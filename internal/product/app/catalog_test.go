@@ -412,6 +412,28 @@ func TestUpdateUsesProductVersionCASAndOperationScopedReceipt(t *testing.T) {
 	}
 }
 
+func TestProductUpdateRejectsArchivedTerminalWithoutChangingTheRetainedFact(t *testing.T) {
+	archived := validTestProduct(44)
+	projection, err := localProductProjectionForLifecycle(archived.LegacyAdminProjection, productport.LocalProductArchived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived.LegacyAdminProjection = projection
+	store := &productTestStore{products: []productport.Product{archived}}
+	events := &productTestEvents{}
+	service := NewService(&productTestUoW{}, store, events)
+	_, err = service.Update(context.Background(), productport.UpdateCommand{
+		ID: archived.ID, ExpectedVersion: archived.Version, Name: "不应修改", Description: "仍保留的历史商品", PriceMinor: 100,
+		Currency: "CNY", StockQuantity: 1, Actor: 7, IdempotencyKey: "product-archive-edit-0001",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("archived update error=%v", err)
+	}
+	if got := store.products[0]; got.ID != archived.ID || got.Version != archived.Version || got.Name != archived.Name || len(events.events) != 0 || store.completeCalls != 0 {
+		t.Fatalf("archived fact changed=%+v events=%d receipts=%d", got, len(events.events), store.completeCalls)
+	}
+}
+
 func TestProductValidationRejectsTimeBeforeCreation(t *testing.T) {
 	product := validTestProduct(1)
 	product.UpdatedAt = product.CreatedAt.Add(-time.Nanosecond)

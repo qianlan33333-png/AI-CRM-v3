@@ -39,6 +39,10 @@ const (
 	StatusDraft     QuestionnaireStatus = "draft"
 	StatusPublished QuestionnaireStatus = "published"
 	StatusDisabled  QuestionnaireStatus = "disabled"
+	// StatusArchived is terminal for normal administration and public access.
+	// The definition and its submission history remain readable through their
+	// retained historical paths.
+	StatusArchived QuestionnaireStatus = "archived"
 
 	DisplayAllInOne AnswerDisplayMode = "all_in_one"
 	DisplayOneByOne AnswerDisplayMode = "one_by_one"

@@ -7,8 +7,25 @@ import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type Mate
 import { openContentComposer, openReadonlyContentPresentation, type ContentComposerResult } from './shared/ui/contentComposer';
 import type { ContentMaterialKind, ContentMaterialRecord } from './shared/ui/contentPresentation';
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+import { mountPageHeaderActions, setPageHeaderActionDisabled } from './shared/ui/pageHeaderActions';
+
+declare global {
+  interface Window {
+    AICRMPageHeaderActions?: {
+      mount: typeof mountPageHeaderActions;
+      setDisabled: typeof setPageHeaderActionDisabled;
+    };
+  }
+}
 
 installCommittedTextSearch();
+// The byte-derived standard script owns the GroupOps list state. Give it this
+// narrow V3 bridge so it can mount actions into the existing shell topbar
+// without recreating a page header or importing a domain command.
+window.AICRMPageHeaderActions = {
+  mount: mountPageHeaderActions,
+  setDisabled: setPageHeaderActionDisabled,
+};
 
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";

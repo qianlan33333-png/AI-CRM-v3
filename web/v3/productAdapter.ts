@@ -7,10 +7,12 @@ import { api } from '../src/shared/api/client';
 import { AdminController } from '../src/admin/controller';
 import { apiRequestOptions } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
-import { productPageDto, type AdminReadContext } from '../src/api/admin';
+import { emptyAdminDb, productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr, renderQr } from '../src/admin/sections/qr';
+import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
+import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord } from './shared/ui/materialPickerAdapter';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -60,10 +62,38 @@ async function readJSON(path: string): Promise<unknown> {
   return payload;
 }
 
+type ArchivedProductEditor = { id: number; prefix: 'pf' | 'spf' };
+
+function archivedProductEditor(value: unknown, editor: ArchivedProductEditor): boolean {
+  const raw = object(value);
+  const product = object(raw.product || value);
+  const id = Number(editor.prefix === 'pf' ? product.id || product.resourceId : product.service_product_id || product.id || product.resourceId);
+  if (!Number.isSafeInteger(id) || id !== editor.id) return false;
+  // Ordinary and service-period detail endpoints expose the normalized
+  // lifecycle. `archived` is retained as a compatibility check for the
+  // service-period response while aliases still serve historical URLs.
+  return product.lifecycle === 'archived' || product.archived === true;
+}
+
+function archivedProductEditorTerminal(editor: ArchivedProductEditor): AdminDb {
+  const template = document.getElementById('tpl') as HTMLTemplateElement | null;
+  if (!template) throw new Error('商品页面模板不可用');
+  const label = editor.prefix === 'pf' ? '普通商品' : '周期商品';
+  const listURL = editor.prefix === 'pf' ? '/admin/wechat-pay/products' : '/admin/service-period-products';
+  // The frozen runtime captures #tpl before reading data and mounts it only
+  // after loadDb resolves. Replacing that captured fragment here therefore
+  // yields a terminal page without mounting a transient form or any of its
+  // save, share, external-push, or member-grid actions.
+  template.innerHTML = `<section data-v3-archived-product-editor role="alert" style="margin:24px;padding:24px;border:1px solid #DEE0E3;border-radius:8px;background:#fff;display:grid;gap:12px;max-width:680px"><h1 style="margin:0;font-size:18px;color:#1F2329">该商品已删除</h1><p style="margin:0;color:#646A73;line-height:1.6">该${label}已从新的选择和购买入口移除。既有订单、权益和审计历史仍会保留。</p><p style="margin:0"><a href="${listURL}" style="color:var(--accent,#3370ff)">返回${label}管理</a></p></section>`;
+  return emptyAdminDb();
+}
+
 let loadedProducts: ProductProjection[] = [];
 const openedProductPayloads = new Map<number, RecordValue>();
 const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
 const productLifecycleKeys = new Map<string, string>();
+type ProductArchiveIntent = { key: string; body: string };
+const productArchiveIntents = new Map<string, ProductArchiveIntent>();
 
 type ProductSaveContext = {
   productID?: number;
@@ -101,6 +131,39 @@ function productLifecycleKey(productID: number, version: number, enabled: boolea
     productLifecycleKeys.set(identity, key);
   }
   return key;
+}
+
+type ProductArchiveRow = { resourceId?: number; version?: number; name?: string };
+type ProductArchiveController = { init(): Promise<void>; db: { rows: { products: ProductArchiveRow[]; spProducts: ProductArchiveRow[] } } };
+
+async function archiveProduct(controller: ProductArchiveController, kind: 'ordinary' | 'service-period', row: ProductArchiveRow): Promise<void> {
+  const id = Number(row.resourceId);
+  const version = Number(row.version);
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(version) || version < 1) {
+    throw new Error('商品缺少打开时版本，请刷新后再删除');
+  }
+  const identity = `${kind}:${id}:${version}`;
+  let intent = productArchiveIntents.get(identity);
+  if (!intent) {
+    intent = { key: newIdempotencyKey(`${kind === 'ordinary' ? 'product' : 'service-product'}-archive`), body: JSON.stringify({ expected_version: version }) };
+    productArchiveIntents.set(identity, intent);
+  }
+  const endpoint = kind === 'ordinary'
+    ? `/api/admin/wechat-pay/products/${id}`
+    : `/api/admin/service-period-products/${id}`;
+  const response = await fetch(endpoint, apiRequestOptions({
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.key },
+    body: intent.body,
+  }));
+  if (!response.ok) throw new Error(`商品删除失败（HTTP ${response.status}）`);
+  await controller.init();
+  const rows = kind === 'ordinary' ? controller.db.rows.products : controller.db.rows.spProducts;
+  if (rows.some((item) => Number(item.resourceId) === id)) {
+    throw new Error('删除已受理，但列表回读仍显示该商品；请刷新后核对');
+  }
+  productArchiveIntents.delete(identity);
+  showMessage(kind === 'ordinary' ? '商品已删除，已停止新的公开购买。' : '周期商品已删除，已停止新的公开购买和成员发放。', true);
 }
 
 function stableProductSaveKeys(input: Parameters<typeof api.saveProduct>[0]): { subjectKey: string; externalPushKey: string } {
@@ -144,50 +207,7 @@ async function recoverExternalPush(input: Parameters<typeof api.saveProduct>[0],
 
 const donorFetch = globalThis.fetch.bind(globalThis);
 
-type MaterialPickerItem = { library_id: number; title?: string; subtitle?: string; thumbnail_url?: string; metadata?: Record<string, unknown> };
-type StandardWindow = Window & { AdminApi?: { requestJson?: (path: string) => Promise<unknown> }; AICRMStandardComponents?: { ready?: () => Promise<void> } };
-
-async function materialPickerItems(path: string): Promise<unknown> {
-  const url = new URL(path, location.origin);
-  if (url.pathname !== '/api/admin/material-picker/items') throw new Error('素材选择请求不受支持');
-  const type = url.searchParams.get('type');
-  const endpoint = type === 'image' ? '/api/admin/image-library' : type === 'miniprogram' ? '/api/admin/miniprogram-library' : type === 'attachment' ? '/api/admin/attachment-library' : type === 'group_invite' ? '/api/admin/group-invite-library' : '';
-  if (!endpoint) throw new Error('素材类型不受支持');
-  const q = url.searchParams.get('q') || '';
-  const items: RecordValue[] = [];
-  for (let offset = 0; ; ) {
-    const source = new URL(endpoint, location.origin);
-    source.searchParams.set('limit', '100'); source.searchParams.set('offset', String(offset)); source.searchParams.set('q', q); source.searchParams.set('enabled_only', 'true');
-    const response = await donorFetch(source, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`素材目录读取失败（HTTP ${response.status}）`);
-    const page = list(object(payload).items).map(object);
-    items.push(...page);
-    const next = Number(object(payload).next_offset);
-    if (object(payload).has_more !== true || !Number.isSafeInteger(next) || next <= offset) break;
-    offset = next;
-  }
-  return { items: items.map((item) => {
-    const id = Number(item.id ?? item.library_id);
-    const originalURL = String(item.original_url ?? item.variant_url ?? (type === 'image' ? `/api/admin/image-library/${id}/variants/original` : ''));
-    return { type, library_id: id, title: String(item.name ?? item.title ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.thumbnail_url ?? item.variant_url ?? ''), enabled: item.enabled !== false, selectable: item.enabled !== false, metadata: { ...item, original_url: originalURL } };
-  }) };
-}
-
-function installMaterialPickerTransport(): void {
-  const target = window as StandardWindow;
-  const prior = target.AdminApi?.requestJson;
-  target.AdminApi ||= {};
-  target.AdminApi.requestJson = async (path: string): Promise<unknown> => {
-    if (new URL(path, location.origin).pathname === '/api/admin/material-picker/items') return materialPickerItems(path);
-    if (prior) return prior(path);
-    const response = await donorFetch(path, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
-    return payload;
-  };
-}
-installMaterialPickerTransport();
+type StandardWindow = Window & { AICRMStandardComponents?: { ready?: () => Promise<void> } };
 
 const periodicSnapshots = new Map<number, RecordValue>();
 
@@ -564,14 +584,22 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
     // The byte-frozen donor loader couples Product forms to the whole Channel
     // catalog. Compose the form from independent local reads so malformed
     // imported Channel rows cannot hide an otherwise valid Product definition.
-    const [db, imageDb, tagDb, channelDb, rawProduct, rawExternalPush] = await Promise.all([
+    const dependencies = Promise.all([
       donorLoadDb(page('products')),
       donorLoadDb(page('images')),
       donorLoadDb(page('tags')),
       optionalChannels,
-      readJSON(`/api/v1/products/${productID}`),
       readJSON(`/api/admin/wechat-pay/products/${productID}/external-push`),
     ]);
+    // Keep the normal editor's independent reads concurrent, while letting an
+    // archived direct URL resolve to its terminal page even if a current-only
+    // catalog or external configuration reader no longer serves that item.
+    void dependencies.catch(() => undefined);
+    const rawProduct = await readJSON(`/api/v1/products/${productID}`);
+    if (archivedProductEditor(rawProduct, { id: productID, prefix: 'pf' })) {
+      return archivedProductEditorTerminal({ id: productID, prefix: 'pf' });
+    }
+    const [db, imageDb, tagDb, channelDb, rawExternalPush] = await dependencies;
     db.rows.images = imageDb.rows.images;
     db.tagGroups = tagDb.tagGroups;
     db.wecomTags = tagDb.wecomTags;
@@ -596,6 +624,13 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
   }
 
   const db = await donorLoadDb(context);
+  if (context?.page === 'spProductForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
+    const productID = Number(context.id);
+    const current = db.rows.spProducts[0];
+    if (archivedProductEditor(current, { id: productID, prefix: 'spf' })) {
+      return archivedProductEditorTerminal({ id: productID, prefix: 'spf' });
+    }
+  }
   if (context?.page !== 'products') return db;
   let rawItems: unknown[];
   rawItems = list(object(await readJSON('/api/v1/products')).items);
@@ -616,10 +651,17 @@ async function readShare(product: ProductProjection): Promise<string> {
   try { payload = object(await response.json()); } catch { throw new Error(`商品分享地址读取失败（HTTP ${response.status}）`); }
   if (response.status === 409 && (payload.code === 'product_not_enabled' || payload.error === 'product_not_enabled')) throw new Error('请先启用商品');
   if (!response.ok) throw new Error(`商品分享地址读取失败（HTTP ${response.status}）`);
+  const productCode = typeof payload.product_code === 'string' ? payload.product_code : '';
   const path = typeof payload.purchase_url === 'string' ? payload.purchase_url : '';
-  if (payload.product_id !== product.resourceId || payload.lifecycle !== 'enabled' || payload.available !== true || path !== `/p/${product.resourceId}` || payload.qr_code_url != null) throw new Error('商品分享响应不完整或越过站内边界');
-  const url = new URL(path, location.origin);
-  if (url.origin !== location.origin || url.pathname !== path || url.search || url.hash) throw new Error('商品分享地址必须是当前站点的公开路径');
+  if (payload.product_id !== product.resourceId || productCode !== product.code || payload.lifecycle !== 'enabled' || payload.available !== true || payload.qr_code_url != null || !path.startsWith('/p/')) throw new Error('商品分享响应不完整或越过站内边界');
+  const encodedCode = path.slice('/p/'.length);
+  if (!encodedCode || encodedCode.includes('/')) throw new Error('商品分享响应不完整或越过站内边界');
+  let decodedCode: string;
+  try { decodedCode = decodeURIComponent(encodedCode); } catch { throw new Error('商品分享响应不完整或越过站内边界'); }
+  if (decodedCode !== product.code) throw new Error('商品分享响应不完整或越过站内边界');
+  let url: URL;
+  try { url = new URL(path, location.origin); } catch { throw new Error('商品分享响应不完整或越过站内边界'); }
+  if (url.origin !== location.origin || url.username || url.password || url.pathname !== path || url.search || url.hash) throw new Error('商品分享地址必须是当前站点的公开路径');
   return url.toString();
 }
 
@@ -1493,43 +1535,120 @@ const servicePeriodDurationObserver = new MutationObserver(mountNewServicePeriod
 servicePeriodDurationObserver.observe(document, { childList: true, subtree: true });
 mountNewServicePeriodDuration();
 
-type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: { type: 'image'; title: string; selectedIds: number[]; limit: number; onConfirm(item: MaterialPickerItem): void; onCancel(): void }): void } };
-let pendingProductMaterialObserver: MutationObserver | undefined;
+type ProductMaterial = MaterialPickerRecord & { metadata: RecordValue };
+type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: {
+  type: 'image'; title: string; selectedIds: number[]; selectedRecords: ProductMaterial[]; limit: number;
+  onCommit(result: { selected: ProductMaterial[]; added: ProductMaterial[]; removed: ProductMaterial[] }): void | Promise<void>;
+  onCancel(): void;
+}): void } };
 
-// The frozen product forms await their scoped page data before appending the
-// legacy generic picker.  Keep that callback path for drafts/save, while the
-// user sees the released original material picker.
-document.addEventListener('click', (event) => {
-  const button = (event.target as Element | null)?.closest('button');
-  if (!button || button.textContent?.trim() !== '从素材库选择' || !button.closest('#product-media, #sp-media')) return;
-  pendingProductMaterialObserver?.disconnect();
-  const observer = new MutationObserver((records) => {
-    for (const record of records) for (const node of record.addedNodes) {
-      if (!(node instanceof HTMLElement) || !node.classList.contains('pk-mask')) continue;
-      observer.disconnect(); if (pendingProductMaterialObserver === observer) pendingProductMaterialObserver = undefined;
-      const picker = (window as ProductMaterialPickerWindow).AICRMMaterialPicker;
-      if (!picker) return;
-      node.style.setProperty('display', 'none', 'important'); node.setAttribute('aria-hidden', 'true');
-      picker.open({ type: 'image', title: '选择页面素材', selectedIds: [], limit: 10,
-        onConfirm(item) {
-          const row = Array.from(node.querySelectorAll<HTMLElement>('[data-pk-id]')).find((candidate) => candidate.dataset.pkId === String(item.library_id));
-          if (!row) {
-            const hint = button.closest<HTMLElement>('#product-media, #sp-media')?.querySelector<HTMLElement>('[data-product-material-error]') || document.createElement('p');
-            hint.dataset.productMaterialError = ''; hint.textContent = '素材目录已变化，未改动当前草稿；请刷新页面后重新选择。'; hint.setAttribute('role', 'alert');
-            if (!hint.parentElement) button.closest<HTMLElement>('#product-media, #sp-media')?.append(hint);
-            node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click(); return;
-          }
-          row.click(); node.querySelector<HTMLElement>('[data-pk="ok"]')?.click();
-        },
-        onCancel() { node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click(); },
-      });
-      return;
-    }
+function productImageOriginalURL(value: unknown, expectedID?: number): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    const url = new URL(value, location.origin);
+    if (url.origin !== location.origin || url.search || url.hash) return undefined;
+    const match = /^\/api\/admin\/image-library\/([1-9]\d*)\/variants\/original$/.exec(url.pathname);
+    if (!match) return undefined;
+    const id = Number(match[1]);
+    if (!Number.isSafeInteger(id) || id < 1 || (expectedID !== undefined && id !== expectedID)) return undefined;
+    return url.pathname;
+  } catch {
+    return undefined;
+  }
+}
+
+const productMetadataReadTimeoutMilliseconds = 2500;
+
+function productInitialMaterial(url: string, unavailableReason = '素材状态待当前目录确认'): ProductMaterial | undefined {
+  const originalURL = productImageOriginalURL(url);
+  if (!originalURL) return undefined;
+  const id = Number(/^\/api\/admin\/image-library\/([1-9]\d*)\//.exec(originalURL)?.[1]);
+  return {
+    type: 'image', library_id: id,
+    title: `已选图片素材 ${id}`,
+    subtitle: '当前商品草稿，等待当前素材目录确认', thumbnail_url: originalURL.replace('/variants/original', '/variants/thumb_320'),
+    enabled: false, selectable: false, mime_type: '', metadata: { original_url: originalURL, authorized: false },
+    unavailable_reason: unavailableReason,
+  };
+}
+
+function productMaterialRecord(raw: RecordValue): ProductMaterial | undefined {
+  const id = Number(raw.id ?? raw.library_id);
+  if (!Number.isSafeInteger(id) || id < 1) return undefined;
+  const originalURL = productImageOriginalURL(raw.original_url ?? raw.variant_url, id);
+  const enabled = raw.enabled !== false;
+  const unavailable = !originalURL ? '素材没有可用于商品的可信原图地址' : enabled ? '' : '素材已停用';
+  return {
+    type: 'image', library_id: id,
+    title: String(raw.name ?? raw.title ?? raw.file_name ?? `图片素材 ${id}`),
+    subtitle: String(raw.description ?? raw.category ?? ''),
+    // The catalog's thumbnail endpoint is display-only. Confirmation always
+    // validates metadata.original_url above, so never attempt to treat a
+    // thumbnail URL as an owner-writeable original URL.
+    thumbnail_url: `/api/admin/image-library/${id}/variants/thumb_320`,
+    enabled, selectable: enabled && Boolean(originalURL), mime_type: String(raw.mime_type ?? ''),
+    metadata: { original_url: originalURL || '', authorized: true },
+    ...(unavailable ? { unavailable_reason: unavailable } : {}),
+  };
+}
+
+async function verifiedProductInitialMaterial(url: string): Promise<ProductMaterial | undefined> {
+  const pending = productInitialMaterial(url);
+  if (!pending) return undefined;
+  // The current frozen product draft can contain a few library originals.  A
+  // direct record read proves those IDs for this scope, but may not keep a
+  // click waiting indefinitely or outlive the page which started it.
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), productMetadataReadTimeoutMilliseconds);
+  try {
+    const response = await donorFetch(new URL(`/api/admin/image-library/${pending.library_id}`, location.origin), { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: controller.signal });
+    if (!response.ok) return pending;
+    const payload = object(await response.json().catch(() => ({})));
+    const material = productMaterialRecord(object(payload.item ?? payload.image));
+    return material?.library_id === pending.library_id ? material : pending;
+  } catch {
+    return productInitialMaterial(url, controller.signal.aborted ? '初始素材目录确认超时；请重试。' : '素材状态待当前目录确认') || pending;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function loadProductMaterialPage(request: MaterialPickerLoadRequest): Promise<{ items: ProductMaterial[]; nextCursor?: string }> {
+  if (request.type !== 'image') throw new Error('当前商品仅支持图片素材。');
+  const offset = Number(request.cursor || '0');
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('素材目录分页标记无效，请重新搜索。');
+  const source = new URL('/api/admin/image-library', location.origin);
+  source.searchParams.set('limit', '50');
+  source.searchParams.set('offset', String(offset));
+  source.searchParams.set('q', request.query);
+  source.searchParams.set('enabled_only', 'true');
+  const response = await donorFetch(source, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: request.signal });
+  const payload = object(await response.json().catch(() => ({})));
+  if (!response.ok) {
+    const error = new Error(response.status === 401 || response.status === 403 ? '素材目录权限已失效，请重新登录后重试。' : '素材目录暂时无法加载，请稍后重试。') as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  const next = Number(payload.next_offset);
+  return {
+    items: list(payload.items).map(object).flatMap((item) => {
+      const record = productMaterialRecord(item);
+      return record ? [record] : [];
+    }),
+    nextCursor: payload.has_more === true && Number.isSafeInteger(next) && next > offset ? String(next) : undefined,
+  };
+}
+
+const productMaterialAdapterReady = (async () => {
+  await (window as StandardWindow).AICRMStandardComponents?.ready?.();
+  installMaterialPickerAdapter({
+    source: 'product-media', scope: 'product-form-image-library', loadPage: loadProductMaterialPage,
+    accessLossMessage: (error) => {
+      const status = (error as { status?: unknown })?.status;
+      return status === 401 || status === 403 ? '素材目录权限已失效；当前商品草稿仍可查看，请取消后重新登录。' : undefined;
+    },
   });
-  pendingProductMaterialObserver = observer;
-  observer.observe(document.body, { childList: true, subtree: true });
-}, true);
-window.addEventListener('pagehide', () => pendingProductMaterialObserver?.disconnect(), { once: true });
+})();
 
 
 // Preserve the frozen form nodes and serializer while switching only the visible
@@ -1617,8 +1736,13 @@ api.saveImageItem = (originalName, patch) => runAction(takeProductUploadInput() 
 type ProductController = {
   page: string;
   db: AdminDb;
+  init(): Promise<void>;
   goto(page: string, query?: string): void;
   qs(): URLSearchParams;
+  renderVals(): Record<string, unknown>;
+  currentCommerceImageUrls(kind: 'product' | 'service'): string[];
+  setCommerceImageUrls(kind: 'product' | 'service', urls: string[]): void;
+  pickCommerceImages(kind: 'product' | 'service'): void;
 };
 const productController = AdminController.prototype as unknown as ProductController;
 const donorProductQuery = productController.qs;
@@ -1627,6 +1751,129 @@ productController.qs = function () {
   const route = productEditorRoute();
   if (route && ((this.page === 'productForm' && route.prefix === 'pf') || (this.page === 'spProductForm' && route.prefix === 'spf'))) query.set('id', String(route.id));
   return query;
+};
+
+function productSelectedURL(item: ProductMaterial): string {
+  const value = item.metadata?.original_url;
+  const url = productImageOriginalURL(value, item.library_id);
+  if (!url || item.metadata?.authorized !== true) throw new Error(`素材「${item.title}」尚未在当前授权目录确认；请刷新或搜索该素材后再确认。`);
+  return url;
+}
+
+function mergeProtectedProductURLs(current: readonly string[], selected: readonly ProductMaterial[]): string[] {
+  const selectedURLs = selected.map(productSelectedURL);
+  const selectedSet = new Set(selectedURLs);
+  const preserved: string[] = [];
+  // Products historically permit a current URL which is not a Media-library
+  // original (for example an already uploaded or external image). The V3
+  // dialog cannot turn such a URL into a library id, so keep it in exactly the
+  // same owner draft rather than silently dropping it on a later selection.
+  // Keep the surviving library URLs and opaque URLs in their original relative
+  // order; additions from the V3 catalogue are appended after that draft.
+  for (const url of current) {
+    const canonical = productImageOriginalURL(url);
+    if (!canonical || selectedSet.has(canonical)) preserved.push(url);
+  }
+  const presentCanonical = new Set(preserved.flatMap((url) => {
+    const canonical = productImageOriginalURL(url);
+    return canonical ? [canonical] : [];
+  }));
+  return [...preserved, ...selectedURLs.filter((url) => !presentCanonical.has(url))];
+}
+
+function describeProductPicker(): void {
+  const hint = document.querySelector<HTMLElement>('[data-v3-selection-session="material"] .aicrm-material-picker__head p');
+  if (hint) hint.textContent = '素材库图片仅在确认后应用；上传或外部图片请在页面原图列表中管理。';
+}
+
+type ProductPickerContext = {
+  controller: ProductController;
+  kind: 'product' | 'service';
+  page: string;
+  locationKey: string;
+  draft: string[];
+  draftKey: string;
+};
+
+type ProductPickerPreopen = ProductPickerContext & { generation: number };
+let productPickerGeneration = 0;
+let productPickerPreopen: ProductPickerPreopen | undefined;
+
+function productPickerDraftKey(urls: readonly string[]): string {
+  return JSON.stringify(urls);
+}
+
+function productPickerContext(controller: ProductController, kind: 'product' | 'service'): ProductPickerContext | undefined {
+  const expectedPage = kind === 'product' ? 'productForm' : 'spProductForm';
+  const expectedPrefix = kind === 'product' ? 'pf' : 'spf';
+  if (controller.page !== expectedPage || productPrefix() !== expectedPrefix) return undefined;
+  let locationKey: string;
+  try { locationKey = `${location.pathname}${location.search}`; } catch { return undefined; }
+  const draft = [...controller.currentCommerceImageUrls(kind)];
+  return { controller, kind, page: controller.page, locationKey, draft, draftKey: productPickerDraftKey(draft) };
+}
+
+function productPickerContextIsCurrent(context: ProductPickerContext): boolean {
+  const current = productPickerContext(context.controller, context.kind);
+  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.draftKey === context.draftKey);
+}
+
+function productPickerPreopenIsCurrent(preopen: ProductPickerPreopen): boolean {
+  return productPickerPreopen?.generation === preopen.generation && productPickerContextIsCurrent(preopen);
+}
+
+productController.pickCommerceImages = function (kind) {
+  const controller = this;
+  const context = productPickerContext(controller, kind);
+  if (!context) {
+    showMessage('当前商品页面已切换，未打开素材选择器。');
+    return;
+  }
+  // A second click for this exact owner draft joins the same bounded read.
+  // A changed page, kind, or draft invalidates the old generation before the
+  // new owner starts its own read, so the late old result cannot open a dialog.
+  if (productPickerPreopen) {
+    const active = productPickerPreopen;
+    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.draftKey === context.draftKey;
+    if (sameOwnerDraft) return;
+    productPickerPreopen = undefined;
+  }
+  const preopen: ProductPickerPreopen = { ...context, generation: ++productPickerGeneration };
+  productPickerPreopen = preopen;
+  void productMaterialAdapterReady.then(async () => {
+    if (!productPickerPreopenIsCurrent(preopen)) return;
+    const picker = (window as ProductMaterialPickerWindow).AICRMMaterialPicker;
+    if (!picker) throw new Error('页面素材选择组件尚未就绪，请稍后重试。');
+    const selectedRecords = (await Promise.all(preopen.draft.map(verifiedProductInitialMaterial))).flatMap((record) => record ? [record] : []);
+    if (!productPickerPreopenIsCurrent(preopen)) return;
+    const selectedIds = [...new Set(selectedRecords.map((item) => item.library_id))];
+    const protectedCount = preopen.draft.length - selectedRecords.length;
+    const availableSlots = 10 - protectedCount;
+    if (availableSlots < 1) {
+      throw new Error('当前商品已有 10 张非素材库图片；请先用页面中的移除按钮释放名额。');
+    }
+    // Pre-open singleflight ends only after the original host and its draft are
+    // proven current. The dialog keeps its own temporary selection afterwards.
+    if (productPickerPreopen?.generation === preopen.generation) productPickerPreopen = undefined;
+    picker.open({
+      type: 'image', title: kind === 'product' ? '选择商品页面素材' : '选择周期商品页面素材',
+      selectedIds, selectedRecords, limit: availableSlots,
+      async onCommit(result) {
+        if (!productPickerContextIsCurrent(preopen)) throw new Error('商品页面或原始素材草稿已改变；请取消后重新打开选择器。');
+        const urls = mergeProtectedProductURLs(preopen.draft, result.selected);
+        if (urls.length > 10) throw new Error('页面素材最多 10 张；未改动当前商品草稿。');
+        controller.setCommerceImageUrls(kind, urls);
+      },
+      onCancel() { /* the shared session cancels its temporary draft only */ },
+    });
+    describeProductPicker();
+  }).catch((error) => {
+    // The frozen controller has not touched its draft yet. Report a scoped
+    // failure instead of opening its older picker with a partial callback.
+    showMessage(error instanceof Error ? error.message : '页面素材选择器暂时不可用，请稍后重试。');
+  }).finally(() => {
+    if (productPickerPreopen?.generation === preopen.generation) productPickerPreopen = undefined;
+  });
 };
 const donorGotoProduct = productController.goto;
 productController.goto = function (page, query = '') {
@@ -1649,3 +1896,51 @@ productController.goto = function (page, query = '') {
   }
   showMessage(`已保存当前维度，服务端版本 ${saved.version}`, true);
 };
+
+const donorProductRenderVals = productController.renderVals;
+productController.renderVals = function renderProductListWithArchiveActions() {
+  const values = donorProductRenderVals.call(this) as { rows?: { products?: ProductArchiveRow[]; spProducts?: ProductArchiveRow[] } };
+  if ((this.page !== 'products' && this.page !== 'spProducts') || !values.rows) return values;
+  const ordinaryRows = values.rows.products || [];
+  const serviceRows = values.rows.spProducts || [];
+  return {
+    ...values,
+    rows: {
+      ...values.rows,
+      products: this.page === 'products' ? ordinaryRows.map((row) => ({
+        ...row,
+        del: () => confirmBox(
+          '删除商品',
+          `确认删除“${row.name || '未命名商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买；已支付订单、权益和审计记录会保留。`,
+          '确认删除',
+		  true,
+		  () => { void archiveProduct(this, 'ordinary', row).catch((error) => showMessage(error instanceof Error ? error.message : '商品删除失败')); },
+        ),
+      })) : ordinaryRows,
+      spProducts: this.page === 'spProducts' ? serviceRows.map((row) => ({
+        ...row,
+        archive: () => confirmBox(
+          '删除周期商品',
+          `确认删除“${row.name || '未命名周期商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买和成员发放；既有成员权益、订单和审计记录会保留。`,
+          '确认删除',
+		  true,
+		  () => { void archiveProduct(this, 'service-period', row).catch((error) => showMessage(error instanceof Error ? error.message : '周期商品删除失败')); },
+        ),
+      })) : serviceRows,
+    },
+  };
+};
+
+// The service-period table is a byte-frozen donor template. Reuse its one
+// archive action and only relabel the mounted DOM so the owner sees the same
+// “删除” verb as ordinary products; the owner command remains Archive.
+function relabelServiceProductDeleteAction(): void {
+  if (typeof document === 'undefined' || !document.body || document.body.dataset.page !== 'spProducts') return;
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
+    if (button.textContent?.trim() === '归档') button.textContent = '删除';
+  }
+}
+const serviceProductDeleteLabelObserver = new MutationObserver(relabelServiceProductDeleteAction);
+serviceProductDeleteLabelObserver.observe(document, { childList: true, subtree: true });
+window.addEventListener('pagehide', () => serviceProductDeleteLabelObserver.disconnect(), { once: true });
+relabelServiceProductDeleteAction();

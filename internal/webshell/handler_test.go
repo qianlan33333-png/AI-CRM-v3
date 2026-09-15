@@ -532,12 +532,12 @@ func TestRenderTagsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	err = renderer.RenderTags(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wecom-tags", nil), "企微标签管理", "", "api.admin_wecom_tags_page"), `<section data-page="tags">frozen donor fragment</section>`, TagsAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js"})
+	err = renderer.RenderTags(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wecom-tags", nil), "企微标签管理", "", "api.admin_wecom_tags_page"), `<section data-page="tags">frozen donor fragment</section>`, TagsAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", PageHeaderActionHostJS: "/assets/page-header-action-host.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="tags">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `/static/admin_console/tag_sync_bridge.js`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Count(body, `<h1 class="admin-page-title">企微标签管理</h1>`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="tags">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `/static/admin_console/tag_sync_bridge.js`) || !strings.Contains(body, `/assets/page-header-action-host.js`) {
 		t.Fatalf("tags shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
@@ -711,14 +711,14 @@ func TestRenderAutomationUsesOnlyV3CreateCodeHostBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assets := AutomationAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js"}
+	assets := AutomationAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", PresentationCSS: "/assets/presentation.css", ContentCSS: "/assets/automation-content.css", SelectionDialogCSS: "/assets/selection-dialog.css", MaterialPickerCSS: "/assets/material-picker.css", MaterialPickerJS: "/assets/material-picker.js", ContentHostJS: "/assets/automation-content.js"}
 	response := httptest.NewRecorder()
 	err = renderer.RenderAutomation(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/agentEdit.html?type=agent", nil), "自动化话术", "", "api.admin_automation_agents"), "agentEdit", `<section data-page="agentEdit">frozen donor fragment</section>`, assets, "agent_0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="agentEdit">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-automation-create-code="agent_0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `<script defer src="/static/admin_console/automation_create_code_adapter.js?v=automation-create-code-v2"></script>`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="agentEdit">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-automation-create-code="agent_0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `<script defer src="/static/admin_console/automation_create_code_adapter.js?v=automation-create-code-v2"></script>`) || !strings.Contains(body, `href="/assets/automation-content.css"`) || !strings.Contains(body, `src="/assets/automation-content.js"`) {
 		t.Fatalf("automation create shell mismatch status=%d body=%q", response.Code, body)
 	}
 

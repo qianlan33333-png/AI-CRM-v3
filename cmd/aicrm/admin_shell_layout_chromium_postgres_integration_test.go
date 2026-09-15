@@ -116,7 +116,8 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/operation-cycles", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/automation-conversion/group-ops/ui", canonicalPath: "/admin/groupops.html", canonicalStatus: http.StatusFound, marker: `data-group-ops-standard-stage`, expectTopbar: true},
 		{path: "/admin/groupops.html", marker: `data-group-ops-standard-stage`, expectTopbar: true},
-		{path: "/admin/channels", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/channels", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/channels/new", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/cloud-orchestrator/plans", marker: `data-cloud-plan-root`, expectTopbar: true},
 		{path: "/admin/cloud-orchestrator/plans/", marker: `data-cloud-plan-root`, expectTopbar: true},
 		{path: "/admin/cloud-orchestrator/plans/" + strconv.FormatInt(fixture.aiPlanID, 10), marker: `data-plan-detail-state`, expectTopbar: true},
@@ -129,7 +130,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/radarDetail.html?id=" + strconv.FormatInt(fixture.radarID, 10), marker: `data-page="radarDetail"`, expectTopbar: true},
 		{path: "/admin/radarForm.html", marker: `data-page="radarForm"`, expectTopbar: true},
 		{path: "/admin/radarForm.html?id=" + strconv.FormatInt(fixture.radarID, 10), marker: `data-page="radarForm"`, expectTopbar: true},
-		{path: "/admin/wecom-tags", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/wecom-tags", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/orders", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/wechat-pay/products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/service-period-products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
@@ -218,7 +219,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		t.Fatalf("admin shell Chromium journey did not report success: %q", output)
 	}
 	for _, name := range []string{
-		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
+		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "ai-detail-1280.png", "ai-detail-1440.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png", "tags-1280.png", "tags-1440.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {

@@ -138,7 +138,7 @@ type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageL
 
 // TagsAssets are manifest-derived frozen donor bundle paths. The tag page is
 // mounted in admin_base and never publishes the donor's own shell/sidebar.
-type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS, PageHeaderActionHostJS string }
 
 // ProductAssets are manifest-derived URLs for the frozen donor Product
 // bundle. They are passed by the Product UI adapter and contain no markup.
@@ -169,7 +169,11 @@ type GroupOpsAssets struct {
 
 // AutomationAssets are manifest-derived frozen Agent bundle paths. The v3
 // shell supplies only URLs; donor markup remains the extracted template.
-type AutomationAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type AutomationAssets struct {
+	TokensCSS, LabsCSS, AdminJS                                        string
+	PresentationCSS, ContentCSS, SelectionDialogCSS, MaterialPickerCSS string
+	MaterialPickerJS, ContentHostJS                                    string
+}
 
 type SurveyAssets struct {
 	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS, SurveyHostJS string
@@ -188,7 +192,7 @@ type ChannelAssets struct {
 	TokensCSS, LabsCSS, AdminJS, StandardHostJS string
 	StandardCSS                                 []string
 }
-type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS string }
+type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS, PageHeaderActionHostJS string }
 
 // DistributionAssets is the small manifest-derived closure mounted inside the
 // admin shell. It never contains a donor document or business data.
@@ -420,11 +424,11 @@ func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPage
 // sidebar shell.  The supplied template was extracted from a verified release
 // asset by the tag module, not from request input.
 func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageData, donorTemplate string, assets TagsAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.PageHeaderActionHostJS == "" {
 		return errors.New("tags shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	data.ShowPageHeader = true
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Tags: true, TagsAssets: assets})
 	if err != nil {
@@ -521,7 +525,9 @@ func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminP
 		}
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// The channel list uses the shared V3 topbar for its one title and create
+	// action. The form keeps its existing embedded layout and controls.
+	data.ShowPageHeader = page == "channels"
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Channel: true, ChannelPage: page, ChannelResourceID: resourceID, ChannelAssets: assets})
 	if err != nil {
@@ -563,7 +569,7 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 }
 
 func (renderer *Renderer) RenderAIAssistant(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AIAssistantAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "list" && page != "detail") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || assets.PageHeaderActionHostJS == "" || (page != "list" && page != "detail") {
 		return errors.New("AI Assistant shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -602,6 +608,9 @@ func (renderer *Renderer) RenderOwnerHandoff(writer http.ResponseWriter, data Ad
 func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AutomationAssets, createCode string) error {
 	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "agents" && page != "agentEdit") {
 		return errors.New("automation shell assets are required")
+	}
+	if page == "agentEdit" && (assets.PresentationCSS == "" || assets.ContentCSS == "" || assets.SelectionDialogCSS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ContentHostJS == "") {
+		return errors.New("automation content host assets are required")
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false

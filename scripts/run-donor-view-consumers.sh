@@ -76,6 +76,7 @@ run_frontend_and_stage_checks() {
   node web/v3/shared/ui/materialPickerAdapter.test.mjs
   node --test web/v3/shared/ui/contentPresentation.test.mjs
   node --test web/v3/shared/ui/contentComposer.test.mjs
+  node web/v3/automationContentHost.test.mjs
   node web/v3/shared/ui/groupPickerAdapter.test.mjs
   node web/v3/shared/ui/tagPickerAdapter.test.mjs
   node web/v3/shared/ui/staffPickerAdapter.test.mjs
@@ -96,7 +97,9 @@ run_frontend_and_stage_checks() {
   node web/v3/fieldMappingEditor.test.mjs
   node web/v3/productAdapter.field_mapping.test.mjs
   node web/v3/productAdapter.save_recovery.test.mjs
+  node web/v3/productAdapter.material_order.test.mjs
   node web/v3/productAdapter.sp_material.test.mjs
+  node web/v3/productAdapter.archive.test.mjs
   node web/v3/orderAdapter.test.mjs
   node web/v3/couponAdapter.test.mjs
   node web/v3/channelAdmissionHost.test.mjs

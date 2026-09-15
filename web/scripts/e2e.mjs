@@ -825,11 +825,12 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         window.Response = Response;
         const calls = [], downloads = [], opened = [];
         const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
-        const product = { id: 7, product_code: 'P-7', name: '真实商品', description: '公开商品', price_minor: 990, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: projection, lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, created_by: 9, version: 3, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:00:00Z' };
+        const product = { id: 7, product_code: 'P/春季 sale', name: '真实商品', description: '公开商品', price_minor: 990, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: projection, lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, created_by: 9, version: 3, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:00:00Z' };
         let externalConfiguration = { url: 'https://hooks.example.test/paid', product_id: 7, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_open', day: 30, frequency: 1, expires_at_ts: null, remark: '旧备注', custom_params: { campaign: 'control', enabled: true, nested: { keep: ' 空白 ' } }, custom_params_json: '{"campaign":"control","enabled":true,"nested":{"keep":" 空白 "}}', revision: 3, updated_at: '2026-09-04T00:00:00Z' };
         let externalTests = [{ product_id: 7, product_kind: 'wechat_pay', effect_id: 'eer_7', state: 'outcome_unknown', attempt_count: 1, provider_accepted: false, delivery_proven: false, real_external_call_executed: true, auto_retry_allowed: false, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:01:00Z' }];
+        let shareMode = 'valid';
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
-        window.__productHttpTest = { calls, downloads, opened };
+        window.__productHttpTest = { calls, downloads, opened, setShareMode: (mode) => { shareMode = mode; } };
         window.URL.createObjectURL = () => 'blob:product-qr';
         window.URL.revokeObjectURL = () => {};
         window.HTMLAnchorElement.prototype.click = function () { downloads.push({ href: this.href, download: this.download }); };
@@ -855,7 +856,14 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             externalTests = [accepted, ...externalTests];
             return json(accepted, 202);
           }
-          if (url.pathname === '/api/admin/wechat-pay/products/7/share') return json({ product_id: 7, product_code: 'P-7', lifecycle: 'enabled', available: true, purchase_url: '/p/7' });
+          if (url.pathname === '/api/admin/wechat-pay/products/7/share') {
+            const share = { product_id: 7, product_code: product.product_code, lifecycle: 'enabled', available: true, purchase_url: '/p/P%2F%E6%98%A5%E5%AD%A3%20sale' };
+            if (shareMode === 'wrong_id') return json({ ...share, product_id: 8 });
+            if (shareMode === 'wrong_code') return json({ ...share, product_code: 'P/另一商品' });
+            if (shareMode === 'nested_path') return json({ ...share, purchase_url: '/p/P/%E6%98%A5%E5%AD%A3%20sale' });
+            if (shareMode === 'query') return json({ ...share, purchase_url: '/p/P%2F%E6%98%A5%E5%AD%A3%20sale?next=elsewhere' });
+            return json(share);
+          }
           return json({ code: 'unexpected_product_request' }, 500);
         };
         return;
@@ -2515,13 +2523,21 @@ console.log('admin/products.html（真实状态、销量与分享）');
   // the live document after the asynchronous share response, just as a browser
   // user sees the overlay rather than retaining a detached test node.
   d = dom.window.document;
-  const expected = 'http://localhost/p/7', svg = d.querySelector('#shareQrBox svg');
+  const expected = 'http://localhost/p/P%2F%E6%98%A5%E5%AD%A3%20sale', svg = d.querySelector('#shareQrBox svg');
   ok('普通商品分享调用真实后端接口', test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/share' && call.method === 'GET'));
-  ok('分享弹窗使用同源商品链接生成二维码', d.querySelector('input[readonly]')?.value === expected && svg?.getAttribute('data-qr-payload') === expected && svg?.querySelector('path'));
+  ok('分享弹窗接受 Owner 编码商品码并生成同源二维码', d.querySelector('input[readonly]')?.value === expected && svg?.getAttribute('data-qr-payload') === expected && svg?.querySelector('path'));
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '预览'));
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存二维码'));
   await sleep(20);
-  ok('商品链接可预览且二维码可下载', test.opened[0]?.[0] === expected && test.downloads[0]?.download === 'P-7-qr.svg');
+  ok('商品链接可预览且二维码可下载', test.opened[0]?.[0] === expected && test.downloads.length === 1);
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '关闭'));
+  for (const [mode, label] of [['wrong_id', '错误商品 ID'], ['wrong_code', '错误商品编码'], ['nested_path', '额外路径'], ['query', '查询串']]) {
+    test.setShareMode(mode);
+    click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '分享'));
+    await sleep(20);
+    d = dom.window.document;
+    ok(`分享拒绝${label}响应`, d.querySelector('#product-v3-toast')?.textContent === '商品分享响应不完整或越过站内边界' && !d.querySelector('#product-share-overlay'));
+  }
   dom.window.close();
 }
 console.log('admin/productForm.html（渠道存量异常隔离）');
