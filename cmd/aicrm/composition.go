@@ -1910,7 +1910,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, ImageLibraryFilterHostJS: assets.ImageLibraryFilterHostJS})
 	})
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
-		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, PageHeaderActionHostJS: assets.PageHeaderActionHostJS})
 	})
 	memberGridUI := producthttp.NewMemberGridUI()
 	productUI := productModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets productmodule.ProductAssets) error {
@@ -1986,7 +1986,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return renderer.RenderChannels(writer, webshell.AdminPageForRequest(request, title, "管理渠道定义、客服分配、资产状态与安全历史归因。", endpoint), page, resourceID, donorTemplate, webshell.ChannelAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
 	})
 	aiUI := aiModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets aiassistant.Assets) error {
-		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS})
+		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS, PageHeaderActionHostJS: assets.PageHeaderActionHostJS})
 	})
 	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	if err != nil {

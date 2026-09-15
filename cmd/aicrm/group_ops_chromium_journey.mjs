@@ -220,6 +220,26 @@ try {
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]')", "material dialog cancel did not return to the actual Radar form");
 
+  // The list has one shell title. Its navigation/create commands are stable
+  // topbar actions, while all data and row controls remain in the workspace.
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin/groupops.html` });
+  await waitFor(cdp, "Boolean(document.querySelector('#group-ops-app .group-ops__table'))", "Group Ops plan list did not render");
+  const listHeader = await evaluate(cdp, "(() => { const topbar=document.querySelector('.admin-topbar'), actions=topbar?.querySelector('[data-page-header-actions=\\\"groupops\\\"]'), create=actions?.querySelector('[data-page-header-action=\\\"create-plan\\\"]'); return {topbars:document.querySelectorAll('header.admin-topbar').length,titles:document.querySelectorAll('.admin-topbar .admin-page-title').length,labels:Array.from(actions?.querySelectorAll('a,button')||[]).map(node=>node.textContent?.trim()),groupsHref:actions?.querySelector('[data-page-header-action=\\\"view-groups\\\"]')?.getAttribute('href'),createDisabled:create?.disabled,localBar:Boolean(document.querySelector('#group-ops-app .group-ops__bar'))}; })()");
+  if (!listHeader || listHeader.topbars !== 1 || listHeader.titles !== 1 || JSON.stringify(listHeader.labels) !== JSON.stringify(['查看所有群', '创建计划']) || listHeader.groupsHref !== '/admin/automation-conversion/group-ops/groups/ui' || listHeader.createDisabled || listHeader.localBar) throw new Error(`Group Ops list header actions are not mounted once in the shell: ${JSON.stringify(listHeader)}`);
+  for (const width of [1440, 1280]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+    await delay(80);
+    const listViewport = await evaluate(cdp, "(() => ({width:innerWidth,documentWidth:document.documentElement.scrollWidth,actions:Array.from(document.querySelectorAll('[data-page-header-actions=\\\"groupops\\\"] a,[data-page-header-actions=\\\"groupops\\\"] button')).map(node=>node.textContent?.trim())}))()");
+    if (!listViewport || listViewport.width !== width || listViewport.documentWidth > width + 1 || JSON.stringify(listViewport.actions) !== JSON.stringify(['查看所有群', '创建计划'])) throw new Error(`Group Ops list ${width}px header layout is invalid: ${JSON.stringify(listViewport)}`);
+    if (screenshotDir) { await fs.mkdir(screenshotDir, { recursive: true }); const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, `groupops-list-header-${width}.png`); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
+  }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+  const createActionIdentity = await evaluate(cdp, "(() => { const create=document.querySelector('[data-page-header-actions=\\\"groupops\\\"] [data-page-header-action=\\\"create-plan\\\"]'); window.__groupOpsHeaderCreate=create; create?.focus(); create?.click(); return Boolean(create); })()");
+  if (!createActionIdentity) throw new Error('Group Ops header create action is unavailable');
+  await waitFor(cdp, "Boolean(document.querySelector('#group-ops-app input[name=\\\"create_plan_name\\\"]'))", "Group Ops header create action did not open the existing local draft");
+  const stableCreateAction = await evaluate(cdp, "document.querySelector('[data-page-header-actions=\\\"groupops\\\"] [data-page-header-action=\\\"create-plan\\\"]') === window.__groupOpsHeaderCreate");
+  if (!stableCreateAction) throw new Error('Group Ops list redraw replaced the focused header create action');
+
   const groupsPath = "/admin/automation-conversion/group-ops/groups/ui";
   await cdp.call("Page.navigate", { url: `${baseURL}${groupsPath}` });
   await waitFor(cdp, "Boolean(document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]'))", "Group Ops groups list did not render its real keyword filter");

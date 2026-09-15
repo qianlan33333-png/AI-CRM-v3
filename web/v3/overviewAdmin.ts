@@ -1,4 +1,5 @@
 import { openDetailDrawer } from './shared/ui/detailDrawer';
+import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 
 type Period = 'today' | '7d' | '30d' | 'custom';
 type SectionStatus = 'ready' | 'zero' | 'data_missing' | 'failed';
@@ -146,12 +147,9 @@ function metric(title: string, value: string, section: Section, detail = '', act
   const summary = detail ? `${detail} · ${hint(section)}` : section.status === 'ready' ? '' : hint(section);
   return `<article class="overview-metric"><div class="overview-metric__head"><span>${escapeHTML(title)}</span>${statusBadge(section)}</div><strong>${escapeHTML(value)}</strong>${summary ? `<p>${escapeHTML(summary)}</p>` : ''}${action}</article>`;
 }
-function active(period: Period): string { return state.query.period === period ? ' is-active' : ''; }
-function rangeControls(): string {
-  const custom = state.query.period === 'custom';
-  return `<section class="overview-range" aria-label="统计区间"><div class="overview-range__presets" role="group" aria-label="快捷统计区间">
-    <button type="button" class="overview-range__button${active('today')}" data-overview-period="today">今日</button><button type="button" class="overview-range__button${active('7d')}" data-overview-period="7d">近 7 天</button><button type="button" class="overview-range__button${active('30d')}" data-overview-period="30d">近 30 天</button><button type="button" class="overview-range__button${active('custom')}" data-overview-period="custom">自定义</button></div>
-    <form class="overview-range__custom${custom ? ' is-open' : ''}" data-overview-custom><label>开始日期<input name="from" type="date" value="${escapeHTML(state.customDraft.from)}"></label><label>结束日期<input name="to" type="date" value="${escapeHTML(state.customDraft.to)}"></label><button type="submit" class="admin-button admin-button--secondary">应用</button></form></section>`;
+function customRangeControls(): string {
+  if (state.query.period !== 'custom') return '';
+  return `<section class="overview-range overview-range--custom" aria-label="自定义统计区间"><form class="overview-range__custom is-open" data-overview-custom><label>开始日期<input name="from" type="date" value="${escapeHTML(state.customDraft.from)}"></label><label>结束日期<input name="to" type="date" value="${escapeHTML(state.customDraft.to)}"></label><button type="submit" class="admin-button admin-button--secondary">应用</button></form></section>`;
 }
 function beijingDate(value: string, inclusiveEnd = false): string | null {
   const timestampValue = new Date(value).getTime();
@@ -362,7 +360,8 @@ function render(): void {
   const loading = state.loading ? '<span class="overview-feedback">正在更新数据…</span>' : '';
   const error = state.error ? `<div class="overview-error" role="alert"><span>${escapeHTML(state.error)}</span>${state.access === 'none' ? '<button type="button" class="admin-button admin-button--secondary" data-overview-retry>重试</button>' : ''}</div>` : '';
   const content = state.access !== 'none' ? accessPanel() : state.data ? renderData(state.data) : '<section class="overview-empty-state"><strong>暂未读取到经营数据</strong><p>请重试后再查看。</p></section>';
-  root.innerHTML = `<div class="overview-admin"><div class="overview-toolbar"><div><span class="overview-toolbar__eyebrow">经营概览</span><p>统计口径以各项数据的确认时间为准</p></div><div class="overview-toolbar__status">${loading}</div></div>${rangeControls()}${error}${content}</div>`;
+  root.innerHTML = `<div class="overview-admin">${loading ? `<p class="overview-read-status" role="status">${loading}</p>` : ''}${customRangeControls()}${error}${content}</div>`;
+  syncRangeHeaderActions();
 }
 async function load(query: Query): Promise<void> {
   if (!root) return;
@@ -403,8 +402,40 @@ function openCustomDraft(): void {
   state.access = 'none';
   render();
 }
+
+function choosePeriod(period: Period): void {
+  if (period === 'custom') { openCustomDraft(); return; }
+  void load({ period });
+}
+
+function syncRangeHeaderActions(): void {
+  for (const period of Object.keys(labels) as Period[]) {
+    const control = document.querySelector<HTMLButtonElement>(`[data-page-header-actions="overview-range"] [data-page-header-action="period-${period}"]`);
+    if (!control) continue;
+    const selected = state.query.period === period;
+    control.classList.toggle('is-active', selected);
+    control.setAttribute('aria-pressed', String(selected));
+  }
+}
+
+function mountRangeHeaderActions(): void {
+  mountPageHeaderActions('overview-range', (Object.keys(labels) as Period[]).map((period) => ({
+    id: `period-${period}`,
+    label: period === 'custom' ? '自定义' : labels[period],
+    variant: period === 'custom' ? 'secondary' : undefined,
+    onClick: () => choosePeriod(period),
+  })));
+  syncRangeHeaderActions();
+}
+
 if (root) {
-  root.addEventListener('click', (event) => { const target = (event.target as Element | null)?.closest<HTMLElement>('[data-overview-period], [data-overview-retry], [data-overview-paid-records]'); if (!target) return; if (target.hasAttribute('data-overview-retry')) { void load(state.query); return; } if (target.hasAttribute('data-overview-paid-records')) { if (state.data && rangeMatches(state.data) && !state.loading && !state.stale && state.data.paid.status !== 'failed') openPaidRecordsDrawer(state.data); return; } const period = target.dataset.overviewPeriod as Period | undefined; if (!period) return; if (period === 'custom') { openCustomDraft(); return; } void load({ period }); });
+  root.addEventListener('click', (event) => {
+    const target = (event.target as Element | null)?.closest<HTMLElement>('[data-overview-retry], [data-overview-paid-records]');
+    if (!target) return;
+    if (target.hasAttribute('data-overview-retry')) { void load(state.query); return; }
+    if (state.data && rangeMatches(state.data) && !state.loading && !state.stale && state.data.paid.status !== 'failed') openPaidRecordsDrawer(state.data);
+  });
   root.addEventListener('submit', (event) => { const form = (event.target as Element | null)?.closest<HTMLFormElement>('[data-overview-custom]'); if (!form) return; event.preventDefault(); applyCustom(form); });
+  mountRangeHeaderActions();
   void load({ period: 'today' });
 }
