@@ -29,6 +29,12 @@ func TestPresentationAssetsAndInitialServerStage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, entries["selectionDialogStyles"]), []byte("test"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range []string{"confirmationDialogHost", "confirmationDialogStyles"} {
+		entries[name] = "assets/" + name + ".test"
+		if err := os.WriteFile(filepath.Join(dir, entries[name]), []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	encoded, _ := json.Marshal(map[string]any{"entries": entries})
 	if err := os.WriteFile(filepath.Join(dir, "asset-manifest.json"), encoded, 0600); err != nil {
 		t.Fatal(err)
@@ -38,7 +44,7 @@ func TestPresentationAssetsAndInitialServerStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	assets := functions["presentationAssets"].(func() PresentationAssets)()
-	if len(assets.Styles) != 3 || assets.Script != "/assets/surfaceFeedbackHost.test" || assets.AdminDateTimeScript != "/assets/adminDateTimeHost.test" || assets.SelectionDialogCSS != "/assets/selectionDialogStyles.test" {
+	if len(assets.Styles) != 3 || assets.Script != "/assets/surfaceFeedbackHost.test" || assets.AdminDateTimeScript != "/assets/adminDateTimeHost.test" || assets.SelectionDialogCSS != "/assets/selectionDialogStyles.test" || assets.ConfirmationDialogCSS != "/assets/confirmationDialogStyles.test" || assets.ConfirmationDialogScript != "/assets/confirmationDialogHost.test" {
 		t.Fatalf("unexpected assets: %#v", assets)
 	}
 	content := functions["presentationContent"].(func(template.HTML) template.HTML)
@@ -53,6 +59,15 @@ func TestPresentationAssetsAndInitialServerStage(t *testing.T) {
 	if _, err := NewRenderer(dir); err != nil {
 		t.Fatal(err)
 	}
+	delete(entries, "confirmationDialogHost")
+	encoded, _ = json.Marshal(map[string]any{"entries": entries})
+	if err := os.WriteFile(filepath.Join(dir, "asset-manifest.json"), encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRenderer(dir); err == nil {
+		t.Fatal("incomplete confirmation dialog asset pair was accepted")
+	}
+	entries["confirmationDialogHost"] = "assets/confirmationDialogHost.test"
 	delete(entries, "adminDateTimeHost")
 	encoded, _ = json.Marshal(map[string]any{"entries": entries, "release_files": map[string]any{"assets/surfaceFeedbackHost.test": map[string]any{}}})
 	if err := os.WriteFile(filepath.Join(dir, "asset-manifest.json"), encoded, 0600); err != nil {

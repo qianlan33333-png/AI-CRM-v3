@@ -931,6 +931,13 @@ func ComponentStatesScreenshotDirectory() string {
 	return os.Getenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR")
 }
 
+// AudienceConfirmationScreenshotDirectory returns the optional evidence
+// directory for the Audience confirmation Chromium journey. The test validates
+// filesystem constraints before it writes rendered screenshots.
+func AudienceConfirmationScreenshotDirectory() string {
+	return os.Getenv("AICRM_AUDIENCE_CONFIRMATION_SCREENSHOT_DIR")
+}
+
 // PublicCommerceScreenshotDirectory returns the optional evidence directory
 // for the public product and payment Chromium journey. The test validates that
 // a supplied path is absolute before it writes local screenshots.
