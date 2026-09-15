@@ -141,6 +141,18 @@
     return ({ active: "正常", merged: "已合并", closed: "已关闭" })[String(value || "")] || "客户状态待确认";
   }
 
+  function contactTypeLabel(value) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) return "待确认";
+    return ({ 1: "微信用户", 2: "企业微信用户" })[value] || "待确认";
+  }
+
+  function touchpointSourceLabel(value) {
+    const source = typeof value === "string" ? value.trim() : "";
+    const known = { wecom: "企业微信", order: "交易", survey: "问卷", customer: "客户档案" };
+    if (known[source]) return known[source];
+    return source ? `其他（${source}）` : "待确认";
+  }
+
   function orderStatusLabel(value) {
     return ({ awaiting_prepay: "待支付", awaiting_payment: "待支付", pending_payment: "待支付", unpaid: "待支付", paid: "已支付", refunding: "退款处理中", partially_refunded: "部分退款", refunded: "已退款", closed: "已关闭", cancelled: "已取消", failed: "支付失败", payment_failed: "支付失败" })[String(value || "")] || "订单状态待确认";
   }
@@ -765,7 +777,7 @@
     }
     const note = document.createElement("p");
     note.className = "customer-section-note";
-    note.textContent = "显示服务端返回的前 10 条近期订单记录。";
+    note.textContent = "最多显示最近 10 条订单。";
     target.append(note);
     recordTable(target, ["订单号", "状态", "创建时间"], summary.recent.slice(0, 10).map(function (order) {
       const item = object(order) || {};
@@ -803,7 +815,7 @@
     }
     recordTable(target, ["事件", "来源", "发生时间"], events.map(function (event) {
       const item = object(event) || {};
-      return [displayValue(item.title, displayValue(item.event_type, "触点事件待确认")), displayValue(item.source_domain), timeValue(item.occurred_at)];
+      return [displayValue(item.title, displayValue(item.event_type, "触点事件待确认")), touchpointSourceLabel(item.source_domain), timeValue(item.occurred_at)];
     }));
   }
 
@@ -831,7 +843,7 @@
       el.profileMeta.replaceChildren(
         metaItem("客户状态", profileReady ? customerStatusLabel(item.status) : "待确认"),
         metaItem("企业", profileReady ? item.corp_name : "待确认"),
-        metaItem("客户类型", profileReady ? item.contact_type : "待确认"),
+        metaItem("客户类型", profileReady ? contactTypeLabel(item.contact_type) : "待确认"),
         metaItem("数据来源", profileReady ? item.source : "待确认"),
         metaItem("最后同步", profileReady ? timeValue(item.last_synced_at) : "待确认"),
       );

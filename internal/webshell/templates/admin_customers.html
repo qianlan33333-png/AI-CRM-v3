@@ -55,13 +55,13 @@
 {{else}}
 <section class="admin-card admin-module-banner" data-customer-profile-root>
   <div class="admin-card-head">
-    <div><h2>客户档案</h2><p id="customer-profile-name">正在读取客户资料…</p></div>
+    <div><p class="customer-profile-eyebrow">客户档案</p><h2 id="customer-profile-name">正在读取客户资料…</h2></div>
     <a class="admin-button admin-button--ghost" href="/admin/customers">返回客户列表</a>
   </div>
   <div id="customer-detail-state" class="admin-state admin-state--inline admin-state--loading"><strong>正在加载客户档案</strong><span>读取本地客户根和安全身份摘要。</span></div>
   <div id="customer-detail-content" hidden>
     <section class="customer-profile-summary" aria-labelledby="customer-profile-summary-title">
-      <div class="customer-profile-section-head"><div><p class="customer-profile-eyebrow">身份摘要</p><h3 id="customer-profile-summary-title">客户根资料</h3></div><p>仅展示本地客户根与安全身份摘要。</p></div>
+      <div class="customer-profile-section-head"><div><h3 id="customer-profile-summary-title">基本资料</h3></div></div>
       <div class="admin-profile-grid" id="customer-detail-fields"></div>
       <div class="customer-profile-meta" id="customer-profile-meta"></div>
     </section>
@@ -69,11 +69,15 @@
     <section class="customer-tag-draft" aria-labelledby="customer-tag-draft-title">
       <div class="customer-profile-section-head"><div><p class="customer-profile-eyebrow">标签草稿</p><h3 id="customer-tag-draft-title">预览后确认变更</h3></div><p>选择只保留在当前草稿，提交前仍需核对。</p></div>
       <form id="customer-tag-single" class="admin-toolbar customer-tag-draft-form" autocomplete="off">
-        <label>加标签 <select name="add_tag_ids" multiple aria-label="加标签" disabled></select></label>
-        <label>移除标签 <select name="remove_tag_ids" multiple aria-label="移除标签" disabled></select></label>
-        <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
-        <button class="admin-button admin-button--ghost" id="customer-tag-single-refresh" type="button" hidden>刷新执行结果</button>
-        <span id="customer-tag-single-result" role="status" aria-live="polite"></span>
+        <div class="customer-tag-draft-selectors">
+          <label>加标签 <select name="add_tag_ids" multiple aria-label="加标签" disabled></select></label>
+          <label>移除标签 <select name="remove_tag_ids" multiple aria-label="移除标签" disabled></select></label>
+        </div>
+        <div class="customer-tag-draft-actions">
+          <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
+          <button class="admin-button admin-button--ghost" id="customer-tag-single-refresh" type="button" hidden>刷新执行结果</button>
+          <span id="customer-tag-single-result" role="status" aria-live="polite"></span>
+        </div>
       </form>
     </section>
   </div>

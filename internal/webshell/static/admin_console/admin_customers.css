@@ -117,8 +117,21 @@
 }
 
 .customer-tag-draft-form {
-  align-items: flex-start;
+  display: grid;
+  gap: 10px;
   padding-top: 2px;
+}
+
+.customer-tag-draft-selectors,
+.customer-tag-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.customer-tag-draft-actions {
+  align-items: center;
 }
 
 .customer-tag-draft-form label {
@@ -258,6 +271,11 @@
     max-width: none;
     margin: 0;
     text-align: left;
+  }
+
+  .customer-tag-draft-selectors,
+  .customer-tag-draft-actions {
+    align-items: stretch;
   }
 
   .customer-record-metrics {
