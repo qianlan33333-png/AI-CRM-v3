@@ -83,11 +83,20 @@ const dom = new JSDOM(page, {
     };
   },
 });
+dom.window.document.body.insertAdjacentHTML('afterbegin', '<header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">商品管理</h1></div></header>');
 
 dom.window.eval(host);
 dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 const document = dom.window.document;
 const sale = await waitFor(() => document.getElementById('product-sale'), 'ordinary product editor did not mount');
+const headerActions = await waitFor(() => document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button').length === 2, 'ordinary topbar must receive the existing return and save controls');
+assert.equal(document.querySelectorAll('.admin-topbar .admin-page-title').length, 1, 'ordinary editor retains the shell title as the only header title');
+assert.deepEqual([...document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button')].map((button) => button.textContent.trim()), ['返回商品管理', '保存当前维度'], 'ordinary topbar retains the existing commands in their original order');
+const ordinaryEditorTitle = [...document.querySelectorAll('#stage h2')].find((heading) => heading.textContent.trim() === '编辑普通商品');
+assert.ok(ordinaryEditorTitle?.hidden, 'ordinary body summary must not repeat the shell header title');
+const ordinaryFrozenHeader = document.getElementById('stage').firstElementChild.firstElementChild;
+assert.ok(ordinaryFrozenHeader?.hidden && ordinaryFrozenHeader.dataset.v3ProductFrozenHeader === 'hidden', 'ordinary editor must hide the frozen 52px donor header after the SSR shell renders');
+assert.equal([...document.querySelectorAll('#stage button')].some((button) => button.textContent.trim() === '返回商品管理'), false, 'ordinary body summary must not retain a second return control');
 const distribution = await waitFor(() => document.querySelector('[data-distribution-policy]'), 'sale dimension did not mount its distribution controls');
 assert.equal(distribution.parentElement, sale, 'distribution controls must be owned by the sale dimension');
 assert.equal(distribution.querySelectorAll('input').length, 3, 'policy exposes only its switch, commission rate, and refund wait days');
