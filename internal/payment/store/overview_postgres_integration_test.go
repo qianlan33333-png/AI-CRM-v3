@@ -71,8 +71,20 @@ func TestPostgreSQLOverviewPaymentUsesTrustedHistoryTimeAndLatestRefundAppend(t 
 	// 100 native + 200 trusted history + 90 current missing-refund-evidence;
 	// 400 at [end) and 500 unknown-confirmation history must not enter known
 	// period money.
-	if paid.OrderCount != 3 || paid.DistinctCanonicalPayers != 3 || len(paid.Gross) != 1 || paid.Gross[0].Currency != "CNY" || paid.Gross[0].AmountMinor != 390 {
+	if paid.OrderCount != 3 || paid.DistinctCanonicalPayers != 0 || len(paid.Gross) != 1 || paid.Gross[0].Currency != "CNY" || paid.Gross[0].AmountMinor != 390 {
 		t.Fatalf("paid known aggregate=%+v", paid)
+	}
+	var payerPage paymentport.PaidOverviewPayerPage
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		payerPage, readErr = repository.ReadPaidOverviewPayerPage(tx, paymentport.OverviewWindow{Start: start, End: end}, 0, 500)
+		return readErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payerPage.CustomerIDs) != 3 || payerPage.CustomerIDs[0] != 11 || payerPage.CustomerIDs[1] != 12 || payerPage.CustomerIDs[2] != 15 {
+		t.Fatalf("paid payer keyset page=%+v", payerPage)
 	}
 	if paid.MissingConfirmationEvidenceCount != 1 || len(paid.MissingConfirmationEvidenceAmount) != 1 || paid.MissingConfirmationEvidenceAmount[0].AmountMinor != 500 {
 		t.Fatalf("paid missing evidence=%+v", paid)

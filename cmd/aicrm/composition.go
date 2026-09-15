@@ -281,6 +281,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	queries := identityquery.NewPostgreSQL(phoneVault)
 	hxcIdentity := identityapp.HXCSourceService{Inspector: queries, Store: identityRepository, OneID: oneID, VerifiedIdentity: identityadapter.HXCVerifiedUnionIDFactory{Enabled: cfg.HXCDashboard.UnionIDVerified}}
 	paymentRepository := paymentstore.NewPostgreSQL()
+	overviewReadUoW, err := platformpostgres.NewReadOnlyRepeatableReadUnitOfWork(pool)
+	if err != nil {
+		return fail(err)
+	}
 	distributionRepository, err := distributionstore.NewPostgreSQL(pool.Native(), uow)
 	if err != nil {
 		return fail(err)
@@ -289,7 +293,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	paymentOverview, err := paymentapp.NewOverviewReader(uow, paymentRepository)
+	paymentOverview, err := paymentapp.NewOverviewReader(overviewReadUoW, paymentRepository, queries)
 	if err != nil {
 		return fail(err)
 	}

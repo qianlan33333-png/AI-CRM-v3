@@ -87,7 +87,7 @@ func TestReadReturnsOtherSectionsWhenOneOwnerTimesOut(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 400*time.Millisecond {
 		t.Fatalf("overview waited beyond its section deadline: %s", elapsed)
 	}
-	if response.Paid.Status != StatusFailed || response.Paid.ReasonCode != "payment_aggregate_timeout" {
+	if response.Paid.Status != StatusFailed || response.Paid.ReasonCode != "payment_aggregate_timeout" || response.Paid.DistinctCanonicalPayers != nil {
 		t.Fatalf("paid timeout section=%+v", response.Paid.Section)
 	}
 	if response.Customers.Status != StatusReady || response.Customers.NewCanonicalCustomers != 2 {
@@ -101,6 +101,26 @@ func TestReadReturnsOtherSectionsWhenOneOwnerTimesOut(t *testing.T) {
 	}
 	if response.Paid.AsOf.IsZero() || response.Customers.AsOf.IsZero() || response.Refunds.AsOf.IsZero() || response.Distribution.AsOf.IsZero() {
 		t.Fatalf("each section must report its observed completion time: %+v", response)
+	}
+}
+
+func TestPaidCanonicalPayerUnavailableOmitsOnlyThatUnknownMetric(t *testing.T) {
+	service, err := NewServiceWithTimeout(
+		overviewCustomerStub{},
+		overviewPaymentStub{paid: paymentport.PaidOverview{Gross: []paymentport.OverviewMoney{{Currency: "CNY", AmountMinor: 120}}, OrderCount: 1}},
+		overviewDistributionStub{},
+		time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.payments = overviewPaymentStub{paid: paymentport.PaidOverview{Gross: []paymentport.OverviewMoney{{Currency: "CNY", AmountMinor: 120}}, OrderCount: 1}, paidErr: paymentport.ErrCanonicalPayerUnavailable}
+	response, err := service.Read(context.Background(), overviewQuery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Paid.Status != StatusDataMissing || response.Paid.ReasonCode != "canonical_payer_unavailable" || response.Paid.DistinctCanonicalPayers != nil || response.Paid.OrderCount != 1 || len(response.Paid.Gross) != 1 || response.Paid.Gross[0].AmountMinor != 120 {
+		t.Fatalf("canonical payer unavailable response=%+v", response.Paid)
 	}
 }
 

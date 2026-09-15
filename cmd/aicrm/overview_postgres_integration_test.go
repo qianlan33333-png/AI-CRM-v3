@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +16,14 @@ import (
 	"time"
 
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	overviewapp "github.com/qianlan33333-png/AI-CRM-v3/internal/overview/app"
+	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 // OneID decision: the fixture inserts one already-verified canonical identity
@@ -53,6 +61,134 @@ func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
 	if err != nil || !strings.Contains(string(output), "admin_overview_chromium: PASS") {
 		t.Fatalf("admin overview Chromium journey err=%v output=%s", err, strings.TrimSpace(string(output)))
 	}
+}
+
+func TestPostgreSQLAdminOverviewCanonicalPayersFollowCurrentMerge(t *testing.T) {
+	fixture := newAdminOverviewFixture(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	payerA := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	payerB := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	payerC := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	for _, item := range []struct {
+		key   string
+		payer *int64
+		minor int64
+	}{
+		{key: "canonical-a", payer: &payerA, minor: 100},
+		{key: "canonical-b", payer: &payerB, minor: 200},
+		{key: "canonical-c", payer: &payerC, minor: 300},
+		{key: "canonical-missing", payer: nil, minor: 400},
+	} {
+		insertAdminOverviewPayment(t, fixture.ctx, fixture.application, now, item.key, item.payer, item.minor)
+	}
+	if _, err := fixture.application.pool.Native().Exec(fixture.ctx, `UPDATE customers
+		SET status='merged',merged_into_customer_id=$2,merged_at=$3,updated_at=$3
+		WHERE id=$1`, payerA, payerB, now); err != nil {
+		t.Fatal(err)
+	}
+	response := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/overview?period=7d")
+	var body struct {
+		Paid struct {
+			Status                  string `json:"status"`
+			ReasonCode              string `json:"reason_code"`
+			OrderCount              int64  `json:"order_count"`
+			DistinctCanonicalPayers *int64 `json:"distinct_canonical_payers"`
+			MissingPayerCount       int64  `json:"missing_payer_count"`
+		} `json:"paid"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || body.Paid.Status != "data_missing" || body.Paid.ReasonCode != "payer_customer_missing" || body.Paid.OrderCount != 5 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != 3 || body.Paid.MissingPayerCount != 1 {
+		t.Fatalf("canonical payer overview status=%d body=%s", response.Code, response.Body.String())
+	}
+	var persistedA, persistedB int64
+	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-canonical-a'`).Scan(&persistedA); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-canonical-b'`).Scan(&persistedB); err != nil {
+		t.Fatal(err)
+	}
+	if persistedA != payerA || persistedB != payerB {
+		t.Fatalf("historical payment payer IDs were rewritten: a=%d b=%d want a=%d b=%d", persistedA, persistedB, payerA, payerB)
+	}
+}
+
+func TestPostgreSQLAdminOverviewCanonicalPayersKeepOneSnapshotAcrossConcurrentMerge(t *testing.T) {
+	fixture := newAdminOverviewFixture(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	payerA := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	payerB := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	insertAdminOverviewPayment(t, fixture.ctx, fixture.application, now, "snapshot-a", &payerA, 100)
+	insertAdminOverviewPayment(t, fixture.ctx, fixture.application, now, "snapshot-b", &payerB, 200)
+	readUoW, err := platformpostgres.NewReadOnlyRepeatableReadUnitOfWork(fixture.application.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := false
+	store := mergeAfterPaidOverviewStore{repository: paymentstore.NewPostgreSQL(), afterFirstPaidRead: func() error {
+		if merged {
+			return errors.New("fixture merge repeated")
+		}
+		merged = true
+		_, mergeErr := fixture.application.pool.Native().Exec(fixture.ctx, `UPDATE customers
+			SET status='merged',merged_into_customer_id=$2,merged_at=$3,updated_at=$3
+			WHERE id=$1`, payerA, payerB, now)
+		return mergeErr
+	}}
+	reader, err := paymentapp.NewOverviewReader(readUoW, store, identityquery.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := paymentport.OverviewWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
+	first, err := reader.ReadPaidOverview(fixture.ctx, window)
+	if err != nil || !merged || first.OrderCount != 3 || first.DistinctCanonicalPayers != 3 {
+		t.Fatalf("repeatable-read snapshot result=%+v merged=%t err=%v", first, merged, err)
+	}
+	currentReader, err := paymentapp.NewOverviewReader(readUoW, paymentstore.NewPostgreSQL(), identityquery.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := currentReader.ReadPaidOverview(fixture.ctx, window)
+	if err != nil || current.OrderCount != 3 || current.DistinctCanonicalPayers != 2 {
+		t.Fatalf("new snapshot result=%+v err=%v", current, err)
+	}
+	var persistedA, persistedB int64
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-snapshot-a'`).Scan(&persistedA); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-snapshot-b'`).Scan(&persistedB); err != nil {
+		t.Fatal(err)
+	}
+	if persistedA != payerA || persistedB != payerB {
+		t.Fatalf("concurrent merge rewrote historical payer facts: a=%d b=%d", persistedA, persistedB)
+	}
+}
+
+func TestPostgreSQLAdminOverviewCanonicalPayersScaleWithinSectionBudget(t *testing.T) {
+	fixture := newAdminOverviewFixture(t)
+	const payerCount = 10001
+	seedAdminOverviewPayerScale(t, fixture.ctx, fixture.application, time.Now().UTC().Truncate(time.Microsecond), payerCount)
+	started := time.Now()
+	response := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/overview?period=7d")
+	elapsed := time.Since(started)
+	var body struct {
+		Paid struct {
+			Status                  string `json:"status"`
+			OrderCount              int64  `json:"order_count"`
+			DistinctCanonicalPayers *int64 `json:"distinct_canonical_payers"`
+		} `json:"paid"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || body.Paid.Status != "ready" || body.Paid.OrderCount != payerCount+1 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != payerCount+1 {
+		t.Fatalf("scaled canonical payer overview status=%d body=%s", response.Code, response.Body.String())
+	}
+	if elapsed > overviewapp.DefaultSectionReadTimeout {
+		t.Fatalf("%d canonical payers took %s, exceeding overview section budget %s", payerCount, elapsed, overviewapp.DefaultSectionReadTimeout)
+	}
+	t.Logf("%d canonical payers read exactly in %s within %s section budget", payerCount, elapsed, overviewapp.DefaultSectionReadTimeout)
 }
 
 type adminOverviewFixture struct {
@@ -171,6 +307,97 @@ func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *comp
 	}
 }
 
+func insertAdminOverviewCustomer(t *testing.T, ctx context.Context, application *composedApplication, now time.Time) int64 {
+	t.Helper()
+	var customerID int64
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO customers(created_at,updated_at) VALUES($1,$1) RETURNING id`, now).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	return customerID
+}
+
+func insertAdminOverviewPayment(t *testing.T, ctx context.Context, application *composedApplication, now time.Time, key string, payerCustomerID *int64, amountMinor int64) {
+	t.Helper()
+	var orderID int64
+	merchantOrderNo := "M-OVERVIEW-" + key
+	if payerCustomerID == nil {
+		if err := application.pool.Native().QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,source_row_digest,version,created_at,updated_at)
+			VALUES('wechat_pay','overview-canonical',$1,$2,NULL,NULL,$3,'CNY','paid','history',false,$4,1,$5,$5) RETURNING id`, key, merchantOrderNo, amountMinor, make([]byte, 32), now).Scan(&orderID); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := application.pool.Native().QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
+		VALUES('wechat_pay','overview-canonical',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, key, merchantOrderNo, *payerCustomerID, amountMinor, now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if payerCustomerID == nil {
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
+			VALUES($1,'wechat_pay','mini_program',$2,NULL,NULL,NULL,$3,'CNY','paid',1,$4,$4,$4,true)`, orderID, merchantOrderNo, amountMinor, now); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	var identityID int64
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at,created_at,updated_at)
+		VALUES($1,'mp_openid','wechat-app:overview-canonical',$2,'verified','wechat_miniprogram',1,$3,$3,$3) RETURNING id`, *payerCustomerID, key, now).Scan(&identityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
+		VALUES($1,'wechat_pay','mini_program',$2,$3,$4,$4,$5,'CNY','paid',1,$6,$6,$6,false)`, orderID, merchantOrderNo, identityID, *payerCustomerID, amountMinor, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedAdminOverviewPayerScale(t *testing.T, ctx context.Context, application *composedApplication, now time.Time, count int) {
+	t.Helper()
+	if count < 1 {
+		t.Fatal("canonical payer scale count must be positive")
+	}
+	_, err := application.pool.Native().Exec(ctx, `WITH inserted_customers AS (
+		INSERT INTO customers(created_at,updated_at)
+		SELECT $1,$1 FROM generate_series(1,$2)
+		RETURNING id
+	), inserted_identities AS (
+		INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at,created_at,updated_at)
+		SELECT id,'mp_openid','wechat-app:overview-canonical-scale','payer-'||id,'verified','wechat_miniprogram',1,$1,$1,$1
+		FROM inserted_customers
+		RETURNING id,customer_id
+	), inserted_orders AS (
+		INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
+		SELECT 'wechat_pay','overview-canonical-scale','payer-'||customers.id,'M-OVERVIEW-SCALE-'||customers.id,customers.id,customers.id,1,'CNY','paid','native',true,1,$1,$1
+		FROM inserted_customers customers
+		JOIN inserted_identities identities ON identities.customer_id=customers.id
+		RETURNING id,payer_customer_id,merchant_order_no
+	)
+	INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
+	SELECT orders.id,'wechat_pay','mini_program',orders.merchant_order_no,identities.id,orders.payer_customer_id,orders.payer_customer_id,1,'CNY','paid',1,$1,$1,$1,false
+	FROM inserted_orders orders
+	JOIN inserted_identities identities ON identities.customer_id=orders.payer_customer_id`, now, count)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+type mergeAfterPaidOverviewStore struct {
+	repository         *paymentstore.Repository
+	afterFirstPaidRead func() error
+}
+
+func (store mergeAfterPaidOverviewStore) ReadPaidOverview(ctx context.Context, window paymentport.OverviewWindow) (paymentport.PaidOverview, error) {
+	facts, err := store.repository.ReadPaidOverview(ctx, window)
+	if err != nil || store.afterFirstPaidRead == nil {
+		return facts, err
+	}
+	return facts, store.afterFirstPaidRead()
+}
+
+func (store mergeAfterPaidOverviewStore) ReadPaidOverviewPayerPage(ctx context.Context, window paymentport.OverviewWindow, after customerdomain.CustomerID, limit int) (paymentport.PaidOverviewPayerPage, error) {
+	return store.repository.ReadPaidOverviewPayerPage(ctx, window, after, limit)
+}
+
+func (store mergeAfterPaidOverviewStore) ReadRefundOverview(ctx context.Context, window paymentport.OverviewWindow) (paymentport.RefundOverview, error) {
+	return store.repository.ReadRefundOverview(ctx, window)
+}
+
 func overviewAuthenticatedGET(t *testing.T, handler http.Handler, session, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -187,9 +414,10 @@ func assertAdminOverviewResponse(t *testing.T, response *httptest.ResponseRecord
 			Timezone string `json:"timezone"`
 		} `json:"range"`
 		Paid struct {
-			Status     string `json:"status"`
-			OrderCount int64  `json:"order_count"`
-			Gross      []struct {
+			Status                  string `json:"status"`
+			OrderCount              int64  `json:"order_count"`
+			DistinctCanonicalPayers *int64 `json:"distinct_canonical_payers"`
+			Gross                   []struct {
 				AmountMinor int64  `json:"amount_minor"`
 				Currency    string `json:"currency"`
 			} `json:"gross"`
@@ -218,7 +446,7 @@ func assertAdminOverviewResponse(t *testing.T, response *httptest.ResponseRecord
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || body.Paid.Status != "ready" || body.Paid.OrderCount != 3 || len(body.Paid.Gross) != 1 || body.Paid.Gross[0].AmountMinor != 2400 || body.Paid.Gross[0].Currency != "CNY" || body.Customers.Status != "ready" || body.Customers.Count != 1 || body.Refunds.Status != "ready" || body.Refunds.Completed != 1 || body.Distribution.Status != "ready" || body.Distribution.Unsettled != 120 || body.Todos.Status != "ready" || len(body.Todos.Items) != 1 || body.Todos.Items[0].Code != "distribution_exceptions" || body.Todos.Items[0].Count != 1 || body.Todos.Items[0].Href != "/admin/distribution" {
+	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || body.Paid.Status != "ready" || body.Paid.OrderCount != 3 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != 1 || len(body.Paid.Gross) != 1 || body.Paid.Gross[0].AmountMinor != 2400 || body.Paid.Gross[0].Currency != "CNY" || body.Customers.Status != "ready" || body.Customers.Count != 1 || body.Refunds.Status != "ready" || body.Refunds.Completed != 1 || body.Distribution.Status != "ready" || body.Distribution.Unsettled != 120 || body.Todos.Status != "ready" || len(body.Todos.Items) != 1 || body.Todos.Items[0].Code != "distribution_exceptions" || body.Todos.Items[0].Count != 1 || body.Todos.Items[0].Href != "/admin/distribution" {
 		t.Fatalf("overview response status=%d body=%s", response.Code, response.Body.String())
 	}
 }

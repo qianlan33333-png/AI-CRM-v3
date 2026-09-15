@@ -4,7 +4,10 @@
 
 import { api } from '../src/shared/api/client';
 import type { AdminDb } from '../src/shared/api/types';
+import { confirmBox, toast } from '../src/shared/ui/feedback';
 import { startChannelAdmissionHost } from './channelAdmissionHost';
+// @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
+import { AdminController } from '../src/admin/controller';
 
 // The standard admission form is a complete, persistent V3 page.  Keep the
 // older frozen-controller seam only for the list and any legacy fixture route.
@@ -28,6 +31,210 @@ const donorLoadDb = api.loadDb.bind(api);
 let channelFormDb: AdminDb | null = null;
 let staffPickerSource: 'common' | 'channel' | null = null;
 let staffPickerTrigger: HTMLButtonElement | null = null;
+type ArchiveIntent = { payload: Record<string, unknown>; etag: string; key: string };
+type ChannelListController = { page: string; init(): Promise<void>; renderVals(): Record<string, unknown> };
+type ChannelListRow = Record<string, unknown> & { resourceId?: number; name?: string; code?: string; status?: string };
+const archiveIntents = new Map<string, ArchiveIntent>();
+const archiveBusy = new Set<string>();
+const confirmedArchivedChannelIDs = new Set<string>();
+
+const catalogWriteFields = [
+  'channel_type', 'carrier_type', 'channel_name', 'channel_code', 'scene_value', 'qr_url', 'status', 'owner_staff_id', 'customer_channel', 'link_url', 'final_url',
+  'welcome_message', 'welcome_image_library_ids', 'welcome_miniprogram_library_ids', 'welcome_attachment_library_ids', 'welcome_group_invite_library_ids',
+  'auto_accept_friend', 'entry_tag_id', 'entry_tag_name', 'entry_tag_group_name', 'assignment_mode', 'assignment_strategy', 'overflow_policy', 'assignment_config_json',
+] as const;
+
+function archiveKey(): string {
+  return globalThis.crypto?.randomUUID ? `channel-archive-${globalThis.crypto.randomUUID()}` : `channel-archive-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function validChannelID(value: unknown): value is string {
+  return typeof value === 'string' && /^[1-9][0-9]*$/.test(value);
+}
+
+function channelArchivePayload(channel: unknown): Record<string, unknown> | null {
+  if (!channel || typeof channel !== 'object' || Array.isArray(channel)) return null;
+  const source = channel as Record<string, unknown>;
+  const payload: Record<string, unknown> = {};
+  for (const field of catalogWriteFields) {
+    if (!(field in source)) return null;
+    payload[field] = source[field];
+  }
+  payload.status = 'archived';
+  return payload;
+}
+
+function sameArchiveIntent(intent: ArchiveIntent, payload: Record<string, unknown>, etag: string): boolean {
+  return intent.etag === etag && JSON.stringify(intent.payload) === JSON.stringify(payload);
+}
+
+function csrfToken(): string {
+  return document.cookie.split(';').map((part) => part.trim()).map((part) => part.split('='))
+    .find(([name]) => name === 'aicrm_csrf' || name === 'aicrm_admin_csrf')?.slice(1).join('=') || '';
+}
+
+async function readArchiveChannel(channelID: string): Promise<{ channel: Record<string, unknown>; etag: string } | null> {
+  const response = await donorFetch(`/api/admin/channels/${channelID}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+  if (!response.ok) return null;
+  const body = await response.json().catch(() => null) as { channel?: unknown } | null;
+  if (!body?.channel || !response.headers.get('ETag')) return null;
+  return { channel: body.channel as Record<string, unknown>, etag: response.headers.get('ETag') || '' };
+}
+
+function archiveFailureMessage(status: number): string {
+  if (status === 401) return '登录已失效，未归档渠道。请重新登录后重试。';
+  if (status === 403) return '当前账号没有归档渠道的权限，未归档渠道。';
+  if (status === 409) return '渠道已被其他人更新，未归档渠道。请刷新后核对再试。';
+  return `渠道归档失败（HTTP ${status}），当前配置未在页面中改写。`;
+}
+
+async function refreshConfirmedArchive(controller: ChannelListController, channelID: string): Promise<void> {
+  confirmedArchivedChannelIDs.add(channelID);
+  archiveIntents.delete(channelID);
+  try {
+    await controller.init();
+    toast('渠道已归档：扫码不会发送欢迎语或入渠标签；历史与配置仍保留，可编辑后再启用。');
+  } catch {
+    // Keep the confirmed ID in this controller seam. A stale callback cannot
+    // become a new write while the authoritative list projection is unavailable.
+    toast('渠道已归档，但列表未更新；请刷新后核对归档状态。', true);
+  }
+}
+
+async function archiveChannel(channelID: string, controller: ChannelListController): Promise<void> {
+  if (!validChannelID(channelID) || archiveBusy.has(channelID)) return;
+  if (confirmedArchivedChannelIDs.has(channelID)) {
+    toast('渠道已归档，但列表未更新；请刷新后核对归档状态。', true);
+    return;
+  }
+  archiveBusy.add(channelID);
+  try {
+    let current: { channel: Record<string, unknown>; etag: string } | null;
+    try {
+      current = await readArchiveChannel(channelID);
+    } catch {
+      toast('读取渠道配置失败，未发送归档请求。请刷新后重试。', true);
+      return;
+    }
+    if (current?.channel.status === 'archived') {
+      await refreshConfirmedArchive(controller, channelID);
+      return;
+    }
+    const payload = current && channelArchivePayload(current.channel);
+    if (!current || !payload) {
+      toast('未取得完整渠道配置或版本，未发送归档请求。请刷新后重试。', true);
+      return;
+    }
+    const existing = archiveIntents.get(channelID);
+    if (existing && !sameArchiveIntent(existing, payload, current.etag)) {
+      archiveIntents.delete(channelID);
+      toast('上次归档结果尚未确认，渠道配置已变化；请核对后重新确认。', true);
+      return;
+    }
+    const intent = existing || { payload, etag: current.etag, key: archiveKey() };
+    archiveIntents.set(channelID, intent);
+    const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json', 'If-Match': intent.etag, 'Idempotency-Key': intent.key });
+    const token = csrfToken();
+    if (token) headers.set('X-CSRF-Token', token);
+    let response: Response | undefined;
+    let readback: { channel: Record<string, unknown>; etag: string } | null | undefined;
+    try {
+      response = await donorFetch(`/api/admin/channels/${channelID}`, { method: 'PATCH', credentials: 'same-origin', headers, body: JSON.stringify(intent.payload) });
+    } catch {
+      try { readback = await readArchiveChannel(channelID); }
+      catch {
+        toast('归档结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
+        return;
+      }
+    }
+    if (response && !response.ok && [401, 403, 409].includes(response.status)) {
+      archiveIntents.delete(channelID);
+      toast(archiveFailureMessage(response.status), true);
+      return;
+    }
+    if (!readback) {
+      try { readback = await readArchiveChannel(channelID); }
+      catch {
+        toast('归档结果尚未确认，回读渠道失败；请稍后刷新核对。', true);
+        return;
+      }
+    }
+    if (readback?.channel.status !== 'archived') {
+      toast('归档结果尚未确认，回读未确认归档；请刷新后核对。', true);
+      return;
+    }
+    await refreshConfirmedArchive(controller, channelID);
+  } finally {
+    archiveBusy.delete(channelID);
+  }
+}
+
+function archiveAction(channelID: string, controller: ChannelListController, channelName: string): () => void {
+  return () => {
+    if (confirmedArchivedChannelIDs.has(channelID)) {
+      toast('渠道已归档，但列表未更新；请刷新后核对归档状态。', true);
+      return;
+    }
+    if (archiveBusy.has(channelID)) return;
+    confirmBox('归档渠道', `归档“${channelName || '该渠道'}”会停止新的扫码欢迎语和入渠标签，保留历史、配置与归因记录；可在编辑页选择“启用”后恢复。确认归档？`, '确认归档', true, () => { void archiveChannel(channelID, controller); });
+  };
+}
+
+function installStableChannelArchiveBinding(): void {
+  const prototype = AdminController.prototype as unknown as { renderVals(this: ChannelListController): Record<string, unknown> };
+  const donorRenderVals = prototype.renderVals;
+  prototype.renderVals = function renderChannelsWithStableArchiveAction() {
+    const values = donorRenderVals.call(this);
+    if (this.page !== 'channels') return values;
+    const rows = values.rows as Record<string, unknown> | undefined;
+    if (!rows || !Array.isArray(rows.channels)) return values;
+    return {
+      ...values,
+      rows: {
+        ...rows,
+        channels: rows.channels.map((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+          const row = value as ChannelListRow;
+          const channelID = String(row.resourceId ?? '');
+          if (!validChannelID(channelID)) return { ...row, archive: () => toast('渠道缺少服务端资源 ID，无法归档。', true), archiveLabel: '归档不可用', archiveDisabled: 'true', archiveTitle: '渠道缺少服务端资源 ID，无法归档。', archiveStyle: { fontSize: '13px', color: '#A6AAB0', cursor: 'not-allowed', whiteSpace: 'nowrap' } };
+          if (row.status === 'archived' || confirmedArchivedChannelIDs.has(channelID)) {
+            return { ...row, archive: () => toast('渠道已归档；请刷新后核对最新列表状态。'), archiveLabel: '已归档', archiveDisabled: 'true', archiveTitle: '渠道已归档：扫码不会发送欢迎语或入渠标签；可编辑后再启用。', archiveStyle: { fontSize: '13px', color: '#A6AAB0', cursor: 'not-allowed', whiteSpace: 'nowrap' } };
+          }
+          return { ...row, archive: archiveAction(channelID, this, String(row.name || row.code || '该渠道')), archiveLabel: '归档', archiveDisabled: 'false', archiveTitle: '归档会停止扫码欢迎语和入渠标签，并保留历史；可编辑后再启用。', archiveStyle: { fontSize: '13px', color: '#3370FF', cursor: 'pointer', whiteSpace: 'nowrap' } };
+        }),
+      },
+    };
+  };
+}
+
+function prepareFrozenChannelListTemplate(): void {
+  if (document.body?.dataset.page !== 'channels') return;
+  const template = document.getElementById('tpl');
+  if (!(template instanceof HTMLTemplateElement)) return;
+  // Rows live in a nested <template data-sc-for>; walk each template.content
+  // explicitly because querySelectorAll does not cross template fragments.
+  const fragments: DocumentFragment[] = [template.content];
+  const anchors: HTMLElement[] = [];
+  while (fragments.length) {
+    const fragment = fragments.pop()!;
+    anchors.push(...Array.from(fragment.querySelectorAll<HTMLElement>('a')));
+    for (const nested of Array.from(fragment.querySelectorAll<HTMLTemplateElement>('template'))) fragments.push(nested.content);
+  }
+  const archive = anchors.find((node) => node.textContent?.trim() === '下架' && node.title === '后端暂无渠道归档 operation');
+  if (archive) {
+    archive.textContent = '{{ r.archiveLabel }}';
+    archive.setAttribute('aria-disabled', '{{ r.archiveDisabled }}');
+    archive.title = '{{ r.archiveTitle }}';
+    archive.setAttribute('style', '{{ r.archiveStyle }}');
+  }
+  const deletion = anchors.find((node) => node.textContent?.trim() === '删除' && node.title === '后端暂无渠道删除 operation');
+  if (deletion) {
+    deletion.textContent = '删除不可用';
+    deletion.title = '暂不支持永久删除；归档会保留历史配置和归因记录。';
+    deletion.style.color = '#A6AAB0';
+    deletion.style.cursor = 'not-allowed';
+  }
+}
 
 function dependencyUnavailable(): Response {
   return new Response(JSON.stringify({ code: 'DEPENDENCY_UNAVAILABLE' }), {
@@ -349,6 +556,11 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (request) return donorFetch(new Request(request, { ...init, headers }));
   return donorFetch(input, { ...init, headers });
 };
+
+// Bind raw resource IDs from the frozen controller before it renders the list.
+// The template changes are in memory only; the frozen donor source is untouched.
+prepareFrozenChannelListTemplate();
+installStableChannelArchiveBinding();
 
 // Dynamic import is deliberate: the binding must be installed before the
 // unmodified donor entry reads location.search and issues mutations.

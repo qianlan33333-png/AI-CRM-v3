@@ -3,6 +3,8 @@ package port
 import (
 	"context"
 	"time"
+
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
 
 // OverviewWindow is a half-open, UTC-normalized business reporting window.
@@ -46,6 +48,13 @@ type PaidOverview struct {
 	MissingConfirmationEvidenceCount  int64
 	MissingConfirmationEvidenceAmount []OverviewMoney
 	Trend                             []PaidOverviewTrend
+}
+
+// PaidOverviewPayerPage is an internal Payment-owner keyset page. It is kept
+// out of the HTTP response so historical payer IDs never leave the composed
+// overview read path.
+type PaidOverviewPayerPage struct {
+	CustomerIDs []customerdomain.CustomerID
 }
 
 // RefundOverview is backed only by the latest committed

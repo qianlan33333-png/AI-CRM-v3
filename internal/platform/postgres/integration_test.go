@@ -35,6 +35,32 @@ func TestPlatformPostgreSQLIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	t.Run("read-only repeatable-read reporting unit of work", func(t *testing.T) {
+		readUnit, unitErr := platformpostgres.NewReadOnlyRepeatableReadUnitOfWork(pool)
+		if unitErr != nil {
+			t.Fatal(unitErr)
+		}
+		if unitErr = readUnit.Within(ctx, func(txContext context.Context) error {
+			var isolation, readOnly string
+			tx, queryErr := platformpostgres.RequireTransaction(txContext)
+			if queryErr != nil {
+				return queryErr
+			}
+			if queryErr = tx.QueryRow(txContext, `SHOW transaction_isolation`).Scan(&isolation); queryErr != nil {
+				return queryErr
+			}
+			if queryErr = tx.QueryRow(txContext, `SHOW transaction_read_only`).Scan(&readOnly); queryErr != nil {
+				return queryErr
+			}
+			if isolation != "repeatable read" || readOnly != "on" {
+				t.Fatalf("reporting transaction isolation=%q read_only=%q", isolation, readOnly)
+			}
+			return nil
+		}); unitErr != nil {
+			t.Fatal(unitErr)
+		}
+	})
+
 	t.Run("unit of work commit rollback and nesting", func(t *testing.T) {
 		auditService, serviceErr := audit.NewService(audit.NewPostgreSQLStore())
 		if serviceErr != nil {

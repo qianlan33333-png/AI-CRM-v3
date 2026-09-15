@@ -18,7 +18,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -428,7 +430,65 @@ func runExcelCompositionJourney(t *testing.T, browser bool) {
 		}
 		return
 	}
-	server.Config.Handler = application.handler
+	var contentReadGate struct {
+		sync.Mutex
+		armed bool
+	}
+	contentReadRelease := make(chan struct{})
+	var releaseContentRead sync.Once
+	delayedContentPath := ""
+	server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/__fixture__/excel-arm-content-read":
+			if request.Method != http.MethodPost {
+				http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			batchID, err := strconv.ParseInt(request.URL.Query().Get("batch_id"), 10, 64)
+			if err != nil || batchID < 1 {
+				http.Error(writer, "invalid batch id", http.StatusBadRequest)
+				return
+			}
+			var exists bool
+			if err = application.pool.Native().QueryRow(request.Context(), `SELECT EXISTS(SELECT 1 FROM ai_assistant_excel_imports WHERE plan_id=$1)`, batchID).Scan(&exists); err != nil {
+				http.Error(writer, "fixture batch lookup failed", http.StatusInternalServerError)
+				return
+			}
+			if !exists {
+				http.Error(writer, "fixture batch not found", http.StatusNotFound)
+				return
+			}
+			contentReadGate.Lock()
+			contentReadGate.armed = true
+			delayedContentPath = fmt.Sprintf("/api/admin/operation-batches/%d", batchID)
+			contentReadGate.Unlock()
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		case "/__fixture__/excel-release-content-read":
+			if request.Method != http.MethodPost {
+				http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			releaseContentRead.Do(func() { close(contentReadRelease) })
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		contentReadGate.Lock()
+		delayContentRead := contentReadGate.armed && request.Method == http.MethodGet && request.URL.Path == delayedContentPath
+		if delayContentRead {
+			contentReadGate.armed = false
+			delayedContentPath = ""
+		}
+		contentReadGate.Unlock()
+		if delayContentRead {
+			select {
+			case <-contentReadRelease:
+			case <-request.Context().Done():
+				return
+			}
+		}
+		application.handler.ServeHTTP(writer, request)
+	})
 	server.StartTLS()
 	cmd := exec.CommandContext(ctx, "node", filepath.Join(root, "cmd/aicrm/excel_batches_chromium_journey.mjs"))
 	cmd.Env = append(os.Environ(), "AICRM_EXCEL_TEST_URL="+server.URL, "AICRM_EXCEL_TEST_USERNAME=excel-browser", "AICRM_EXCEL_TEST_PASSWORD=excel-browser-password")

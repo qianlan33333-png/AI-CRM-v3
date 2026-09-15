@@ -60,9 +60,9 @@ pagingWindow.fetch = async (input) => {
   if (url.pathname === "/api/admin/operation-batches/legacy") return response({ items: [] });
   if (url.pathname === "/api/admin/operation-batches/strategies/strategy-121") {
     detailReads.push(url.pathname);
-    return response({ strategy: { strategy_key: "strategy-121", title: "长期计划 121" }, items: [{ id: 1121, state: "pending_review", version: 1, summary: { total_rows: 1, excluded_rows: 0, empty_title_rows: 0, expected_tasks: 1 } }] });
+    return response({ strategy: { strategy_key: "strategy-121", title: "长期计划 121" }, items: [{ id: 1121, state: "pending_review", version: 1, current_content_version: 1, summary: { total_rows: 1, excluded_rows: 0, empty_title_rows: 0, expected_tasks: 1 } }] });
   }
-  if (url.pathname === "/api/admin/operation-batches/1121") return response({ batch: { id: 1121, state: "pending_review", version: 1, summary: { total_rows: 1, excluded_rows: 0, empty_title_rows: 0, expected_tasks: 1 } }, rows: [], next_cursor: "" });
+  if (url.pathname === "/api/admin/operation-batches/1121") return response({ batch: { id: 1121, state: "pending_review", version: 1, current_content_version: 1, summary: { total_rows: 1, excluded_rows: 0, empty_title_rows: 0, expected_tasks: 1 } }, rows: [], next_cursor: "" });
   throw new Error(`unexpected request ${url.pathname}${url.search}`);
 };
 try {

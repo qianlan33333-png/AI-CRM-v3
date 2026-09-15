@@ -76,7 +76,7 @@ type Paid struct {
 	Section
 	Gross                             []Money      `json:"gross"`
 	OrderCount                        int64        `json:"order_count"`
-	DistinctCanonicalPayers           int64        `json:"distinct_canonical_payers"`
+	DistinctCanonicalPayers           *int64       `json:"distinct_canonical_payers,omitempty"`
 	MissingPayerCount                 int64        `json:"missing_payer_count,omitempty"`
 	MissingConfirmationEvidenceCount  int64        `json:"missing_confirmation_evidence_count,omitempty"`
 	MissingConfirmationEvidenceAmount []Money      `json:"missing_confirmation_evidence_amount,omitempty"`
@@ -294,9 +294,14 @@ func zeroSection(asOf time.Time) Section {
 }
 
 func paidResponse(asOf time.Time, facts paymentport.PaidOverview, err error) Paid {
-	result := Paid{Section: baseSection(asOf), Gross: paymentMoney(facts.Gross), OrderCount: facts.OrderCount, DistinctCanonicalPayers: facts.DistinctCanonicalPayers, MissingPayerCount: facts.MissingPayerCount, MissingConfirmationEvidenceCount: facts.MissingConfirmationEvidenceCount, MissingConfirmationEvidenceAmount: paymentMoney(facts.MissingConfirmationEvidenceAmount), Trend: paymentTrendPoints(facts.Trend)}
+	canonicalPayers := facts.DistinctCanonicalPayers
+	result := Paid{Section: baseSection(asOf), Gross: paymentMoney(facts.Gross), OrderCount: facts.OrderCount, DistinctCanonicalPayers: &canonicalPayers, MissingPayerCount: facts.MissingPayerCount, MissingConfirmationEvidenceCount: facts.MissingConfirmationEvidenceCount, MissingConfirmationEvidenceAmount: paymentMoney(facts.MissingConfirmationEvidenceAmount), Trend: paymentTrendPoints(facts.Trend)}
 	switch {
+	case errors.Is(err, paymentport.ErrCanonicalPayerUnavailable):
+		result.DistinctCanonicalPayers = nil
+		result.Section = missingSection(asOf, "canonical_payer_unavailable")
 	case err != nil:
+		result.DistinctCanonicalPayers = nil
 		result.Section = failedReadSection(asOf, "payment_aggregate", err)
 	case facts.MissingConfirmationEvidenceCount > 0:
 		result.Section = missingSection(asOf, "paid_confirmation_time_missing")
@@ -312,7 +317,7 @@ func overviewContract() Contract {
 	return Contract{
 		Scope:            authorizedGlobalScope,
 		PaidGross:        "payment.payments: status=paid, one unique business order_id, and trustworthy original paid_confirmed_at; native and history payments share this denominator, while no-time history amounts are returned as missing evidence",
-		PaidPayers:       "payment.payments: same known paid-confirmed-at denominator, distinct payer_customer_id",
+		PaidPayers:       "payment.payments: same known paid-confirmed-at denominator, historic payer_customer_id resolved read-only to current canonical Customer roots; unavailable roots omit the count rather than returning a partial or zero value",
 		NewCustomers:     "identity.customers: root created_at with explicit interactive identity source; history receipts excluded; unknown sources are data_missing",
 		Refunds:          "payment refund evidence: current completed refund uses latest payment.refund_settled audit append by id; completed history uses payment.refund_history_imported at its source occurred_at",
 		Distribution:     "distribution.commissions: period paid_confirmed_at; current settlement balances and open/querying exceptions are not period-filtered",
