@@ -6,8 +6,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,6 +52,13 @@ type productExternalPushChromiumFixture struct {
 	serviceProductID         int64
 	historicalOrderReference string
 	dataKey                  []byte
+}
+
+type productExternalPushChromiumFixtureOptions struct {
+	// enablePublicH5 configures only the public-commerce journey's exact local
+	// H5 identity/session boundary. Existing product-admin fixtures keep their
+	// original disabled Payment/OAuth configuration.
+	enablePublicH5 bool
 }
 
 // TestPostgreSQLProductExternalPushCompositionPreflight runs in every real
@@ -122,6 +134,14 @@ func newProductExternalPushChromiumFixture(t *testing.T) *productExternalPushChr
 // journeys bounded while allowing a composed caller to budget for its own
 // larger route matrix. It does not change any per-page browser waits.
 func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time.Duration) *productExternalPushChromiumFixture {
+	return newProductExternalPushChromiumFixtureWithOptions(t, timeout, productExternalPushChromiumFixtureOptions{})
+}
+
+func newPublicCommerceChromiumFixture(t *testing.T, timeout time.Duration) *productExternalPushChromiumFixture {
+	return newProductExternalPushChromiumFixtureWithOptions(t, timeout, productExternalPushChromiumFixtureOptions{enablePublicH5: true})
+}
+
+func newProductExternalPushChromiumFixtureWithOptions(t *testing.T, timeout time.Duration, options productExternalPushChromiumFixtureOptions) *productExternalPushChromiumFixture {
 	t.Helper()
 	if timeout < time.Second {
 		t.Fatal("Chromium fixture timeout must be positive")
@@ -166,7 +186,7 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
 	t.Cleanup(server.Close)
 	origin := "https://" + server.Listener.Addr().String()
-	application, err := compose(ctx, platformconfig.Runtime{
+	runtime := platformconfig.Runtime{
 		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin,
 		ReleaseSHA: "product-external-push-chromium-journey", WorkerOwner: "product-external-push-chromium-journey", WorkerLimit: 1,
 		GroupOps:     platformconfig.GroupOps{WebhookSecret: "product-external-push-chromium-webhook-secret"},
@@ -176,7 +196,17 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 		AIAssistant:  platformconfig.AIAssistant{UIEnabled: true},
 		CommercePush: platformconfig.CommercePush{ProviderEnabled: true, TargetsJSON: string(targetsJSON), PayloadDataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
 		Bootstrap:    platformconfig.Bootstrap{Enabled: true, Username: "product-browser-owner", Password: "product-browser-owner-password", DisplayName: "Product Browser Owner"},
-	})
+	}
+	if options.enablePublicH5 {
+		// The public journey issues a synthetic, provider-verified test session
+		// through the composed OneID/Payment service. These temporary local
+		// credentials make that existing read boundary available; browser steps
+		// stop before checkout, OAuth, or any Provider call.
+		paymentKey, paymentCertificate := distributionFixturePaymentCredentials(t)
+		runtime.Survey = platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(dataKey), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(dataKey), OAuthEnabled: true, OAuthAppID: "wx-public-commerce-h5", OAuthSecret: "public-commerce-h5-fixture-secret", OAuthOpenPlatformID: "public-commerce-fixture-platform", OAuthScope: "snsapi_userinfo"}
+		runtime.WeChatPay = platformconfig.WeChatPay{Enabled: true, AppID: "wx-public-commerce-mini", AppSecret: "public-commerce-mini-fixture-secret", AppScope: "wechat-app:wx-public-commerce-mini", H5OAuthEnabled: true, H5AppID: "wx-public-commerce-h5", H5AppSecret: "public-commerce-h5-fixture-secret", H5AppScope: "wechat-app:wx-public-commerce-h5", OrderContactDataKey: base64.RawStdEncoding.EncodeToString(dataKey), MerchantID: "public-commerce-fixture-mch", MerchantSerial: "public-commerce-fixture-serial", PrivateKeyPath: paymentKey, PlatformCertPath: paymentCertificate, APIV3Key: "0123456789abcdef0123456789abcdef"}
+	}
+	application, err := compose(ctx, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +217,9 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 	productID, serviceProductID, historicalOrderReference, err := seedProductExternalPushChromiumJourney(ctx, application)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if options.enablePublicH5 {
+		seedPublicCommerceDetailImage(t, ctx, application, productID)
 	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan error, 1)
@@ -267,6 +300,43 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 		script:    filepath.Join(filepath.Dir(source), "product_external_push_chromium_journey.mjs"),
 		productID: productID, serviceProductID: serviceProductID,
 		historicalOrderReference: historicalOrderReference, dataKey: dataKey,
+	}
+}
+
+// seedPublicCommerceDetailImage creates one synthetic, Product-owned detail
+// image for the authorized public browser journey. It does not upload or call
+// a Provider; Media serves the saved bytes through Product's existing narrow
+// anonymous image route.
+func seedPublicCommerceDetailImage(t *testing.T, ctx context.Context, application *composedApplication, productID int64) {
+	t.Helper()
+	// Use a tall Product-owned image so the public browser journey verifies the
+	// real fixed purchase bar at the end of a scrollable detail page instead of
+	// only a one-viewport media card.
+	canvas := image.NewRGBA(image.Rect(0, 0, 640, 2200))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{51, 112, 255, 255}), image.Point{}, draw.Src)
+	draw.Draw(canvas, image.Rect(0, 734, 640, 1467), image.NewUniform(color.RGBA{15, 118, 110, 255}), image.Point{}, draw.Src)
+	draw.Draw(canvas, image.Rect(0, 1467, 640, 2200), image.NewUniform(color.RGBA{70, 83, 185, 255}), image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		t.Fatal(err)
+	}
+	content := encoded.Bytes()
+	digestValue := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(digestValue[:])
+	pool := application.pool.Native()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
+		t.Fatal(err)
+	}
+	var imageID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,'public-commerce-detail-long.png','公开商品验收长图','公开商品浏览器验收用合成长图','chromium,public-commerce','public-commerce','image/png',$2,640,2200,true,1,1) RETURNING id`, digest, len(content)).Scan(&imageID); err != nil {
+		t.Fatal(err)
+	}
+	images, err := json.Marshal([]string{"/api/admin/image-library/" + strconv.FormatInt(imageID, 10) + "/variants/original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE products SET images=$2::jsonb WHERE id=$1`, productID, images); err != nil {
+		t.Fatal(err)
 	}
 }
 

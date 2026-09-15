@@ -9,9 +9,13 @@ const screenshots = process.env.AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR;
 const standardCode = process.env.AICRM_PUBLIC_COMMERCE_STANDARD_CODE;
 const serviceCode = process.env.AICRM_PUBLIC_COMMERCE_SERVICE_CODE;
 const unavailableServiceCode = process.env.AICRM_PUBLIC_COMMERCE_UNAVAILABLE_SERVICE_CODE;
-if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(baseURL) || !path.isAbsolute(screenshots || "") || !standardCode || !serviceCode || !unavailableServiceCode) {
+const trustedSession = String(process.env.AICRM_PUBLIC_COMMERCE_TRUSTED_SESSION || "");
+if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(baseURL) || !path.isAbsolute(screenshots || "") || !standardCode || !serviceCode || !unavailableServiceCode || !/^aicrm_payment_session=pays_[A-Za-z0-9_-]{20,}$/.test(trustedSession)) {
   throw new Error("public commerce Chromium journey environment is incomplete");
 }
+const [trustedCookieName, trustedCookieValue] = trustedSession.split("=", 2);
+const browserUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MicroMessenger/8.0.50 Mobile/15E148 Safari/604.1";
+const nonWeChatUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1";
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const browserBinary = () => {
@@ -129,17 +133,43 @@ try {
   });
 
   const resize = width => cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 860, deviceScaleFactor: 1, mobile: true, screenWidth: width, screenHeight: 860 });
+  const setUserAgent = userAgent => cdp.call("Emulation.setUserAgentOverride", { userAgent });
+  const settleLayout = () => evaluate(cdp, "(document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))");
   const capture = async filename => {
+    await settleLayout();
     const image = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     await fs.writeFile(path.join(screenshots, filename), Buffer.from(image.data, "base64"), { mode: 0o600 });
   };
 
-  const visit = async ({ pagePath, kind, route, width, file, unavailable = false }) => {
+  const visitUnauthenticatedGate = async () => {
+    await resize(375);
+    await setUserAgent(nonWeChatUserAgent);
+    await cdp.call("Page.navigate", { url: baseURL + `/pay/${encodeURIComponent(standardCode)}` });
+    await waitFor(cdp, "document.querySelector('[data-v3-public-commerce]')?.dataset.publicCommerceMounted === 'true'", "presentation Host did not mount unauthenticated public payment");
+    await waitFor(cdp, "document.querySelector('#identityGate:not([hidden])') && document.querySelector('#identityTitle')?.textContent === '请在微信中打开'", "non-WeChat Owner identity state did not settle");
+    const gate = await evaluate(cdp, "(() => ({title:document.querySelector('#identityTitle')?.textContent,message:document.querySelector('#identityMessage')?.textContent,action:document.querySelector('#authContinue')?.textContent,disabled:document.querySelector('#authContinue')?.getAttribute('aria-disabled'),checkoutHidden:document.querySelector('#checkoutContent')?.hidden}))()");
+    assert.deepEqual(gate, { title: "请在微信中打开", message: "请复制当前链接到微信中打开并完成授权。", action: "请在微信中打开", disabled: "true", checkoutHidden: true }, "non-WeChat identity gate must not claim an in-progress authorization");
+  };
+
+  const visit = async ({ pagePath, kind, route, width, file, name, price, detail = false, media = false, unavailable = false }) => {
     await resize(width);
     await cdp.call("Page.navigate", { url: baseURL + pagePath });
-    await waitFor(cdp, "document.querySelector('main[data-v3-public-commerce]')?.dataset.publicCommerceMounted === 'true'", `presentation Host did not mount ${pagePath}`);
+    const rootMounted = "document.querySelector('[data-v3-public-commerce]')?.dataset.publicCommerceMounted === 'true'";
+    try {
+      await waitFor(cdp, rootMounted, `presentation Host did not mount ${pagePath}`);
+    } catch (error) {
+      const mounting = await evaluate(cdp, "(() => { const root=document.querySelector('[data-v3-public-commerce]'); return {root:!!root,tag:root?.tagName||'',route:root?.dataset.publicCommerceRoute||'',mounted:root?.dataset.publicCommerceMounted||'',hostScripts:Array.from(document.scripts).map(script=>String(script.src||'')).filter(src=>src.includes('/product-public-assets/')),body:document.body?.innerHTML.slice(0,320)||''}; })()");
+      throw new Error(`${error.message}; state=${JSON.stringify(mounting)}`);
+    }
     await waitFor(cdp, "Array.from(document.styleSheets).some(sheet => String(sheet.href || '').includes('/product-public-assets/'))", `public stylesheet did not load ${pagePath}`);
-    const state = await evaluate(cdp, "(() => { const root=document.querySelector('main[data-v3-public-commerce]'); return {kind:root?.dataset.productKind,route:root?.dataset.publicCommerceRoute,view:root?.dataset.publicCommerceView,overflow:document.documentElement.scrollWidth>innerWidth+1,host:Array.from(document.scripts).some(script=>String(script.src||'').includes('/product-public-assets/')),unavailableButton:Boolean(document.querySelector('#servicePeriodPayButton:disabled'))}; })()");
+    if (!unavailable) {
+      const contentSelector = detail ? "#detailContent:not([hidden])" : "#checkoutContent:not([hidden])";
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(contentSelector)})`, `authorized business content did not appear ${pagePath}`);
+      if (media) {
+        await waitFor(cdp, "(() => { const image=document.querySelector('#detailContent .detail-image'); return image && image.complete && image.naturalWidth > 0; })()", `Product-owned detail media did not load ${pagePath}`);
+      }
+    }
+    const state = await evaluate(cdp, "(() => { const root=document.querySelector('[data-v3-public-commerce]'); const detail=document.querySelector('#detailContent'); const checkout=document.querySelector('#checkoutContent'); const image=detail?.querySelector('.detail-image'); const tag=document.querySelector('.service-period-tag'); return {kind:root?.dataset.productKind,route:root?.dataset.publicCommerceRoute,view:root?.dataset.publicCommerceView,primaryAction:root?.dataset.publicCommercePrimaryAction,overflow:document.documentElement.scrollWidth>innerWidth+1,detailScrollable:document.documentElement.scrollHeight>innerHeight+1,host:Array.from(document.scripts).some(script=>String(script.src||'').includes('/product-public-assets/')),identityVisible:Boolean(document.querySelector('#identityGate:not([hidden])')),unavailableButton:Boolean(document.querySelector('#servicePeriodPayButton:disabled')),unavailableTagDot:tag?getComputedStyle(tag,'::before').backgroundColor:'',detailVisible:Boolean(detail&&!detail.hidden),detailName:detail?.querySelector('h1')?.textContent||'',detailPrice:document.querySelector('#detailPrice')?.textContent||'',detailAction:detail?.querySelector('.buy')?.textContent||'',detailImageLoaded:Boolean(image && image.complete && image.naturalWidth > 0),checkoutVisible:Boolean(checkout&&!checkout.hidden),checkoutName:checkout?.querySelector('.product h1')?.textContent||'',checkoutPrice:checkout?.querySelector('#price')?.textContent||'',payable:checkout?.querySelector('#payableAmount')?.textContent||'',footer:checkout?.querySelector('#footerAmount')?.textContent||'',buyDisabled:Boolean(checkout?.querySelector('#buy')?.disabled),buyText:checkout?.querySelector('#buy')?.textContent||''}; })()");
     assert.equal(state.kind, kind, `${pagePath} product kind`);
     assert.equal(state.route, route, `${pagePath} route kind`);
     assert.equal(state.host, true, `${pagePath} Host resource`);
@@ -147,19 +177,51 @@ try {
     // The frozen page owns the unavailable fact through its disabled action;
     // do not infer state from user-visible text or depend on an incidental CSS
     // class that the frozen state renderer does not preserve after load.
-    if (unavailable) assert.equal(state.unavailableButton, true, `${pagePath} unavailable Owner state`);
-    else assert.notEqual(state.view, undefined, `${pagePath} structural Owner state`);
+    if (unavailable) {
+      assert.equal(state.unavailableButton, true, `${pagePath} unavailable Owner state`);
+      assert.equal(state.primaryAction, 'disabled', `${pagePath} unavailable primary action marker`);
+      assert.equal(state.unavailableTagDot, 'rgb(168, 173, 181)', `${pagePath} unavailable status dot remains neutral`);
+    } else if (detail) {
+      assert.equal(state.identityVisible, false, `${pagePath} trusted session must reveal product detail`);
+      assert.equal(state.detailVisible, true, `${pagePath} visible product detail`);
+      assert.equal(state.detailName, name, `${pagePath} product detail name`);
+      assert.equal(state.detailPrice, price, `${pagePath} product detail price`);
+      assert.notEqual(state.detailAction, "", `${pagePath} product purchase action`);
+      if (media) {
+        assert.equal(state.detailImageLoaded, true, `${pagePath} Product-owned detail media`);
+        assert.equal(state.detailScrollable, true, `${pagePath} Product-owned long media creates a real detail scroll`);
+        await evaluate(cdp, "window.scrollTo(0, document.documentElement.scrollHeight);");
+        await settleLayout();
+        const bottomSafe = await evaluate(cdp, "(() => { const image=document.querySelector('#detailContent .detail-image'); const footer=document.querySelector('.checkout-footer'); if (!image || !footer) return false; const bottom=image.getBoundingClientRect().bottom; return bottom > 0 && bottom <= footer.getBoundingClientRect().top; })()");
+        assert.equal(bottomSafe, true, `${pagePath} detail media remains above the fixed purchase bar when scrolled`);
+        await capture('public-standard-detail-375-bottom.png');
+        await evaluate(cdp, "window.scrollTo(0, 0);");
+      }
+    } else {
+      assert.equal(state.identityVisible, false, `${pagePath} trusted session must reveal checkout`);
+      assert.equal(state.checkoutVisible, true, `${pagePath} visible checkout content`);
+      assert.equal(state.checkoutName, name, `${pagePath} checkout product name`);
+      assert.equal(state.checkoutPrice, price, `${pagePath} checkout price`);
+      assert.equal(state.payable, `¥${price}`, `${pagePath} Owner payable amount`);
+      assert.equal(state.footer, `¥${price}`, `${pagePath} Owner payment recovery footer amount`);
+      assert.equal(state.buyDisabled, false, `${pagePath} ready purchase action`);
+      assert.equal(state.buyText, "立即支付", `${pagePath} purchase action text`);
+    }
     await capture(file);
   };
 
-  await visit({ pagePath: `/p/${encodeURIComponent(standardCode)}`, kind: "standard", route: "detail", width: 375, file: "public-standard-detail-375.png" });
-  await visit({ pagePath: `/pay/${encodeURIComponent(standardCode)}`, kind: "standard", route: "payment", width: 390, file: "public-standard-payment-390.png" });
+  await visitUnauthenticatedGate();
+  await setUserAgent(browserUserAgent);
+  const cookie = await cdp.call("Network.setCookie", { url: baseURL, name: trustedCookieName, value: trustedCookieValue, secure: true, httpOnly: true, sameSite: "Lax" });
+  assert.equal(cookie.success, true, "trusted Payment session cookie");
+  await visit({ pagePath: `/p/${encodeURIComponent(standardCode)}`, kind: "standard", route: "detail", width: 375, file: "public-standard-detail-375.png", name: "浏览器外推商品", price: "99.00", detail: true, media: true });
+  await visit({ pagePath: `/pay/${encodeURIComponent(standardCode)}`, kind: "standard", route: "payment", width: 390, file: "public-standard-payment-390.png", name: "浏览器外推商品", price: "99.00" });
   // Service-period's existing Owner selects the checkout presentation when a
   // product has no detail-media records. This fixture intentionally has no
   // synthetic media, so verify its real route output instead of treating the
   // URL alone as proof of a detail section.
-  await visit({ pagePath: `/s/${encodeURIComponent(serviceCode)}`, kind: "service_period", route: "payment", width: 430, file: "public-service-available-430.png" });
-  await visit({ pagePath: `/s/${encodeURIComponent(serviceCode)}/pay`, kind: "service_period", route: "payment", width: 390, file: "public-service-available-payment-390.png" });
+  await visit({ pagePath: `/s/${encodeURIComponent(serviceCode)}`, kind: "service_period", route: "payment", width: 430, file: "public-service-available-430.png", name: "浏览器周期外推商品", price: "128.00" });
+  await visit({ pagePath: `/s/${encodeURIComponent(serviceCode)}/pay`, kind: "service_period", route: "payment", width: 390, file: "public-service-available-payment-390.png", name: "浏览器周期外推商品", price: "128.00" });
   await visit({ pagePath: `/s/${encodeURIComponent(unavailableServiceCode)}`, kind: "service_period", route: "service-period-state", width: 375, file: "public-service-unavailable-detail-375.png", unavailable: true });
   await visit({ pagePath: `/s/${encodeURIComponent(unavailableServiceCode)}/pay`, kind: "service_period", route: "service-period-state", width: 430, file: "public-service-unavailable-payment-430.png", unavailable: true });
 

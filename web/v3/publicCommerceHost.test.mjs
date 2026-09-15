@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
 
-const dom = new JSDOM('<!doctype html><main data-v3-public-commerce data-public-commerce-route="payment">'
+const dom = new JSDOM('<!doctype html><body>'
+  + '<main data-v3-public-commerce data-public-commerce-route="service-period-state" class="service-period-page">'
   + '<section id="identityGate"></section><section id="detailContent" hidden></section>'
   + '<section id="checkoutContent" hidden><button id="buy">立即支付</button><div id="status" class="status" role="status"></div></section>'
-  + '<img class="detail-image" alt="商品详情"></main>', { url: 'https://test.invalid/pay/course-7', pretendToBeVisual: true });
+  + '<span class="service-period-tag">未上架</span><img class="detail-image" alt="商品详情"></main>'
+  + '<button id="servicePeriodPayButton">暂未开放</button></body>', { url: 'https://test.invalid/pay/course-7', pretendToBeVisual: true });
 const bundle = await build({
   stdin: {
     contents: "export { mountPublicCommerce } from './web/v3/publicCommerceHost';",
@@ -31,9 +33,9 @@ Object.assign(globalThis, {
 });
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const root = document.querySelector('main');
+const root = document.querySelector('[data-v3-public-commerce]');
 const mount = mountPublicCommerce(root);
-assert.ok(mount, 'public commerce root mounts once');
+assert.ok(mount, 'public commerce body root mounts once');
 assert.equal(root.dataset.publicCommerceView, 'identity', 'identity state comes from the existing hidden section');
 assert.equal(root.dataset.publicCommercePrimaryAction, 'enabled', 'primary action state comes from the existing button property');
 assert.equal(mountPublicCommerce(root), null, 'second mount does not create a second observer');
@@ -47,6 +49,12 @@ const primary = root.querySelector('#buy');
 primary.disabled = true;
 await flush();
 assert.equal(root.dataset.publicCommercePrimaryAction, 'disabled', 'disabled state remains structural');
+
+primary.disabled = false;
+const servicePeriodPrimary = document.querySelector('#servicePeriodPayButton');
+servicePeriodPrimary.disabled = true;
+await flush();
+assert.equal(root.dataset.publicCommercePrimaryAction, 'disabled', 'service-period disabled state is an explicit Owner action fact');
 
 const status = root.querySelector('#status');
 status.classList.add('completion-result');

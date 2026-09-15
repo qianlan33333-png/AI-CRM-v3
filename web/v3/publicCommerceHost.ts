@@ -30,7 +30,12 @@ export function mountPublicCommerce(root: HTMLElement | null): PublicCommerceMou
     root.dataset.publicCommerceCompletion = status?.classList.contains('completion-result') ? 'true' : 'false';
 
     const primary = root.querySelector<HTMLButtonElement>('#buy');
-    root.dataset.publicCommercePrimaryAction = primary?.disabled ? 'disabled' : 'enabled';
+    // The frozen service-period renderer keeps its fixed action bar adjacent
+    // to, rather than inside, the decorated main element. It is still the
+    // Owner's explicit disabled fact for this one public document.
+    const servicePeriodPrimary = root.querySelector<HTMLButtonElement>('#servicePeriodPayButton')
+      || root.ownerDocument.querySelector<HTMLButtonElement>('#servicePeriodPayButton');
+    root.dataset.publicCommercePrimaryAction = primary?.disabled || servicePeriodPrimary?.disabled ? 'disabled' : 'enabled';
   };
 
   const onImageError = (event: Event) => {
@@ -40,7 +45,7 @@ export function mountPublicCommerce(root: HTMLElement | null): PublicCommerceMou
   };
 
   const observer = new MutationObserver(refresh);
-  observer.observe(root, { attributes: true, attributeFilter: ['hidden', 'class', 'disabled'], subtree: true });
+  observer.observe(root.ownerDocument.documentElement, { attributes: true, attributeFilter: ['hidden', 'class', 'disabled'], subtree: true });
   root.addEventListener('error', onImageError, true);
   refresh();
 
@@ -57,5 +62,5 @@ export function mountPublicCommerce(root: HTMLElement | null): PublicCommerceMou
 }
 
 if (typeof document !== 'undefined') {
-  mountPublicCommerce(document.querySelector<HTMLElement>('main[data-v3-public-commerce]'));
+  mountPublicCommerce(document.querySelector<HTMLElement>('[data-v3-public-commerce]'));
 }

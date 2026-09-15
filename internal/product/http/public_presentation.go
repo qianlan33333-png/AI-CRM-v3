@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const publicCommerceAssetPrefix = "/product-public-assets/"
@@ -24,18 +25,76 @@ type PublicPresentationAssets struct {
 	StylesheetURL string
 	HostURL       string
 	handler       *publicPresentationAssetHandler
+	resolver      *publicPresentationAssetResolver
 }
 
 func (assets PublicPresentationAssets) configured() bool {
 	return assets.handler != nil && assets.StylesheetURL != "" && assets.HostURL != ""
 }
 
-func (assets PublicPresentationAssets) serveHTTP(writer http.ResponseWriter, request *http.Request) {
-	if !assets.configured() {
-		http.NotFound(writer, request)
-		return
+// bound reports whether a caller explicitly opted into the public
+// presentation closure. An unbound handler retains the donor-only behavior
+// used by focused unit tests; a bound release resolver must resolve before a
+// public HTML page or public asset can be served.
+func (assets PublicPresentationAssets) bound() bool {
+	return assets.configured() || assets.resolver != nil
+}
+
+func (assets PublicPresentationAssets) resolved() (PublicPresentationAssets, error) {
+	if assets.configured() {
+		return assets, nil
 	}
-	assets.handler.ServeHTTP(writer, request)
+	if assets.resolver == nil {
+		return PublicPresentationAssets{}, errors.New("public presentation assets are not configured")
+	}
+	return assets.resolver.resolve()
+}
+
+func (assets PublicPresentationAssets) serveHTTP(writer http.ResponseWriter, request *http.Request) error {
+	resolved, err := assets.resolved()
+	if err != nil {
+		return err
+	}
+	resolved.handler.ServeHTTP(writer, request)
+	return nil
+}
+
+// publicPresentationAssetResolver delays release-artifact I/O until Product's
+// public presentation route is actually mounted. Composition is shared by
+// workers and focused non-UI fixtures, which intentionally do not require a
+// checkout's browser closure. Once an HTML page or public asset is requested,
+// resolution remains fail-closed: no manifest, altered closure, or missing
+// release file can fall back to the frozen public UI.
+type publicPresentationAssetResolver struct {
+	dist   string
+	once   sync.Once
+	assets PublicPresentationAssets
+	err    error
+}
+
+// NewDeferredPublicPresentationAssets binds Product's public presentation to
+// one explicit release directory without reading it during composition. The
+// first public page or declared asset request verifies the same manifest
+// closure as NewPublicPresentationAssets and caches either that result or its
+// error for the lifetime of the composed process.
+func NewDeferredPublicPresentationAssets(dist string) (PublicPresentationAssets, error) {
+	if strings.TrimSpace(dist) == "" {
+		return PublicPresentationAssets{}, errors.New("public presentation dist is required")
+	}
+	return PublicPresentationAssets{resolver: &publicPresentationAssetResolver{dist: dist}}, nil
+}
+
+func (resolver *publicPresentationAssetResolver) resolve() (PublicPresentationAssets, error) {
+	if resolver == nil || strings.TrimSpace(resolver.dist) == "" {
+		return PublicPresentationAssets{}, errors.New("public presentation dist is required")
+	}
+	resolver.once.Do(func() {
+		resolver.assets, resolver.err = NewPublicPresentationAssets(resolver.dist)
+	})
+	if resolver.err != nil {
+		return PublicPresentationAssets{}, resolver.err
+	}
+	return resolver.assets, nil
 }
 
 func publicCommerceContentSecurityPolicy() string {

@@ -81,6 +81,39 @@ func TestPublicPresentationAssetsAreManifestBoundAndAnonymousSafe(t *testing.T) 
 	}
 }
 
+func TestDeferredPublicPresentationDefersCompositionButFailsClosedOnPublicRoute(t *testing.T) {
+	assets, err := NewDeferredPublicPresentationAssets(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewPublicHandler(&testCatalog{product: enabledPublicProduct(7, "course-7")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetPublicPresentationAssets(assets); err != nil {
+		t.Fatal(err)
+	}
+
+	// Composition can bind the explicit release directory before a browser
+	// artifact exists, but an actual public HTML or declared asset request must
+	// never silently fall back to the donor-only page.
+	for _, path := range []string{"/pay/course-7", "/product-public-assets/publicCommerceHost.js"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "public presentation unavailable") {
+			t.Fatalf("bound deferred path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+
+	// The browser closure is unrelated to the stable public catalog API, which
+	// remains readable by worker and non-UI composition fixtures.
+	api := httptest.NewRecorder()
+	handler.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/public/products/course-7", nil))
+	if api.Code != http.StatusOK {
+		t.Fatalf("public API status=%d body=%s", api.Code, api.Body.String())
+	}
+}
+
 func TestServicePeriodPresentationMountsForAvailableAndUnavailablePages(t *testing.T) {
 	assets, _ := publicPresentationFixture(t)
 	product := productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}
@@ -106,6 +139,26 @@ func TestServicePeriodPresentationMountsForAvailableAndUnavailablePages(t *testi
 	unavailablePage := httptest.NewRecorder()
 	unavailable.ServeHTTP(unavailablePage, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
 	assertServicePeriodPresentation(t, unavailablePage, "unavailable")
+}
+
+func TestDeferredServicePeriodPresentationFailsClosedWhenRouteIsRequested(t *testing.T) {
+	assets, err := NewDeferredPublicPresentationAssets(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	product := productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}
+	handler, err := NewServicePeriodPublicHandler(&servicePeriodPublicStub{product: product})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetPublicPresentationAssets(assets); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "public presentation unavailable") {
+		t.Fatalf("deferred service-period status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func assertServicePeriodPresentation(t *testing.T, response *httptest.ResponseRecorder, branch string) {

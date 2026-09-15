@@ -139,7 +139,12 @@ type composedApplication struct {
 	// remains unexported and is retained so same-package PostgreSQL journeys can
 	// exercise an EER terminal callback through the exact Production observer
 	// wiring without contacting a Provider.
-	paymentDistribution   effectport.CompletionSink
+	paymentDistribution effectport.CompletionSink
+	// paymentSession remains private to the Composition Root. Same-package
+	// PostgreSQL browser journeys use it only to issue a provider-verified test
+	// session through the exact OneID-backed session service before exercising
+	// public read paths.
+	paymentSession        *paymentsession.Service
 	channelEntrantActions *channelstore.EntrantActionStore
 	customerSync          wecom.CustomerSyncService
 	adminOps              *adminopsapp.ProjectionService
@@ -862,7 +867,12 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	publicCommerceAssets, err := producthttp.NewPublicPresentationAssets("web/dist")
+	// Public commerce presentation is a release-only browser closure. Resolve
+	// its manifest lazily on the public route, consistent with the other UI
+	// bindings below: workers and non-UI composition fixtures need no cwd
+	// artifact, while an actual public request still fails closed if web/dist is
+	// missing, altered, or incomplete.
+	publicCommerceAssets, err := producthttp.NewDeferredPublicPresentationAssets("web/dist")
 	if err != nil {
 		return fail(err)
 	}
@@ -2017,7 +2027,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = runtimeReleaseService.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: runtimeSnapshot.Revision, Source: runtimeSnapshot.Source, Role: string(cfg.Role), ReleaseSHA: cfg.ReleaseSHA, SnapshotChecksum: runtimeSnapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
 		return fail(err)
 	}
-	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, paymentSession: paymentSession, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {

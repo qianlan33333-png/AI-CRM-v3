@@ -76,10 +76,12 @@ func (h *ServicePeriodPublicHandler) SetPublicMediaReader(media publicServicePer
 }
 
 // SetPublicPresentationAssets injects the same manifest-verified public
-// presentation closure used by ordinary Product routes. The service-period
-// frozen body stays immutable; only its final emitted document is decorated.
+// presentation closure used by ordinary Product routes. A deferred closure is
+// resolved only when this public route is requested; the service-period frozen
+// body stays immutable and cannot silently fall back when a bound release is
+// incomplete.
 func (h *ServicePeriodPublicHandler) SetPublicPresentationAssets(assets PublicPresentationAssets) error {
-	if h == nil || !assets.configured() {
+	if h == nil || !assets.bound() {
 		return errors.New("service-period public presentation assets are required")
 	}
 	h.presentationAssets = assets
@@ -119,11 +121,19 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		clearLegacyPromotionCookies(w)
 	}
 	public := publicProduct{ID: product.ID, Name: product.Name, PriceMinor: product.PriceMinor, Currency: product.Currency, PaymentPath: publicPaymentPath("/s/"+url.PathEscape(product.Code)+"/pay", promotionContext), PromotionContext: promotionContext, BuyButtonText: "立即报名", ProductKind: "service_period", CouponTargetRef: "service_period:" + strconv.FormatInt(int64(product.ID), 10), ServicePeriodDurationDays: product.ServicePeriodDurationDays, Images: publicDetailMedia(product.Code, product.DetailMedia)}
+	presentation := PublicPresentationAssets{}
+	if h.presentationAssets.bound() {
+		presentation, err = h.presentationAssets.resolved()
+		if err != nil {
+			http.Error(w, "public presentation unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", publicCommerceContentSecurityPolicy())
 	if available {
-		if err = publicProductPage.Execute(w, publicProductPageView{Product: public, Payment: true, Detail: !payment && len(public.Images) > 0, Presentation: publicPresentationTemplateFor(h.presentationAssets)}); err != nil {
+		if err = publicProductPage.Execute(w, publicProductPageView{Product: public, Payment: true, Detail: !payment && len(public.Images) > 0, Presentation: publicPresentationTemplateFor(presentation)}); err != nil {
 			return
 		}
 		return
@@ -136,7 +146,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	if !available {
 		state.Available, state.Status, state.CTA, state.LeadQRURL = false, "unavailable", "暂未开放", ""
 	}
-	_ = renderServicePeriodPublicPageWithPresentation(w, state, h.presentationAssets)
+	_ = renderServicePeriodPublicPageWithPresentation(w, state, presentation)
 }
 
 func (h *ServicePeriodPublicHandler) publicState(ctx context.Context, r *http.Request, product productport.CheckoutProduct, public publicProduct) (servicePeriodPublicState, error) {
@@ -278,21 +288,36 @@ func (h *ServicePeriodPublicHandler) trustedEntitlement(ctx context.Context, r *
 	if err != nil || cookie.Value == "" {
 		return orderport.Entitlement{}, false, nil
 	}
-	var actor paymentport.SessionActor
-	var item orderport.Entitlement
-	var found bool
+	var (
+		actor        paymentport.SessionActor
+		sessionValid bool
+	)
 	err = h.uow.Within(ctx, func(txctx context.Context) error {
-		actor, err = h.sessions.LookupWithin(txctx, cookie.Value, h.now().UTC())
-		if err != nil || actor.PayerCustomerID < 1 {
-			return errors.New("trusted session unavailable")
+		resolvedActor, lookupErr := h.sessions.LookupWithin(txctx, cookie.Value, h.now().UTC())
+		if errors.Is(lookupErr, paymentport.ErrSessionRequired) {
+			// An expired or invalid browser cookie has no public entitlement
+			// authority. Treat it as an anonymous read, like no cookie, so it
+			// cannot expose a prior customer state or turn into a false 503.
+			return nil
 		}
-		item, found, err = h.entitlements.GetCustomerServicePeriodEntitlement(txctx, actor.PayerCustomerID, int64(productID))
-		return err
+		if lookupErr != nil {
+			return lookupErr
+		}
+		actor, sessionValid = resolvedActor, true
+		return nil
 	})
 	if err != nil {
 		return orderport.Entitlement{}, false, err
 	}
-	return item, found, nil
+	if !sessionValid || actor.PayerCustomerID < 1 {
+		return orderport.Entitlement{}, false, nil
+	}
+	// The Payment session reader requires the short local transaction above,
+	// while the stable Order entitlement application owns its own read UoW.
+	// Keep the calls sequential: forwarding txctx would attempt a nested
+	// PostgreSQL transaction and turn a legitimate public unavailable state
+	// into a 503. This route is a read-only presentation projection.
+	return h.entitlements.GetCustomerServicePeriodEntitlement(ctx, actor.PayerCustomerID, int64(productID))
 }
 
 func remainingServicePeriodDays(now, end time.Time) int32 {

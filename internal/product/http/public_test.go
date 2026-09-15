@@ -359,6 +359,15 @@ func (servicePeriodSessionStub) LookupWithin(_ context.Context, token string, _ 
 	return paymentport.SessionActor{PayerCustomerID: 11, BeneficiaryCustomerID: 11}, nil
 }
 
+// servicePeriodExpiredSessionStub deliberately returns a populated actor with
+// ErrSessionRequired. The public Host must disregard every actor when session
+// validation fails rather than relying on a particular adapter's zero value.
+type servicePeriodExpiredSessionStub struct{}
+
+func (servicePeriodExpiredSessionStub) LookupWithin(_ context.Context, _ string, _ time.Time) (paymentport.SessionActor, error) {
+	return paymentport.SessionActor{PayerCustomerID: 99, BeneficiaryCustomerID: 99}, paymentport.ErrSessionRequired
+}
+
 type servicePeriodEntitlementStub struct{ page orderport.EntitlementPage }
 
 func (stub servicePeriodEntitlementStub) ListCustomerEntitlements(_ context.Context, customerID int64, _ int32) (orderport.EntitlementPage, error) {
@@ -386,6 +395,16 @@ func (servicePeriodEntitlementStub) UpdateEntitlementRemark(context.Context, ord
 }
 func (servicePeriodEntitlementStub) UpdateEntitlementAlliance(context.Context, orderport.AllianceCommand) (orderport.Entitlement, error) {
 	return orderport.Entitlement{}, errors.New("unused")
+}
+
+type servicePeriodEntitlementProbe struct {
+	servicePeriodEntitlementStub
+	called bool
+}
+
+func (probe *servicePeriodEntitlementProbe) GetCustomerServicePeriodEntitlement(_ context.Context, _, _ int64) (orderport.Entitlement, bool, error) {
+	probe.called = true
+	return orderport.Entitlement{}, false, errors.New("expired session must not read entitlement")
 }
 
 type servicePeriodLeadQRStub struct{ value channelport.PublicLeadQRCode }
@@ -498,6 +517,25 @@ func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *
 	handler.ServeHTTP(untrusted, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
 	if untrusted.Code != http.StatusOK || !strings.Contains(untrusted.Body.String(), `id="identityGate"`) {
 		t.Fatalf("untrusted page status=%d body=%s", untrusted.Code, untrusted.Body.String())
+	}
+}
+
+func TestPublicServicePeriodExpiredTrustedSessionDoesNotReuseActor(t *testing.T) {
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}}
+	handler, err := NewServicePeriodPublicHandler(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &servicePeriodEntitlementProbe{}
+	if err = handler.SetTrustedPublicState(servicePeriodTestUOW{}, servicePeriodExpiredSessionStub{}, probe); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/s/term-31", nil)
+	request.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: "expired-service-period-trusted"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || probe.called {
+		t.Fatalf("expired session status=%d entitlement_called=%t", response.Code, probe.called)
 	}
 }
 
