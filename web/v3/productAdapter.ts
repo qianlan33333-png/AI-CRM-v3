@@ -2024,7 +2024,7 @@ function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
     // any write; the Product owner still enforces its original CAS server-side.
     if (product) for (const action of container.querySelectorAll<HTMLButtonElement>('button')) {
       if (action.textContent?.trim() === '启用' || action.textContent?.trim() === '停用') {
-        productLifecycleActionContexts.set(action, { product, row, container, page });
+        productLifecycleActionContexts.set(action, { product, row, container, page: 'products' });
       }
     }
     const menu = mountTableActionMenu(container, { owner: `product-${page}-${index}`, primaryCount: 2 });
