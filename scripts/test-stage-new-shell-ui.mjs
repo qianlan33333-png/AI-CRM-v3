@@ -83,7 +83,7 @@ for (const relative of [...selected, ...groupOpsSupport]) {
 
 const adminPages = fs.readdirSync(path.join(source, 'admin')).filter((name) => name.endsWith('.html')).sort();
 assert.ok(adminPages.length >= 39, 'new shell release must carry the complete built admin document set');
-assert.deepEqual(fs.readdirSync(path.join(stage, 'admin')).filter((name) => name.endsWith('.html')).sort(), [...new Set([...adminPages, 'tags.html'])].sort(), 'staged admin documents differ from the built new shell or removed the existing private tags carrier');
+assert.deepEqual(fs.readdirSync(path.join(stage, 'admin')).filter((name) => name.endsWith('.html')).sort(), [...adminPages, 'tags.html'].sort(), 'staged admin documents differ from the built new shell or removed the existing private tags carrier');
 for (const page of adminPages) {
   const relative = `admin/${page}`;
   assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);

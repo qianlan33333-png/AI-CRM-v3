@@ -12,6 +12,7 @@
 - 金额、时间和结算措辞遵循 [PR #301](https://github.com/qianlan33333-png/AI-CRM-v3/pull/301)：`paid` 与 `receiver_succeeded` 仅表示**系统分账成功确认**，不能代称银行到账。结算详情只按同一 `settlement_reference` 的 `distribution.settlement_paid.v1` 审计读取 `settlement_confirmed_at`；`updated_at` 仅为记录更新时间，不能替代确认时间。
 - 扩展已有 `web/v3/distributionAdmin.ts`、`shared/ui/detailDrawer` 与 admin shell 的 `--brand`、`--text`、`--panel`、`--line`、`--radius-*` 和 `presentation.css` 的 `--ui-*`。不另建色彩或布局体系，也不修改冻结 donor。
 - 当前页筛选消费已审核的 `web/v3/shared/ui/committedTextSearch.ts`（来源 `9c05b9d2d21d9d637b1a0ce54978fbc61897db69`）的提交式输入边界：IME 和普通输入保留草稿，只有 Enter 或“筛选”才重绘当前页。
+- 本次会话的 Product Design 路由在 Skills catalog 中不可用，未伪造其调用；实现继续受本仓的组件索引、已选后台视觉 token 和实际挂载验证约束。
 
 ## 用户可见行为
 

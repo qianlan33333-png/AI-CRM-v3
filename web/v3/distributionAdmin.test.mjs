@@ -110,7 +110,7 @@ assert.equal(dom.window.document.body.textContent.includes('未设置昵称'), t
 restoredCrossTabDraft.value = '';
 const distributionCallsBeforeFilter = calls.filter((call) => call.path === '/api/admin/distribution/distributors').length;
 const filter = dom.window.document.querySelector('input[aria-label="仅筛选当前已加载页"]');
-filter.value = '无匹配当前页记录'; filter.setSelectionRange(filter.value.length, filter.value.length);
+filter.focus(); filter.value = '无匹配当前页记录'; filter.setSelectionRange(filter.value.length, filter.value.length);
 filter.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }));
 filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 assert.equal(dom.window.document.querySelector('input[aria-label="仅筛选当前已加载页"]'), filter, 'IME draft must keep the filter input node stable');
