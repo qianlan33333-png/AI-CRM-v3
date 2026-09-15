@@ -20,9 +20,11 @@ func (r *Repository) ReadPaidOverview(ctx context.Context, window paymentport.Ov
 	if !window.Valid() {
 		return paymentport.PaidOverview{}, paymentport.ErrInvalid
 	}
-	// One statement is intentional. The UoW's normal READ COMMITTED isolation
-	// takes a snapshot per statement, while the amount, count, trend and missing
-	// evidence displayed in one Paid section must describe the same snapshot.
+	// One statement is intentional so amount, count, trend and missing evidence
+	// describe one Payment snapshot. The composed overview reader runs this
+	// statement together with its payer keysets and Identity root reads in one
+	// read-only repeatable-read UoW, keeping the completed canonical count on
+	// that same snapshot.
 	var result paymentport.PaidOverview
 	var grossJSON, trendJSON, missingJSON []byte
 	err = t.QueryRow(ctx, `WITH paid_in_range AS MATERIALIZED (
