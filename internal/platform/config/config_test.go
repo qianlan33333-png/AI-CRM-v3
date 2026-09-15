@@ -579,6 +579,17 @@ func TestComponentStatesScreenshotDirectoryUsesConfigurationBoundary(t *testing.
 	}
 }
 
+func TestAudienceConfirmationScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_AUDIENCE_CONFIRMATION_SCREENSHOT_DIR", "")
+	if value := AudienceConfirmationScreenshotDirectory(); value != "" {
+		t.Fatalf("missing screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_AUDIENCE_CONFIRMATION_SCREENSHOT_DIR", "/tmp/aicrm-audience-confirmation-evidence")
+	if value := AudienceConfirmationScreenshotDirectory(); value != "/tmp/aicrm-audience-confirmation-evidence" {
+		t.Fatalf("screenshot directory=%q", value)
+	}
+}
+
 func TestPublicCommerceScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	t.Setenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR", "")
 	if value := PublicCommerceScreenshotDirectory(); value != "" {
