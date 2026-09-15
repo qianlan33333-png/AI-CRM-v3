@@ -1,4 +1,7 @@
-import { renderQr } from '../../../donor-sources/v2-6bfbe5816bb89913c70adaca87d6a486260e016e/web/src/admin/sections/qr';
+// Use the existing materialized frozen-QR view path. Importing the donor's
+// physical source path in parallel would duplicate the same QR runtime chunk
+// and break the established Survey release closure.
+import { renderQr } from '../../../src/admin/sections/qr';
 import { openDetailDrawer } from './detailDrawer';
 
 export type ShareQrDialogAction = {
