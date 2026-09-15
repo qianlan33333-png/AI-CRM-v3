@@ -219,10 +219,9 @@ function applyApplicationTarget(value: ApplicationTargetRead): void {
 function clearAuthorizedFacts(): void {
   me = undefined;
   agreement = undefined;
-  // The application target is read with the authorized distribution session.
-  // Do not retain a product name from a session that has just lost access.
-  applicationTarget = undefined;
-  applicationTargetState = applicationContext ? "failed" : "none";
+  // This is a strictly public product read, not a customer or distributor
+  // projection. Keep its server-confirmed result through OAuth recovery so an
+  // application link can still identify its product before login.
   products = [];
   productCursor = "";
   productEmptyReason = "";
