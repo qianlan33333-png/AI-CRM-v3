@@ -776,8 +776,12 @@ try {
   // Asset commands are draft-only at the Owner boundary. The selector must
   // make that state explicit, and this scoped bind journey proceeds from a
   // genuine draft plan rather than weakening the service rule.
-  state.plan.status = "draft";
-  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="groups"]').click();
+  state.plan = { ...state.plan, status: "draft" };
+  fullWindow.dispatchEvent(new fullWindow.CustomEvent("aicrm:groupops-detail-refresh", { detail: { planId: 41 } }));
+  await waitFor(
+    () => fullWindow.document.querySelector('[data-action="open-group-picker"]'),
+    "draft-only group picker did not render after the scoped fixture reread a draft plan",
+  );
   const groupOpen = fullWindow.document.querySelector('[data-action="open-group-picker"]');
   groupOpen.focus();
   groupOpen.click();
@@ -993,7 +997,7 @@ try {
   fullWindow.document.getElementById('group-ops-app').append(staleInput);
   deferredSave.click();
   await waitFor(
-    () => fullWindow.document.body.textContent.includes('计划状态、版本或配置不满足要求，请刷新后检查'),
+    () => /保存使用版本 v17；当前版本为 v18。草稿已保留/.test(fullWindow.document.body.textContent),
     () => `stale basic save must surface the authoritative revision conflict; text=${fullWindow.document.body.textContent} recent=${JSON.stringify(calls.slice(-8))}`,
   );
   assert.equal(state.plan.name, planNameBeforeStaleControl, "a stale basic save must not claim a later plan write succeeded");
@@ -1006,6 +1010,383 @@ try {
 } finally {
   fullJourney.window.close();
 }
+
+// An active Webhook plan can carry a valid ten-group execution definition.
+// The detail page must make that lifecycle fact visible, never route either
+// former Save action through PUT, and use the displayed revision for an
+// explicit pause followed by a complete owner readback.
+const activeLifecycleErrors = [];
+const activeLifecycleConsole = new VirtualConsole();
+activeLifecycleConsole.on("jsdomError", (error) => activeLifecycleErrors.push(String(error?.message || error)));
+const activeLifecycleJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="12"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/12",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  virtualConsole: activeLifecycleConsole,
+});
+const activeLifecycleWindow = activeLifecycleJourney.window;
+activeLifecycleWindow.Headers = Headers;
+activeLifecycleWindow.Response = Response;
+Object.defineProperty(activeLifecycleWindow, "crypto", { configurable: true, value: crypto });
+activeLifecycleWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
+activeLifecycleWindow.confirm = () => true;
+const activeLifecycleCalls = [];
+const activeLifecyclePlan = { plan_id: 12, name: "Webhook 十群计划", revision: 12, status: "active", plan_type: "webhook" };
+const activeLifecycleAssets = Array.from({ length: 10 }, (_, index) => ({ asset_reference: `group-${index + 1}` }));
+const activeLifecycleDetail = () => ({ plan: clone(activeLifecyclePlan), members: [{ staff_id: 7 }], group_assets: clone(activeLifecycleAssets), nodes: [] });
+activeLifecycleWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), activeLifecycleWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  const body = init.body ? JSON.parse(String(init.body)) : null;
+  activeLifecycleCalls.push({ path: url.pathname + url.search, method, body });
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "owner", display_name: "运营一号" }] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/12" && method === "GET") return response(activeLifecycleDetail());
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/12/groups" && method === "GET") return response({ items: clone(activeLifecycleAssets), summary: { bound_group_count: 10 } });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/12/webhook-descriptor" && method === "GET") return response({ configured: true, reference: "webhook-twelve", path: "/api/automation/group-ops/webhooks/webhook-twelve", signature_algorithm: "HMAC-SHA256" });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/12/disable" && method === "POST") {
+    assert.equal(body.expected_revision, 12, "detail pause must use the revision the user saw");
+    activeLifecyclePlan.status = "paused";
+    activeLifecyclePlan.revision = 13;
+    return response({ plan: clone(activeLifecyclePlan) });
+  }
+  throw new Error(`unexpected active lifecycle request ${method} ${url.pathname}`);
+};
+try {
+  activeLifecycleWindow.eval(pickerSource);
+  activeLifecycleWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => activeLifecycleWindow.document.querySelector('[data-action="pause-detail-plan"]'), "active detail did not render its explicit pause action");
+  assert.match(activeLifecycleWindow.document.body.textContent, /已启用 · 当前版本 v12/, "active lifecycle and rendered revision must be visible");
+  assert.equal(activeLifecycleWindow.document.querySelector('[data-action="save-plan"]'), null, "active plan must not render a misleading basic save");
+  assert.equal(activeLifecycleWindow.document.querySelector('[data-action="save-active-detail-panel"]'), null, "active plan must not render the second misleading save");
+  assert.equal(activeLifecycleWindow.document.querySelector('[name="plan_name"]')?.disabled, true, "active plan name must be read-only");
+  assert.equal(activeLifecycleWindow.document.querySelector('[data-action="open-group-picker"]'), null, "active bound groups must not expose a write action");
+  assert.equal(activeLifecycleWindow.document.querySelector('[data-action="save-webhook"]'), null, "active Webhook configuration must not expose a write action");
+  assert.equal(activeLifecycleWindow.document.querySelector('[data-action="pause-detail-plan"]')?.__dcBound, true, "explicit lifecycle action must declare shared-feedback ownership");
+  assert.equal(activeLifecycleWindow.document.querySelector('[data-action="pause-detail-plan"]')?.dataset.capabilityState, "real", "real lifecycle action must not be marked backend-blocked");
+  assert.equal(activeLifecycleCalls.some((call) => call.method === "PUT" || /\/(groups|nodes|webhook-descriptor)$/.test(call.path) && call.method !== "GET"), false, "active detail hydration must issue zero configuration writes");
+  activeLifecycleWindow.document.querySelector('[data-action="pause-detail-plan"]').click();
+  await waitFor(() => activeLifecyclePlan.status === "paused" && activeLifecycleWindow.document.querySelector('[data-action="save-plan"]'), "confirmed pause did not complete the authoritative detail readback");
+  assert.equal(activeLifecycleCalls.filter((call) => call.path.endsWith("/disable") && call.method === "POST").length, 1, "one explicit click sends one pause command");
+  assert.equal(activeLifecycleCalls.filter((call) => call.method === "PUT").length, 0, "pause must not be preceded by a basic configuration PUT");
+  assert.equal(activeLifecycleWindow.document.querySelector('[name="plan_name"]')?.disabled, false, "paused plan may edit its basic configuration after readback");
+  assert.equal(activeLifecycleWindow.document.querySelector('[data-action="open-group-picker"]'), null, "paused plan must not expose draft-only group writes");
+  assert.match(activeLifecycleWindow.document.body.textContent, /绑定群和标准编排只可在草稿计划中调整/, "paused plan must explain its remaining draft-only boundary");
+  if (activeLifecycleErrors.length) throw new Error(`active lifecycle DOM errors: ${JSON.stringify(activeLifecycleErrors)}`);
+  console.log("groupops-active-plan-lifecycle-dom: PASS");
+} finally {
+  activeLifecycleJourney.window.close();
+}
+
+// A pending detail save freezes every plan mutation surface, including a
+// previously rendered control whose listener is still reachable after the
+// loading repaint. Directory sync is also held during that interval so an
+// owner draft cannot race the same plan readback; outside the lock it remains
+// the existing Provider-read/local-directory maintenance path.
+async function assertPendingPlanMutationLock(planID, planType) {
+  const errors = [];
+  const console = new VirtualConsole();
+  console.on("jsdomError", (error) => errors.push(String(error?.message || error)));
+  const journey = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="${planID}"></main></body></html>`, {
+    url: `https://groupops.test/admin/automation-conversion/group-ops/plans/${planID}`,
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+    virtualConsole: console,
+  });
+  const view = journey.window;
+  view.Headers = Headers;
+  view.Response = Response;
+  Object.defineProperty(view, "crypto", { configurable: true, value: crypto });
+  view.document.cookie = "aicrm_admin_csrf=test-csrf";
+  const calls = [];
+  const plan = { plan_id: planID, name: `${planType} 锁定计划`, revision: 1, status: "draft", plan_type: planType };
+  let releaseWrite;
+  view.fetch = async (input, init = {}) => {
+    const url = new URL(String(input), view.location.href);
+    const method = String(init.method || "GET").toUpperCase();
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ path: url.pathname, method, body });
+    if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "owner", display_name: "运营一号" }] });
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}` && method === "GET") return response({ plan: clone(plan), members: [{ staff_id: 7 }], group_assets: [{ asset_reference: "group-a" }], nodes: planType === "standard" ? [{ node_id: 1, day_index: 1, scheduled_time: "09:00", action_title: "既有动作", status: "active" }] : [] });
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}/groups` && method === "GET") return response({ items: [{ asset_reference: "group-a" }], summary: { bound_group_count: 1 } });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [{ chat_reference: "group-b", owner_userid: "7", group_name: "可选群" }], total: 1, limit: 200, offset: 0, has_more: false });
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}/webhook-descriptor` && method === "GET") return response({ configured: false });
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}` && method === "PUT") {
+      assert.equal(body.expected_revision, 1, "pending save starts from the displayed revision");
+      return new Promise((resolve) => {
+        releaseWrite = () => {
+          plan.revision = 2;
+          plan.name = body.name;
+          resolve(response({ plan: clone(plan) }));
+        };
+      });
+    }
+    if (method !== "GET") return response({ plan: clone(plan) });
+    throw new Error(`unexpected pending-lock request ${method} ${url.pathname}`);
+  };
+  try {
+    view.eval(pickerSource);
+    view.eval(bundle.outputFiles[0].text);
+    await waitFor(() => view.document.querySelector('[data-action="save-plan"]'), `${planType} pending-lock fixture did not render`);
+    const staleSave = view.document.querySelector('[data-action="save-plan"]');
+    const staleRefresh = view.document.querySelector('[data-action="refresh-owner-groups"]');
+    const staleOpenGroup = view.document.querySelector('[data-action="open-group-picker"]');
+    const staleRemoveGroup = view.document.querySelector('[data-action="remove-group"]');
+    let staleOpenNode = null;
+    let staleSaveNode = null;
+    let staleWebhook = null;
+    if (planType === "standard") {
+      staleOpenNode = view.document.querySelector('[data-action="open-node-modal"]');
+      staleOpenNode.click();
+      await waitFor(() => view.document.querySelector('[data-action="save-node"]'), "standard node editor did not render before the pending save");
+      staleSaveNode = view.document.querySelector('[data-action="save-node"]');
+    } else {
+      staleWebhook = view.document.querySelector('[data-action="save-webhook"]');
+    }
+    staleSave.click();
+    await waitFor(() => releaseWrite, `${planType} pending save did not reach the delayed PUT`);
+    staleRefresh.click();
+    staleOpenGroup.click();
+    staleRemoveGroup.click();
+    staleOpenNode?.click();
+    staleSaveNode?.click();
+    staleWebhook?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const extraPlanWrites = calls.filter((call) => call.method !== "GET" && call.path !== `/api/admin/automation-conversion/group-ops/plans/${planID}`);
+    assert.deepEqual(extraPlanWrites, [], `${planType} pending save must block stale group/node/Webhook mutations and directory sync`);
+    assert.match(view.document.body.textContent, /正在保存计划|保存中/, `${planType} pending save must remain visibly locked`);
+    releaseWrite();
+    await waitFor(() => view.document.body.textContent.includes("已保存"), `${planType} pending save did not complete its authority readback`);
+    if (errors.length) throw new Error(`${planType} pending mutation DOM errors: ${JSON.stringify(errors)}`);
+  } finally {
+    journey.window.close();
+  }
+}
+
+await assertPendingPlanMutationLock(73, "standard");
+await assertPendingPlanMutationLock(74, "webhook");
+console.log("groupops-pending-plan-mutation-lock-dom: PASS");
+
+// A stale activation request must retain its explicit version conflict. A
+// newer server revision from another editor is not evidence that this browser
+// saved its form, so the UI must not claim a saved-before-enable result.
+const staleActivationJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="71"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/71",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const staleActivationWindow = staleActivationJourney.window;
+staleActivationWindow.Headers = Headers;
+staleActivationWindow.Response = Response;
+Object.defineProperty(staleActivationWindow, "crypto", { configurable: true, value: crypto });
+staleActivationWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
+staleActivationWindow.confirm = () => true;
+let staleActivationRead = 0;
+const staleActivationWrites = [];
+const staleActivationCalls = [];
+const staleActivationPlan = { plan_id: 71, name: "被其他人编辑", revision: 10, status: "paused", plan_type: "webhook" };
+staleActivationWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), staleActivationWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  const body = init.body ? JSON.parse(String(init.body)) : null;
+  staleActivationCalls.push({ path: url.pathname, method, body });
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "owner", display_name: "运营一号" }] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/71" && method === "GET") {
+    staleActivationRead += 1;
+    if (staleActivationRead === 2) {
+      staleActivationPlan.revision = 11;
+      staleActivationPlan.status = "active";
+    }
+    return response({ plan: clone(staleActivationPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/71/groups" && method === "GET") return response({ items: [], summary: { bound_group_count: 0 } });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/71/webhook-descriptor" && method === "GET") return response({ configured: true, reference: "webhook-stale", path: "/api/automation/group-ops/webhooks/webhook-stale" });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/71" && method === "PUT") {
+    staleActivationWrites.push(body);
+    return response({ error: { code: "operations_conflict" } }, 409);
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/71/disable" && method === "POST") {
+    assert.equal(body.expected_revision, 11, "pause after a conflict must use the authority-read revision");
+    staleActivationPlan.revision = 12;
+    staleActivationPlan.status = "paused";
+    return response({ plan: clone(staleActivationPlan) });
+  }
+  throw new Error(`unexpected stale activation request ${method} ${url.pathname}`);
+};
+try {
+  staleActivationWindow.eval(pickerSource);
+  staleActivationWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => staleActivationWindow.document.querySelector('[data-action="save-plan"]'), "paused activation fixture did not render basic save");
+  assert.equal(staleActivationWindow.document.querySelector('option[value="draft"]'), null, "paused plans must not expose a nonexistent paused-to-draft transition");
+  staleActivationWindow.document.querySelector('[name="plan_name"]').value = "冲突后保留的草稿";
+  staleActivationWindow.document.querySelector('[name="status"]').value = "active";
+  staleActivationWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => staleActivationWindow.document.body.textContent.includes("当前计划已启用（版本 v11）"), "stale activation must show the current active revision without claiming persistence");
+  assert.equal(staleActivationWrites.length, 1, "stale activation sends one PUT");
+  assert.equal(staleActivationWrites[0].expected_revision, 10, "Host must not replace displayed revision with its later read");
+  assert.equal(staleActivationWindow.document.body.textContent.includes("基础配置已保存，但暂不能启用"), false, "another editor's newer revision must not masquerade as this save");
+  staleActivationWindow.document.querySelector('[data-action="pause-detail-plan"]').click();
+  await waitFor(
+    () => staleActivationPlan.status === "paused" && staleActivationWindow.document.body.textContent.includes("已停用，当前版本 v12"),
+    () => `pause after a conflict did not complete its authority readback: status=${staleActivationPlan.status} revision=${staleActivationPlan.revision} calls=${JSON.stringify(staleActivationCalls)} text=${staleActivationWindow.document.body.textContent}`,
+  );
+  assert.equal(staleActivationWindow.document.querySelector('[name="plan_name"]')?.value, "冲突后保留的草稿", "a confirmed pause must preserve the stale-save draft for a manual follow-up");
+  assert.match(staleActivationWindow.document.body.textContent, /已停用，当前版本 v12。草稿已保留/, "pause readback must explain the retained draft instead of silently discarding it");
+  console.log("groupops-stale-activation-cas-dom: PASS");
+} finally {
+  staleActivationJourney.window.close();
+}
+
+// A Host-marked partial success is the only case where the UI may say the
+// basic fields saved before enable failed. The existing read-only preview then
+// turns concrete owner validation codes into repairable labels without any
+// second write or lifecycle retry.
+const activationValidationJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="72"></main></body></html>`, {
+  url: "https://groupops.test/admin/automation-conversion/group-ops/plans/72",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+const activationValidationWindow = activationValidationJourney.window;
+activationValidationWindow.Headers = Headers;
+activationValidationWindow.Response = Response;
+Object.defineProperty(activationValidationWindow, "crypto", { configurable: true, value: crypto });
+activationValidationWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
+const activationValidationCalls = [];
+const activationValidationPlan = { plan_id: 72, name: "待补齐配置", revision: 20, status: "paused", plan_type: "webhook" };
+activationValidationWindow.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), activationValidationWindow.location.href);
+  const method = String(init.method || "GET").toUpperCase();
+  const body = init.body ? JSON.parse(String(init.body)) : null;
+  activationValidationCalls.push({ path: url.pathname, method, body });
+  if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "owner", display_name: "运营一号" }] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/72" && method === "GET") return response({ plan: clone(activationValidationPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/72/groups" && method === "GET") return response({ items: [], summary: { bound_group_count: 0 } });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/72/webhook-descriptor" && method === "GET") return response({ configured: false });
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/72" && method === "PUT") {
+    assert.equal(body.expected_revision, 20);
+    activationValidationPlan.revision = 21;
+    activationValidationPlan.name = body.name;
+    return response({ plan: clone(activationValidationPlan) });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/72/enable" && method === "POST") return response({ error: { code: "operations_conflict" } }, 409);
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/72/content/preview" && method === "POST") return response({ valid: false, issue_codes: ["group_asset_required", "webhook_descriptor_required"] });
+  throw new Error(`unexpected activation validation request ${method} ${url.pathname}`);
+};
+try {
+  activationValidationWindow.eval(pickerSource);
+  activationValidationWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(() => activationValidationWindow.document.querySelector('[data-action="save-plan"]'), "activation validation fixture did not render");
+  activationValidationWindow.document.querySelector('[name="status"]').value = "active";
+  activationValidationWindow.document.querySelector('[data-action="save-plan"]').click();
+  await waitFor(() => activationValidationWindow.document.body.textContent.includes("至少绑定一个群、生成 Webhook 地址"), "activation failure must expose the existing concrete preview checks");
+  assert.match(activationValidationWindow.document.body.textContent, /基础配置已保存，但暂不能启用/, "partial result must name its saved-before-enable boundary");
+  assert.equal(activationValidationCalls.filter((call) => call.method === "PUT").length, 1, "partial activation performs one basic save");
+  assert.equal(activationValidationCalls.filter((call) => call.path.endsWith("/enable") && call.method === "POST").length, 1, "partial activation performs one enable attempt");
+  assert.equal(activationValidationCalls.filter((call) => call.path.endsWith("/content/preview") && call.method === "POST").length, 1, "repair labels use one existing read-only preview");
+  console.log("groupops-activation-validation-dom: PASS");
+} finally {
+  activationValidationJourney.window.close();
+}
+
+// Once the Host has received a valid PUT receipt, an enable 5xx or transport
+// error is not evidence that the basic fields were rejected. Both cases must
+// re-read authority, never preview guessed validation or repeat either write.
+async function assertPartialEnableFailure(kind, failInitialReadback) {
+  const planID = kind === "network" ? 75 : 74;
+  const journey = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="detail" data-plan-id="${planID}"></main></body></html>`, {
+    url: `https://groupops.test/admin/automation-conversion/group-ops/plans/${planID}`,
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  const view = journey.window;
+  view.Headers = Headers;
+  view.Response = Response;
+  Object.defineProperty(view, "crypto", { configurable: true, value: crypto });
+  view.document.cookie = "aicrm_admin_csrf=test-csrf";
+  const calls = [];
+  let planReads = 0;
+  let releaseRecoveryReadback;
+  const holdRecoveryReadback = kind === "network";
+  const plan = { plan_id: planID, name: `${kind} 启用结果`, revision: 30, status: "paused", plan_type: "webhook" };
+  view.fetch = async (input, init = {}) => {
+    const url = new URL(String(input), view.location.href);
+    const method = String(init.method || "GET").toUpperCase();
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ path: url.pathname, method, body });
+    if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [{ staff_id: 7, sender_userid: "owner", display_name: "运营一号" }] });
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}` && method === "GET") {
+      planReads += 1;
+      // The Host first reads current owner metadata before its PUT. The third
+      // detail request is the Standard controller's authoritative recovery
+      // read after the Host has marked the accepted PUT/failed enable pair.
+      if (failInitialReadback && planReads === 3) throw new Error("authority read unavailable");
+      if (holdRecoveryReadback && planReads === 3) {
+        return new Promise((resolve) => { releaseRecoveryReadback = resolve; });
+      }
+      return response({ plan: clone(plan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
+    }
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}/groups` && method === "GET") return response({ items: [], summary: { bound_group_count: 0 } });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") return response({ items: [], total: 0, limit: 200, offset: 0, has_more: false });
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}/webhook-descriptor` && method === "GET") return response({ configured: true, reference: `webhook-${planID}`, path: `/api/automation/group-ops/webhooks/webhook-${planID}` });
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}` && method === "PUT") {
+      assert.equal(body.expected_revision, 30, `${kind} partial result must retain the displayed revision for its PUT`);
+      plan.revision = 31;
+      plan.name = body.name;
+      return response({ plan: clone(plan) });
+    }
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}/enable` && method === "POST") {
+      assert.equal(body.expected_revision, 31, `${kind} enable follows the verified PUT receipt`);
+      if (kind === "network") throw new Error("enable connection reset");
+      return response({ error: { code: "service_unavailable" } }, 500);
+    }
+    if (url.pathname === `/api/admin/automation-conversion/group-ops/plans/${planID}/content/preview` && method === "POST") return response({ valid: false, issue_codes: ["group_asset_required"] });
+    throw new Error(`unexpected ${kind} partial-result request ${method} ${url.pathname}`);
+  };
+  try {
+    view.eval(pickerSource);
+    view.eval(bundle.outputFiles[0].text);
+    await waitFor(() => view.document.querySelector('[data-action="save-plan"]'), `${kind} partial-result fixture did not render`);
+    view.document.querySelector('[name="status"]').value = "active";
+    view.document.querySelector('[data-action="save-plan"]').click();
+    if (holdRecoveryReadback) {
+      await waitFor(
+        () => typeof releaseRecoveryReadback === "function" && view.document.querySelector('[data-action="reload-plan-detail"]'),
+        "partial-result recovery did not install its GET-only lock before the authority read",
+      );
+      const recoverySave = view.document.querySelector('[data-action="save-plan"]');
+      const recoverySync = view.document.querySelector('[data-action="refresh-owner-groups"]');
+      assert.equal(recoverySave?.disabled, true, "a recovery GET must disable the basic save control");
+      assert.equal(recoverySync?.disabled, true, "a recovery GET must disable directory sync while the owner snapshot is stale");
+      recoverySave?.dispatchEvent(new view.MouseEvent("click", { bubbles: true }));
+      recoverySync?.dispatchEvent(new view.MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(calls.filter((call) => call.method === "PUT").length, 1, "a delayed recovery read must block a second basic mutation");
+      assert.equal(calls.filter((call) => call.path.endsWith("/operation-members/sync") && call.method === "POST").length, 0, "a delayed recovery read must block directory sync without changing the plan");
+      releaseRecoveryReadback(response({ plan: clone(plan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] }));
+    }
+    if (failInitialReadback) {
+      await waitFor(() => view.document.querySelector('[data-action="reload-plan-detail"]'), `${kind} partial result must lock after its authority readback fails`);
+      assert.match(view.document.body.textContent, /基础配置已保存，但启用结果尚未确认/, `${kind} readback failure must not call the PUT rejected`);
+      view.document.querySelector('[data-action="reload-plan-detail"]').click();
+    }
+    await waitFor(
+      () => /基础配置已保存；启用结果(?:尚)?未确认/.test(view.document.body.textContent),
+      () => `${kind} partial result did not explain its unresolved enable state: calls=${JSON.stringify(calls)} text=${view.document.body.textContent}`,
+    );
+    assert.equal(calls.filter((call) => call.method === "PUT").length, 1, `${kind} partial result never repeats its accepted PUT`);
+    assert.equal(calls.filter((call) => call.path.endsWith("/enable") && call.method === "POST").length, 1, `${kind} partial result never repeats enable automatically`);
+    assert.equal(calls.filter((call) => call.path.endsWith("/content/preview") && call.method === "POST").length, 0, `${kind} is not a proven configuration conflict and must not guess preview labels`);
+    assert.equal(view.document.body.textContent.includes("基础配置未保存"), false, `${kind} partial result must not claim the accepted PUT was rejected`);
+  } finally {
+    journey.window.close();
+  }
+}
+
+await assertPartialEnableFailure("500", true);
+await assertPartialEnableFailure("network", false);
+console.log("groupops-partial-enable-recovery-dom: PASS");
 
 // The detail renderer owns the dependent group directory. A second owner
 // choice (or an authoritative reread before navigation) must win over an old

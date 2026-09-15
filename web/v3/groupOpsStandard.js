@@ -42,7 +42,9 @@
     bindingGroups: false,
     changingPlanId: 0,
     savingPlan: false,
+    pausingPlan: false,
     planReadbackPending: 0,
+    planReadbackMode: "",
     planDraft: null,
     showNodeModal: false,
     editingNodeId: 0,
@@ -73,6 +75,7 @@
     apiPlan: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}`,
     apiPlanEnable: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/enable`,
     apiPlanDisable: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/disable`,
+    apiPlanContentPreview: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/content/preview`,
     apiPlanGroups: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/groups`,
     apiPlanGroup: (id, chatId) =>
       `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/groups/${encodeURIComponent(chatId)}`,
@@ -218,6 +221,65 @@
 
   function planIsArchived(plan) {
     return Boolean(plan && plan.status === "archived");
+  }
+
+  function planIsActive(plan) {
+    return Boolean(plan && plan.status === "active");
+  }
+
+  function planIsPaused(plan) {
+    // The V3 Host projects the owner status "paused" as the frozen form's
+    // historical "disabled" value. Accept either shape so direct fixtures
+    // cannot make a paused plan look editable in a different way.
+    return Boolean(plan && (plan.status === "disabled" || plan.status === "paused"));
+  }
+
+  function planAllowsBasicConfiguration(plan) {
+    return Boolean(plan && (plan.status === "draft" || planIsPaused(plan)));
+  }
+
+  function planAllowsDraftConfiguration(plan) {
+    return Boolean(plan && plan.status === "draft");
+  }
+
+  function planReadbackPending() {
+    return Boolean(state.planReadbackPending);
+  }
+
+  function planMutationLocked() {
+    return Boolean(state.savingPlan || state.pausingPlan || planReadbackPending());
+  }
+
+  function planMutationLockMessage() {
+    if (planReadbackPending()) return "当前计划状态尚未读取完成，请先重新读取最新配置。";
+    return state.pausingPlan ? "正在停用计划，请稍候。" : "正在保存计划，请稍候。";
+  }
+
+  function rejectPlanMutationWhileLocked() {
+    if (!planMutationLocked()) return false;
+    state.notice = planMutationLockMessage();
+    state.noticeIsError = true;
+    renderDetail();
+    return true;
+  }
+
+  function activePlanLockMessage() {
+    const revision = numericPositiveSafeInteger(state.plan && state.plan.revision);
+    return `计划已启用${revision ? `（当前版本 v${revision}）` : ""}，请先单独停用计划后再修改配置。`;
+  }
+
+  function draftOnlyLockMessage() {
+    return "绑定群和标准编排只可在草稿计划中调整。停用后，基础配置和 Webhook 可编辑；绑定群和标准编排保持只读。";
+  }
+
+  function setPlanReadbackPending(planID, mode) {
+    state.planReadbackPending = planID;
+    state.planReadbackMode = mode;
+  }
+
+  function clearPlanReadbackPending() {
+    state.planReadbackPending = 0;
+    state.planReadbackMode = "";
   }
 
   function typeText(type) {
@@ -429,11 +491,15 @@
   }
 
   function renderError(message) {
-    if (state.savingPlan || state.planReadbackPending) {
-      state.notice = state.planReadbackPending
-        ? "已保存，但读取最新配置失败。请重新读取后再继续保存。"
-        : "正在保存基础配置，请稍候";
-      state.noticeIsError = Boolean(state.planReadbackPending);
+    if (state.savingPlan || state.pausingPlan || planReadbackPending()) {
+      state.notice = planReadbackPending()
+        ? state.planReadbackMode === "pause"
+          ? "停用结果尚未完成读取。请重新读取后再继续操作。"
+          : state.planReadbackMode === "conflict"
+            ? "保存未完成，当前版本读取失败。请重新读取后再继续保存。"
+            : "已保存，但读取最新配置失败。请重新读取后再继续保存。"
+        : state.pausingPlan ? "正在停用计划，请稍候" : "正在保存基础配置，请稍候";
+      state.noticeIsError = planReadbackPending();
       renderDetail();
       return;
     }
@@ -458,6 +524,12 @@
 
   function bindSharedEvents() {
     app.querySelectorAll("[data-action]").forEach((element) => {
+      // These V3-owned controls have a real listener before frozen shared
+      // feedback sees a capture-phase click. No donor feedback behavior is
+      // changed; a disabled state remains a truthful local lifecycle lock.
+      element.__dcBound = true;
+      element.dataset.capabilityState = "real";
+      element.removeAttribute("aria-description");
       element.addEventListener("click", onAction);
     });
     app.querySelectorAll("select[data-filter]").forEach((element) => {
@@ -685,6 +757,12 @@
 
   function onAction(event) {
     const action = event.currentTarget.dataset.action;
+    const planMutationActions = new Set([
+      "save-plan", "save-active-detail-panel", "pause-detail-plan", "pick-plan-owner", "refresh-owner-groups",
+      "bind-group", "open-group-picker", "confirm-group-picker", "remove-group",
+      "open-node-modal", "edit-node", "configure-node-content", "save-node", "delete-node", "save-webhook",
+    ]);
+    if (planMutationActions.has(action) && rejectPlanMutationWhileLocked()) return;
     const archivedWriteActions = new Set([
       "save-plan", "save-active-detail-panel", "refresh-owner-groups", "pick-plan-owner",
       "bind-group", "open-group-picker", "confirm-group-picker", "remove-group",
@@ -696,6 +774,29 @@
       state.notice = "计划已归档，不能修改或重新启用";
       return renderDetail();
     }
+    const activeWriteActions = new Set([
+      "save-plan", "save-active-detail-panel", "refresh-owner-groups", "pick-plan-owner",
+      "bind-group", "open-group-picker", "confirm-group-picker", "remove-group",
+      "open-node-modal", "edit-node", "configure-node-content", "save-node", "delete-node", "save-webhook",
+    ]);
+    if (planIsActive(state.plan) && activeWriteActions.has(action)) {
+      state.showGroupPicker = false;
+      state.showNodeModal = false;
+      state.notice = activePlanLockMessage();
+      state.noticeIsError = true;
+      return renderDetail();
+    }
+    const draftOnlyActions = new Set([
+      "bind-group", "open-group-picker", "confirm-group-picker", "remove-group",
+      "open-node-modal", "edit-node", "configure-node-content", "save-node", "delete-node",
+    ]);
+    if (!planAllowsDraftConfiguration(state.plan) && draftOnlyActions.has(action)) {
+      state.showGroupPicker = false;
+      state.showNodeModal = false;
+      state.notice = draftOnlyLockMessage();
+      state.noticeIsError = true;
+      return renderDetail();
+    }
     if (action === "create-plan") return createPlan();
     if (action === "retry-create-plan") return retryCreatePlan();
     if (action === "retry-create-configuration") return retryCreateConfiguration();
@@ -704,6 +805,7 @@
     if (action === "save-plan") return savePlan();
     if (action === "save-active-detail-panel") return saveActiveDetailPanel();
     if (action === "reload-plan-detail") return reloadSavedPlanDetail();
+    if (action === "pause-detail-plan") return pauseActivePlan();
     if (action === "switch-detail-panel") {
       state.activeDetailPanel = event.currentTarget.dataset.panel || "basic";
       return renderDetail();
@@ -740,7 +842,9 @@
       },
       });
     }
-    if (action === "pick-plan-owner") return openMemberPicker({
+    if (action === "pick-plan-owner") {
+      if (planMutationLocked()) return undefined;
+      return openMemberPicker({
       fieldName: "owner_userid",
       title: "选择负责人",
       value: currentFormValue("owner_userid") || (state.plan || {}).owner_userid,
@@ -751,7 +855,8 @@
         }
         void loadOwnerGroups(memberStaffId(member));
       },
-    });
+      });
+    }
     if (action === "pick-group-filter-owner") return openMemberPicker({
       fieldName: "owner_userid",
       title: "选择群主/管理员",
@@ -1112,6 +1217,7 @@
   function planDraft() {
     if (!state.plan) return null;
     return {
+      expected_revision: numericPositiveSafeInteger(state.plan.revision) || 0,
       plan_name: currentFormValue("plan_name").trim(),
       plan_code: state.plan.plan_code,
       plan_type: currentFormValue("plan_type") || state.plan.plan_type,
@@ -1121,12 +1227,24 @@
   }
 
   async function savePlan() {
-    if (!state.plan || !state.plan.id || state.savingPlan || state.planReadbackPending) return;
+    if (!state.plan || !state.plan.id || planMutationLocked()) return;
+    if (!planAllowsBasicConfiguration(state.plan)) {
+      state.notice = activePlanLockMessage();
+      state.noticeIsError = true;
+      renderDetail();
+      return;
+    }
     const planID = state.plan.id;
     const draft = planDraft();
     state.planDraft = draft;
     if (!draft || !draft.plan_name) {
       state.notice = "请输入计划名称后再保存";
+      state.noticeIsError = true;
+      renderDetail();
+      return;
+    }
+    if (!draft.expected_revision) {
+      state.notice = "当前计划版本无效，请重新读取后再保存";
       state.noticeIsError = true;
       renderDetail();
       return;
@@ -1139,8 +1257,12 @@
     try {
       await requestJson(routes.apiPlan(planID), { method: "PUT", body: draft });
     } catch (error) {
+      if (error && (error.status === 409 || error.groupopsSavedBeforeLifecycle)) {
+        await recoverConfigurationConflict(planID, draft, generation, error);
+        return;
+      }
       state.savingPlan = false;
-      state.notice = requestErrorMessage(error, "保存失败，请核对后重试");
+      state.notice = `基础配置未保存：${requestErrorMessage(error, "请核对后重试")}。草稿已保留。`;
       state.noticeIsError = true;
       renderDetail();
       return;
@@ -1156,8 +1278,87 @@
     } catch (error) {
       if (generation !== detailReadGeneration || Number(state.plan?.id) !== Number(planID)) return;
       state.savingPlan = false;
-      state.planReadbackPending = planID;
+      setPlanReadbackPending(planID, "save");
       state.notice = `已保存，但读取最新配置失败：${requestErrorMessage(error, "请重新读取最新配置")}。请重新读取后再继续保存。`;
+      state.noticeIsError = true;
+      renderDetail();
+    }
+  }
+
+  function contentValidationLabel(code) {
+    const labels = {
+      group_asset_required: "至少绑定一个群",
+      member_required: "设置一位运营成员",
+      webhook_descriptor_required: "生成 Webhook 地址",
+      node_required: "至少配置一条标准编排动作",
+      legacy_material_reference_unsupported: "更新不支持的历史素材",
+      invalid_node: "修正无效的标准编排动作",
+    };
+    return labels[code] || "补齐计划内容";
+  }
+
+  async function activationValidationMessage(planID) {
+    try {
+      const preview = await requestJson(routes.apiPlanContentPreview(planID), { method: "POST" });
+      const codes = Array.isArray(preview && preview.issue_codes) ? preview.issue_codes : [];
+      const labels = [...new Set(codes.map((code) => contentValidationLabel(String(code || ""))))];
+      if (labels.length) return `基础配置已保存，但暂不能启用：${labels.join("、")}。`;
+    } catch (error) {
+      // The failed activation is still made explicit below. Preview is a
+      // read-only aid and never gates the preserved draft or causes a retry.
+    }
+    return "基础配置已保存，但暂不能启用。请检查绑定群、运营成员以及 Webhook 或标准编排。";
+  }
+
+  async function recoverConfigurationConflict(planID, draft, generation, error) {
+    const acceptedUpdate = Boolean(
+      error
+      && error.groupopsSavedBeforeLifecycle
+      && Number(error.groupopsSavedBeforeLifecycle.plan_id) === Number(planID),
+    );
+    // This recovery follows a completed or conflicted write.  Drop the visual
+    // saving state only after installing the GET-only recovery lock: otherwise
+    // a render between these two statements leaves a moment where another
+    // mutation can reuse the stale form revision.
+    setPlanReadbackPending(planID, acceptedUpdate ? "lifecycle" : "conflict");
+    state.savingPlan = false;
+    state.notice = acceptedUpdate ? "基础配置已保存，正在读取当前计划状态" : "保存未完成，正在读取当前计划版本";
+    state.noticeIsError = true;
+    renderDetail();
+    try {
+      const detail = await readDetailPage(planID);
+      if (!applyDetailPage(detail, planID, generation)) return;
+      clearPlanReadbackPending();
+      const currentRevision = numericPositiveSafeInteger(state.plan && state.plan.revision);
+      state.planDraft = draft;
+      if (acceptedUpdate) {
+        const acceptedRevision = numericPositiveSafeInteger(error.groupopsSavedBeforeLifecycle.revision);
+        if (planIsActive(state.plan)) {
+          state.notice = `基础配置已保存，计划当前已启用（版本 v${currentRevision || "—"}）。草稿已保留供核对。`;
+          state.noticeIsError = false;
+        } else if (draft.status === "active" && acceptedRevision && acceptedRevision === currentRevision && error.status === 409) {
+          state.notice = await activationValidationMessage(planID);
+          state.noticeIsError = true;
+        } else if (draft.status === "active" && acceptedRevision && acceptedRevision === currentRevision) {
+          state.notice = `基础配置已保存；启用结果尚未确认，当前计划为${statusText(state.plan.status)}（版本 v${currentRevision}）。请核对后手动启用。草稿已保留。`;
+          state.noticeIsError = true;
+        } else {
+          state.notice = `基础配置已保存；当前版本为 v${currentRevision || "—"}。计划状态已变化，请核对后手动操作。草稿已保留。`;
+          state.noticeIsError = true;
+        }
+      } else if (planIsActive(state.plan)) {
+        state.notice = `当前计划已启用（版本 v${currentRevision || "—"}）。草稿已保留，请先停用后再核对并保存。`;
+      } else {
+        state.notice = `保存使用版本 v${draft.expected_revision}；当前版本为 v${currentRevision || "—"}。草稿已保留，请核对后手动保存。`;
+      }
+      if (!acceptedUpdate) state.noticeIsError = true;
+      renderDetail();
+    } catch (error) {
+      if (generation !== detailReadGeneration || Number(state.plan?.id) !== Number(planID)) return;
+      state.planDraft = draft;
+      state.notice = acceptedUpdate
+        ? `基础配置已保存，但启用结果尚未确认：${requestErrorMessage(error, "请重新读取当前计划")}。草稿已保留；系统不会自动重试启用。`
+        : `保存未完成，当前版本读取失败：${requestErrorMessage(error, "请重新读取最新配置")}。草稿已保留；系统不会自动重试写入。`;
       state.noticeIsError = true;
       renderDetail();
     }
@@ -1165,7 +1366,8 @@
 
   async function reloadSavedPlanDetail() {
     const planID = state.planReadbackPending;
-    if (!planID || state.savingPlan) return;
+    const mode = state.planReadbackMode;
+    if (!planID || state.savingPlan || state.pausingPlan) return;
     state.savingPlan = true;
     const generation = ++detailReadGeneration;
     state.notice = "正在读取最新配置";
@@ -1175,21 +1377,104 @@
       const detail = await readDetailPage(planID);
       if (!applyDetailPage(detail, planID, generation)) return;
       state.savingPlan = false;
-      state.planReadbackPending = 0;
-      state.planDraft = null;
-      state.notice = "已读取最新配置";
+      clearPlanReadbackPending();
+      if (mode === "save") state.planDraft = null;
+      state.notice = mode === "pause"
+        ? planIsPaused(state.plan)
+          ? state.planDraft
+            ? `已停用，当前版本 v${state.plan.revision}。草稿已保留，请核对后手动保存。`
+            : `已停用，当前版本 v${state.plan.revision}。已读取最新配置。`
+          : `已读取当前计划（版本 v${state.plan.revision}）；计划仍为已启用，请核对后再次点击停用。`
+        : mode === "conflict"
+          ? `已读取当前版本 v${state.plan.revision}；草稿已保留，请核对后手动保存。`
+          : mode === "lifecycle"
+            ? planIsActive(state.plan)
+              ? `基础配置已保存，计划当前已启用（版本 v${state.plan.revision}）。草稿已保留供核对。`
+              : `基础配置已保存；启用结果未确认，当前计划为${statusText(state.plan.status)}（版本 v${state.plan.revision}）。草稿已保留，请核对后手动启用。`
+          : "已读取最新配置";
+      state.noticeIsError = mode === "lifecycle" && !planIsActive(state.plan);
       renderDetail();
     } catch (error) {
       if (generation !== detailReadGeneration || Number(state.plan?.id) !== Number(planID)) return;
       state.savingPlan = false;
-      state.notice = `已保存，但读取最新配置失败：${requestErrorMessage(error, "请稍后重新读取")}。请稍后重新读取。`;
+      state.notice = mode === "pause"
+        ? `停用结果尚未完成读取：${requestErrorMessage(error, "请稍后重新读取")}。系统不会重复停用。`
+        : mode === "conflict"
+          ? `保存未完成，当前版本读取失败：${requestErrorMessage(error, "请稍后重新读取")}。草稿已保留。`
+          : mode === "lifecycle"
+            ? `基础配置已保存，但启用结果尚未确认：${requestErrorMessage(error, "请稍后重新读取")}。草稿已保留；系统不会自动重试启用。`
+          : `已保存，但读取最新配置失败：${requestErrorMessage(error, "请稍后重新读取")}。请稍后重新读取。`;
+      state.noticeIsError = true;
+      renderDetail();
+    }
+  }
+
+  async function pauseActivePlan() {
+    if (!state.plan || !state.plan.id || !planIsActive(state.plan) || planMutationLocked()) return;
+    const planID = state.plan.id;
+    const expectedRevision = numericPositiveSafeInteger(state.plan.revision);
+    if (!expectedRevision) {
+      state.notice = "当前计划版本无效，请重新读取后再停用";
+      state.noticeIsError = true;
+      renderDetail();
+      return;
+    }
+    if (!window.confirm("停用后将停止接收新的计划执行。本次不会直接改动现有计划内容；停用后仅可编辑基础配置和 Webhook，绑定群与标准编排仍保持只读。确认停用？")) return;
+    state.pausingPlan = true;
+    const generation = ++detailReadGeneration;
+    state.notice = "停用中";
+    state.noticeIsError = false;
+    renderDetail();
+    let confirmed = false;
+    try {
+      const changed = await requestJson(routes.apiPlanDisable(planID), { method: "POST", body: { expected_revision: expectedRevision } });
+      const plan = confirmedWritePlan(changed, planID, "paused", "停用");
+      if (numericPositiveSafeInteger(plan.revision) !== expectedRevision + 1) throw new Error("停用结果未确认，请重新读取当前计划");
+      confirmed = true;
+    } catch (error) {
+      await recoverPauseReadback(planID, expectedRevision, generation, error, confirmed);
+      return;
+    }
+    await recoverPauseReadback(planID, expectedRevision, generation, null, true);
+  }
+
+  async function recoverPauseReadback(planID, expectedRevision, generation, error, confirmed) {
+    if (generation !== detailReadGeneration || Number(state.plan?.id) !== Number(planID)) return;
+    state.pausingPlan = false;
+    setPlanReadbackPending(planID, "pause");
+    state.notice = confirmed
+      ? "停用已确认，正在读取最新配置"
+      : error && error.status === 409
+        ? `停用未提交：页面使用版本 v${expectedRevision}。正在读取当前状态和版本。`
+        : "停用结果尚未确认，正在读取当前状态和版本；系统不会重复停用。";
+    state.noticeIsError = !confirmed;
+    renderDetail();
+    try {
+      const detail = await readDetailPage(planID);
+      if (!applyDetailPage(detail, planID, generation)) return;
+      clearPlanReadbackPending();
+      if (planIsPaused(state.plan)) {
+        state.notice = state.planDraft
+          ? `已停用，当前版本 v${state.plan.revision}。草稿已保留，请核对后手动保存。`
+          : `已停用，当前版本 v${state.plan.revision}。已读取最新配置。`;
+        state.noticeIsError = false;
+      } else {
+        state.notice = `停用未确认：当前计划仍为已启用（版本 v${state.plan.revision}）。请核对后再次点击停用。`;
+        state.noticeIsError = true;
+      }
+      renderDetail();
+    } catch (readError) {
+      if (generation !== detailReadGeneration || Number(state.plan?.id) !== Number(planID)) return;
+      state.notice = confirmed
+        ? `停用已确认，但读取最新配置失败：${requestErrorMessage(readError, "请重新读取")}`
+        : `停用结果尚未确认，读取当前状态失败：${requestErrorMessage(readError, "请重新读取")}。系统不会重复停用。`;
       state.noticeIsError = true;
       renderDetail();
     }
   }
 
   function saveCurrentDimensionDisabled() {
-    return state.activeDetailPanel !== "basic";
+    return state.activeDetailPanel !== "basic" || planMutationLocked() || !planAllowsBasicConfiguration(state.plan);
   }
 
   function saveActiveDetailPanel() {
@@ -1198,13 +1483,14 @@
   }
 
   async function bindGroup(chatId) {
-    if (!state.plan || !chatId) return;
+    if (!state.plan || !chatId || planMutationLocked() || !planAllowsDraftConfiguration(state.plan)) return;
     await requestJson(routes.apiPlanGroups(state.plan.id), { method: "POST", body: { chat_id: chatId, operator: "admin_ui" } });
     state.notice = "已添加";
     loadDetailPage(state.plan.id);
   }
 
   function openGroupPicker() {
+    if (planMutationLocked() || !planAllowsDraftConfiguration(state.plan)) return;
     state.showGroupPicker = true;
     state.groupPickerSearch = "";
     state.groupPickerNotice = "";
@@ -1220,7 +1506,7 @@
   }
 
   async function confirmGroupPicker() {
-    if (!state.plan || !state.plan.id || state.bindingGroups) return;
+    if (!state.plan || !state.plan.id || state.bindingGroups || planMutationLocked() || !planAllowsDraftConfiguration(state.plan)) return;
     const selected = Array.from(app.querySelectorAll("[data-group-choice]:checked")).map((item) => item.value).filter(Boolean);
     if (!selected.length) {
       state.groupPickerNotice = "请选择群";
@@ -1249,7 +1535,7 @@
   }
 
   async function removeGroup(chatId) {
-    if (!state.plan || !chatId) return;
+    if (!state.plan || !chatId || planMutationLocked() || !planAllowsDraftConfiguration(state.plan)) return;
     await requestJson(routes.apiPlanGroup(state.plan.id, chatId), { method: "DELETE" });
     state.notice = "已移除";
     loadDetailPage(state.plan.id);
@@ -1300,7 +1586,7 @@
   }
 
   async function refreshOwnerGroups() {
-    if (!state.plan) return;
+    if (!state.plan || planMutationLocked() || !planAllowsBasicConfiguration(state.plan)) return;
     const owner = currentFormValue("owner_userid") || state.plan.owner_userid || "";
     if (!owner) {
       state.notice = "请选择运营成员";
@@ -1343,6 +1629,7 @@
   }
 
   function openNodeModal(nodeId) {
+    if (planMutationLocked() || !planAllowsDraftConfiguration(state.plan)) return;
     if (window.AICRMGroupOpsV3Content && typeof window.AICRMGroupOpsV3Content.cancelPending === "function") {
       window.AICRMGroupOpsV3Content.cancelPending();
     }
@@ -1369,7 +1656,7 @@
   }
 
   async function saveNode() {
-    if (!state.plan || !state.plan.id) return;
+    if (!state.plan || !state.plan.id || planMutationLocked() || !planAllowsDraftConfiguration(state.plan)) return;
     const nodeId = Number(state.editingNodeId || 0);
     const existing = editingNode() || {};
     const contentPayload = contentPackageToNodePayload(contentPackageFromForm());
@@ -1399,7 +1686,7 @@
   }
 
   async function deleteNode(nodeId) {
-    if (!state.plan || !nodeId) return;
+    if (!state.plan || !nodeId || planMutationLocked() || !planAllowsDraftConfiguration(state.plan)) return;
     await requestJson(routes.apiPlanNode(state.plan.id, nodeId), { method: "DELETE" });
     state.notice = "已删除动作";
     loadDetailPage(state.plan.id);
@@ -1427,7 +1714,7 @@
   }
 
   async function saveWebhook() {
-    if (!state.plan || !state.plan.id) return;
+    if (!state.plan || !state.plan.id || planMutationLocked() || !planAllowsBasicConfiguration(state.plan)) return;
     const reference = String(state.webhook?.reference || `groupops-${crypto.randomUUID()}`);
     if (!validWebhookReference(reference)) {
       state.notice = "Webhook 标识只能使用字母、数字、连字符、下划线、点号和冒号";
@@ -1686,7 +1973,7 @@
   }
 
   async function loadDetailPage(planId) {
-    if (state.savingPlan || state.planReadbackPending) return;
+    if (state.savingPlan || state.pausingPlan || planReadbackPending()) return;
     // A navigation or authoritative reread invalidates an earlier owner
     // projection too. Its late success/failure must not repaint this detail.
     invalidateOwnerGroupsRefresh();
@@ -1728,7 +2015,8 @@
 
   function renderBoundGroups() {
     if (!state.planGroups.length) return '<div class="group-ops__empty">暂无绑定群</div>';
-    const archived = planIsArchived(state.plan);
+    const editable = planAllowsDraftConfiguration(state.plan);
+    const locked = planMutationLocked();
     return state.planGroups
       .map(
         (group) => `
@@ -1737,7 +2025,7 @@
             <div class="group-ops__group-name"><strong>${escapeHtml(groupName(group))}</strong></div>
             <div class="group-ops__group-meta">${escapeHtml(group.chat_id || "")}</div>
           </div>
-          ${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : actionButton("移除", "remove-group", "") .replace(">", ` data-chat-id="${escapeHtml(group.chat_id)}">`)}
+          ${editable ? actionButton("移除", "remove-group", "", locked) .replace(">", ` data-chat-id="${escapeHtml(group.chat_id)}">`) : '<span class="group-ops__chip group-ops__chip--neutral">只读</span>'}
         </div>`,
       )
       .join("");
@@ -1760,7 +2048,7 @@
       .map(
         (group) => `
         <label class="group-ops__group-item group-ops__group-choice">
-          <input type="checkbox" data-group-choice value="${escapeHtml(group.chat_id)}">
+          <input type="checkbox" data-group-choice value="${escapeHtml(group.chat_id)}"${planMutationLocked() ? " disabled" : ""}>
           <div>
             <div class="group-ops__group-name"><strong>${escapeHtml(group.group_name)}</strong></div>
             <div class="group-ops__group-meta">${escapeHtml(group.chat_id)}</div>
@@ -1771,7 +2059,7 @@
   }
 
   function renderGroupPickerModal() {
-    if (!state.showGroupPicker || planIsArchived(state.plan)) return "";
+    if (!state.showGroupPicker || !planAllowsDraftConfiguration(state.plan)) return "";
     return `
       <div class="group-ops__modal-mask" role="dialog" aria-modal="true">
         <div class="group-ops__modal group-ops__modal--groups">
@@ -1788,7 +2076,7 @@
           <div class="group-ops__modal-footer">
             ${actionButton("取消", "close-group-picker")}
             <button class="group-ops__button group-ops__button--primary" type="button" data-action="confirm-group-picker"${
-              state.bindingGroups ? " disabled" : ""
+              state.bindingGroups || planMutationLocked() ? " disabled" : ""
             }>${state.bindingGroups ? "绑定中" : "确认选择"}</button>
           </div>
         </div>
@@ -1798,7 +2086,7 @@
 
   function renderRefreshOwnerGroupsButton() {
     const owner = currentFormValue("owner_userid") || (state.plan && state.plan.owner_userid) || "";
-    const disabled = !owner || state.refreshingOwnerGroups || planIsArchived(state.plan);
+    const disabled = !owner || state.refreshingOwnerGroups || !planAllowsBasicConfiguration(state.plan) || planMutationLocked();
     return `<button class="group-ops__button" type="button" data-action="refresh-owner-groups"${disabled ? " disabled" : ""}>${
       state.refreshingOwnerGroups ? "刷新中" : "刷新名下群聊"
     }</button>`;
@@ -1893,7 +2181,8 @@
   }
 
   function renderNodes() {
-    const archived = planIsArchived(state.plan);
+    const editable = planAllowsDraftConfiguration(state.plan);
+    const locked = planMutationLocked();
     const current = editingNode() || {
       day_index: 1,
       scheduled_time: "20:00",
@@ -1909,7 +2198,7 @@
     const currentContentPackage = nodeToContentPackage(current);
     const currentContentRecords = contentMaterialRecordsForNode(current);
     const currentContentSummary = contentPackageSummary(currentContentPackage);
-    const modal = state.showNodeModal && !archived
+    const modal = state.showNodeModal && editable
       ? `
         <div class="group-ops__modal-mask" role="dialog" aria-modal="true">
           <div class="group-ops__modal group-ops__modal--action">
@@ -1930,7 +2219,7 @@
                   <strong>话术摘要</strong><span>${escapeHtml(currentContentSummary.text)}</span>
                   <strong>内容数量</strong><span>图片 ${currentContentSummary.imageCount} / 小程序 ${currentContentSummary.miniprogramCount} / 附件 ${currentContentSummary.attachmentCount} / 群邀请 ${currentContentSummary.groupInviteCount}</span>
                 </div>
-                <button class="group-ops__button" type="button" data-action="configure-node-content">配置话术和素材</button>
+                <button class="group-ops__button" type="button" data-action="configure-node-content"${locked ? " disabled" : ""}>配置话术和素材</button>
                 ${renderLegacyAttachmentNotice(current)}
                 <input type="hidden" name="node_content_package_json" value="${escapeHtml(JSON.stringify(currentContentPackage))}">
                 <input type="hidden" name="node_content_material_order_json" value="${escapeHtml(JSON.stringify(currentContentRecords))}">
@@ -1938,7 +2227,7 @@
             </div>
             <div class="group-ops__modal-footer">
               ${actionButton("取消", "cancel-node")}
-              ${actionButton("保存动作", "save-node", "group-ops__button--primary")}
+              ${actionButton("保存动作", "save-node", "group-ops__button--primary", locked)}
             </div>
           </div>
         </div>`
@@ -1953,7 +2242,7 @@
           <td><span class="group-ops__summary">${escapeHtml(textSummary(nodeToContentPackage(node).content_text || node.text_content))}</span></td>
           <td><div class="group-ops__chip-row">${materialChips(node)}</div></td>
           <td><div class="group-ops__row-actions">
-            ${actionButton("查看内容", "view-node-content", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : `${actionButton("编辑", "edit-node", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${actionButton("删除", "delete-node", "group-ops__button--danger").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}`}
+            ${actionButton("查看内容", "view-node-content", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${editable ? `${actionButton("编辑", "edit-node", "", locked).replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${actionButton("删除", "delete-node", "group-ops__button--danger", locked).replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}` : '<span class="group-ops__chip group-ops__chip--neutral">只读</span>'}
           </div></td>
         </tr>`,
       )
@@ -1963,8 +2252,9 @@
       <section class="group-ops__panel${state.activeDetailPanel === "nodes" ? " is-active" : ""}" id="panel-nodes">
         <div class="group-ops__panel-title-row">
           <h3>标准编排</h3>
-          ${isStandard && !archived ? actionButton("添加动作", "open-node-modal", "group-ops__button--primary") : isStandard && archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : ""}
+          ${isStandard && editable ? actionButton("添加动作", "open-node-modal", "group-ops__button--primary", locked) : isStandard ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : ""}
         </div>
+        ${isStandard && !editable ? `<div class="group-ops__notice">${escapeHtml(draftOnlyLockMessage())}</div>` : ""}
         <div class="group-ops__table-wrap">
           <table class="group-ops__table">
             <thead><tr><th>第几天</th><th>发送时间</th><th>动作标题</th><th>标准话术摘要</th><th>素材标签</th><th class="group-ops__table-actions-head">操作</th></tr></thead>
@@ -1983,6 +2273,7 @@
   function renderWebhook() {
     const config = state.webhook || {};
     const archived = planIsArchived(state.plan);
+    const editable = planAllowsBasicConfiguration(state.plan);
     if (state.plan.plan_type !== "webhook") {
       return `
         <section class="group-ops__panel${state.activeDetailPanel === "webhook" ? " is-active" : ""}" id="panel-webhook">
@@ -2001,8 +2292,9 @@
           <span class="group-ops__pill">Webhook 接收计划</span>
         </div>
         <div class="group-ops__webhook-panel">
-          ${configured || archived ? "" : `<div class="group-ops__row-actions">${actionButton("生成 Webhook 地址", "save-webhook", "group-ops__button--primary")}</div>`}
-          ${configured ? "" : archived ? '<div class="group-ops__empty">计划已归档，Webhook 配置保持只读。</div>' : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
+          ${configured || !editable ? "" : `<div class="group-ops__row-actions">${actionButton("生成 Webhook 地址", "save-webhook", "group-ops__button--primary", planMutationLocked())}</div>`}
+          ${configured ? "" : archived ? '<div class="group-ops__empty">计划已归档，Webhook 配置保持只读。</div>' : planIsActive(state.plan) ? `<div class="group-ops__empty">${escapeHtml(activePlanLockMessage())}</div>` : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
+          ${configured && planIsActive(state.plan) ? `<div class="group-ops__notice">${escapeHtml(activePlanLockMessage())}</div>` : ""}
           ${configured ? `
           <div class="group-ops__notice">地址已配置；无需预设节点。每个动态请求提供话术和已绑定群的子集，调用仍需签名配置和启用计划。</div>
           <div class="group-ops__webhook-line">
@@ -2044,59 +2336,66 @@
 
   function renderBasicPanel() {
     const archived = planIsArchived(state.plan);
+    const active = planIsActive(state.plan);
+    const editable = planAllowsBasicConfiguration(state.plan);
     const draft = state.planDraft || {};
     const ownerID = draft.owner_userid || state.plan.owner_userid;
     const owner = state.plan.owner_name || ownerID || "未配置负责人";
-    const saving = state.savingPlan || state.planReadbackPending;
+    const saving = state.savingPlan || state.pausingPlan || planReadbackPending();
+    const selectedStatus = draft.status || state.plan.status;
+    const statusOptions = planIsPaused(state.plan)
+      ? `<option value="disabled"${selectedStatus === "disabled" || selectedStatus === "paused" ? " selected" : ""}>停用</option>
+         <option value="active"${selectedStatus === "active" ? " selected" : ""}>启用</option>`
+      : `<option value="draft"${selectedStatus === "draft" ? " selected" : ""}>草稿</option>
+         <option value="active"${selectedStatus === "active" ? " selected" : ""}>启用</option>`;
     return `
       <section class="group-ops__panel${state.activeDetailPanel === "basic" ? " is-active" : ""}" id="panel-basic">
         <div class="group-ops__panel-title-row">
           <h3>基础配置</h3>
-          <span class="group-ops__pill">${archived ? "已归档" : "可保存"}</span>
+          <span class="group-ops__pill">${archived ? "已归档" : active ? `已启用 · 当前版本 v${escapeHtml(state.plan.revision)}` : "可保存"}</span>
         </div>
         <div class="group-ops__form-grid">
           <div class="group-ops__field group-ops__field--full">
             <span>运营成员</span>
-            ${archived ? `<div class="group-ops__member-current">${escapeHtml(owner)}</div>` : renderMemberField("owner_userid", ownerID, "pick-plan-owner", "更换运营成员", Boolean(saving))}
+            ${!editable ? `<div class="group-ops__member-current">${escapeHtml(owner)}</div>` : renderMemberField("owner_userid", ownerID, "pick-plan-owner", "更换运营成员", Boolean(saving))}
           </div>
           <label class="group-ops__field">
             <span>状态</span>
-            <select name="status"${archived || saving ? " disabled" : ""}>
-              <option value="draft"${(draft.status || state.plan.status) === "draft" ? " selected" : ""}>草稿</option>
-              <option value="active"${(draft.status || state.plan.status) === "active" ? " selected" : ""}>启用</option>
-              <option value="disabled"${(draft.status || state.plan.status) === "disabled" ? " selected" : ""}>停用</option>
-              ${archived ? '<option value="archived" selected>已归档（终态）</option>' : ""}
-            </select>
+            ${active ? `<div class="group-ops__member-current">已启用 · 当前版本 v${escapeHtml(state.plan.revision)}</div>` : archived ? '<select name="status" disabled><option value="archived" selected>已归档（终态）</option></select>' : `<select name="status"${saving ? " disabled" : ""}>
+              ${statusOptions}
+            </select>`}
           </label>
           <label class="group-ops__field">
             <span>计划名称</span>
-            <input name="plan_name" value="${escapeHtml(draft.plan_name ?? (state.plan.plan_name || ""))}"${archived || saving ? " disabled" : ""}>
+            <input name="plan_name" value="${escapeHtml(draft.plan_name ?? (state.plan.plan_name || ""))}"${!editable || saving ? " disabled" : ""}>
           </label>
           <label class="group-ops__field">
             <span>计划类型</span>
-            <select name="plan_type"${archived || saving ? " disabled" : ""}>
+            <select name="plan_type"${!editable || saving ? " disabled" : ""}>
               <option value="standard"${(draft.plan_type || state.plan.plan_type) === "standard" ? " selected" : ""}>标准编排计划</option>
               <option value="webhook"${(draft.plan_type || state.plan.plan_type) === "webhook" ? " selected" : ""}>Webhook 接收计划</option>
             </select>
           </label>
         </div>
         <div class="group-ops__panel-actions">
-          ${archived ? '<div class="group-ops__notice">计划已归档，不能修改或重新启用。</div>' : `${renderRefreshOwnerGroupsButton()}${actionButton(state.savingPlan ? "保存中" : "保存基础配置", "save-plan", "group-ops__button--primary", saving)}`}
+          ${archived ? '<div class="group-ops__notice">计划已归档，不能修改或重新启用。</div>' : active ? `<div class="group-ops__notice">${escapeHtml(activePlanLockMessage())}</div>` : `${renderRefreshOwnerGroupsButton()}${actionButton(state.savingPlan ? "保存中" : "保存基础配置", "save-plan", "group-ops__button--primary", saving)}`}
         </div>
       </section>
     `;
   }
 
   function renderGroupsPanel() {
+    const editable = planAllowsDraftConfiguration(state.plan);
     return `
       <section class="group-ops__panel${state.activeDetailPanel === "groups" ? " is-active" : ""}" id="panel-groups">
         <div class="group-ops__panel-title-row">
           <h3>绑定群</h3>
-          ${planIsArchived(state.plan) ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : actionButton("选择群", "open-group-picker", "group-ops__button--primary")}
+          ${editable ? actionButton("选择群", "open-group-picker", "group-ops__button--primary", planMutationLocked()) : '<span class="group-ops__chip group-ops__chip--neutral">只读</span>'}
         </div>
+        ${editable ? "" : `<div class="group-ops__notice">${escapeHtml(planIsActive(state.plan) ? activePlanLockMessage() : draftOnlyLockMessage())}</div>`}
         <div class="group-ops__group-list">${renderBoundGroups()}</div>
         <div class="group-ops__panel-actions">
-          ${planIsArchived(state.plan) ? "" : renderRefreshOwnerGroupsButton()}
+          ${planAllowsBasicConfiguration(state.plan) ? renderRefreshOwnerGroupsButton() : ""}
         </div>
       </section>
     `;
@@ -2114,17 +2413,21 @@
   }
 
   function renderDetailShell(summary) {
+    const active = planIsActive(state.plan);
+    const detailLocked = state.savingPlan || state.pausingPlan || planReadbackPending();
     return `
-      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}"${state.noticeIsError ? ' role="alert"' : ""} ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}${state.planReadbackPending ? ` ${actionButton("重新读取最新配置", "reload-plan-detail", "", state.savingPlan)}` : ""}</div>
+      <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}"${state.noticeIsError ? ' role="alert"' : ""} ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}${planReadbackPending() ? ` ${actionButton("重新读取最新配置", "reload-plan-detail", "", state.savingPlan || state.pausingPlan)}` : ""}</div>
       <section class="group-ops__detail-shell">
         <section class="group-ops__summary-card">
           <div class="group-ops__summary-head">
             <h2>${escapeHtml(state.plan.plan_name || "群运营计划")}</h2>
             <div class="group-ops__summary-actions">
               ${pageButton("返回列表", routes.list)}
-              <button class="group-ops__button group-ops__button--primary" type="button" data-action="save-active-detail-panel"${
-                saveCurrentDimensionDisabled() || planIsArchived(state.plan) || state.savingPlan || state.planReadbackPending ? " disabled" : ""
-              }>${state.savingPlan ? "保存中" : "保存当前维度"}</button>
+              ${active
+                ? actionButton(state.pausingPlan ? "停用中" : "停用计划", "pause-detail-plan", "group-ops__button--primary", detailLocked)
+                : `<button class="group-ops__button group-ops__button--primary" type="button" data-action="save-active-detail-panel"${
+                    saveCurrentDimensionDisabled() || planIsArchived(state.plan) || detailLocked ? " disabled" : ""
+                  }>${state.savingPlan ? "保存中" : "保存当前维度"}</button>`}
             </div>
           </div>
           <div class="group-ops__summary-grid">${renderStats(summary)}</div>

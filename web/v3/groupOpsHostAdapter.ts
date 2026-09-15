@@ -622,7 +622,8 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   const parsedURL = new URL(url, window.location.origin);
   const match = parsedURL.pathname.match(/\/plans\/(\d+)/);
   const id = match ? Number(match[1]) : 0;
-  if (id && method !== "GET") invalidateInitialDetailRead(id);
+  const readOnlyContentPreview = id > 0 && method === "POST" && parsedURL.pathname === `${base}/plans/${id}/content/preview`;
+  if (id && method !== "GET" && !readOnlyContentPreview) invalidateInitialDetailRead(id);
   if (parsedURL.pathname === `${base}/plans` && method === "GET") {
     const requested = requestedPlanPage(parsedURL);
     const data = await nativeRequest(url, { signal: options.signal && typeof options.signal === "object" ? options.signal as AbortSignal : undefined });
@@ -844,7 +845,10 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     const wantedOwner = Number(body.owner_userid);
     const currentOwner = Number((current.members || [])[0]?.staff_id || 0);
     const payload: Json = {
-      expected_revision: await revision(id),
+      // The Standard controller captures the revision that was actually
+      // rendered with this form. Do not pre-read a newer value and silently
+      // turn a user's stale save into a write against an unseen definition.
+      expected_revision: await expectedRevision(body, id),
       name: body.plan_name,
       plan_type: body.plan_type,
     };
@@ -855,11 +859,24 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     let value = await nativeRequest(url, { method: "PUT", body: payload });
     const wanted = body.status;
     const mapped = (value.plan || value).status;
-    if (wanted === "active" && mapped !== "active")
-      value = await nativeRequest(`${base}/plans/${id}/enable`, {
-        method: "POST",
-        body: { expected_revision: (value.plan || value).revision },
-      });
+    if (wanted === "active" && mapped !== "active") {
+      const persisted = value.plan || value;
+      try {
+        value = await nativeRequest(`${base}/plans/${id}/enable`, {
+          method: "POST",
+          body: { expected_revision: persisted.revision },
+        });
+      } catch (error) {
+        // A save followed by an activation is two existing owner commands.
+        // Distinguish "PUT accepted, enable rejected" from a stale PUT so the
+        // Standard controller never infers persistence from a later revision.
+        (error as Error & { groupopsSavedBeforeLifecycle?: Json }).groupopsSavedBeforeLifecycle = {
+          plan_id: id,
+          revision: persisted.revision,
+        };
+        throw error;
+      }
+    }
     if (wanted === "disabled" && mapped === "active")
       value = await nativeRequest(`${base}/plans/${id}/disable`, {
         method: "POST",
