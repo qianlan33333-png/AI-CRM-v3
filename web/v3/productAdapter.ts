@@ -95,6 +95,8 @@ let loadedProducts: ProductProjection[] = [];
 const openedProductPayloads = new Map<number, RecordValue>();
 const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
 const productLifecycleKeys = new Map<string, string>();
+type ProductLifecycleActionContext = { product: ProductProjection; row: HTMLTableRowElement; container: HTMLElement; page: 'products' };
+const productLifecycleActionContexts = new WeakMap<HTMLButtonElement, ProductLifecycleActionContext>();
 type ProductArchiveIntent = { key: string; body: string };
 const productArchiveIntents = new Map<string, ProductArchiveIntent>();
 
@@ -776,15 +778,16 @@ document.addEventListener('click', (event) => {
   if (!(target instanceof Element)) return;
   const button = target.closest('button');
   if (!button || (button.textContent?.trim() !== '启用' && button.textContent?.trim() !== '停用')) return;
-  const row = button.closest('tbody tr');
-  const retainedIndex = Number(button.dataset.productListRowIndex);
-  const index = Number.isSafeInteger(retainedIndex) && retainedIndex >= 0
-    ? retainedIndex
-    : Array.from(row?.parentElement?.querySelectorAll(':scope > tr') || []).indexOf(row as HTMLTableRowElement);
-  const product = loadedProducts[index];
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (!product) return showMessage('商品缺少服务端 ID，未发送状态变更请求');
+  const context = productLifecycleActionContexts.get(button);
+  if (!context || context.page !== 'products' || !context.row.isConnected || !context.container.isConnected) {
+    return showMessage('商品操作上下文已失效，请刷新列表后重试；未发送状态变更请求');
+  }
+  const product = loadedProducts.find((item) => item.resourceId === context.product.resourceId);
+  if (!product || product.version !== context.product.version || product.lifecycle !== context.product.lifecycle) {
+    return showMessage('商品列表已更新，请刷新后重试；未发送状态变更请求');
+  }
   void toggleProductLifecycle(button, product).catch((error) => {
     button.disabled = false;
     button.textContent = product.lifecycle === 'enabled' ? '停用' : '启用';
@@ -2013,11 +2016,17 @@ function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
   for (const [index, row] of Array.from(document.querySelectorAll<HTMLTableRowElement>('tbody tr')).entries()) {
     const container = row.lastElementChild?.querySelector<HTMLElement>(':scope > div');
     if (!container || productListActionMenus.has(container)) continue;
-    // Overflow actions are rehomed into a document-level panel. Preserve the
-    // original list projection index on each real control so its existing
-    // delegated lifecycle command keeps its product/CAS binding after that
-    // presentation-only move.
-    for (const action of container.querySelectorAll<HTMLButtonElement>('button')) action.dataset.productListRowIndex = String(index);
+    const product = page === 'products' ? loadedProducts[index] : undefined;
+    // Overflow actions are rehomed into a document-level panel. Bind the
+    // original Product projection and its still-mounted source row to every
+    // real lifecycle control, rather than deriving a new target from a later
+    // list order. A detached row/container or stale projection rejects before
+    // any write; the Product owner still enforces its original CAS server-side.
+    if (product) for (const action of container.querySelectorAll<HTMLButtonElement>('button')) {
+      if (action.textContent?.trim() === '启用' || action.textContent?.trim() === '停用') {
+        productLifecycleActionContexts.set(action, { product, row, container, page });
+      }
+    }
     const menu = mountTableActionMenu(container, { owner: `product-${page}-${index}`, primaryCount: 2 });
     if (menu) productListActionMenus.set(container, menu);
   }
