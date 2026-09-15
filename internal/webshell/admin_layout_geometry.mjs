@@ -554,17 +554,41 @@ try {
       const approveInHeader=planActions?.querySelector('[data-plan-approve]');
       const rejectInHeader=planActions?.querySelector('[data-plan-reject]');
       const backInHeader=planActions?.querySelector('a[href="/admin/cloud-orchestrator/plans"]');
+      const style = node => node ? getComputedStyle(node) : null;
+      const color = value => {
+        const match=String(value || '').match(/^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+        return match ? [Number(match[1]),Number(match[2]),Number(match[3])] : null;
+      };
+      const luminance = value => {
+        const rgb=color(value); if (!rgb) return 0;
+        const channels=rgb.map(channel => { const normalized=channel/255; return normalized <= .03928 ? normalized/12.92 : Math.pow((normalized+.055)/1.055,2.4); });
+        return .2126*channels[0]+.7152*channels[1]+.0722*channels[2];
+      };
+      const contrast = (foreground, background) => {
+        const one=luminance(foreground), two=luminance(background);
+        return (Math.max(one,two)+.05)/(Math.min(one,two)+.05);
+      };
+      const readable = node => {
+        const value=style(node); return Boolean(value) && contrast(value.color,value.backgroundColor) >= 4.5;
+      };
+      // This only probes the native disabled rendering and restores the exact
+      // domain fact. It never invokes a plan command or a Provider write.
+      const approveWasDisabled=approveInHeader instanceof HTMLButtonElement ? approveInHeader.disabled : false;
+      if (approveInHeader instanceof HTMLButtonElement) approveInHeader.disabled=true;
+      const disabledStyle=style(approveInHeader);
+      const disabledVisible=Boolean(disabledStyle && disabledStyle.color !== 'rgba(0, 0, 0, 0)' && disabledStyle.backgroundColor !== 'rgba(0, 0, 0, 0)');
+      if (approveInHeader instanceof HTMLButtonElement) approveInHeader.disabled=approveWasDisabled;
       // Relocated controls are intentionally no longer descendants of the
       // plan root. Inspect the original donor container directly so this
       // verifies its hidden state rather than treating a missing moved button
       // as proof that the duplicate toolbar disappeared.
       const sourceActions=detailHead?.querySelector('.cloud-plan-actions');
-      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),refreshVisible:visible(refresh),detailHead:box(detailHead),detailStateVisible:visible(detailState),planActions:box(planActions),approveVisible:visible(approveInHeader),rejectVisible:visible(rejectInHeader),backVisible:visible(backInHeader),sourceActionsHidden:!visible(sourceActions),stageDuplicateActions:Boolean(root?.querySelector('[data-plan-approve],[data-plan-reject]')),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),refreshVisible:visible(refresh),detailHead:box(detailHead),detailStateVisible:visible(detailState),planActions:box(planActions),approveVisible:visible(approveInHeader),rejectVisible:visible(rejectInHeader),backVisible:visible(backInHeader),approveReadable:readable(approveInHeader),rejectReadable:readable(rejectInHeader),backReadable:readable(backInHeader),disabledVisible,sourceActionsHidden:!visible(sourceActions),stageDuplicateActions:Boolean(root?.querySelector('[data-plan-approve],[data-plan-reject]')),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
     })()`);
     const commonInvalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "AI 助手" || !layout.root || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom;
     if (commonInvalid) throw new Error(label + " native cloud-plan topbar/content geometry invalid");
     if (!detail && (!layout.toolbar || !layout.refreshVisible || Math.abs(layout.toolbar.left-layout.root.left) > 1 || Math.abs(layout.toolbar.top-layout.root.top) > 1)) throw new Error(label + " native cloud-plan toolbar is absent or misaligned");
-    if (detail && (!layout.detailHead || !layout.detailStateVisible || !layout.planActions || !layout.approveVisible || !layout.rejectVisible || !layout.backVisible || !layout.sourceActionsHidden || layout.stageDuplicateActions || Math.abs(layout.detailHead.left-layout.root.left) > 1 || Math.abs(layout.detailHead.top-layout.root.top) > 1 || layout.planActions.top + 1 < layout.topbar.top || layout.planActions.bottom > layout.topbar.bottom + 1)) throw new Error(label + " native cloud-plan detail actions/status are absent or misaligned");
+    if (detail && (!layout.detailHead || !layout.detailStateVisible || !layout.planActions || !layout.approveVisible || !layout.rejectVisible || !layout.backVisible || !layout.approveReadable || !layout.rejectReadable || !layout.backReadable || !layout.disabledVisible || !layout.sourceActionsHidden || layout.stageDuplicateActions || Math.abs(layout.detailHead.left-layout.root.left) > 1 || Math.abs(layout.detailHead.top-layout.root.top) > 1 || layout.planActions.top + 1 < layout.topbar.top || layout.planActions.bottom > layout.topbar.bottom + 1)) throw new Error(label + " native cloud-plan detail actions/status are absent, unreadable or misaligned");
   };
   const assertHeaderActionWidths = async (label, owner, labels) => {
     try {
