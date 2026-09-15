@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -132,14 +137,37 @@ func seedRemainingPagesRadar(t *testing.T, fixture *productExternalPushChromiumF
 	t.Helper()
 	const code = "rd_remainingpageschromium"
 	now := time.Now().UTC()
+	imageID := seedRemainingPagesRadarImage(t, fixture)
 	var id int64
-	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `INSERT INTO radar_links(public_code,name,title,description,content_type,media_id,auth_policy,status,created_by,updated_by,created_at,updated_at) VALUES($1,'剩余页面雷达','剩余页面雷达图片','Chromium public fixture','image',$2,'anonymous','enabled',1,1,$3,$3) RETURNING id`, code, fixture.materialFirstID, now).Scan(&id); err != nil {
+	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `INSERT INTO radar_links(public_code,name,title,description,content_type,media_id,auth_policy,status,created_by,updated_by,created_at,updated_at) VALUES($1,'剩余页面雷达','剩余页面雷达图片','Chromium public fixture','image',$2,'anonymous','enabled',1,1,$3,$3) RETURNING id`, code, imageID, now).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.application.pool.Native().Exec(fixture.ctx, `INSERT INTO radar_link_versions(radar_id,version,snapshot,actor_id,created_at) VALUES($1,1,'{}'::jsonb,1,$2)`, id, now); err != nil {
 		t.Fatal(err)
 	}
 	return code
+}
+
+func seedRemainingPagesRadarImage(t *testing.T, fixture *productExternalPushChromiumFixture) int64 {
+	t.Helper()
+	canvas := image.NewRGBA(image.Rect(0, 0, 320, 180))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{R: 35, G: 99, B: 235, A: 255}), image.Point{}, draw.Src)
+	draw.Draw(canvas, image.Rect(0, 90, 320, 180), image.NewUniform(color.RGBA{R: 16, G: 145, B: 117, A: 255}), image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		t.Fatal(err)
+	}
+	content := encoded.Bytes()
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(content))
+	pool := fixture.application.pool.Native()
+	if _, err := pool.Exec(fixture.ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
+		t.Fatal(err)
+	}
+	var imageID int64
+	if err := pool.QueryRow(fixture.ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,'remaining-pages-radar-visible.png','剩余页面雷达可见图','Chromium public visible image fixture','chromium,radar','chromium-radar','image/png',$2,320,180,true,1,1) RETURNING id`, digest, len(content)).Scan(&imageID); err != nil {
+		t.Fatal(err)
+	}
+	return imageID
 }
 
 func seedRemainingPagesCoupon(t *testing.T, fixture *productExternalPushChromiumFixture) string {

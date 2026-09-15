@@ -80,6 +80,7 @@ try {
     await resize(width); await visit(`/r/${radarCode}`);
     await waitFor(cdp, "document.querySelector('#root img.view')?.complete", `radar image did not render at ${width}`);
     assert.equal(await evaluate(cdp, "document.querySelector('#root img.view')?.naturalWidth > 0"), true, `radar image must load at ${width}`);
+	assert.equal(await evaluate(cdp, "(()=>{const image=document.querySelector('#root img.view');if(!image)return false;const box=image.getBoundingClientRect();return image.naturalWidth>=320&&image.naturalHeight>=180&&box.width>=Math.min(320,innerWidth)&&box.height>=160})()"), true, `radar image must be visibly reviewable at ${width}`);
     await waitForCondition(() => radarEventResponses.length > previousRadarEvents && radarEventResponses.at(-1) === 200, `radar image-loaded event did not complete at ${width}`);
     await noOverflow(`radar ${width}`); await capture(`radar-${width}.png`);
   }
