@@ -20,6 +20,14 @@ function buttonClass(variant: PageHeaderAction['variant']): string {
   return `admin-button${variant ? ` admin-button--${variant}` : ''}`;
 }
 
+function applyDisabled(control: HTMLButtonElement): void {
+  const businessDisabled = control.dataset.pageHeaderActionBusinessDisabled === 'true';
+  const busy = control.dataset.pageHeaderActionBusy === 'true';
+  control.disabled = businessDisabled || busy;
+  if (control.disabled) control.setAttribute('aria-disabled', 'true');
+  else control.removeAttribute('aria-disabled');
+}
+
 function report(action: PageHeaderAction, error: unknown): void {
   try { action.onError?.(error); } catch { /* a page-level feedback hook cannot break the topbar */ }
 }
@@ -42,19 +50,21 @@ function actionElement(action: PageHeaderAction): HTMLElement {
   control.className = buttonClass(action.variant);
   control.textContent = action.label;
   control.dataset.pageHeaderAction = actionID(action);
-  control.disabled = action.disabled === true;
-  if (control.disabled) control.setAttribute('aria-disabled', 'true');
+  control.dataset.pageHeaderActionBusinessDisabled = String(action.disabled === true);
+  control.dataset.pageHeaderActionBusy = 'false';
+  applyDisabled(control);
   const reset = () => {
     if (!control.isConnected) return;
-    control.disabled = false;
+    control.dataset.pageHeaderActionBusy = 'false';
     control.removeAttribute('aria-busy');
-    control.removeAttribute('aria-disabled');
+    applyDisabled(control);
   };
   control.addEventListener('click', () => {
     if (control.disabled || !action.onClick) return;
     // Set busy before invoking page code so a synchronous reentrant click
     // cannot issue the same authorized command twice.
-    control.disabled = true;
+    control.dataset.pageHeaderActionBusy = 'true';
+    applyDisabled(control);
     control.setAttribute('aria-busy', 'true');
     let pending: void | Promise<void>;
     try {
@@ -94,9 +104,8 @@ export function setPageHeaderActionDisabled(owner: string, action: string, disab
   const control = Array.from(actionHost(owner)?.querySelectorAll<HTMLElement>(':scope > [data-page-header-action]') || [])
     .find((candidate) => candidate.dataset.pageHeaderAction === action);
   if (!(control instanceof HTMLButtonElement)) return false;
-  control.disabled = disabled;
-  if (disabled) control.setAttribute('aria-disabled', 'true');
-  else control.removeAttribute('aria-disabled');
+  control.dataset.pageHeaderActionBusinessDisabled = String(disabled);
+  applyDisabled(control);
   return true;
 }
 

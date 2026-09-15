@@ -56,6 +56,30 @@ try {
   assert.equal(topbar.querySelector('[data-page-header-actions="groupops"] button'), create, 'stable disabled update keeps the same control node');
   assert.equal(create.disabled, true, 'stable API exposes dynamic disabled state');
   assert.equal(dom.window.setDisabled('groupops', 'missing', true), false, 'stable API never creates an unknown action');
+  let resolveLocked;
+  let lockedCalls = 0;
+  const locked = new Promise((resolve) => { resolveLocked = resolve; });
+  dom.window.mount('lock-state', [{ id: 'save', label: '保存', onClick: () => { lockedCalls += 1; return locked; } }]);
+  const lockedSave = topbar.querySelector('[data-page-header-actions="lock-state"] button');
+  lockedSave.click();
+  assert.equal(lockedSave.disabled, true, 'pending work keeps the control busy');
+  assert.equal(dom.window.setDisabled('lock-state', 'save', true), true, 'a business lock updates a pending action');
+  resolveLocked(); await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(lockedSave.disabled, true, 'pending completion cannot clear a newer business lock');
+  assert.equal(dom.window.setDisabled('lock-state', 'save', false), true, 'business lock can be cleared after completion');
+  assert.equal(lockedSave.disabled, false, 'clearing a completed business lock re-enables the same button');
+  let resolveSecond;
+  const second = new Promise((resolve) => { resolveSecond = resolve; });
+  dom.window.mount('lock-state-two', [{ id: 'save', label: '保存', onClick: () => { lockedCalls += 1; return second; }, disabled: true }]);
+  const pendingSave = topbar.querySelector('[data-page-header-actions="lock-state-two"] button');
+  assert.equal(dom.window.setDisabled('lock-state-two', 'save', false), true, 'an external unlock updates the business state');
+  pendingSave.click();
+  assert.equal(lockedCalls, 2, 'an unlocked action begins one request');
+  assert.equal(dom.window.setDisabled('lock-state-two', 'save', false), true, 'an external unlock while pending is recorded');
+  pendingSave.click();
+  assert.equal(lockedCalls, 2, 'an external unlock cannot bypass the pending single-flight lock');
+  resolveSecond(); await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pendingSave.disabled, false, 'pending completion restores only the busy state after an external unlock');
   const rejectedAction = dom.window.mount('distribution-safe', [{
     label: '重试',
     onClick: () => Promise.reject(new Error('expected rejection')),
