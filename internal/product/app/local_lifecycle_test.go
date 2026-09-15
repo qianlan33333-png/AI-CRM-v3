@@ -66,6 +66,60 @@ func TestLocalProductLifecycleEnableDisableCASIdempotencyAndNoop(t *testing.T) {
 	}
 }
 
+func TestLocalProductLifecycleArchiveRetainsReferencesAndBecomesTerminal(t *testing.T) {
+	service, store, events := newLocalProductLifecycleFixture()
+	product := seedLocalProduct(t, store, 41, productport.LocalProductEnabled, true, []string{"https://local.invalid/referenced.png"})
+	// These are the Product-owned test stand-ins for order and coupon history.
+	// Archive must retain their Product ID even though it closes new discovery.
+	store.references[product.ID] = true
+	store.couponTargets[product.ID] = true
+
+	command := productport.ArchiveLocalProductCommand{
+		ID: product.ID, ExpectedVersion: product.Version, Actor: 41, IdempotencyKey: "wechat-archive-key-0001",
+	}
+	archived, err := service.ArchiveLocalProduct(context.Background(), command)
+	if err != nil || archived.ID != product.ID || archived.Lifecycle != productport.LocalProductArchived || archived.Enabled || archived.Version != product.Version+1 {
+		t.Fatalf("archive=%+v err=%v", archived, err)
+	}
+	persisted, ok := store.products[product.ID]
+	if !ok || persisted.ID != product.ID || !store.references[product.ID] || !store.couponTargets[product.ID] {
+		t.Fatalf("archive lost retained Product/history facts: product=%+v order=%v coupon=%v", persisted, store.references[product.ID], store.couponTargets[product.ID])
+	}
+	if store.updateCalls != 1 || len(events.events) != 1 || events.events[0].Type != productport.EventProductUpdated {
+		t.Fatalf("archive writes/events=%d/%d %+v", store.updateCalls, len(events.events), events.events)
+	}
+
+	replayed, err := service.ArchiveLocalProduct(context.Background(), command)
+	if err != nil || !reflect.DeepEqual(replayed, archived) || store.updateCalls != 1 || len(events.events) != 1 {
+		t.Fatalf("archive replay=%+v err=%v writes/events=%d/%d", replayed, err, store.updateCalls, len(events.events))
+	}
+	if _, err = service.ArchiveLocalProduct(context.Background(), productport.ArchiveLocalProductCommand{
+		ID: product.ID, ExpectedVersion: product.Version, Actor: 41, IdempotencyKey: "wechat-archive-stale-001",
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale archive error=%v", err)
+	}
+	if store.updateCalls != 1 || len(events.events) != 1 {
+		t.Fatalf("stale archive wrote product/events=%d/%d", store.updateCalls, len(events.events))
+	}
+
+	if _, err = service.SetLocalProductEnabled(context.Background(), productport.SetLocalProductEnabledCommand{
+		ID: archived.ID, ExpectedVersion: archived.Version, Enabled: true, Actor: 41, IdempotencyKey: "wechat-archive-enable-001",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("archived enable error=%v", err)
+	}
+	if _, err = service.CopyLocalProduct(context.Background(), productport.CopyLocalProductCommand{
+		ID: archived.ID, ExpectedVersion: archived.Version, Actor: 41, IdempotencyKey: "wechat-archive-copy-0001",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("archived copy error=%v", err)
+	}
+	if _, err = service.ShareLocalProduct(context.Background(), archived.ID); !errors.Is(err, ErrLocalProductNotEnabled) {
+		t.Fatalf("archived share error=%v", err)
+	}
+	if store.updateCalls != 1 || store.createCalls != 0 || len(events.events) != 1 {
+		t.Fatalf("terminal actions mutated archive writes/create/events=%d/%d/%d", store.updateCalls, store.createCalls, len(events.events))
+	}
+}
+
 func TestLocalProductLifecycleCopyRetainsTypedBodyAndImagesButResetsDraft(t *testing.T) {
 	service, store, events := newLocalProductLifecycleFixture()
 	source := seedLocalProduct(t, store, 11, productport.LocalProductDisabled, false, []string{"https://local.invalid/one.png", "https://local.invalid/two.png"})

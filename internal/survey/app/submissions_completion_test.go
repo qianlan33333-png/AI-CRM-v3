@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,12 +25,19 @@ type completionStore struct {
 	created       bool
 	accepted      int
 	bound         int
+	saveCalls     int
+	statusLocks   int
 	testSnapshot  CompletionTestSnapshot
 	testCreated   bool
 }
 
 func (s *completionStore) Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error) {
 	return s.questionnaire, nil
+}
+
+func (s *completionStore) LockQuestionnaireStatus(context.Context, surveyport.ID) (surveyport.QuestionnaireStatus, error) {
+	s.statusLocks++
+	return s.questionnaire.Status, nil
 }
 
 func completionIntPointer(value int) *int { return &value }
@@ -46,6 +54,12 @@ func (s *completionStore) CreateSubmission(_ context.Context, in PersistSubmissi
 }
 func (s *completionStore) GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error) {
 	return s.configuration, nil
+}
+func (s *completionStore) SaveOperationConfiguration(_ context.Context, value surveyport.OperationConfiguration, _ int64, now time.Time) (surveyport.OperationConfiguration, error) {
+	s.saveCalls++
+	value.UpdatedAt = now
+	s.configuration = value
+	return value, nil
 }
 func (s *completionStore) RecordCompletionEffect(context.Context, surveyport.ID, surveyport.ID, string, string, string, [32]byte, time.Time) error {
 	s.bound++
@@ -157,8 +171,31 @@ func TestOperationConfigurationRejectsNonObjectMetadata(t *testing.T) {
 	}
 }
 
+func TestOperationConfigurationRejectsArchivedQuestionnaireWithoutChangingRetainedConfiguration(t *testing.T) {
+	existing := surveyport.OperationConfiguration{
+		QuestionnaireID: 7, CompletionNavigationRef: "history-navigation", ExternalPushEnabled: true,
+		ExternalPushConfigurationRef: "history-push", ExternalPushMetadata: json.RawMessage(`{"remark":"retained"}`), Version: 4,
+	}
+	store := &completionStore{questionnaire: surveyport.Questionnaire{ID: 7, Status: surveyport.StatusArchived}, configuration: existing}
+	service := NewSubmissionService(oauthUOW{}, store, nil)
+	_, err := service.SaveOperationConfiguration(context.Background(), surveyport.OperationConfiguration{
+		QuestionnaireID: 7, CompletionNavigationRef: "new-navigation", ExternalPushEnabled: true,
+		ExternalPushConfigurationRef: "new-push", ExternalPushMetadata: json.RawMessage(`{"remark":"must-not-write"}`), Version: 4,
+	}, 8, "survey-archived-config-0001")
+	if !errors.Is(err, surveyport.ErrNotFound) {
+		t.Fatalf("archived configuration write error=%v", err)
+	}
+	if store.statusLocks != 1 || store.saveCalls != 0 || !reflect.DeepEqual(store.configuration, existing) {
+		t.Fatalf("archived configuration mutated retained history locks=%d saves=%d configuration=%+v", store.statusLocks, store.saveCalls, store.configuration)
+	}
+	readback, err := service.GetOperationConfiguration(context.Background(), 7)
+	if err != nil || !reflect.DeepEqual(readback, existing) {
+		t.Fatalf("archived historical configuration readback=%+v err=%v", readback, err)
+	}
+}
+
 func TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect(t *testing.T) {
-	q := surveyport.Questionnaire{ID: 4, Title: "增长调研"}
+	q := surveyport.Questionnaire{ID: 4, Title: "增长调研", Status: surveyport.StatusDraft}
 	store := &completionStore{questionnaire: q, configuration: surveyport.OperationConfiguration{QuestionnaireID: q.ID, ExternalPushEnabled: true, ExternalPushConfigurationRef: "local-webhook", ExternalPushMetadata: json.RawMessage(`{"custom_params":{"campaign":"autumn","unionid":"must-not-send"}}`)}}
 	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
@@ -189,8 +226,12 @@ func TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect(t *testi
 		t.Fatalf("synthetic replay=%+v/%+v snapshot=%+v calls=%d", first, second, store.testSnapshot, accepter.calls)
 	}
 	store.configuration.ExternalPushMetadata = json.RawMessage(`{"remark":"changed"}`)
+	store.questionnaire.Status = surveyport.StatusArchived
 	third, err := service.QueueCompletionTest(context.Background(), q.ID, 8, key)
 	if err != nil || third != first || accepter.calls != 3 || store.testSnapshot.Policy.Remark != "" {
 		t.Fatalf("changed configuration retargeted test=%+v err=%v calls=%d snapshot=%+v", third, err, accepter.calls, store.testSnapshot)
+	}
+	if _, err = service.QueueCompletionTest(context.Background(), q.ID, 8, "survey-completion-test-command-0002"); !errors.Is(err, surveyport.ErrNotFound) || accepter.calls != 3 {
+		t.Fatalf("archived questionnaire accepted a new test err=%v calls=%d", err, accepter.calls)
 	}
 }

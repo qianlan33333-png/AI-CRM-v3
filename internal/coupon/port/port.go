@@ -96,7 +96,10 @@ type RuleApplication interface {
 	UpdateDraft(context.Context, UpsertCommand) (Coupon, error)
 	Publish(context.Context, ID, int64, string) (Coupon, error)
 	Stop(context.Context, ID, int64, string) (Coupon, error)
-	Archive(context.Context, ID, int64, string) (Coupon, error)
+	// Archive is a versioned terminal lifecycle command. The caller must bind
+	// the exact row version displayed in its confirmation; replaying the same
+	// idempotency key/body returns the original archived snapshot.
+	Archive(context.Context, ID, int64, int64, string) (Coupon, error)
 	Delete(context.Context, ID, int64, string) (Coupon, error)
 	Copy(context.Context, ID, int64, string) (Coupon, error)
 }

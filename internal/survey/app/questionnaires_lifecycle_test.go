@@ -54,10 +54,12 @@ func (s *lifecycleStore) Create(_ context.Context, q surveyport.Questionnaire, _
 }
 func (s *lifecycleStore) Publish(_ context.Context, id surveyport.ID, expected, _ int64, _ time.Time) (surveyport.Questionnaire, error) {
 	s.published++
-	return surveyport.Questionnaire{ID: id, Version: expected + 1, Status: surveyport.StatusPublished}, nil
+	s.source.ID, s.source.Version, s.source.Status = id, expected+1, surveyport.StatusPublished
+	return s.source, nil
 }
 func (s *lifecycleStore) SetStatus(_ context.Context, id surveyport.ID, status surveyport.QuestionnaireStatus, expected, _ int64, _ time.Time) (surveyport.Questionnaire, error) {
-	return surveyport.Questionnaire{ID: id, Version: expected + 1, Status: status}, nil
+	s.source.ID, s.source.Version, s.source.Status = id, expected+1, status
+	return s.source, nil
 }
 
 func TestQuestionnaireLifecycleCreatesDuplicatesAndPublishesIdempotently(t *testing.T) {
@@ -80,5 +82,28 @@ func TestQuestionnaireLifecycleCreatesDuplicatesAndPublishesIdempotently(t *test
 	published, err := service.Publish(context.Background(), 7, 1, 3, "questionnaire-publish-lifecycle-0003")
 	if err != nil || published.Status != surveyport.StatusPublished || store.published != 1 {
 		t.Fatalf("publish=%+v err=%v calls=%d", published, err, store.published)
+	}
+}
+
+func TestQuestionnaireArchiveIsTerminalAndIdempotent(t *testing.T) {
+	question := surveyport.Question{Type: surveyport.QuestionTextarea, Title: "需求", Required: true, SortOrder: 0}
+	store := &lifecycleStore{source: surveyport.Questionnaire{ID: 7, Name: "增长问卷", Title: "增长问卷", Slug: "growth", Status: surveyport.StatusPublished, Mode: surveyport.ModeSurvey, AnswerDisplayMode: surveyport.DisplayAllInOne, Questions: []surveyport.Question{question}}}
+	service := NewService(oauthUOW{}, store)
+	archive, err := service.SetStatus(context.Background(), 7, 1, surveyport.StatusArchived, 3, "questionnaire-archive-lifecycle-0001")
+	if err != nil {
+		t.Fatalf("archive err=%v", err)
+	}
+	if archive.Status != surveyport.StatusArchived || archive.Version != 2 {
+		t.Fatalf("archive=%+v", archive)
+	}
+	replay, err := service.SetStatus(context.Background(), 7, 1, surveyport.StatusArchived, 3, "questionnaire-archive-lifecycle-0001")
+	if err != nil || replay.ID != archive.ID || replay.Status != surveyport.StatusArchived || replay.Version != archive.Version {
+		t.Fatalf("archive replay=%+v err=%v", replay, err)
+	}
+	if _, err = service.SetStatus(context.Background(), 7, archive.Version, surveyport.StatusPublished, 3, "questionnaire-enable-after-archive-0002"); err != surveyport.ErrNotFound {
+		t.Fatalf("enable archived err=%v, want not found", err)
+	}
+	if _, err = service.Duplicate(context.Background(), 7, 3, "questionnaire-copy-after-archive-0003"); err != surveyport.ErrNotFound {
+		t.Fatalf("copy archived err=%v, want not found", err)
 	}
 }

@@ -464,7 +464,7 @@ func (h *Handler) localDelete(w http.ResponseWriter, r *http.Request, id int64) 
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	result, err := h.lifecycle.DeleteLocalProduct(r.Context(), productport.DeleteLocalProductCommand{ID: productport.ID(id), ExpectedVersion: body.ExpectedVersion, Actor: principal.InternalID, IdempotencyKey: key})
+	result, err := h.lifecycle.ArchiveLocalProduct(r.Context(), productport.ArchiveLocalProductCommand{ID: productport.ID(id), ExpectedVersion: body.ExpectedVersion, Actor: principal.InternalID, IdempotencyKey: key})
 	if err != nil {
 		resultError(w, err)
 		return
