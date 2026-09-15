@@ -579,6 +579,17 @@ func TestComponentStatesScreenshotDirectoryUsesConfigurationBoundary(t *testing.
 	}
 }
 
+func TestAutomationFixedContentScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR", "")
+	if value := AutomationFixedContentScreenshotDirectory(); value != "" {
+		t.Fatalf("missing automation fixed-content screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR", "/tmp/aicrm-automation-content-evidence")
+	if value := AutomationFixedContentScreenshotDirectory(); value != "/tmp/aicrm-automation-content-evidence" {
+		t.Fatalf("automation fixed-content screenshot directory=%q", value)
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	allowed := map[string]string{
 		"AICRM_DATABASE_URL":                 "postgres://target@localhost/aicrm",
