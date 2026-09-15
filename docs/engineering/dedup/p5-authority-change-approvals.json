@@ -709,6 +709,28 @@
       ],
       "reason": "Rebind the reviewed customer SSR profile and owner-scoped GroupOps selection authority to current main while retaining the main pagination and interrupted-create recovery contracts. Frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
       "review_reference": "Root review of customer SSR current-main integration and source authority derivation on 2026-09-15"
+    },
+    {
+      "base_commit": "a53d60d280ec6284f6d1f1b1b48bff4390bcaaa1",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b9214cb231f65a7b6cb67286631f1fd379827ad46750a7f98ede4bd3cd7e666e",
+          "head_sha256": "c16b2a83d75c922ae8ce4befe7a507d9da17d3f8b365c8ba382e906b414943e5"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "ae4a00225aeb39f5ec6cb06df38ac1f3b12c987132f7b78f6decf86c1ac93c7a",
+          "head_sha256": "15736e427756d8eb434bf5248077e6b1cad31d47b1b869961565a618fe988db0"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "64caee6a45cd6ba5350c43aea7b98aa6061bfbb660673f5599c4df6210ff0a65",
+          "head_sha256": "f87bd7f91619c883671197ee46abe7e4c007e67a9dd2ea538c52013e44c506f1"
+        }
+      ],
+      "reason": "Rebind the reviewed customer SSR profile and owner-scoped GroupOps selection authority to current main after its interrupted-create recovery merge. Frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root direction to preserve the current main GroupOps recovery contract and customer SSR authority snapshot on 2026-09-15"
     }
   ]
 }
