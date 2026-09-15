@@ -32,7 +32,7 @@ import (
 // joins no owner tables and writes nothing; this PostgreSQL fixture only
 // seeds owner facts needed to exercise the composed read path.
 func TestPostgreSQLAdminOverviewCompositionPreflight(t *testing.T) {
-	fixture := newAdminOverviewFixture(t)
+	fixture := newAdminOverviewFixture(t, withAdminOverviewTrendFacts())
 	response := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/overview?period=7d")
 	assertAdminOverviewResponse(t, response)
 	unauthenticated := httptest.NewRecorder()
@@ -46,7 +46,7 @@ func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1")
 	}
-	fixture := newAdminOverviewFixture(t)
+	fixture := newAdminOverviewFixture(t, withAdminOverviewTrendFacts())
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate overview Chromium journey")
@@ -198,7 +198,17 @@ type adminOverviewFixture struct {
 	session     string
 }
 
-func newAdminOverviewFixture(t *testing.T) *adminOverviewFixture {
+type adminOverviewFixtureOptions struct{ includeTrendFacts bool }
+type adminOverviewFixtureOption func(*adminOverviewFixtureOptions)
+
+// withAdminOverviewTrendFacts supplies the three-date visual fixture only to
+// response and Chromium coverage. Canonical-root and scale tests retain their
+// minimal one-payment baseline so their exact denominator is self-contained.
+func withAdminOverviewTrendFacts() adminOverviewFixtureOption {
+	return func(options *adminOverviewFixtureOptions) { options.includeTrendFacts = true }
+}
+
+func newAdminOverviewFixture(t *testing.T, configure ...adminOverviewFixtureOption) *adminOverviewFixture {
 	t.Helper()
 	// compose resolves the release manifest as web/dist relative to the running
 	// service. Go package tests otherwise start in cmd/aicrm and silently take
@@ -208,6 +218,10 @@ func newAdminOverviewFixture(t *testing.T) *adminOverviewFixture {
 		t.Fatal("locate overview composition fixture")
 	}
 	t.Chdir(filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..")))
+	options := adminOverviewFixtureOptions{}
+	for _, option := range configure {
+		option(&options)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -236,14 +250,14 @@ func newAdminOverviewFixture(t *testing.T) *adminOverviewFixture {
 	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "overview-browser-admin", Password: "overview-browser-admin-password", DisplayName: "Overview Browser Admin"}); err != nil {
 		t.Fatal(err)
 	}
-	seedAdminOverviewFacts(t, ctx, application)
+	seedAdminOverviewFacts(t, ctx, application, options.includeTrendFacts)
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	session, _ := adminAccessLogin(t, application.handler, "overview-browser-admin", "overview-browser-admin-password")
 	return &adminOverviewFixture{ctx: ctx, application: application, server: server, session: session}
 }
 
-func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *composedApplication) {
+func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *composedApplication, includeTrendFacts bool) {
 	t.Helper()
 	pool := application.pool.Native()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -260,23 +274,25 @@ func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *comp
 	if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program','M-OVERVIEW-BROWSER',$2,$3,$3,1200,'CNY','paid',1,$4,$4,$4,false) RETURNING id`, orderID, identityID, customerID, now).Scan(&paymentID); err != nil {
 		t.Fatal(err)
 	}
-	// Seed three trustworthy confirmation dates across the seven-day window.
-	// The deliberately absent dates exercise the ready-only client-side zero-day
-	// completion without fabricating data when the owner reports data_missing.
-	for _, extra := range []struct {
-		sourceKey, merchantOrder string
-		amount                   int64
-		confirmedAt              time.Time
-	}{
-		{sourceKey: "overview-browser-order-six-days", merchantOrder: "M-OVERVIEW-BROWSER-6", amount: 400, confirmedAt: now.AddDate(0, 0, -6)},
-		{sourceKey: "overview-browser-order-three-days", merchantOrder: "M-OVERVIEW-BROWSER-3", amount: 800, confirmedAt: now.AddDate(0, 0, -3)},
-	} {
-		var extraOrderID int64
-		if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','overview-browser',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, extra.sourceKey, extra.merchantOrder, customerID, extra.amount, extra.confirmedAt).Scan(&extraOrderID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := pool.Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program',$2,$3,$4,$4,$5,'CNY','paid',1,$6,$6,$6,false)`, extraOrderID, extra.merchantOrder, identityID, customerID, extra.amount, extra.confirmedAt); err != nil {
-			t.Fatal(err)
+	if includeTrendFacts {
+		// Seed three trustworthy confirmation dates only for the visual fixture.
+		// The deliberately absent dates exercise ready-only client-side zero-day
+		// completion without fabricating data when the Owner reports data_missing.
+		for _, extra := range []struct {
+			sourceKey, merchantOrder string
+			amount                   int64
+			confirmedAt              time.Time
+		}{
+			{sourceKey: "overview-browser-order-six-days", merchantOrder: "M-OVERVIEW-BROWSER-6", amount: 400, confirmedAt: now.AddDate(0, 0, -6)},
+			{sourceKey: "overview-browser-order-three-days", merchantOrder: "M-OVERVIEW-BROWSER-3", amount: 800, confirmedAt: now.AddDate(0, 0, -3)},
+		} {
+			var extraOrderID int64
+			if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','overview-browser',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, extra.sourceKey, extra.merchantOrder, customerID, extra.amount, extra.confirmedAt).Scan(&extraOrderID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program',$2,$3,$4,$4,$5,'CNY','paid',1,$6,$6,$6,false)`, extraOrderID, extra.merchantOrder, identityID, customerID, extra.amount, extra.confirmedAt); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	var refundID int64
