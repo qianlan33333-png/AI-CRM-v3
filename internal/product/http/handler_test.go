@@ -168,6 +168,7 @@ type testExternalPush struct {
 type testMemberEntitlements struct {
 	mu            sync.Mutex
 	page          orderport.ServicePeriodMemberPage
+	pages         []orderport.ServicePeriodMemberPage
 	queries       []orderport.ServicePeriodMemberQuery
 	remarkCmd     *orderport.RemarkCommand
 	remarkCalls   int
@@ -183,7 +184,19 @@ func (stub *testMemberEntitlements) ListServicePeriodMembers(_ context.Context, 
 	defer stub.mu.Unlock()
 	stub.queries = append(stub.queries, query)
 	page := stub.page
-	page.Items = append([]orderport.Entitlement(nil), stub.page.Items...)
+	if len(stub.pages) > 0 {
+		pageIndex := 0
+		if query.Cursor != "" {
+			if _, err := fmt.Sscanf(query.Cursor, "test-member-page-%d", &pageIndex); err != nil || pageIndex < 1 || pageIndex >= len(stub.pages) {
+				return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+			}
+		}
+		page = stub.pages[pageIndex]
+		if page.NextCursor == "" && pageIndex+1 < len(stub.pages) {
+			page.NextCursor = fmt.Sprintf("test-member-page-%d", pageIndex+1)
+		}
+	}
+	page.Items = append([]orderport.Entitlement(nil), page.Items...)
 	if query.GroupByRemainingDays || len(query.GridGroups) > 0 {
 		snapshot := query.SnapshotAt
 		if snapshot.IsZero() {
@@ -970,6 +983,7 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 		t.Fatal("node is required for frozen member-grid browser journey")
 	}
 	handler, _, _, _ := newHandlerForTest(t)
+	members := handler.members.(*testMemberEntitlements)
 	workspace := handler.workspace.(*testMemberWorkspace)
 	filterConfig := json.RawMessage(`{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"remaining_days","operator":"gte","value":1}]},"sorts":[],"groups":[]}`)
 	workspace.views = []productport.MemberGridView{{ID: 19, ProductID: 7, Name: "筛选视图", Position: 1, Config: filterConfig, Version: 1, CreatedBy: 9, UpdatedBy: 9, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}}
@@ -1004,7 +1018,6 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 		t.Fatalf("frozen member-grid browser journey: %v\n%s", err, output)
 	}
 
-	members := handler.members.(*testMemberEntitlements)
 	remarkCommand, foundRemark, _, queries := members.snapshot()
 	if !foundRemark || remarkCommand.Remark != "第二次备注" || remarkCommand.ExpectedVersion != 6 || remarkCommand.CustomerID != 0 {
 		t.Fatalf("opaque remark CAS command=%+v", remarkCommand)
@@ -1032,6 +1045,52 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 	}
 	if !savedGroup || !savedSort || workspaceSnapshot.Collaborators != 0 || workspaceSnapshot.Share.Enabled || workspaceSnapshot.Share.PublicID != "" {
 		t.Fatalf("frozen UI persistence group=%t sort=%t collaborators=%d share=%+v", savedGroup, savedSort, workspaceSnapshot.Collaborators, workspaceSnapshot.Share)
+	}
+}
+
+func TestFrozenMemberGridPublicSummaryBrowserJourneyUsesCursorAndGroups(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatal("node is required for frozen member-grid public summary journey")
+	}
+	handler, _, _, _ := newHandlerForTest(t)
+	members := handler.members.(*testMemberEntitlements)
+	now := time.Now().UTC()
+	members.pages = []orderport.ServicePeriodMemberPage{
+		{Items: append([]orderport.Entitlement(nil), members.page.Items...)},
+		{Items: []orderport.Entitlement{
+			{ID: 42, CustomerID: 78, ServiceProductID: 7, ProductName: "周期七", Status: "active", StartAt: now.Add(-48 * time.Hour), EndAt: now.Add(23 * time.Hour), RenewalCountAvailable: true, Version: 1, UpdatedAt: now},
+			{ID: 43, CustomerID: 79, ServiceProductID: 7, ProductName: "周期七", Status: "active", StartAt: now.Add(-72 * time.Hour), EndAt: now.Add(23 * time.Hour), RenewalCountAvailable: true, Version: 1, UpdatedAt: now},
+		}},
+	}
+	workspace := handler.workspace.(*testMemberWorkspace)
+	const shareToken = "mgshare1.abcdefghijklmnopqrstuv.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	workspace.share = productport.MemberGridShare{ProductID: 7, Enabled: true, PublicID: shareToken, Version: 1}
+	workspace.views = []productport.MemberGridView{{
+		ID: 31, ProductID: 7, Name: "分组末页视图", Position: 1,
+		Config:  json.RawMessage(`{"schema_version":1,"filter":{"logic":"and","conditions":[]},"sorts":[],"groups":[{"field":"remaining_days","direction":"asc"}]}`),
+		Version: 1, CreatedBy: 9, UpdatedBy: 9, CreatedAt: now, UpdatedAt: now,
+	}}
+
+	ui := NewMemberGridUI()
+	mux := http.NewServeMux()
+	mux.Handle("/shared/service-period-member-grid", ui)
+	mux.Handle("/service-period-member-grid-assets/", ui)
+	mux.Handle("/static/service-period/icons/", ui)
+	mux.Handle("/", handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate member-grid public summary journey")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", ".."))
+	journey := filepath.Join(root, "internal", "product", "http", "member_grid_host", "member_grid_public_summary_journey.mjs")
+	command := exec.Command("node", journey)
+	command.Dir = root
+	command.Env = append(os.Environ(), "AICRM_MEMBER_GRID_JOURNEY_BASE_URL="+server.URL, "AICRM_MEMBER_GRID_JOURNEY_SHARE_TOKEN="+shareToken)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("frozen member-grid public summary journey: %v\n%s", err, output)
 	}
 }
 

@@ -98,15 +98,16 @@
 
   // The public query intentionally omits a global total. The frozen renderer
   // treats its null sentinel as Number(null) and reports “共 0 行” even when
-  // it has rendered rows. The V3 Host can state the truthful loaded count
-  // without inventing a total or changing the frozen query contract.
-  const renderUnknownPublicTotal = () => {
+  // it has rendered rows. Group collapse intentionally removes data rows from
+  // the DOM, so the Host states only the current visible-row count. It neither
+  // invents a total nor adds another pagination state.
+  const renderUnknownPublicVisibleRows = () => {
     if (memberGridRoot()?.dataset?.mode !== "public") return;
     const summary = document.getElementById("spResultSummary");
     const rows = document.querySelectorAll("#spGridBody tr[data-record-id]").length;
-    if (summary && rows > 0 && /^共\s*0\s*行(?:，已加载\s*\d+\s*行)?$/.test(summary.textContent.trim())) summary.textContent = `已加载 ${rows} 行`;
+    if (summary && /^共\s*0\s*行(?:，(?:已加载|当前显示)\s*\d+\s*行)?$/.test(summary.textContent.trim())) summary.textContent = `当前显示 ${rows} 行`;
   };
-  new MutationObserver(renderUnknownPublicTotal).observe(document.documentElement, {childList:true, subtree:true, characterData:true});
-  renderUnknownPublicTotal();
+  new MutationObserver(renderUnknownPublicVisibleRows).observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+  renderUnknownPublicVisibleRows();
 
 })(window, document);
