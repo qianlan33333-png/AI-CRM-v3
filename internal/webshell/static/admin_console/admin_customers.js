@@ -916,8 +916,16 @@
   if (el.batchTagRefresh) el.batchTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.batchTagResult, el.batchTagRefresh); });
   if (el.singleTagRefresh) el.singleTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.singleTagResult, el.singleTagRefresh); });
   if (el.filters) {
+    const textSearchInputs = new Set(el.filters.querySelectorAll('input[name="keyword"], input[name="phone"]'));
+    const composingSearchInputs = new WeakSet();
+    el.filters.addEventListener("compositionstart", function (event) {
+      if (textSearchInputs.has(event.target)) composingSearchInputs.add(event.target);
+    });
+    el.filters.addEventListener("compositionend", function (event) {
+      if (textSearchInputs.has(event.target)) composingSearchInputs.delete(event.target);
+    });
     el.filters.addEventListener("keydown", function (event) {
-      if (event.key !== "Enter" || event.isComposing) return;
+      if (!textSearchInputs.has(event.target) || event.key !== "Enter" || event.isComposing || event.keyCode === 229 || composingSearchInputs.has(event.target)) return;
       event.preventDefault();
       el.filters.requestSubmit();
     });

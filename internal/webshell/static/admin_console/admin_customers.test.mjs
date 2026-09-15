@@ -76,9 +76,22 @@ searchInput.value = "候选客户";
 searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: true }));
 await new Promise((resolve) => setTimeout(resolve, 20));
 if (customerListReads !== 1) throw new Error("IME candidate Enter submitted the customer search");
+searchInput.dispatchEvent(new dom.window.CompositionEvent("compositionstart", { bubbles: true }));
+searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, keyCode: 229 }));
+await new Promise((resolve) => setTimeout(resolve, 20));
+if (customerListReads !== 1) throw new Error("Safari IME candidate Enter submitted the customer search");
+searchInput.dispatchEvent(new dom.window.CompositionEvent("compositionend", { bubbles: true }));
+searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, keyCode: 229 }));
+await new Promise((resolve) => setTimeout(resolve, 20));
+if (customerListReads !== 1) throw new Error("legacy IME keyCode 229 submitted the customer search");
 searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: false }));
 await new Promise((resolve) => setTimeout(resolve, 20));
 if (customerListReads !== 2) throw new Error("committed Enter did not submit the customer search");
+for (const control of [dom.window.document.querySelector('#customer-list-refresh'), dom.window.document.querySelector('#customer-list-clear'), dom.window.document.querySelector('#customer-list-filters select[name="status"]')]) {
+  const enter = new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  control.dispatchEvent(enter);
+  if (enter.defaultPrevented) throw new Error("customer text-search Enter guard intercepted a native control");
+}
 const checkbox = dom.window.document.querySelector('input[type="checkbox"]');
 checkbox.checked = true;
 checkbox.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
