@@ -1,7 +1,10 @@
 export {};
 import { api } from '../src/shared/api/client';
+import { emptyAdminDb, radarPageDto, type AdminReadContext } from '../src/api/admin';
+import { getRadarLink } from '../src/api/generated/p4-radar/p4-radar';
+import type { RadarLink as ApiRadarLink } from '../src/api/generated/health.schemas';
+import { apiRequestOptions, request as authenticatedRequest, unwrapGenerated } from '../src/api/transport';
 import { rememberActionInputs, runAction } from './actionFeedback';
-import { request as authenticatedRequest } from '../src/api/transport';
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest } from './shared/ui/materialPickerAdapter';
 
@@ -21,6 +24,52 @@ type StandardWindow = Window & {
 const originalFetch = window.fetch.bind(window);
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+
+type RadarExactTarget =
+  | { kind: 'other' }
+  | { kind: 'new' }
+  | { kind: 'read'; id: number }
+  | { kind: 'invalid' };
+
+function radarExactTarget(context?: AdminReadContext): RadarExactTarget {
+  if (context?.page !== 'radarDetail' && context?.page !== 'radarForm') return { kind: 'other' };
+  const entries = Array.from(new URL(location.href).searchParams.entries());
+  if (context.page === 'radarForm' && entries.length === 0) return { kind: 'new' };
+  if (entries.length !== 1 || entries[0][0] !== 'id') return { kind: 'invalid' };
+  const rawID = entries[0][1];
+  if (!/^[1-9][0-9]*$/.test(rawID)) return { kind: 'invalid' };
+  const id = Number(rawID);
+  if (!Number.isSafeInteger(id) || String(id) !== rawID) return { kind: 'invalid' };
+  return { kind: 'read', id };
+}
+
+async function exactRadarDb(id: number) {
+  const payload = record(unwrapGenerated(await getRadarLink(id, apiRequestOptions())));
+  const link = record(payload.link);
+  if (
+    payload.local_projection !== true ||
+    payload.real_external_call_executed !== false ||
+    !Number.isSafeInteger(link.link_id) ||
+    link.link_id !== id
+  ) {
+    throw new Error('内容雷达详情数据异常，请刷新重试。');
+  }
+  const db = emptyAdminDb();
+  db.radarLinks = [radarPageDto(link as unknown as ApiRadarLink)];
+  return db;
+}
+
+function installRadarExactRead(): void {
+  const prior = api.loadDb.bind(api);
+  api.loadDb = async (context?: AdminReadContext) => {
+    const target = radarExactTarget(context);
+    if (target.kind === 'invalid') throw new Error('内容雷达链接 ID 无效');
+    if (target.kind !== 'read' || api.mode !== 'http') return prior(context);
+    return exactRadarDb(target.id);
+  };
+}
+
+installRadarExactRead();
 
 // Radar explicitly supplies this authorised, page-scoped read to the shared
 // dialog. The dialog never reaches into AdminApi or chooses a catalogue scope.
