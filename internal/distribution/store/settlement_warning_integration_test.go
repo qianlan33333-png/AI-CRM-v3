@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -157,6 +160,10 @@ func seedRefundRecheckCommission(t *testing.T, ctx context.Context, pool *pgxpoo
 }
 
 func settlementWarningPool(t *testing.T) (*pgxpool.Pool, func()) {
+	return settlementWarningPoolWithTracer(t, nil)
+}
+
+func settlementWarningPoolWithTracer(t *testing.T, tracer pgx.QueryTracer) (*pgxpool.Pool, func()) {
 	t.Helper()
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -185,6 +192,7 @@ func settlementWarningPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	config := adminConfig.Copy()
 	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.ConnConfig.Tracer = tracer
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
@@ -217,5 +225,109 @@ func settlementWarningPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer stop()
 		_, _ = admin.Exec(cleanup, "DROP SCHEMA "+identifier+" CASCADE")
 		admin.Close()
+	}
+}
+
+type orderDistributionReadTracer struct{ statements atomic.Int32 }
+
+func (t *orderDistributionReadTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "FROM distribution_order_attributions a") {
+		t.statements.Add(1)
+	}
+	return ctx
+}
+
+func (t *orderDistributionReadTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+}
+
+func (t *orderDistributionReadTracer) Reset()       { t.statements.Store(0) }
+func (t *orderDistributionReadTracer) Count() int32 { return t.statements.Load() }
+
+func TestPostgreSQLCommissionListReadsPaidSystemConfirmationWithoutScanningMoneyAsTime(t *testing.T) {
+	readTracer := &orderDistributionReadTracer{}
+	pool, cleanup := settlementWarningPoolWithTracer(t, readTracer)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC)
+	distributor, policy, credential := seedRefundRecheckParentFacts(t, ctx, pool, now)
+	commissionID := seedRefundRecheckCommission(t, ctx, pool, distributor, policy, credential, 8301, now)
+	otherCommissionID := seedRefundRecheckCommission(t, ctx, pool, distributor, policy, credential, 8302, now)
+	confirmed := now.Add(2 * time.Hour)
+	if _, err := pool.Exec(ctx, `UPDATE distribution_commissions SET status='paid',paid_minor=100,version=2,updated_at=$2 WHERE id=$1`, commissionID, confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at) VALUES('distribution.settlement_paid.v1','commission',$1,'worker:distribution-due','{"settlement_reference":"settlement:8301"}',$2)`, commissionID, confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO distribution_commission_adjustments(commission_id,kind,delta_minor,resulting_payable_minor,reason,source_reference,occurred_at) VALUES($1,'buyer_refund',-20,80,'buyer_refund','refund:8301',$2)`, commissionID, confirmed.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'settlement:8301',60,'CNY','payment:8301','receiver_succeeded',$2,1,$3,$3),($1,'settlement:8301-no-audit',40,'CNY','payment:8301b','receiver_succeeded',$2,1,$3,$3)`, commissionID, confirmed.Add(24*time.Hour), confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO distribution_exceptions(commission_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at) VALUES($1,'buyer_refund_after_paid','open',0,100,100,'buyer_refund_after_paid','refund:8301','order-refund:8301',1,$2,$2)`, commissionID, confirmed); err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page distributionport.CommissionPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		page, readErr = repository.ListCommissionsByCustomer(tx, 202, "", "", 20)
+		return readErr
+	}); err != nil {
+		t.Fatalf("paid commission list: %v", err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("paid list=%+v", page.Items)
+	}
+	var paidItem *distributionport.CommissionListItem
+	for i := range page.Items {
+		if page.Items[i].OrderReference == "order-8301" {
+			paidItem = &page.Items[i]
+		}
+	}
+	if paidItem == nil || paidItem.PaidMinor != 100 || !paidItem.SettlementConfirmedAt.Equal(confirmed) || !paidItem.PaidAt.Equal(confirmed) {
+		t.Fatalf("paid list=%+v", page.Items)
+	}
+	// An audit may arrive later for the commission with an invalid settlement
+	// reference. It is not confirmation evidence for any persisted settlement
+	// and must not replace the order projection's last real confirmation time.
+	if _, err = pool.Exec(ctx, `INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at) VALUES('distribution.settlement_paid.v1','commission',$1,'fixture:late-wrong-reference','{"settlement_reference":"settlement:8301-not-persisted"}',$2)`, commissionID, confirmed.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	readTracer.Reset()
+	var byOrder map[int64][]distributionport.OrderDistributionLine
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		byOrder, readErr = repository.ReadOrderDistribution(tx, []int64{8301, 8302})
+		return readErr
+	}); err != nil {
+		t.Fatalf("order batch distribution: %v", err)
+	}
+	if statements := readTracer.Count(); statements != 1 {
+		t.Fatalf("order distribution read used %d fact statements; one statement is required so PostgreSQL supplies one MVCC snapshot", statements)
+	}
+	lines := byOrder[8301]
+	if len(lines) != 1 || !lines[0].HasCommission || lines[0].CommissionID != commissionID || lines[0].PaidMinor != 100 || !lines[0].SettlementConfirmedAt.Equal(confirmed) || lines[0].RateBasisPoints != 1000 || lines[0].WaitDays != 7 {
+		t.Fatalf("order 8301 lines=%+v", lines)
+	}
+	if len(lines[0].Adjustments) != 1 || lines[0].Adjustments[0].DeltaMinor != -20 || len(lines[0].Settlements) != 2 || lines[0].Settlements[0].Reference != "settlement:8301" || lines[0].Settlements[0].SettlementConfirmedAt == nil || !lines[0].Settlements[0].SettlementConfirmedAt.Equal(confirmed) || lines[0].Settlements[1].Reference != "settlement:8301-no-audit" || lines[0].Settlements[1].SettlementConfirmedAt != nil || len(lines[0].Exceptions) != 1 || lines[0].Exceptions[0].Kind != "buyer_refund_after_paid" {
+		t.Fatalf("order 8301 nested distribution facts=%+v", lines[0])
+	}
+	otherLines := byOrder[8302]
+	if len(otherLines) != 1 || otherLines[0].CommissionID != otherCommissionID || otherLines[0].SettlementConfirmedAt != nil || len(otherLines[0].Adjustments) != 0 || len(otherLines[0].Settlements) != 0 || len(otherLines[0].Exceptions) != 0 {
+		t.Fatalf("order 8302 received crossed distribution facts=%+v", otherLines)
 	}
 }
