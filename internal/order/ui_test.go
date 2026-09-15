@@ -43,3 +43,25 @@ func TestOrderUIRequiresAndServesHostBundle(t *testing.T) {
 		t.Fatal("missing Host must fail rather than render the old query UI")
 	}
 }
+
+func TestOrderDetailUIAcceptsOnlyCanonicalProviderQuery(t *testing.T) {
+	for _, test := range []struct {
+		name, query string
+		want        bool
+	}{
+		{"legacy id", "?id=M-1", true},
+		{"wechat alias", "?id=M-1&provider=wechat", true},
+		{"wechat pay", "?id=M-1&provider=wechat_pay", true},
+		{"alipay", "?id=M-1&provider=alipay", true},
+		{"unknown provider", "?id=M-1&provider=unknown", false},
+		{"duplicate provider", "?id=M-1&provider=wechat&provider=alipay", false},
+		{"unrelated query", "?id=M-1&source=dom", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/admin/orderDetail.html"+test.query, nil)
+			if got := validUIQuery(request, "orderDetail"); got != test.want {
+				t.Fatalf("validUIQuery(%s)=%v want=%v", test.query, got, test.want)
+			}
+		})
+	}
+}

@@ -77,8 +77,21 @@ func validUIQuery(r *http.Request, page string) bool {
 		return len(values) == 0
 	}
 	ids, ok := values["id"]
-	if !ok || len(values) != 1 || len(ids) != 1 || ids[0] == "" || len(ids[0]) > 200 || strings.TrimSpace(ids[0]) != ids[0] {
+	if !ok || len(ids) != 1 || ids[0] == "" || len(ids[0]) > 200 || strings.TrimSpace(ids[0]) != ids[0] {
 		return false
+	}
+	if len(values) > 2 {
+		return false
+	}
+	if providers, exists := values["provider"]; exists {
+		if len(providers) != 1 || !validDetailProvider(providers[0]) {
+			return false
+		}
+	}
+	if len(values) == 2 {
+		if _, exists := values["provider"]; !exists {
+			return false
+		}
 	}
 	for _, value := range ids[0] {
 		if unicode.IsControl(value) {
@@ -86,6 +99,10 @@ func validUIQuery(r *http.Request, page string) bool {
 		}
 	}
 	return true
+}
+
+func validDetailProvider(provider string) bool {
+	return provider == "wechat" || provider == "wechat_pay" || provider == "wechat_shop" || provider == "alipay"
 }
 
 type buildManifest struct {

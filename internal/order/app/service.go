@@ -99,6 +99,12 @@ type Store interface {
 	CommercePushDeliveryReference(context.Context, domain.Provider, string) (orderport.CommercePushDeliveryReference, error)
 }
 
+// providerReferenceStore is an additive private store seam. Existing test
+// stores and legacy read consumers keep the ambiguity-safe reference lookup.
+type providerReferenceStore interface {
+	FindByReferenceForProvider(context.Context, domain.Provider, string) ([]domain.Order, error)
+}
+
 // paymentConfirmationEvidenceStore is deliberately a private read seam. A
 // Provider reconciliation may prove an existing paid event, but it must never
 // manufacture one for an already-paid order whose immutable event is absent.
@@ -752,6 +758,39 @@ func (s *Service) GetByReference(ctx context.Context, reference string) (domain.
 		return domain.Snapshot{}, orderport.ErrConflict
 	}
 	return matches[0].Snapshot(), nil
+}
+
+// GetByReferenceForProvider resolves the legacy merchant reference only in
+// the explicitly selected payment provider. This is a read-only detail seam;
+// it does not relax the ambiguity-safe behaviour of GetByReference.
+func (s *Service) GetByReferenceForProvider(ctx context.Context, provider domain.Provider, reference string) (domain.Snapshot, error) {
+	if !ready(s) || !validScope(reference) || !validProvider(provider) {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	store, ok := s.store.(providerReferenceStore)
+	if !ok {
+		return domain.Snapshot{}, orderport.ErrUnavailable
+	}
+	var matches []domain.Order
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var findErr error
+		matches, findErr = store.FindByReferenceForProvider(tx, provider, reference)
+		return findErr
+	})
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	if len(matches) == 0 {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return matches[0].Snapshot(), nil
+}
+
+func validProvider(provider domain.Provider) bool {
+	return provider == domain.ProviderWeChatPay || provider == domain.ProviderWeChatShop || provider == domain.ProviderAlipay
 }
 
 func (s *Service) GetByReferenceForCustomer(ctx context.Context, reference string, customerID int64) (domain.Snapshot, error) {

@@ -802,6 +802,22 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
+  /api/admin/overview:
+    get:
+      operationId: getAdminOverview
+      tags: [Overview]
+      description: "Read-only operating summary for the authenticated global admin-read scope. Every owner section returns its own `status`, `as_of`, and `scope`: `zero` is a confirmed zero, `data_missing` preserves known values plus missing-evidence counts, and `failed` does not invalidate other sections. Payment includes native and historical rows only when the original paid confirmation time is trustworthy; no-time historical facts are reported as missing evidence rather than silently excluded."
+      security: [{adminSession: []}]
+      parameters:
+        - {name: period, in: query, required: true, schema: {type: string, enum: [today, 7d, 30d, custom]}}
+        - {name: from, in: query, description: Required only when period=custom. Inclusive Beijing calendar date., schema: {type: string, format: date}}
+        - {name: to, in: query, description: Required only when period=custom and must be on or after from. Inclusive Beijing calendar date., schema: {type: string, format: date}}
+      responses:
+        "200": {description: "Per-section operating facts. The request has no Provider calls, writes, queues, or persisted aggregate table.", content: {application/json: {schema: {$ref: "#/components/schemas/AdminOverview"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/customers:
     get:
       operationId: listCustomers
@@ -4199,6 +4215,129 @@ components:
       content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformV1Failure"}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    AdminOverview:
+      type: object
+      additionalProperties: false
+      required: [range, contract, paid, customers, refunds, distribution, todos]
+      properties:
+        range: {$ref: "#/components/schemas/AdminOverviewRange"}
+        contract: {$ref: "#/components/schemas/AdminOverviewContract"}
+        paid: {$ref: "#/components/schemas/AdminOverviewPaid"}
+        customers: {$ref: "#/components/schemas/AdminOverviewCustomers"}
+        refunds: {$ref: "#/components/schemas/AdminOverviewRefunds"}
+        distribution: {$ref: "#/components/schemas/AdminOverviewDistribution"}
+        todos: {$ref: "#/components/schemas/AdminOverviewTodos"}
+    AdminOverviewRange:
+      type: object
+      additionalProperties: false
+      required: [period, timezone, start, end]
+      properties:
+        period: {type: string, enum: [today, 7d, 30d, custom]}
+        timezone: {const: Asia/Shanghai}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time, description: Exclusive range end.}
+    AdminOverviewContract:
+      type: object
+      additionalProperties: false
+      required: [scope, paid_gross, paid_payers, new_customers, refunds, distribution, cross_domain_reads]
+      properties:
+        scope: {const: admin_authorized_global}
+        paid_gross: {type: string}
+        paid_payers: {type: string}
+        new_customers: {type: string}
+        refunds: {type: string}
+        distribution: {type: string}
+        cross_domain_reads: {type: string}
+    AdminOverviewSection:
+      type: object
+      additionalProperties: false
+      required: [status, as_of, scope]
+      properties:
+        status: {type: string, enum: [ready, zero, data_missing, failed]}
+        as_of: {type: string, format: date-time, description: Actual completion observation time for this owner section.}
+        scope: {const: admin_authorized_global}
+        reason_code: {type: string}
+    AdminOverviewMoney:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: {type: integer, format: int64}
+        currency: {type: string, minLength: 1, maxLength: 16}
+    AdminOverviewTrendPoint:
+      type: object
+      additionalProperties: false
+      required: [date, gross, order_count]
+      properties:
+        date: {type: string, format: date}
+        gross: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+        order_count: {type: integer, format: int64, minimum: 0}
+    AdminOverviewPaid:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [gross, order_count, trend]
+          properties:
+            gross: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            order_count: {type: integer, format: int64, minimum: 0, description: Distinct Payment business order_id values in the trustworthy paid_confirmed_at window.}
+            distinct_canonical_payers:
+              type: integer
+              format: int64
+              minimum: 0
+              description: Distinct current canonical Customer roots for the historical paid payer set. Omitted when the bounded OneID root read is unavailable so clients cannot present an unknown count as zero.
+            missing_payer_count: {type: integer, format: int64, minimum: 0}
+            missing_confirmation_evidence_count: {type: integer, format: int64, minimum: 0}
+            missing_confirmation_evidence_amount: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            trend: {type: array, items: {$ref: "#/components/schemas/AdminOverviewTrendPoint"}}
+    AdminOverviewCustomers:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [new_canonical_customers, historical_excluded]
+          properties:
+            new_canonical_customers: {type: integer, format: int64, minimum: 0}
+            historical_excluded: {type: integer, format: int64, minimum: 0}
+            unknown_source_count: {type: integer, format: int64, minimum: 0}
+            evidence: {type: string}
+    AdminOverviewRefunds:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [completed_amount, completed_count, net_amount]
+          properties:
+            completed_amount: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            completed_count: {type: integer, format: int64, minimum: 0}
+            missing_completion_evidence_count: {type: integer, format: int64, minimum: 0}
+            net_amount: {type: [array, "null"], items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            evidence: {type: string}
+    AdminOverviewDistribution:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [period_paid_sales_minor, period_initial_commission_minor, period_commission_count, current_unsettled_minor, current_settled_minor, currency]
+          properties:
+            period_paid_sales_minor: {type: integer, format: int64, minimum: 0}
+            period_initial_commission_minor: {type: integer, format: int64, minimum: 0}
+            period_commission_count: {type: integer, format: int64, minimum: 0}
+            current_unsettled_minor: {type: integer, format: int64, minimum: 0}
+            current_settled_minor: {type: integer, format: int64, minimum: 0}
+            currency: {const: CNY}
+    AdminOverviewTodos:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [code, count, href]
+                properties:
+                  code: {type: string}
+                  count: {type: integer, format: int64, minimum: 0}
+                  href: {type: string, pattern: "^/"}
     RadarLink:
       type: object
       additionalProperties: false
@@ -5056,6 +5195,35 @@ components:
         provider_label: {type: string}
         detail_url: {type: string, maxLength: 2048}
         refundable_amount_total: {type: integer, format: int64, minimum: 0}
+        distribution_read_state: {type: string, enum: [available, unavailable], description: "Distribution owner read state after Order authorization. unavailable never means non-distribution."}
+        distribution:
+          type: array
+          description: "Immutable per-item Distribution attribution snapshots. Empty is a non-distribution order only when distribution_read_state is available."
+          items:
+            type: object
+            additionalProperties: false
+            required: [item_line, product_name, distributor_display_name, rate_basis_points, wait_days, policy_version, has_commission, initial_minor, current_payable_minor, paid_minor, currency, status, hold_reason, cancel_reason, exception_reason, due_at, settlement_confirmed_at, adjustments, settlements, exceptions]
+            properties:
+              item_line: {type: integer, minimum: 1}
+              product_name: {type: string, maxLength: 500}
+              distributor_display_name: {type: string, maxLength: 200}
+              rate_basis_points: {type: integer, minimum: 0, maximum: 3000, description: "Frozen attribution policy ratio in basis points."}
+              wait_days: {type: integer, minimum: 0, maximum: 29, description: "Frozen refund-review wait days."}
+              policy_version: {type: integer, minimum: 1}
+              has_commission: {type: boolean, description: "false means attribution exists but payment has not formed a commission."}
+              initial_minor: {type: integer, format: int64, minimum: 0}
+              current_payable_minor: {type: integer, format: int64, minimum: 0}
+              paid_minor: {type: integer, format: int64, minimum: 0}
+              currency: {type: string, pattern: "^[A-Z]{3}$"}
+              status: {type: string, description: "Empty when has_commission is false."}
+              hold_reason: {type: string, maxLength: 200}
+              cancel_reason: {type: string, maxLength: 200}
+              exception_reason: {type: string, maxLength: 200}
+              due_at: {type: [string, "null"], format: date-time, description: "预计可结算时间; not a completed payout."}
+              settlement_confirmed_at: {type: [string, "null"], format: date-time, description: "System confirmation time from distribution.settlement_paid.v1, not Provider or bank arrival time."}
+              adjustments: {type: array, items: {type: object, additionalProperties: false, required: [kind, delta_minor, resulting_payable_minor, reason, occurred_at], properties: {kind: {type: string}, delta_minor: {type: integer, format: int64}, resulting_payable_minor: {type: integer, format: int64, minimum: 0}, reason: {type: string, maxLength: 200}, occurred_at: {type: string, format: date-time}}}}
+              settlements: {type: array, items: {type: object, additionalProperties: false, required: [reference, amount_minor, currency, state, provider_deadline_at, settlement_confirmed_at, created_at, updated_at], properties: {reference: {type: string, maxLength: 200}, amount_minor: {type: integer, format: int64, minimum: 1}, currency: {type: string, pattern: "^[A-Z]{3}$"}, state: {type: string}, provider_deadline_at: {type: [string, "null"], format: date-time}, settlement_confirmed_at: {type: [string, "null"], format: date-time, description: "System confirmation time for this settlement_reference from distribution.settlement_paid.v1; not Provider or bank arrival time."}, created_at: {type: [string, "null"], format: date-time}, updated_at: {type: [string, "null"], format: date-time}}}}
+              exceptions: {type: array, items: {type: object, additionalProperties: false, required: [kind, status, amount_minor, reason, evidence_reference, created_at, updated_at], properties: {kind: {type: string}, status: {type: string}, amount_minor: {type: integer, format: int64, minimum: 0}, reason: {type: string, maxLength: 500}, evidence_reference: {type: string, maxLength: 500}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}}}}
     LegacyOrderRefund:
       type: object
       additionalProperties: false

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 )
@@ -29,11 +31,13 @@ func (s securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomai
 }
 
 type appStub struct {
-	page    orderport.Page
-	detail  domain.Snapshot
-	getErr  error
-	query   orderport.ListQuery
-	exports int
+	page        orderport.Page
+	detail      domain.Snapshot
+	scoped      map[domain.Provider]domain.Snapshot
+	scopedCalls []domain.Provider
+	getErr      error
+	query       orderport.ListQuery
+	exports     int
 }
 
 type customerDisplaysStub map[customerdomain.CustomerID]customerport.DirectoryContactDisplay
@@ -56,6 +60,13 @@ func (stub *customerFilterStub) ResolveOrderCustomerFilter(_ context.Context, in
 func (a *appStub) Get(context.Context, int64) (domain.Snapshot, error) { return a.detail, a.getErr }
 func (a *appStub) GetByReference(context.Context, string) (domain.Snapshot, error) {
 	return a.detail, a.getErr
+}
+func (a *appStub) GetByReferenceForProvider(_ context.Context, provider domain.Provider, _ string) (domain.Snapshot, error) {
+	a.scopedCalls = append(a.scopedCalls, provider)
+	if order, ok := a.scoped[provider]; ok {
+		return order, a.getErr
+	}
+	return domain.Snapshot{}, orderport.ErrNotFound
 }
 
 func TestListUsesCanonicalCustomerDisplayName(t *testing.T) {
@@ -170,6 +181,41 @@ func TestAmbiguousReferenceReturnsConflict(t *testing.T) {
 	}
 }
 
+func TestProviderScopedOrderDetailKeepsSameMerchantNumbersSeparate(t *testing.T) {
+	wechat := sampleOrder()
+	wechat.ID, wechat.MerchantOrderNo, wechat.Provider = 101, "shared-reference", domain.ProviderWeChatPay
+	alipay := sampleOrder()
+	alipay.ID, alipay.MerchantOrderNo, alipay.Provider = 202, wechat.MerchantOrderNo, domain.ProviderAlipay
+	application := &appStub{detail: wechat, scoped: map[domain.Provider]domain.Snapshot{domain.ProviderWeChatPay: wechat, domain.ProviderAlipay: alipay}}
+	handler, err := NewHandler(application, adminSecurity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		provider string
+		wantID   int64
+	}{{provider: "wechat", wantID: wechat.ID}, {provider: "alipay", wantID: alipay.ID}} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders/shared-reference?provider="+test.provider, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":`+strconv.FormatInt(test.wantID, 10)) {
+			t.Fatalf("provider=%s code=%d body=%s", test.provider, response.Code, response.Body.String())
+		}
+	}
+	if got := application.scopedCalls; len(got) != 2 || got[0] != domain.ProviderWeChatPay || got[1] != domain.ProviderAlipay {
+		t.Fatalf("scoped calls=%v", got)
+	}
+	legacy := httptest.NewRecorder()
+	handler.ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/api/admin/orders/shared-reference", nil))
+	if legacy.Code != http.StatusOK || !strings.Contains(legacy.Body.String(), `"id":101`) {
+		t.Fatalf("legacy detail code=%d body=%s", legacy.Code, legacy.Body.String())
+	}
+	invalid := httptest.NewRecorder()
+	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/admin/orders/shared-reference?provider=unknown", nil))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid provider code=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
 func TestExportRequiresAdminCSRFAndRejectsUnresolvedIdentityFilters(t *testing.T) {
 	body := `{"resource":"orders","format":"csv","filters":{"provider":"wechat","identity":"raw-openid"}}`
 	for _, test := range []struct {
@@ -213,5 +259,100 @@ func TestExportReturnsReceiptBackedCSV(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Header().Get("X-AICRM-Export-Receipt") != "7" || response.Header().Get("Content-Type") != "text/csv; charset=utf-8" || app.exports != 1 {
 		t.Fatalf("code=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+}
+
+type distributionReaderStub struct {
+	values map[int64][]distributionport.OrderDistributionLine
+	err    error
+	calls  [][]int64
+}
+
+func (s *distributionReaderStub) ReadOrderDistribution(_ context.Context, ids []int64) (map[int64][]distributionport.OrderDistributionLine, error) {
+	s.calls = append(s.calls, append([]int64(nil), ids...))
+	return s.values, s.err
+}
+
+func TestOrderResponsesBatchDistributionSnapshotsAfterOrderAuthorization(t *testing.T) {
+	order := sampleOrder()
+	reader := &distributionReaderStub{values: map[int64][]distributionport.OrderDistributionLine{order.ID: {{
+		OrderID: order.ID, AttributionID: 71, CommissionID: 81, ItemLine: 1, ProductName: "冻结商品", DistributorCustomerID: 66, DistributorDisplayName: "分销员甲",
+		RateBasisPoints: 1234, WaitDays: 7, PolicyVersion: 3, HasCommission: true, InitialMinor: 123, CurrentPayableMinor: 99, PaidMinor: 50, Currency: "CNY", Status: "exception", HoldReason: "退款复核中",
+		Adjustments: []distributionport.OrderDistributionAdjustment{{Kind: "buyer_refund", DeltaMinor: -24, ResultingPayableMinor: 99, Reason: "部分退款", OccurredAt: time.Date(2026, 9, 15, 1, 2, 3, 0, time.UTC)}},
+		Settlements: []distributionport.OrderDistributionSettlement{{Reference: "dstl_1", AmountMinor: 50, Currency: "CNY", State: "receiver_succeeded"}},
+		Exceptions:  []distributionport.OrderDistributionException{{Kind: "buyer_refund_after_paid", Status: "open", AmountMinor: 50, Reason: "退款后待处理", EvidenceReference: "refund_1"}},
+	}}}}
+	handler, err := NewHandler(&appStub{page: orderport.Page{Items: []domain.Snapshot{order}}, detail: order}, adminSecurity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetDistributionReader(reader); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/admin/orders", "/api/admin/orders/M-1"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		body := response.Body.String()
+		if response.Code != http.StatusOK || !strings.Contains(body, `"distribution_read_state":"available"`) || !strings.Contains(body, `"distributor_display_name":"分销员甲"`) || !strings.Contains(body, `"settlement_confirmed_at":null`) || !strings.Contains(body, `"buyer_refund_after_paid"`) {
+			t.Fatalf("path=%s code=%d body=%s", path, response.Code, body)
+		}
+		if strings.Contains(body, `"distributor_customer_id"`) || strings.Contains(body, `"attribution_id"`) || strings.Contains(body, `"commission_id"`) {
+			t.Fatalf("Order response leaked Distribution internals: %s", body)
+		}
+	}
+	if len(reader.calls) != 2 || len(reader.calls[0]) != 1 || reader.calls[0][0] != order.ID || len(reader.calls[1]) != 1 || reader.calls[1][0] != order.ID {
+		t.Fatalf("expected one batch read per authorized response, calls=%v", reader.calls)
+	}
+}
+
+func TestOrderResponseMakesDistributionReadFailureExplicitWithoutFailingOrder(t *testing.T) {
+	order := sampleOrder()
+	reader := &distributionReaderStub{err: errors.New("distribution unavailable")}
+	handler, err := NewHandler(&appStub{detail: order}, adminSecurity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetDistributionReader(reader); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders/M-1", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"distribution_read_state":"unavailable"`) {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestOrderDistributionReadUsesSameRolesAsDistributionAdmin(t *testing.T) {
+	order := sampleOrder()
+	reader := &distributionReaderStub{}
+	for _, principal := range []accessdomain.Principal{
+		{InternalID: 9, Kind: accessdomain.KindStaff, Roles: []accessdomain.Role{accessdomain.RoleViewer}},
+		{InternalID: 9, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}},
+	} {
+		handler, err := NewHandler(&appStub{detail: order}, securityStub{principal: principal})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = handler.SetDistributionReader(reader); err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders/M-1", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("principal=%+v code=%d", principal, response.Code)
+		}
+	}
+	before := len(reader.calls)
+	denied, err := NewHandler(&appStub{detail: order}, securityStub{principal: accessdomain.Principal{InternalID: 9, Kind: accessdomain.KindStaff}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = denied.SetDistributionReader(reader); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	denied.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders/M-1", nil))
+	if response.Code != http.StatusForbidden || len(reader.calls) != before {
+		t.Fatalf("unauthorized read code=%d calls=%v", response.Code, reader.calls)
 	}
 }

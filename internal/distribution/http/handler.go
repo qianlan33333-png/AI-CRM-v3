@@ -415,8 +415,11 @@ func (h *Handler) commissions(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, x := range page.Items {
 		item := map[string]any{"commission_id": x.CommissionID, "order_reference": x.OrderReference, "product_name": x.ProductName, "initial_minor": x.InitialMinor, "current_payable_minor": x.CurrentPayableMinor, "paid_minor": x.PaidMinor, "status": x.Status, "hold_reason": x.HoldReason, "cancel_reason": x.CancelReason, "exception_reason": x.ExceptionReason, "paid_confirmed_at": x.PaidConfirmedAt.UTC(), "due_at": x.DueAt.UTC(), "created_at": x.CreatedAt.UTC(), "currency": x.Currency}
-		if !x.PaidAt.IsZero() {
-			item["paid_at"] = x.PaidAt.UTC()
+		if !x.SettlementConfirmedAt.IsZero() {
+			item["settlement_confirmed_at"] = x.SettlementConfirmedAt.UTC()
+			// Deprecated compatibility field. It has always been a Distribution
+			// system confirmation fact here, never Provider/bank arrival time.
+			item["paid_at"] = x.SettlementConfirmedAt.UTC()
 		}
 		items = append(items, item)
 	}
