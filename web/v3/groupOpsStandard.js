@@ -25,6 +25,8 @@
     noticeIsError: false,
     showCreate: false,
     createNotice: "",
+    createDraft: null,
+    createInFlight: false,
     showGroupPicker: false,
     groupPickerSearch: "",
     groupPickerNotice: "",
@@ -36,6 +38,17 @@
     showNodeModal: false,
     editingNodeId: 0,
     activeDetailPanel: "basic",
+    listLimit: 50,
+    listOffset: 0,
+    listHasMore: false,
+    listHasSuccessfulPage: false,
+    listBusy: false,
+    listGeneration: 0,
+    listController: null,
+    listRetrySnapshot: null,
+    listError: "",
+    listUnauthorized: false,
+    writeReadbackPlanId: 0,
   };
   let detailReadGeneration = 0;
 
@@ -44,6 +57,7 @@
     groups: "/admin/automation-conversion/group-ops/groups/ui",
     plan: (id) => `/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}`,
     apiPlans: "/api/admin/automation-conversion/group-ops/plans",
+    apiPlansPage: (limit, offset) => `${routes.apiPlans}?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`,
     apiPlan: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}`,
     apiPlanEnable: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/enable`,
     apiPlanDisable: (id) => `/api/admin/automation-conversion/group-ops/plans/${encodeURIComponent(id)}/disable`,
@@ -104,6 +118,85 @@
     // V3 only projects a number when an authoritative source exists.
     if (value === null || value === undefined || value === "") return "—";
     return new Intl.NumberFormat("zh-CN").format(Number(value));
+  }
+
+  function positiveSafeInteger(value) {
+    if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value))) return null;
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+  }
+
+  function numericPositiveSafeInteger(value) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+
+  function listSnapshot(offset = state.listOffset) {
+    const safeOffset = Number(offset);
+    if (!Number.isSafeInteger(safeOffset) || safeOffset < 0 || safeOffset > 1000000) throw new Error("计划列表页码无效");
+    return Object.freeze({ limit: state.listLimit, offset: safeOffset });
+  }
+
+  function validateListPage(payload, snapshot) {
+    if (!payload || !Array.isArray(payload.items)) throw new Error("计划列表数据无效");
+    const total = payload.total;
+    const limit = payload.limit;
+    const offset = payload.offset;
+    const queueCount = payload.queue_count;
+    if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0) throw new Error("计划列表总数数据无效");
+    if (limit !== snapshot.limit || offset !== snapshot.offset || typeof payload.has_more !== "boolean") throw new Error("计划列表页码数据无效");
+    if (payload.items.length > limit) throw new Error("计划列表数据超出页大小");
+    payload.items.forEach((item) => {
+      if (!numericPositiveSafeInteger(item && item.id) || !numericPositiveSafeInteger(item && item.revision)) throw new Error("计划列表行版本数据无效");
+    });
+    if (typeof queueCount !== "number" || !Number.isSafeInteger(queueCount) || queueCount < 0) throw new Error("计划通知排队数据无效");
+    return { items: payload.items, total, limit, offset, hasMore: payload.has_more, queueCount };
+  }
+
+  function listPageMessage(error, fallback) {
+    return requestErrorMessage(error, fallback || "读取当前页失败");
+  }
+
+  function listActionFromElement(element) {
+    const id = positiveSafeInteger(element && element.dataset.planId);
+    const revision = positiveSafeInteger(element && element.dataset.planRevision);
+    return id && revision ? Object.freeze({ id, revision }) : null;
+  }
+
+  function confirmedWritePlan(payload, id, expectedStatus, actionLabel) {
+    const plan = payload && (payload.plan || payload);
+    if (!plan || positiveSafeInteger(plan.plan_id) !== id || !numericPositiveSafeInteger(plan.revision) || plan.status !== expectedStatus)
+      throw new Error(`${actionLabel}结果未确认，请刷新后重试`);
+    return plan;
+  }
+
+  function listNavigationDisabled() {
+    return state.listBusy || state.listUnauthorized || Boolean(state.listRetrySnapshot);
+  }
+
+  function createFlowLocked() {
+    if (state.createInFlight) return true;
+    const phase = state.createDraft && state.createDraft.phase;
+    return (
+      phase === "post_unknown" ||
+      phase === "post_authorization" ||
+      phase === "configuration_unknown" ||
+      phase === "configuration_rejected" ||
+      phase === "configuration_authorization" ||
+      phase === "session_changed"
+    );
+  }
+
+  function listWriteReadbackLocked() {
+    return (
+      state.listBusy ||
+      state.listUnauthorized ||
+      Boolean(state.changingPlanId) ||
+      Boolean(state.writeReadbackPlanId)
+    );
+  }
+
+  function listWritesDisabled() {
+    return listWriteReadbackLocked() || createFlowLocked();
   }
 
   function statusText(status) {
@@ -422,6 +515,8 @@
       return renderDetail();
     }
     if (action === "create-plan") return createPlan();
+    if (action === "retry-create-plan") return retryCreatePlan();
+    if (action === "retry-create-configuration") return retryCreateConfiguration();
     if (action === "show-create-plan") return showCreatePlan();
     if (action === "cancel-create-plan") return cancelCreatePlan();
     if (action === "save-plan") return savePlan();
@@ -432,9 +527,12 @@
       return renderDetail();
     }
     if (action === "refresh-owner-groups") return refreshOwnerGroups();
-    if (action === "enable-plan") return enablePlan(event.currentTarget.dataset.planId);
-    if (action === "disable-plan") return disablePlan(event.currentTarget.dataset.planId);
-    if (action === "delete-plan") return deletePlan(event.currentTarget.dataset.planId);
+    if (action === "enable-plan") return enablePlan(listActionFromElement(event.currentTarget));
+    if (action === "disable-plan") return disablePlan(listActionFromElement(event.currentTarget));
+    if (action === "delete-plan") return deletePlan(listActionFromElement(event.currentTarget));
+    if (action === "previous-list-page") return changeListPage(-state.listLimit);
+    if (action === "next-list-page") return changeListPage(state.listLimit);
+    if (action === "retry-list-page") return retryListPage();
     if (action === "bind-group") return bindGroup(event.currentTarget.dataset.chatId);
     if (action === "open-group-picker") return openGroupPicker();
     if (action === "close-group-picker") return closeGroupPicker();
@@ -448,14 +546,17 @@
     if (action === "delete-node") return deleteNode(event.currentTarget.dataset.nodeId);
     if (action === "copy-webhook") return copyWebhook();
     if (action === "save-webhook") return saveWebhook();
-    if (action === "pick-create-owner") return openMemberPicker({
+    if (action === "pick-create-owner") {
+      if (createControlsDisabled()) return;
+      return openMemberPicker({
       fieldName: "create_owner_userid",
       title: "选择负责人",
       value: currentFormValue("create_owner_userid"),
       onPicked: (member) => {
         state.createOwner = member;
       },
-    });
+      });
+    }
     if (action === "pick-plan-owner") return openMemberPicker({
       fieldName: "owner_userid",
       title: "选择负责人",
@@ -489,74 +590,299 @@
   }
 
   function showCreatePlan() {
+    if (listWritesDisabled()) return;
     state.showCreate = true;
     state.createNotice = "";
     renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
   }
 
   function cancelCreatePlan() {
+    if (createFlowLocked()) return;
     state.showCreate = false;
     state.createNotice = "";
+    state.createDraft = null;
+    state.createOwner = null;
     renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
   }
 
+  function createIdempotencyKey(stage) {
+    return `groupops-create-${stage}-${crypto.randomUUID()}`.toLowerCase();
+  }
+
+  function createSessionMarker() {
+    const entries = String(document.cookie || "")
+      .split(";")
+      .map((value) => value.trim().split("="));
+    const entry = entries.find(
+      ([name]) => name === "aicrm_csrf" || name === "aicrm_admin_csrf",
+    );
+    return entry ? entry.slice(1).join("=") : "";
+  }
+
+  function editableCreateDraftFromForm() {
+    const owner = currentFormValue("create_owner_userid") || memberStaffId(state.createOwner);
+    return Object.freeze({
+      plan_name:
+        String(
+          currentFormValue("create_plan_name") || "新建群运营计划",
+        ).trim() || "新建群运营计划",
+      plan_type: currentFormValue("create_plan_type") || "standard",
+      owner_userid: owner,
+      status: "draft",
+      phase: "editing",
+    });
+  }
+
+  function retainEditableCreateDraft() {
+    if (!state.showCreate || createFlowLocked()) return;
+    // A loading shell has already replaced the form during page navigation.
+    // Keep the snapshot captured immediately before that replacement instead
+    // of treating absent controls as a fresh default draft.
+    if (!document.querySelector('[name="create_plan_name"]')) return;
+    state.createDraft = editableCreateDraftFromForm();
+  }
+
+  function createDraftFromForm() {
+    const draft = editableCreateDraftFromForm();
+    return Object.freeze({
+      ...draft,
+      create_key: createIdempotencyKey("post"),
+      configuration_key: createIdempotencyKey("configuration"),
+      plan_id: 0,
+      expected_revision: 0,
+      session_marker: createSessionMarker(),
+      phase: "post",
+    });
+  }
+
+  function createControlsDisabled() {
+    return listWriteReadbackLocked() || createFlowLocked();
+  }
+
+  function createErrorStatus(error) {
+    return error && typeof error.status === "number" ? error.status : 0;
+  }
+
+  function createErrorKind(error) {
+    const status = createErrorStatus(error);
+    if (status === 401 || status === 403) return "authorization";
+    if (status === 400 || status === 409) return "rejected";
+    return "unknown";
+  }
+
+  function createErrorRecovery(error) {
+    const value = error && error.groupOpsCreateRecovery;
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function stopCreateRecoveryForSession(draft) {
+    state.createDraft = Object.freeze({ ...draft, phase: "session_changed" });
+    state.createInFlight = false;
+    state.showCreate = true;
+    state.createNotice =
+      "登录状态已变化，不能恢复这次创建。请重新核对已有计划；系统不会以新身份重放请求。";
+    state.notice = "";
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+  }
+
+  function createItem(payload) {
+    const item = payload && (payload.item || payload);
+    const id = positiveSafeInteger(item && item.id);
+    const revision = numericPositiveSafeInteger(item && item.revision);
+    if (!id || !revision) throw new Error("创建结果未确认，请重新确认创建");
+    return Object.freeze({ id, revision });
+  }
+
+  function createRecoveryOptions(draft, phase) {
+    const options = {
+      stage: phase,
+      create_key: draft.create_key,
+      configuration_key: draft.configuration_key,
+      session_marker: draft.session_marker,
+      plan_name: draft.plan_name,
+      plan_type: draft.plan_type,
+      owner_userid: draft.owner_userid,
+    };
+    if (phase === "configuration") {
+      options.plan_id = draft.plan_id;
+      options.expected_revision = draft.expected_revision;
+    }
+    return Object.freeze(options);
+  }
+
+  function setCreateFailure(draft, error) {
+    const recovery = createErrorRecovery(error);
+    const stage =
+      recovery && recovery.stage === "configuration" ? "configuration" : "post";
+    const kind = createErrorKind(error);
+    let next = { ...draft };
+    if (stage === "configuration" && recovery) {
+      next = {
+        ...next,
+        plan_id: positiveSafeInteger(recovery.plan_id) || 0,
+        expected_revision:
+          numericPositiveSafeInteger(recovery.expected_revision) || 0,
+      };
+    }
+    if (recovery && recovery.session_changed) {
+      stopCreateRecoveryForSession(next);
+      return;
+    }
+    if (stage === "post") {
+      next.phase =
+        kind === "authorization"
+          ? "post_authorization"
+          : kind === "rejected"
+            ? "rejected"
+            : "post_unknown";
+      state.createNotice =
+        kind === "authorization"
+          ? "当前账号无权创建计划。请重新登录后重新读取页面；系统未自动重放创建请求。"
+          : kind === "rejected"
+            ? `创建被拒绝：${requestErrorMessage(error, "请修改草稿后重新创建")}`
+            : `创建结果尚未确认：${requestErrorMessage(error, "请重新确认创建")}。请勿新建或修改当前草稿。`;
+    } else {
+      if (!next.plan_id || !next.expected_revision) {
+        next.phase = "post_unknown";
+        state.createNotice =
+          "创建结果尚未确认，请重新确认创建；系统不会自动重试。";
+      } else {
+        next.phase =
+          kind === "authorization"
+            ? "configuration_authorization"
+            : kind === "rejected"
+              ? "configuration_rejected"
+              : "configuration_unknown";
+        state.createNotice =
+          kind === "authorization"
+            ? "计划已创建，但当前账号无权继续配置负责人。请重新登录后打开该计划；系统未自动重放配置请求。"
+            : kind === "rejected"
+              ? `计划已创建，但基础配置被拒绝：${requestErrorMessage(error, "请打开计划后核对")}`
+              : `计划已创建，但基础配置结果尚未确认：${requestErrorMessage(error, "请重新确认配置")}。请勿新建或修改当前草稿。`;
+      }
+    }
+    state.createDraft = Object.freeze(next);
+    state.createInFlight = false;
+    state.showCreate = true;
+    state.notice = "";
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+  }
+
+  async function submitCreate(draft, phase) {
+    if (
+      !draft.session_marker ||
+      createSessionMarker() !== draft.session_marker
+    ) {
+      stopCreateRecoveryForSession(draft);
+      return;
+    }
+    state.createDraft = Object.freeze({
+      ...draft,
+      phase: phase === "configuration" ? "configuration" : "post",
+    });
+    state.createInFlight = true;
+    state.createNotice =
+      phase === "configuration" ? "正在确认基础配置" : "正在创建计划";
+    state.notice = "";
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    try {
+      const created = await requestJson(routes.apiPlans, {
+        method: "POST",
+        body: {
+          plan_name: draft.plan_name,
+          plan_type: draft.plan_type,
+          owner_userid: draft.owner_userid,
+          status: draft.status,
+        },
+        createRecovery: createRecoveryOptions(draft, phase),
+      });
+      const item = createItem(created);
+      state.createInFlight = false;
+      state.createDraft = null;
+      state.createNotice = "";
+      window.location.assign(routes.plan(item.id));
+    } catch (error) {
+      setCreateFailure(draft, error);
+    }
+  }
+
   async function createPlan() {
-    const owner = currentFormValue("create_owner_userid");
-    if (!owner) {
+    if (listWriteReadbackLocked() || createFlowLocked()) return;
+    const draft = createDraftFromForm();
+    if (!draft.owner_userid) {
       state.showCreate = true;
+      state.createDraft = Object.freeze({ ...draft, phase: "rejected" });
       state.createNotice = "请选择运营成员";
       state.notice = "";
       renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
       return;
     }
-    try {
-      const created = await requestJson(routes.apiPlans, {
-        method: "POST",
-        body: {
-          plan_name: currentFormValue("create_plan_name") || "新建群运营计划",
-          plan_type: currentFormValue("create_plan_type") || "standard",
-          owner_userid: owner,
-          status: "draft",
-        },
-      });
-      const item = created.item || created;
-      if (item.id) window.location.assign(routes.plan(item.id));
-    } catch (error) {
-      const message = requestErrorMessage(error, "创建失败");
-      state.showCreate = true;
-      state.createNotice = message.includes("创建失败") ? message : `创建失败：${message}`;
-      state.notice = "";
-      renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    return submitCreate(draft, "post");
+  }
+
+  function retryCreatePlan() {
+    const draft = state.createDraft;
+    if (
+      !draft ||
+      draft.phase !== "post_unknown" ||
+      state.createInFlight ||
+      listWriteReadbackLocked()
+    )
+      return;
+    return submitCreate(draft, "post");
+  }
+
+  function retryCreateConfiguration() {
+    const draft = state.createDraft;
+    if (
+      !draft ||
+      draft.phase !== "configuration_unknown" ||
+      !draft.plan_id ||
+      !draft.expected_revision ||
+      state.createInFlight ||
+      listWriteReadbackLocked()
+    )
+      return;
+    return submitCreate(draft, "configuration");
+  }
+
+  async function disablePlan(action) {
+    return changePlanState(action, "disable");
+  }
+
+  async function enablePlan(action) {
+    return changePlanState(action, "enable");
+  }
+
+  async function changePlanState(listAction, action) {
+    const id = listAction && listAction.id;
+    if (!id || !listAction.revision || listWritesDisabled() || state.writeReadbackPlanId === id) {
+      if (!listAction) {
+        state.listError = "计划版本无效，请重新读取当前页";
+        renderList(state.lastTotal || 0, state.queueCount || 0);
+      }
+      return;
     }
-  }
-
-  async function disablePlan(planId) {
-    return changePlanState(planId, "disable");
-  }
-
-  async function enablePlan(planId) {
-    return changePlanState(planId, "enable");
-  }
-
-  async function changePlanState(planId, action) {
-    const id = Number(planId);
-    if (!id || state.changingPlanId) return;
     state.changingPlanId = id;
     state.notice = action === "enable" ? "启用中" : "停用中";
     state.noticeIsError = false;
     renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
     try {
-      const changed = await requestJson(action === "enable" ? routes.apiPlanEnable(id) : routes.apiPlanDisable(id), { method: "POST" });
-      const status = (changed.plan || changed).status;
-      if (action === "enable" && status !== "active") throw new Error("启用结果未确认，请刷新后重试");
-      if (action === "disable" && status === "active") throw new Error("停用结果未确认，请刷新后重试");
-      await loadListPage();
+      const changed = await requestJson(action === "enable" ? routes.apiPlanEnable(id) : routes.apiPlanDisable(id), { method: "POST", body: { expected_revision: listAction.revision } });
+      confirmedWritePlan(changed, id, action === "enable" ? "active" : "paused", action === "enable" ? "启用" : "停用");
+      state.writeReadbackPlanId = id;
+      const readback = await loadListPage({ snapshot: listSnapshot(), preserveView: true });
+      if (!readback.published) {
+        state.notice = "操作已执行，但当前页未更新；重新读取当前页";
+        state.noticeIsError = true;
+        return;
+      }
       state.notice = action === "enable" ? "已启用" : "已停用";
       state.noticeIsError = false;
     } catch (error) {
       // Re-read the list and plan after conflict/failure. This refreshes the
       // Host revision cache but never submits an automatic retry write.
-      await Promise.allSettled([requestJson(routes.apiPlan(id)), loadListPage({ preserveView: true })]);
+      await Promise.allSettled([requestJson(routes.apiPlan(id)), loadListPage({ snapshot: listSnapshot(), preserveView: true })]);
       state.notice = requestErrorMessage(error, action === "enable" ? "启用失败，请重试" : "停用失败，请重试");
       state.noticeIsError = true;
     } finally {
@@ -565,13 +891,41 @@
     }
   }
 
-  async function deletePlan(planId) {
-    if (!planId) return;
-    const current = state.plans.find((item) => Number(item.id) === Number(planId));
+  async function deletePlan(listAction) {
+    if (!listAction || !listAction.id || !listAction.revision || listWritesDisabled() || state.writeReadbackPlanId === listAction.id) {
+      if (!listAction) {
+        state.listError = "计划版本无效，请重新读取当前页";
+        renderList(state.lastTotal || 0, state.queueCount || 0);
+      }
+      return;
+    }
+    const current = state.plans.find((item) => Number(item.id) === listAction.id && Number(item.revision) === listAction.revision);
     const label = current && current.plan_name ? `「${current.plan_name}」` : "该计划";
-    if (!window.confirm(`确认删除${label}？删除后列表将不再显示。`)) return;
-    await requestJson(routes.apiPlan(planId), { method: "DELETE" });
-    loadListPage();
+    if (!window.confirm(`确认归档${label}？归档后仍保留在列表中。`)) return;
+    state.changingPlanId = listAction.id;
+    state.notice = "归档中";
+    state.noticeIsError = false;
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    try {
+      const archived = await requestJson(routes.apiPlan(listAction.id), { method: "DELETE", body: { expected_revision: listAction.revision } });
+      confirmedWritePlan(archived, listAction.id, "archived", "归档");
+      state.writeReadbackPlanId = listAction.id;
+      const readback = await loadListPage({ snapshot: listSnapshot(), preserveView: true, allowOnePageBack: true });
+      if (!readback.published) {
+        state.notice = "操作已执行，但当前页未更新；重新读取当前页";
+        state.noticeIsError = true;
+        return;
+      }
+      state.notice = "已归档";
+      state.noticeIsError = false;
+    } catch (error) {
+      await Promise.allSettled([requestJson(routes.apiPlan(listAction.id)), loadListPage({ snapshot: listSnapshot(), preserveView: true })]);
+      state.notice = requestErrorMessage(error, "归档失败，请重试");
+      state.noticeIsError = true;
+    } finally {
+      state.changingPlanId = 0;
+      renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    }
   }
 
   function planDraft() {
@@ -854,44 +1208,146 @@
     }
   }
 
-  async function loadListPage({ preserveView = false } = {}) {
+  function changeListPage(delta) {
+    if (listNavigationDisabled()) return;
+    const offset = Math.max(0, state.listOffset + delta);
+    if (offset === state.listOffset) return;
+    loadListPage({ snapshot: listSnapshot(offset), preserveView: state.plans.length > 0 });
+  }
+
+  function retryListPage() {
+    if (!state.listRetrySnapshot || state.listBusy || state.listUnauthorized) return;
+    loadListPage({ snapshot: state.listRetrySnapshot, preserveView: state.plans.length > 0 });
+  }
+
+  async function loadListPage({ snapshot = listSnapshot(), preserveView = false, allowOnePageBack = false } = {}) {
+    const requested = Object.freeze({ limit: snapshot.limit, offset: snapshot.offset });
+    if (state.listController) state.listController.abort();
+    const controller = new AbortController();
+    const generation = state.listGeneration + 1;
+    state.listGeneration = generation;
+    state.listController = controller;
+    state.listBusy = true;
+    state.listError = "";
+    state.listRetrySnapshot = null;
+    // A new page can replace the list shell with a loading view before the
+    // next render. Preserve an editable creation form first; pending recovery
+    // phases remain immutable through createFlowLocked().
+    retainEditableCreateDraft();
     if (!preserveView) renderLoading();
+    else renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    const current = () => state.listGeneration === generation && state.listController === controller;
     try {
-      const [payload, ownersPayload] = await Promise.all([requestJson(routes.apiPlans), requestJson(routes.apiMembers)]);
-      state.plans = normalizeItems(payload);
+      const [payload, ownersPayload] = await Promise.all([
+        requestJson(routes.apiPlansPage(requested.limit, requested.offset), { signal: controller.signal }),
+        requestJson(routes.apiMembers, { signal: controller.signal }),
+      ]);
+      if (!current()) return { published: false, stale: true };
+      const page = validateListPage(payload, requested);
+      if (allowOnePageBack && page.items.length === 0 && page.offset > 0 && page.total <= page.offset) {
+        return loadListPage({ snapshot: listSnapshot(Math.max(0, page.offset - requested.limit)), preserveView: true });
+      }
+      state.plans = page.items;
       state.ownerOptions = normalizeOwners(ownersPayload, null);
-      state.lastTotal = payload.total || state.plans.length;
-      state.queueCount = payload.queue_count || 0;
-      renderList(state.lastTotal, state.queueCount);
+      state.lastTotal = page.total;
+      state.queueCount = page.queueCount;
+      state.listOffset = page.offset;
+      state.listHasMore = page.hasMore;
+      state.listHasSuccessfulPage = true;
+      state.listUnauthorized = false;
+      state.writeReadbackPlanId = 0;
+      return { published: true };
     } catch (error) {
-      renderError(error.message);
+      if (!current() || error?.name === "AbortError") return { published: false, stale: true };
+      if (error && (error.status === 401 || error.status === 403)) {
+        state.plans = [];
+        state.lastTotal = 0;
+        state.queueCount = 0;
+        state.listOffset = 0;
+        state.listHasMore = false;
+        state.listHasSuccessfulPage = false;
+        state.listRetrySnapshot = null;
+        state.writeReadbackPlanId = 0;
+        state.listUnauthorized = true;
+        state.listError = "当前账号无权读取运营计划";
+      } else {
+        state.listRetrySnapshot = requested;
+        state.listError = `读取当前页失败：${listPageMessage(error)}`;
+      }
+      return { published: false, error };
+    } finally {
+      if (current()) {
+        state.listBusy = false;
+        state.listController = null;
+        renderList(state.listHasSuccessfulPage ? state.lastTotal : null, state.listHasSuccessfulPage ? state.queueCount : null);
+      }
     }
   }
 
   function renderCreatePanel() {
     if (!state.showCreate) return "";
-    const ownerField = renderMemberField("create_owner_userid", (state.createOwner || {}).user_id, "pick-create-owner", state.createOwner ? "更换运营成员" : "选择运营成员");
+    const draft = state.createDraft || {};
+    const locked = createControlsDisabled();
+    const ownerID = draft.owner_userid || (state.createOwner || {}).user_id;
+    const ownerField = renderMemberField(
+      "create_owner_userid",
+      ownerID,
+      "pick-create-owner",
+      state.createOwner ? "更换运营成员" : "选择运营成员",
+      locked,
+    );
+    const phase = draft.phase || "";
+    const retryPost = phase === "post_unknown";
+    const retryConfiguration = phase === "configuration_unknown";
+    const openCreated = positiveSafeInteger(draft.plan_id);
     return `
       <section class="group-ops__card">
         <div class="group-ops__filters">
-          <label class="group-ops__field group-ops__field--wide"><span>计划名称</span><input name="create_plan_name" value="新建群运营计划"></label>
-          <label class="group-ops__field"><span>计划类型</span><select name="create_plan_type"><option value="standard">标准编排计划</option><option value="webhook">Webhook 接收计划</option></select></label>
+          <label class="group-ops__field group-ops__field--wide"><span>计划名称</span><input name="create_plan_name" value="${escapeHtml(draft.plan_name || "新建群运营计划")}"${locked ? " disabled" : ""}></label>
+          <label class="group-ops__field"><span>计划类型</span><select name="create_plan_type"${locked ? " disabled" : ""}><option value="standard"${(draft.plan_type || "standard") === "standard" ? " selected" : ""}>标准编排计划</option><option value="webhook"${draft.plan_type === "webhook" ? " selected" : ""}>Webhook 接收计划</option></select></label>
           <label class="group-ops__field"><span>运营成员</span>${ownerField}</label>
-          <div class="group-ops__modal-notice" ${state.createNotice ? "" : "hidden"}>${escapeHtml(state.createNotice)}</div>
-          <div class="group-ops__row-actions">${actionButton("保存计划", "create-plan", "group-ops__button--primary")}${actionButton("取消", "cancel-create-plan")}</div>
+          <div class="group-ops__modal-notice" role="alert" ${state.createNotice ? "" : "hidden"}>${escapeHtml(state.createNotice)}</div>
+          <div class="group-ops__row-actions">${
+            retryPost
+              ? actionButton(
+                  "重新确认创建",
+                  "retry-create-plan",
+                  "group-ops__button--primary",
+                  state.createInFlight || listWriteReadbackLocked(),
+                )
+              : retryConfiguration
+                ? actionButton(
+                    "重新确认基础配置",
+                    "retry-create-configuration",
+                    "group-ops__button--primary",
+                    state.createInFlight || listWriteReadbackLocked(),
+                  )
+                : actionButton(
+                    state.createInFlight ? "创建中" : "保存计划",
+                    "create-plan",
+                    "group-ops__button--primary",
+                    locked,
+                  )
+          }${openCreated ? pageButton("打开已创建计划", routes.plan(openCreated), "primary") : ""}${actionButton("取消", "cancel-create-plan", "", locked)}</div>
         </div>
       </section>
     `;
   }
 
   function renderList(total, queueCount) {
-    const boundCountKnown = state.plans.every((plan) => Number.isSafeInteger(plan.bound_group_count) && plan.bound_group_count >= 0);
+    retainEditableCreateDraft();
+    const totalKnown = state.listHasSuccessfulPage && Number.isSafeInteger(total) && total >= 0;
+    const boundCountKnown = state.listHasSuccessfulPage && state.plans.every((plan) => Number.isSafeInteger(plan.bound_group_count) && plan.bound_group_count >= 0);
     const boundCount = boundCountKnown ? state.plans.reduce((sum, plan) => sum + plan.bound_group_count, 0) : null;
-    const reachKnown = state.plans.length > 0 && state.plans.every((plan) => plan.today_estimated_reach !== null && plan.today_estimated_reach !== undefined && Number.isFinite(Number(plan.today_estimated_reach)));
+    const reachKnown = state.listHasSuccessfulPage && state.plans.length > 0 && state.plans.every((plan) => plan.today_estimated_reach !== null && plan.today_estimated_reach !== undefined && Number.isFinite(Number(plan.today_estimated_reach)));
     const reach = reachKnown ? state.plans.reduce((sum, plan) => sum + Number(plan.today_estimated_reach), 0) : null;
+    const actionsDisabled = listWritesDisabled();
     const rows = state.plans
       .map(
-        (plan) => `
+        (plan) => {
+          const writeDisabled = actionsDisabled || state.changingPlanId === Number(plan.id) || state.writeReadbackPlanId === Number(plan.id);
+          const actionAttributes = `data-plan-id="${escapeHtml(plan.id)}" data-plan-revision="${escapeHtml(plan.revision)}"${writeDisabled ? " disabled" : ""}`;
+          return `
         <tr>
           <td><strong>${escapeHtml(plan.plan_name)}</strong></td>
           <td>${escapeHtml(typeText(plan.plan_type))}</td>
@@ -906,26 +1362,31 @@
                 planIsArchived(plan)
                   ? '<span class="group-ops__chip group-ops__chip--neutral">归档终态</span>'
                   : plan.status === "active"
-                    ? `<button class="group-ops__button" type="button" data-action="disable-plan" data-plan-id="${escapeHtml(plan.id)}">停用</button>`
-                    : `<button class="group-ops__button" type="button" data-action="enable-plan" data-plan-id="${escapeHtml(plan.id)}"${state.changingPlanId === Number(plan.id) ? " disabled" : ""}>${state.changingPlanId === Number(plan.id) ? "启用中" : "启用"}</button>`
+                    ? `<button class="group-ops__button" type="button" data-action="disable-plan" ${actionAttributes}>${state.changingPlanId === Number(plan.id) ? "停用中" : "停用"}</button>`
+                    : `<button class="group-ops__button" type="button" data-action="enable-plan" ${actionAttributes}>${state.changingPlanId === Number(plan.id) ? "启用中" : "启用"}</button>`
               }
-              ${planIsArchived(plan) ? "" : `<button class="group-ops__button group-ops__button--danger" type="button" data-action="delete-plan" data-plan-id="${escapeHtml(plan.id)}">删除</button>`}
+              ${planIsArchived(plan) ? "" : `<button class="group-ops__button group-ops__button--danger" type="button" data-action="delete-plan" ${actionAttributes}>归档</button>`}
             </div>
           </td>
-        </tr>`,
+        </tr>`;
+        },
       )
       .join("");
+    const rangeStart = !totalKnown ? null : total === 0 ? 0 : Math.min(state.listOffset + 1, total);
+    const rangeEnd = !totalKnown ? null : total === 0 ? 0 : Math.min(state.listOffset + state.plans.length, total);
+    const paginationDisabled = listNavigationDisabled();
     renderShell(`
       <div class="group-ops__bar">
         ${pageButton("查看所有群", routes.groups)}
-        ${actionButton("创建计划", "show-create-plan", "group-ops__button--primary")}
+        ${actionButton("创建计划", "show-create-plan", "group-ops__button--primary", listWritesDisabled())}
       </div>
       <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}"${state.noticeIsError ? ' role="alert"' : ""} ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}${state.planReadbackPending ? ` ${actionButton("重新读取最新配置", "reload-plan-detail", "", state.savingPlan)}` : ""}</div>
+      <div class="group-ops__notice group-ops__notice--error" role="alert" ${state.listError ? "" : "hidden"}>${escapeHtml(state.listError)}${state.listRetrySnapshot ? ` ${actionButton("重新读取当前页", "retry-list-page", "", state.listBusy || state.listUnauthorized)}` : ""}</div>
       <section class="group-ops__metric-grid">
-        ${metricCard("运营计划", formatNumber(total))}
-        ${metricCard(boundCountKnown ? "已绑定群" : "已绑定群（暂不可用）", formatNumber(boundCount))}
-        ${metricCard("今日预估", formatNumber(reach))}
-        ${metricCard("通知排队队列", formatNumber(queueCount))}
+        ${metricCard("运营计划", formatNumber(totalKnown ? total : null))}
+        ${metricCard(boundCountKnown ? "本页已绑定群" : "本页已绑定群（暂不可用）", formatNumber(boundCount))}
+        ${metricCard("本页今日预估", formatNumber(reach))}
+        ${metricCard("本页通知排队", formatNumber(state.listHasSuccessfulPage ? queueCount : null))}
       </section>
       ${renderCreatePanel()}
       <section class="group-ops__card">
@@ -934,14 +1395,20 @@
             <thead>
               <tr><th>计划名称</th><th>类型</th><th>运营成员</th><th>绑定群</th><th>今日预估</th><th>状态</th><th>操作</th></tr>
             </thead>
-            <tbody>${rows || '<tr><td colspan="7" class="group-ops__empty">暂无数据</td></tr>'}</tbody>
+            <tbody>${rows || `<tr><td colspan="7" class="group-ops__empty">${state.listHasSuccessfulPage ? "暂无数据" : "尚未取得列表数据"}</td></tr>`}</tbody>
           </table>
         </div>
+        <nav class="admin-pagination" aria-label="运营计划分页">
+          <span>第 ${formatNumber(rangeStart)}–${formatNumber(rangeEnd)} 项，共 ${formatNumber(totalKnown ? total : null)} 项</span>
+          <div class="group-ops__row-actions">
+            <button class="group-ops__button" type="button" data-action="previous-list-page" aria-label="上一页运营计划"${paginationDisabled || state.listOffset === 0 ? " disabled" : ""}>上一页</button>
+            <button class="group-ops__button" type="button" data-action="next-list-page" aria-label="下一页运营计划"${paginationDisabled || !state.listHasMore ? " disabled" : ""}>下一页</button>
+          </div>
+        </nav>
       </section>
     `);
     state.notice = "";
     state.noticeIsError = false;
-    state.createNotice = "";
   }
 
   async function readDetailPage(planId) {

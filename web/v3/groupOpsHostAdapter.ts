@@ -123,6 +123,77 @@ function csrf(): string {
 function key(): string {
   return `groupops-${Date.now()}-${crypto.randomUUID()}`;
 }
+function privateCreateRecoveryKey(value: unknown): string {
+  const normalized =
+    typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!/^[a-z0-9._:-]{16,128}$/.test(normalized))
+    throw new Error("创建恢复请求无效");
+  return normalized;
+}
+function createRecoverySessionMarker(value: unknown): string {
+  if (typeof value !== "string" || !value) throw new Error("创建恢复请求无效");
+  return value;
+}
+function createRecoveryOptions(value: unknown): Json | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Json;
+  const stage = source.stage;
+  if (stage !== "post" && stage !== "configuration")
+    throw new Error("创建恢复请求无效");
+  const result: Json = {
+    stage,
+    createKey: privateCreateRecoveryKey(source.create_key),
+    configurationKey: privateCreateRecoveryKey(source.configuration_key),
+    sessionMarker: createRecoverySessionMarker(source.session_marker),
+    planName: String(source.plan_name || "").trim(),
+    planType: source.plan_type,
+  };
+  if (
+    !result.planName ||
+    (result.planType !== "standard" && result.planType !== "webhook")
+  )
+    throw new Error("创建恢复请求无效");
+  result.ownerID = requiredIdentifier(source.owner_userid, "创建恢复请求无效");
+  if (stage === "configuration") {
+    result.planID = requiredIdentifier(source.plan_id, "创建恢复请求无效");
+    result.expectedRevision = requiredNumericPositiveInteger(
+      source.expected_revision,
+      "创建恢复请求无效",
+    );
+  }
+  return Object.freeze(result);
+}
+function createRecoverySessionChangedError(recovery: Json): Error {
+  const result = new Error("登录状态已变化，不能恢复这次创建");
+  Object.assign(result, {
+    groupOpsCreateRecovery: {
+      stage: recovery.stage,
+      plan_id: recovery.planID || 0,
+      expected_revision: recovery.expectedRevision || 0,
+      session_changed: true,
+    },
+  });
+  return result;
+}
+function assertCreateRecoverySession(recovery: Json): void {
+  if (!recovery.sessionMarker || csrf() !== recovery.sessionMarker)
+    throw createRecoverySessionChangedError(recovery);
+}
+function createRecoveryError(error: unknown, recovery: Json): Error {
+  const result =
+    error instanceof Error
+      ? error
+      : new Error(errorMessage(error, "创建结果未确认"));
+  Object.assign(result, {
+    groupOpsCreateRecovery: {
+      stage: recovery.stage,
+      plan_id: recovery.planID || 0,
+      expected_revision: recovery.expectedRevision || 0,
+      session_changed: Boolean((error as Json)?.groupOpsCreateRecovery?.session_changed),
+    },
+  });
+  return result;
+}
 function html(value: unknown): string {
   // The donor expects legacy new/updated counters; V3 returns a snapshot total.
   // Translate only the next notice belonging to a completed refresh/readback.
@@ -186,7 +257,7 @@ async function nativeRequest(url: string, options: Json = {}, onOperationsConfli
   if (options.body !== undefined)
     headers.set("Content-Type", "application/json");
   if (options.method && options.method !== "GET") {
-    headers.set("Idempotency-Key", typeof options.idempotencyKey === "string" ? options.idempotencyKey : key());
+    headers.set("Idempotency-Key", options.privateCreateRecoveryKey || (typeof options.idempotencyKey === "string" ? options.idempotencyKey : key()));
     const token = csrf();
     if (token) headers.set("X-CSRF-Token", token);
   }
@@ -214,8 +285,8 @@ async function nativeRequest(url: string, options: Json = {}, onOperationsConfli
         else revisions.delete(planID);
       }
     }
-    const error = new Error(responseMessage(data, `HTTP ${response.status}`)) as Error & { status?: number };
-    error.status = response.status;
+    const error = new Error(responseMessage(data, `HTTP ${response.status}`));
+    Object.assign(error, { status: response.status, payload: data });
     throw error;
   }
   return data;
@@ -242,19 +313,54 @@ function boundGroupCount(value: Json): number | null {
     throw new Error("计划绑定群数数据无效");
   return count;
 }
+function requiredIdentifier(value: unknown, message: string): number {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value))) throw new Error(message);
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(message);
+  return number;
+}
+function requiredNumericPositiveInteger(value: unknown, message: string): number {
+  if (typeof value !== "number") throw new Error(message);
+  const number = value;
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(message);
+  return number;
+}
+function requiredNumericNonNegativeInteger(value: unknown, message: string): number {
+  if (typeof value !== "number") throw new Error(message);
+  const number = value;
+  if (!Number.isSafeInteger(number) || number < 0) throw new Error(message);
+  return number;
+}
+function requestedPlanPage(url: URL): { limit: number; offset: number } {
+  const hasLimit = url.searchParams.has("limit");
+  const hasOffset = url.searchParams.has("offset");
+  if (!hasLimit && !hasOffset) return { limit: 50, offset: 0 };
+  if (!hasLimit || !hasOffset) throw new Error("计划列表页码请求无效");
+  const limit = requiredIdentifier(url.searchParams.get("limit"), "计划列表页码请求无效");
+  const offsetValue = url.searchParams.get("offset");
+  if (offsetValue === null || !/^(?:0|[1-9][0-9]*)$/.test(offsetValue)) throw new Error("计划列表页码请求无效");
+  const offset = Number(offsetValue);
+  if (!Number.isSafeInteger(offset)) throw new Error("计划列表页码请求无效");
+  if (limit !== 50 || offset > 1000000) throw new Error("计划列表页码请求无效");
+  return { limit, offset };
+}
 function plan(value: Json, publishRevision = true): Json {
-  const id = Number(value.plan_id);
+  const id = requiredIdentifier(value.plan_id, "计划列表 ID 数据无效");
+  const revision = requiredNumericPositiveInteger(value.revision, "计划列表版本数据无效");
   const count = boundGroupCount(value);
-  if (publishRevision) revisions.set(id, Number(value.revision || 0));
+  const queueCount = Object.prototype.hasOwnProperty.call(value, "queue_count")
+    ? requiredNumericNonNegativeInteger(value.queue_count, "计划通知排队数据无效")
+    : 0;
+  if (publishRevision) revisions.set(id, revision);
   return {
     id,
     plan_name: value.name,
     plan_code: `v3-${id}`,
     plan_type: value.plan_type || "standard",
     status: value.status === "paused" ? "disabled" : value.status,
-    revision: Number(value.revision || 0),
+    revision,
     ...planOwner(value),
-    queue_count: Number(value.queue_count || 0),
+    queue_count: queueCount,
     bound_group_count: count,
     today_estimated_reach: null,
     updated_at: value.updated_at,
@@ -329,6 +435,104 @@ function groupView(asset: Json, directoryItem?: GroupPickerRecord): Json {
     internal_member_count_snapshot: knownTotal && knownExternal ? Number(total) - Number(external) : null,
     external_member_count_snapshot: knownExternal ? Number(external) : null,
   };
+}
+async function expectedRevision(body: Json, id: number): Promise<number> {
+  if (Object.prototype.hasOwnProperty.call(body, "expected_revision"))
+    return requiredNumericPositiveInteger(body.expected_revision, "计划版本数据无效");
+  return revision(id);
+}
+function createPlanResult(
+  value: Json,
+  message: string,
+): { raw: Json; id: number; revision: number } {
+  const raw =
+    value?.plan && typeof value.plan === "object" ? value.plan : value;
+  if (!raw || typeof raw !== "object") throw new Error(message);
+  return {
+    raw,
+    id: requiredIdentifier(raw.plan_id, message),
+    revision: requiredNumericPositiveInteger(raw.revision, message),
+  };
+}
+function confirmedCreatedPlan(value: Json, recovery: Json): { raw: Json; id: number; revision: number } {
+  const created = createPlanResult(value, "创建结果未确认，请重新确认创建");
+  if (created.revision !== 1 || created.raw.status !== "draft" || created.raw.name !== recovery.planName)
+    throw new Error("创建结果未确认，请重新确认创建");
+  return created;
+}
+function createConfigurationPayload(_body: Json, recovery: Json): Json {
+  return {
+    expected_revision: recovery.expectedRevision,
+    name: recovery.planName,
+    plan_type: recovery.planType,
+    owner_staff_id: recovery.ownerID,
+  };
+}
+function confirmedCreateConfiguration(
+  value: Json,
+  recovery: Json,
+  payload: Json,
+): Json {
+  const confirmed = createPlanResult(
+    value,
+    "基础配置结果未确认，请重新确认配置",
+  );
+  if (
+    confirmed.id !== recovery.planID ||
+    confirmed.revision !== recovery.expectedRevision + 1 ||
+    confirmed.raw.name !== payload.name ||
+    confirmed.raw.status !== "draft" ||
+    confirmed.raw.plan_type !== payload.plan_type
+  )
+    throw new Error("基础配置结果未确认，请重新确认配置");
+  if (
+    !Array.isArray(value.members) ||
+    value.members.length !== 1 ||
+    requiredIdentifier(
+      value.members[0]?.staff_id,
+      "基础配置结果未确认，请重新确认配置",
+    ) !== payload.owner_staff_id
+  )
+    throw new Error("基础配置结果未确认，请重新确认配置");
+  return plan(confirmed.raw);
+}
+async function completeCreateConfiguration(
+  body: Json,
+  recovery: Json,
+): Promise<Json> {
+  const payload = createConfigurationPayload(body, recovery);
+  let value: Json;
+  try {
+    assertCreateRecoverySession(recovery);
+    value = await nativeRequest(`${base}/plans/${recovery.planID}`, {
+      method: "PUT",
+      body: payload,
+      privateCreateRecoveryKey: recovery.configurationKey,
+    });
+  } catch (error) {
+    throw createRecoveryError(error, recovery);
+  }
+  try {
+    return confirmedCreateConfiguration(value, recovery, payload);
+  } catch (error) {
+    throw createRecoveryError(error, recovery);
+  }
+}
+async function directory(): Promise<Json[]> {
+  const items: Json[] = [];
+  let offset = 0;
+  try {
+    for (;;) {
+      const data = await nativeRequest(`${base}/groups?limit=200&offset=${offset}`);
+      if (!Array.isArray(data.items)) throw new Error("invalid directory page");
+      items.push(...data.items);
+      if (!data.has_more) return items;
+      if (!data.items.length) throw new Error("directory pagination did not advance");
+      offset += data.items.length;
+    }
+  } catch {
+    throw new Error("群目录读取失败，请重试");
+  }
 }
 function newInitialDetailReadEpoch(id: number): InitialDetailReadEpoch {
   const generation = (detailReadGenerations.get(id) || 0) + 1;
@@ -428,20 +632,39 @@ function summarizeGroups(rows: Json[]): Json {
 async function requestJson(url: string, options: Json = {}): Promise<Json> {
   const method = String(options.method || "GET").toUpperCase();
   const body = options.body || {};
-  const match = url.match(/\/plans\/(\d+)/);
+  const parsedURL = new URL(url, window.location.origin);
+  const match = parsedURL.pathname.match(/\/plans\/(\d+)/);
   const id = match ? Number(match[1]) : 0;
   if (id && method !== "GET") invalidateInitialDetailRead(id);
-  if (url === `${base}/plans` && method === "GET") {
-    const data = await nativeRequest(url);
+  if (parsedURL.pathname === `${base}/plans` && method === "GET") {
+    const requested = requestedPlanPage(parsedURL);
+    const data = await nativeRequest(url, { signal: options.signal });
     if (!Array.isArray(data.items)) throw new Error("计划列表数据无效");
+    const total = requiredNumericNonNegativeInteger(data.total, "计划列表总数数据无效");
+    const limit = requiredNumericPositiveInteger(data.limit, "计划列表页码数据无效");
+    const offset = requiredNumericNonNegativeInteger(data.offset, "计划列表页码数据无效");
+    if (limit !== requested.limit || offset !== requested.offset || typeof data.has_more !== "boolean" || data.items.length > limit)
+      throw new Error("计划列表页码数据无效");
     // Parse the complete page before publishing any row revision. A malformed
     // later row must not advance CAS for an earlier row that remains visible
     // after the list read fails.
-    data.items.forEach((item: Json) => boundGroupCount(item));
-    const items = data.items.map((item: Json) => plan(item));
+    data.items.forEach((item: Json) => {
+      boundGroupCount(item);
+      requiredIdentifier(item.plan_id, "计划列表 ID 数据无效");
+      requiredNumericPositiveInteger(item.revision, "计划列表版本数据无效");
+      requiredNumericNonNegativeInteger(item.queue_count, "计划通知排队数据无效");
+    });
+    // A page only publishes into the Standard controller's local snapshot.
+    // Detail reads retain the existing revision cache; a list response must
+    // not advance CAS for a row whose page was never rendered.
+    const items = data.items.map((item: Json) => plan(item, false));
     return {
       ...data,
       items,
+      total,
+      limit,
+      offset,
+      has_more: data.has_more,
       queue_count: items.reduce(
         (sum, item) => sum + Number(item.queue_count || 0),
         0,
@@ -449,6 +672,35 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     };
   }
   if (url === `${base}/plans` && method === "POST") {
+    const recovery = createRecoveryOptions(options.createRecovery);
+    if (recovery?.stage === "configuration")
+      return { item: await completeCreateConfiguration(body, recovery) };
+    if (recovery?.stage === "post") {
+      let created: Json;
+      try {
+        assertCreateRecoverySession(recovery);
+        created = await nativeRequest(url, {
+          method,
+          body: { name: recovery.planName },
+          privateCreateRecoveryKey: recovery.createKey,
+        });
+      } catch (error) {
+        throw createRecoveryError(error, recovery);
+      }
+      let current: { raw: Json; id: number; revision: number };
+      try {
+        current = confirmedCreatedPlan(created, recovery);
+      } catch (error) {
+        throw createRecoveryError(error, recovery);
+      }
+      const configuration = Object.freeze({
+        ...recovery,
+        stage: "configuration",
+        planID: current.id,
+        expectedRevision: current.revision,
+      });
+      return { item: await completeCreateConfiguration(body, configuration) };
+    }
     const created = await nativeRequest(url, {
       method,
       body: { name: String(body.plan_name || "").trim() || "新建群运营计划" },
@@ -475,12 +727,12 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   if (id && /\/enable$/.test(url))
     return nativeRequest(`${base}/plans/${id}/enable`, {
       method: "POST",
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (id && /\/disable$/.test(url))
     return nativeRequest(`${base}/plans/${id}/disable`, {
       method: "POST",
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (id && /\/groups$/.test(url) && method === "GET") {
     const claimed = claimInitialDetailRead(id, "groups");
@@ -594,7 +846,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   if (id && url === `${base}/plans/${id}` && method === "DELETE")
     return nativeRequest(url, {
       method,
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (
     id &&
