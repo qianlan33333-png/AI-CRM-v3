@@ -127,9 +127,12 @@ try {
   employeeSearch.value = 'pageA'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(15);
   assert.match(document.querySelector('#admin-access-employee-results').textContent, /PageA1/, 'a paged directory displays its first authorized page');
   assert.ok(document.querySelector('button[data-access-action="more-employees"]'), 'the matching displayed query can load its next page');
+  document.querySelector('#admin-access-employee-results button[data-wecom-userid]').click();
+  assert.equal(document.querySelector('#admin-access-provision-next').disabled, false, 'a new eligible selection can proceed after another employee became authorized');
+  assert.doesNotMatch(document.querySelector('#admin-access-provision-hint').textContent, /不能重复开通/, 'a new eligible selection clears the unrelated authorization warning');
   employeeSearch.value = 'failure'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(15);
   assert.match(document.querySelector('#admin-access-employee-search-status').textContent, /上次查询“pageA”/, 'a failed new query identifies the query that still owns the retained page cursor');
-  assert.match(document.querySelector('#admin-access-employee-search-status').textContent, /未执行“failure”的新查询/, 'a failed replacement does not present the previous page as results for the new query');
+  assert.match(document.querySelector('#admin-access-employee-search-status').textContent, /“failure”的新查询未成功/, 'a failed replacement does not present the previous page as results for the new query');
   assert.equal(document.querySelector('button[data-access-action="more-employees"]'), null, 'retained results do not expose a cursor that belongs to a different or failed query');
   assert.equal(calls.some((item) => item.includes('query=failure') && item.includes('cursor=page-a-next')), false, 'the old page cursor is never sent with the failed query');
 

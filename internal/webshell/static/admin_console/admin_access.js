@@ -240,6 +240,9 @@
       employeeCursor = String(payload.next_cursor || ""); employeeHasMore = payload.has_more === true;
       if (reset) {
         employeeDisplayedQuery = query;
+        // The unavailable notice belongs only to the selected identity in
+        // this successful result. Do not carry it into a different query.
+        employeeSelectionUnavailable = "";
         const current = selectedEmployee && employeeItems.find((item) => String(item.wecom_userid) === String(selectedEmployee.wecom_userid));
         if (current && current.authorized_account === true) {
           selectedEmployee = null;
@@ -262,7 +265,7 @@
       employeeDirectoryError = true;
       renderEmployeeResults();
       const displayed = employeeDisplayedQuery ? `“${employeeDisplayedQuery}”` : "全部员工";
-      const failed = query ? `；未执行“${query}”的新查询。` : "；未重新读取全部员工。";
+      const failed = query ? `；“${query}”的新查询未成功。` : "；重新读取全部员工未成功。";
       elements.employeeStatus.textContent = employeeItems.length ? `企业员工目录暂时不可用，仍显示上次查询${displayed}的 ${employeeItems.length} 名员工${failed}` : errorMessage(error, "企业员工目录暂时不可用。");
       setAlert(errorMessage(error, "企业员工目录暂时不可用。"), "error"); setProvisionStep(1);
     }
@@ -303,7 +306,7 @@
     employeeAbort = null;
     void loadEmployees(true);
   });
-  elements.employeeResults.addEventListener("click", (event) => { const more = event.target.closest('button[data-access-action="more-employees"]'); if (more) { void loadEmployees(false); return; } const button = event.target.closest("button[data-wecom-userid]"); if (!button || button.disabled) return; selectedEmployee = employeeItems.find((item) => String(item.wecom_userid) === String(button.dataset.wecomUserid) && item.authorized_account !== true) || null; renderEmployeeResults(); setProvisionStep(1); });
+  elements.employeeResults.addEventListener("click", (event) => { const more = event.target.closest('button[data-access-action="more-employees"]'); if (more) { void loadEmployees(false); return; } const button = event.target.closest("button[data-wecom-userid]"); if (!button || button.disabled) return; selectedEmployee = employeeItems.find((item) => String(item.wecom_userid) === String(button.dataset.wecomUserid) && item.authorized_account !== true) || null; if (selectedEmployee) employeeSelectionUnavailable = ""; renderEmployeeResults(); setProvisionStep(1); });
   elements.provisionNext.addEventListener("click", () => { if (provisionStep === 1 && selectedEmployee) setProvisionStep(2); else if (provisionStep === 2 && selectedProvisionRole()) setProvisionStep(3); });
   elements.provisionBack.addEventListener("click", () => { if (provisionStep > 1) setProvisionStep(provisionStep - 1); });
   root.querySelectorAll('input[name="provision-role"]').forEach((input) => input.addEventListener("change", () => setProvisionStep(2)));
