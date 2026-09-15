@@ -66,12 +66,17 @@ async function stopBrowser(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 async function captureOverview(cdp, name, width) {
-  if (!screenshotDirectory) return;
   await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
   await delay(80);
+  if (!screenshotDirectory) return;
   const image = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
   await fs.mkdir(screenshotDirectory, { recursive: true });
   await fs.writeFile(path.join(screenshotDirectory, name), Buffer.from(image.data, "base64"));
+}
+async function assertDrawerGeometry(cdp, expectedViewport) {
+  const geometry = JSON.parse(await evaluate(cdp, "(() => { const drawer=document.querySelector('.shared-detail-drawer'); const panel=drawer?.querySelector('.shared-detail-drawer__panel'); const rect=(node)=>{const box=node?.getBoundingClientRect();return box?{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}:null}; const style=drawer?getComputedStyle(drawer):null; return JSON.stringify({viewport:window.innerWidth,clientWidth:document.documentElement.clientWidth,drawer:rect(drawer),panel:rect(panel),open:drawer?.open===true,display:style?.display||'',position:style?.position||'',marginRight:Number.parseFloat(style?.marginRight||'0'),drawerStyleLoaded:[...document.styleSheets].some(sheet=>String(sheet.href||'').includes('sharedDetailDrawerStyles-'))}); })()") || "{}");
+  const rightGap = geometry.clientWidth - geometry.drawer?.right;
+  if (geometry.viewport !== expectedViewport || !geometry.open || !geometry.drawerStyleLoaded || geometry.display !== 'block' || geometry.position !== 'fixed' || !geometry.drawer || !geometry.panel || geometry.clientWidth <= 0 || geometry.drawer.left < 0 || geometry.drawer.right > geometry.clientWidth + 1 || Math.abs(rightGap - geometry.marginRight) > 1 || geometry.marginRight !== 16 || geometry.drawer.width < 400 || geometry.drawer.width > 640 || geometry.panel.left < geometry.drawer.left || geometry.panel.right > geometry.drawer.right + 1) throw new Error(`paid-record drawer did not use the shared right-side geometry: ${JSON.stringify(geometry)}`);
 }
 async function selectOverviewPeriod(cdp, label, period) {
   const encodedLabel = JSON.stringify(label);
@@ -140,10 +145,10 @@ try {
   const paidRecordsOpened = await evaluate(cdp, "(() => { const button=document.querySelector('[data-overview-paid-records]'); if (!button) return false; button.click(); return true; })()");
   if (!paidRecordsOpened) throw new Error("overview paid-record action is unavailable for a ready payment section");
   await waitFor(cdp, "document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]')", "paid-record drawer did not form the provider-scoped order detail link");
-  const drawerGeometry = JSON.parse(await evaluate(cdp, "(() => { const drawer=document.querySelector('.shared-detail-drawer'); const panel=drawer?.querySelector('.shared-detail-drawer__panel'); const rect=(node)=>{const box=node?.getBoundingClientRect();return box?{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}:null}; return JSON.stringify({viewport:window.innerWidth,drawer:rect(drawer),panel:rect(panel),open:drawer?.open===true,display:drawer?getComputedStyle(drawer).display:'',position:drawer?getComputedStyle(drawer).position:'',drawerStyleLoaded:[...document.styleSheets].some(sheet=>String(sheet.href||'').includes('sharedDetailDrawerStyles-'))}); })()") || "{}");
-  if (!drawerGeometry.open || !drawerGeometry.drawerStyleLoaded || drawerGeometry.display !== 'block' || !drawerGeometry.drawer || !drawerGeometry.panel || drawerGeometry.drawer.left <= drawerGeometry.viewport / 2 || drawerGeometry.drawer.right > drawerGeometry.viewport + 1 || drawerGeometry.drawer.width < 400 || drawerGeometry.drawer.width > 640 || drawerGeometry.panel.left < drawerGeometry.drawer.left || drawerGeometry.panel.right > drawerGeometry.drawer.right + 1) throw new Error(`paid-record drawer did not use the shared right-side geometry: ${JSON.stringify(drawerGeometry)}`);
   await captureOverview(cdp, "overview-paid-records-1280.png", 1280);
+  await assertDrawerGeometry(cdp, 1280);
   await captureOverview(cdp, "overview-paid-records-1440.png", 1440);
+  await assertDrawerGeometry(cdp, 1440);
   const openedOrder = await evaluate(cdp, "(() => { const link=document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]'); if (!link) return false; link.click(); return true; })()");
   if (!openedOrder) throw new Error("paid-record drawer link disappeared before navigation");
   try {
