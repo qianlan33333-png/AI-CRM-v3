@@ -95,6 +95,7 @@ var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.admin_distribution_page":                      {"api.admin_distribution_page", "/admin/distribution"},
 	"api.admin_coupons_page":                           {"api.admin_coupons_page", "/admin/coupons"},
 	"api.admin_alipay_transactions_page":               {"api.admin_alipay_transactions_page", "/admin/alipay/transactions"},
+	"api.admin_materials_workspace":                    {"api.admin_materials_workspace", "/admin/materials"},
 	"api.admin_image_library_workspace":                {"api.admin_image_library_workspace", "/admin/image-library"},
 	"api.admin_miniprogram_library_workspace":          {"api.admin_miniprogram_library_workspace", "/admin/miniprogram-library"},
 	"api.admin_attachment_library_workspace":           {"api.admin_attachment_library_workspace", "/admin/attachment-library"},
