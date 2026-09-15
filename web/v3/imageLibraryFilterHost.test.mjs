@@ -53,8 +53,8 @@ let failConfirmedDeleteReadback = false;
 
 const virtualConsole = new VirtualConsole();
 virtualConsole.forwardTo(console);
-const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="stage" data-image-library-v3-root></main><script>${materialHost}</script><script>${imageHost}</script></body></html>`, {
-  url: "https://test.invalid/admin/image-library",
+const dom = new JSDOM(`<!doctype html><html><body data-page="images"><header class="admin-topbar"><div class="admin-topbar-head"><h1>素材库</h1></div><div class="admin-topbar-meta"></div></header><main id="stage" data-image-library-v3-root data-material-library-workspace="true"></main><script>${materialHost}</script><script>${imageHost}</script></body></html>`, {
+  url: "https://test.invalid/admin/materials?tab=images",
   runScripts: "dangerously",
   pretendToBeVisual: true,
   virtualConsole,
@@ -231,8 +231,8 @@ current.input.value = "弹窗延迟";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 commitSearch(current.input);
 await waitFor(() => typeof releaseDialogRead === "function", "delayed dialog read did not start");
-const upload = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "上传图片");
-assert.ok(upload, "upload action missing from source-owned Host");
+const upload = dom.window.document.querySelector('[data-page-header-actions="image-library"] button');
+assert.ok(upload?.textContent === "上传图片", "upload action missing from the one shared page header");
 upload.click();
 await waitFor(() => Boolean(dom.window.document.querySelector("#fImgUpFile")), "upload dialog did not open during pending read");
 const pendingFile = dom.window.document.querySelector("#fImgUpFile");
@@ -323,7 +323,7 @@ assert.ok(!(dom.window.document.getElementById("stage")?.textContent || "").incl
 current.input.value = "";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 commitSearch(current.input);
-await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材"), "controlled-error recovery did not restore the active list");
+await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材") && [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "下一页" && !button.disabled), "controlled-error recovery did not restore the active list");
 
 failSecondPage = true;
 const failingNext = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "下一页");

@@ -4,7 +4,7 @@ import { JSDOM } from 'jsdom';
 
 const bundle = await build({
   stdin: {
-    contents: "import { mountPageHeaderActions, mountPageHeaderActionElements, setPageHeaderActionDisabled } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions; globalThis.mountElements = mountPageHeaderActionElements; globalThis.setDisabled = setPageHeaderActionDisabled;",
+    contents: "import { mountPageHeaderActions, mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins, setPageHeaderActionDisabled } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions; globalThis.mountElements = mountPageHeaderActionElements; globalThis.hasConnectedOrigins = pageHeaderActionElementsHaveConnectedOrigins; globalThis.setDisabled = setPageHeaderActionDisabled;",
     resolveDir: process.cwd(), sourcefile: 'page-header-actions-test-entry.ts',
   }, bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, logLevel: 'warning',
 });
@@ -109,6 +109,7 @@ try {
   const relocated = topbar.querySelector('[data-page-header-actions="ai-plan-detail"]');
   assert.deepEqual([...relocated.children].map((node) => node.textContent), ['返回一级页', '确认并发送'], 'existing controls move to the page header in requested order');
   assert.equal(relocated.querySelector('button'), original, 'existing page control identity is preserved');
+  assert.equal(dom.window.hasConnectedOrigins('ai-plan-detail', [original]), true, 'a relocated control retains a connected donor origin while the source is live');
   assert.equal(dom.window.document.activeElement, original, 'a first move from the source preserves focus on that same original control');
   original.click();
   assert.equal(originalClicks, 1, 'moved controls retain their existing domain listener');
@@ -145,6 +146,7 @@ try {
   staleSource.append(stale); dom.window.document.body.append(staleSource);
   dom.window.mountElements('stale-owner', [stale]);
   staleSource.remove();
+  assert.equal(dom.window.hasConnectedOrigins('stale-owner', [stale]), false, 'a donor redraw disconnects the moved control origin even while its header node remains connected');
   dom.window.mountElements('stale-owner', [stale]);
   assert.equal(topbar.querySelector('[data-page-header-actions="stale-owner"]'), null, 'a redraw-detached source control cannot be resurrected in the header');
   assert.equal(stale.isConnected, false, 'a detached donor control remains detached after stale remount is rejected');

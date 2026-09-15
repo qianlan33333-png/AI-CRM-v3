@@ -685,13 +685,17 @@ class MaterialRefreshPanel {
   private generation = 0;
   private fullRetryKey = '';
   private singleRetryKeys = new Map<string, string>();
+  // `render()` replaces this small support panel after every authoritative
+  // read. Keep the user's disclosure choice across those renders so polling
+  // or an explicit refresh cannot collapse diagnostics they are reviewing.
+  private diagnosticsOpen = false;
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('section');
     this.root.id = 'material-refresh-panel';
     this.root.dataset.materialRefresh = 'true';
     this.root.setAttribute('aria-labelledby', 'material-refresh-title');
-    this.root.style.cssText = 'grid-column:1/-1;background:#fff;border:1px solid #DEE0E3;border-radius:8px;padding:14px 16px;color:#1F2329';
+    this.root.style.cssText = 'grid-column:1/-1;padding:8px 0;border-bottom:1px solid #DEE0E3;color:#1F2329';
     parent.prepend(this.root);
     this.render();
   }
@@ -749,24 +753,19 @@ class MaterialRefreshPanel {
 
   private renderError(value: string): void {
     this.root.replaceChildren();
-    const header = document.createElement('div');
-    header.dataset.materialRefreshHeader = 'true';
-    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
-    const title = document.createElement('h2');
-    title.id = 'material-refresh-title';
-    title.textContent = '素材刷新状态';
-    title.style.cssText = 'margin:0;font-size:14px';
+    const status = document.createElement('p');
+    status.dataset.materialRefreshStatus = 'true';
+    status.id = 'material-refresh-title';
+    status.setAttribute('role', 'alert');
+    status.textContent = `素材刷新：${value}`;
+    status.style.cssText = 'margin:0;color:#B42318;font-size:12px;line-height:20px';
+    const details = this.diagnosticsDetails('刷新设置与明细');
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.textContent = '重试读取刷新状态';
     retry.onclick = () => { void this.load(); };
-    header.append(title, retry);
-    const status = document.createElement('p');
-    status.dataset.materialRefreshStatus = 'true';
-    status.setAttribute('role', 'alert');
-    status.textContent = value;
-    status.style.cssText = 'margin:10px 0 0;color:#B42318;font-size:12px';
-    this.root.append(header, status);
+    details.append(retry);
+    this.root.append(status, details);
   }
 
   private render(): void {
@@ -774,44 +773,55 @@ class MaterialRefreshPanel {
       this.root.replaceChildren();
       const status = document.createElement('p');
       status.dataset.materialRefreshStatus = 'true';
+      status.id = 'material-refresh-title';
       status.setAttribute('role', 'status');
-      status.textContent = '正在读取素材刷新状态…';
-      status.style.cssText = 'margin:0;color:#646A73;font-size:12px';
+      status.textContent = '素材刷新：正在读取状态…';
+      status.style.cssText = 'margin:0;color:#646A73;font-size:12px;line-height:20px';
       this.root.append(status);
       return;
     }
     this.root.replaceChildren();
-    const header = document.createElement('div');
-    header.dataset.materialRefreshHeader = 'true';
-    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
-    const titleWrap = document.createElement('div');
-    const title = document.createElement('h2');
-    title.id = 'material-refresh-title';
-    title.textContent = '素材刷新状态';
-    title.style.cssText = 'margin:0;font-size:14px';
+    const status = document.createElement('p');
+    status.dataset.materialRefreshStatus = 'true';
+    status.setAttribute('role', 'status');
+    status.id = 'material-refresh-title';
+    status.style.cssText = 'margin:0;color:#646A73;font-size:12px;line-height:20px;min-height:20px';
+    status.textContent = `素材刷新：${this.round ? this.roundProgress(this.round) : '当日刷新进度暂不可用'}`;
+    this.root.append(status);
+    if (this.failures.length || materialNumber(this.round?.unknown) || materialNumber(this.round?.failed)) {
+      const attention = document.createElement('p');
+      attention.dataset.materialRefreshAttention = 'true';
+      attention.setAttribute('role', 'status');
+      // Per-source failures and round counts are different projections of the
+      // same work. Never add them: one failed source can be represented by
+      // both values. The disclosure keeps each authoritative count distinct.
+      const sourceText = this.failures.length ? `${this.failures.length} 项素材需补传` : '';
+      const roundText = this.round
+        ? `本轮失败 ${materialNumber(this.round.failed) ?? '—'}、待核实 ${materialNumber(this.round.unknown) ?? '—'}`
+        : '';
+      attention.textContent = `有刷新异常需处理：${[sourceText, roundText].filter(Boolean).join('；')}。查看下方明细。`;
+      attention.style.cssText = 'margin:2px 0 0;color:#B54708;font-size:12px;line-height:20px';
+      this.root.append(attention);
+    }
+
+    // Refresh information supplements a material library; it is not a second
+    // material index. Keep the current run and the authorized refresh action
+    // visible, while making per-source diagnostics an explicit disclosure so
+    // a page never presents the same catalogue twice on first render.
+    const details = this.diagnosticsDetails(`刷新设置与明细（${this.items.length} 项${this.failures.length ? `，${this.failures.length} 项需处理` : ''}）`);
     const note = document.createElement('p');
     note.textContent = '启用图片、附件和小程序封面每天 02:00 全量刷新；刷新只更新临时凭据，不触发群发。';
-    note.style.cssText = 'margin:4px 0 0;color:#646A73;font-size:12px;line-height:18px';
-    titleWrap.append(title, note);
+    note.style.cssText = 'margin:8px 0 0;color:#646A73;font-size:12px;line-height:18px';
+    details.append(note);
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px';
     const all = document.createElement('button');
     all.type = 'button';
     all.className = 'admin-button admin-button--primary';
     all.textContent = '立即刷新全部启用素材';
     all.dataset.materialRefreshAll = 'true';
     all.onclick = () => { void this.refreshAll(all); };
-    header.append(titleWrap, all);
-    this.root.append(header);
-
-    const status = document.createElement('p');
-    status.dataset.materialRefreshStatus = 'true';
-    status.setAttribute('role', 'status');
-    status.style.cssText = 'margin:10px 0 0;color:#646A73;font-size:12px;min-height:18px';
-    this.root.append(status);
-    const progress = document.createElement('p');
-    progress.dataset.materialRefreshProgress = 'true';
-    progress.style.cssText = 'margin:4px 0 10px;color:#646A73;font-size:12px';
-    progress.textContent = this.round ? this.roundProgress(this.round) : '当日刷新进度暂不可用';
-    this.root.append(progress);
+    actions.append(all);
     if (this.round && materialNumber(this.round.id) !== undefined) {
       const refreshProgress = document.createElement('button');
       refreshProgress.type = 'button';
@@ -819,24 +829,13 @@ class MaterialRefreshPanel {
       refreshProgress.textContent = '刷新进度';
       refreshProgress.dataset.materialRefreshRound = String(this.round.id);
       refreshProgress.onclick = () => { void this.loadRound(refreshProgress); };
-      this.root.append(refreshProgress);
+      actions.append(refreshProgress);
     }
+    details.append(actions);
     const next = document.createElement('p');
-    next.style.cssText = 'margin:8px 0 10px;color:#646A73;font-size:12px';
+    next.style.cssText = 'margin:8px 0 0;color:#646A73;font-size:12px';
     next.textContent = `下次运行：${materialNextRun(this.nextRefreshAt)}`;
-    this.root.append(next);
-
-    // Refresh information supplements a material library; it is not a second
-    // material index. Keep the current run and the authorized refresh action
-    // visible, while making per-source diagnostics an explicit disclosure so
-    // a page never presents the same catalogue twice on first render.
-    const details = document.createElement('details');
-    details.dataset.materialRefreshDetails = 'true';
-    details.style.cssText = 'margin-top:10px;border-top:1px solid #EFF0F1;padding-top:10px';
-    const summary = document.createElement('summary');
-    summary.textContent = `查看刷新明细（${this.items.length} 项${this.failures.length ? `，${this.failures.length} 项需处理` : ''}）`;
-    summary.style.cssText = 'cursor:pointer;color:#245BDB;font-size:12px;line-height:20px';
-    details.append(summary);
+    details.append(next);
 
     if (this.failures.length) {
       const missing = document.createElement('section');
@@ -890,6 +889,19 @@ class MaterialRefreshPanel {
     this.items.forEach((item) => table.append(this.itemRow(item)));
     details.append(table);
     this.root.append(details);
+  }
+
+  private diagnosticsDetails(label: string): HTMLDetailsElement {
+    const details = document.createElement('details');
+    details.dataset.materialRefreshDetails = 'true';
+    details.open = this.diagnosticsOpen;
+    details.style.cssText = 'margin-top:4px;border-top:1px solid #EFF0F1;padding-top:6px';
+    details.addEventListener('toggle', () => { this.diagnosticsOpen = details.open; });
+    const summary = document.createElement('summary');
+    summary.textContent = label;
+    summary.style.cssText = 'cursor:pointer;color:#245BDB;font-size:12px;line-height:20px';
+    details.append(summary);
+    return details;
   }
 
   private roundProgress(round: RefreshRoundProjection): string {

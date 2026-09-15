@@ -100,6 +100,18 @@ function actionHost(owner: string): HTMLElement | undefined {
 
 const relocatedActionOrigins = new WeakMap<HTMLElement, Comment>();
 
+/**
+ * True only while controls moved to the topbar still have a connected marker
+ * in their donor-owned source. Hosts use this before treating a redraw with no
+ * replacement control as an unmount: an element in the topbar is expected not
+ * to be found by a stage query after it has been relocated.
+ */
+export function pageHeaderActionElementsHaveConnectedOrigins(owner: string, elements: readonly HTMLElement[]): boolean {
+  return elements.length > 0 && elements.every((element) =>
+    element.dataset.pageHeaderActionElement === owner && element.isConnected && relocatedActionOrigins.get(element)?.isConnected,
+  );
+}
+
 function ensureActionHost(owner: string): { meta: HTMLElement; host: HTMLElement } | undefined {
   const topbar = document.querySelector<HTMLElement>('.admin-topbar');
   if (!topbar) return undefined;

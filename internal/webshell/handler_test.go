@@ -20,7 +20,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		t.Fatalf("group count=%d, want 7", len(ADMIN_NAV_GROUPS))
 	}
 	wantTitles := []string{"总览", "客户", "运营", "交易", "分销", "内容素材", "系统设置"}
-	wantCounts := []int{1, 3, 6, 4, 1, 5, 3}
+	wantCounts := []int{1, 3, 6, 4, 1, 3, 3}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
 			t.Fatalf("group %d=%+v, want title=%q count=%d", index, group, wantTitles[index], wantCounts[index])
@@ -67,6 +67,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		"automation_agents":       {"/admin/automation-agents", "/admin/agentEdit.html"},
 		"questionnaires":          {"/admin/questionnaires", "/admin/questionnaireDetail.html"},
 		"radar_links":             {"/admin/radar-links", "/admin/radarDetail.html"},
+		"image_library":           {"/admin/materials", "/admin/image-library", "/admin/miniprogram-library", "/admin/attachment-library", "/admin/images.html", "/admin/mpLib.html", "/admin/attach.html"},
 		"owner_migration":         {"/admin/owner-migration", "/admin/ownerMig.html"},
 		"config":                  {"/admin/config", "/admin/configDetail.html"},
 		"api_docs":                {"/admin/api-docs", "/admin/apidocs.html"},
@@ -553,6 +554,7 @@ func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing
 		AdminJS:                  "/media-assets/admin.js",
 		MaterialSaveHostJS:       "/media-assets/material-save-host.js",
 		ImageLibraryFilterHostJS: "/media-assets/image-library-filter-host.js",
+		MaterialLibraryHostJS:    "/media-assets/material-library-host.js",
 	}
 	response := httptest.NewRecorder()
 	err = renderer.RenderMedia(
@@ -571,11 +573,11 @@ func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing
 	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `data-page="images"`) || !strings.Contains(body, `data-image-library-v3-root`) || strings.Contains(body, `<template id="tpl">`) || strings.Contains(body, `src="/media-assets/admin.js"`) || hostAt < 0 || materialAt < 0 || !(materialAt < hostAt) {
 		t.Fatalf("image library shell mismatch host=%d material=%d body=%q", hostAt, materialAt, body)
 	}
-	if err = renderer.RenderMedia(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"), "images", "", MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err == nil {
+	if err = renderer.RenderMedia(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"), "images", "", MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, MaterialLibraryHostJS: assets.MaterialLibraryHostJS}); err == nil {
 		t.Fatal("image library shell accepted a missing filter Host asset")
 	}
 	attachmentResponse := httptest.NewRecorder()
-	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", `<section data-page="attach"></section>`, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err != nil {
+	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", `<section data-page="attach"></section>`, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, MaterialLibraryHostJS: assets.MaterialLibraryHostJS}); err != nil {
 		t.Fatal(err)
 	}
 	attachmentBody := attachmentResponse.Body.String()

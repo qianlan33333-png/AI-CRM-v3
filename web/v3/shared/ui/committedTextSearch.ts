@@ -24,6 +24,8 @@ const registeredSearches: RegisteredSearch[] = [
   { selector: 'input[placeholder="搜索计划名称、发送人"]:not(:disabled)', trigger: 'input' },
   { selector: 'input[placeholder="按名称、链接、文件名搜索"]', trigger: 'input' },
   { selector: 'input[data-image-library-query]', trigger: 'input' },
+  { selector: 'input[data-material-library-query="attachment"]', trigger: 'input' },
+  { selector: 'input[data-material-library-query="miniprogram"]', trigger: 'keydown' },
   { selector: 'input[data-open-platform-doc-search]', trigger: 'input' },
   { selector: 'input[data-field-mapping-variable-search]', trigger: 'input' },
   // Distribution is a current-page-only client filter. It shares the same

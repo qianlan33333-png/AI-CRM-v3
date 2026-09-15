@@ -502,6 +502,87 @@ try {
       return false;
     }
   };
+  const assertMaterialWorkspace = async (label, tab, actionLabel) => {
+    await assertLayout("standard", label, ".admin-page-title");
+    const material = await evaluate(cdp, `(() => {
+      const topbar=document.querySelector('.admin-topbar');
+      const stage=document.querySelector('#stage[data-material-library-workspace="true"]');
+      const title=topbar?.querySelector('.admin-page-title');
+      const tabs=Array.from(stage?.querySelectorAll('[data-material-library-tab]') || []);
+      const action=Array.from(topbar?.querySelectorAll('button') || []).find(node => String(node.textContent || '').trim() === ${JSON.stringify(actionLabel)});
+      const visible=node => { const rect=node?.getBoundingClientRect(), style=node ? getComputedStyle(node) : null; return Boolean(node && rect && rect.width > 1 && rect.height > 1 && style?.display !== 'none' && style.visibility !== 'hidden'); };
+      const donorHeaders=Array.from(stage?.querySelectorAll('div[style*="height: 52px"],div[style*="height:52px"]') || []).filter(visible);
+      return {title:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,tabs:tabs.map(node => ({tab:node.dataset.materialLibraryTab,current:node.getAttribute('aria-current'),href:node.getAttribute('href')})),action:visible(action),overflow:document.documentElement.scrollWidth > innerWidth + 1,donorHeaders:donorHeaders.length};
+    })()`);
+    const expectedTabs = ['images', 'attachments', 'miniprograms'];
+    const validTabs = material?.tabs?.length === expectedTabs.length && material.tabs.every((item, index) => item.tab === expectedTabs[index] && item.href === `/admin/materials?tab=${expectedTabs[index]}` && (item.tab === tab ? item.current === 'page' : item.current === null));
+    if (!material || material.title !== '素材库' || material.headers !== 1 || !validTabs || !material.action || material.overflow || material.donorHeaders !== 0) throw new Error(`${label} unified material topbar/tabs/action layout invalid: ${JSON.stringify(material)}`);
+  };
+  const navigateMaterialWorkspace = async (tab, label, actionLabel, ready, ownerPath, requiredText) => {
+    const pathname = `/admin/materials?tab=${tab}`;
+    currentStep = label;
+    try {
+      const requestStart = requestEvents.length;
+      await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === '/admin/materials' && new URLSearchParams(location.search).get('tab') === ${JSON.stringify(tab)} && document.readyState !== 'loading'`, label + ' did not navigate');
+      await waitFor(cdp, ready, label + ' Host did not become ready');
+      const ownerReads = requestEvents.slice(requestStart).filter(value => /^GET \/api\/admin\/(?:image-library|attachment-library|miniprogram-library)$/.test(value));
+      if (!ownerReads.includes(`GET ${ownerPath}`) || ownerReads.some(value => value !== `GET ${ownerPath}`)) {
+        throw new Error(`${label} read a non-active material owner: ${JSON.stringify(ownerReads)}`);
+      }
+      if (requiredText && !await evaluate(cdp, `document.querySelector('#stage')?.textContent?.includes(${JSON.stringify(requiredText)})`)) {
+        throw new Error(`${label} did not present fixture metadata ${JSON.stringify(requiredText)}`);
+      }
+      await waitForFonts(label);
+      await recordGeometry(label, () => assertMaterialWorkspace(label, tab, actionLabel), false);
+      for (const width of [1280, 1440]) {
+        await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+        await delay(80);
+        await assertMaterialWorkspace(label + `-${width}`, tab, actionLabel);
+        await capture(`${label}-${width}`);
+      }
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
+  };
+  const assertMaterialAlias = async (pathname, tab, ready, label) => {
+    currentStep = label;
+    try {
+      await cdp.call("Page.navigate", { url: baseURL + pathname });
+      await waitFor(cdp, `location.pathname === '/admin/materials' && new URLSearchParams(location.search).get('tab') === ${JSON.stringify(tab)} && document.readyState !== 'loading'`, label + ' did not redirect to the selected workspace tab');
+      await waitFor(cdp, ready, label + ' material Host did not become ready');
+      await assertMaterialWorkspace(label, tab, tab === 'images' ? '上传图片' : tab === 'attachments' ? '上传附件' : '新建小程序卡片');
+      return true;
+    } catch (error) {
+      await recordRouteFailure(label, error);
+      return false;
+    }
+  };
+  const assertMaterialHeaderActionOpens = async (owner, actionLabel, expectedInput, label) => {
+    try {
+      const opened = await evaluate(cdp, `(() => {
+        const action=Array.from(document.querySelectorAll('[data-page-header-actions=${JSON.stringify(owner)}] button')).find(node => String(node.textContent || '').trim() === ${JSON.stringify(actionLabel)});
+        if (!(action instanceof HTMLButtonElement) || action.disabled) return false;
+        action.click(); return true;
+      })()`);
+      if (!opened) throw new Error(label + ' topbar action was not actionable');
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(expectedInput)}) instanceof HTMLInputElement`, label + ' original modal did not open');
+      const closed = await evaluate(cdp, `(() => {
+        const input=document.querySelector(${JSON.stringify(expectedInput)});
+        const modal=input?.closest('div[style*="position: fixed"],div[style*="position:fixed"]');
+        const cancel=Array.from(modal?.querySelectorAll('button') || []).find(node => String(node.textContent || '').trim() === '取消');
+        if (!(cancel instanceof HTMLButtonElement)) return false;
+        cancel.click(); return true;
+      })()`);
+      if (!closed) throw new Error(label + ' modal could not be cancelled without a write');
+      await waitFor(cdp, `!document.querySelector(${JSON.stringify(expectedInput)})`, label + ' modal did not close after cancellation');
+    } catch (error) {
+      await recordRouteFailure(label, error);
+    }
+  };
   const assertGroupOpsLayout = async label => {
     await assertLayout("standard", label, ".admin-page-title");
     const layout = await evaluate(cdp, `(() => {
@@ -726,9 +807,17 @@ try {
   await assertProductDimensions('sp');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
-  await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-title] h1'))", "image-library", "embedded", imageLibraryHostTitle, true, true);
-  await navigate("/admin/miniprogram-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "miniprogram-library", "embedded", frozenListToolbarTitle, true, true);
-  await navigate("/admin/attachment-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "attachment-library", "embedded", embeddedTitle, true, true);
+  await navigateMaterialWorkspace('images', 'materials-images', '上传图片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-cards]'))", '/api/admin/image-library', '素材工作台缩略图');
+  await navigateMaterialWorkspace('miniprograms', 'materials-miniprograms', '新建小程序卡片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('#fMpQuery'))", '/api/admin/miniprogram-library', 'wx_material_layout');
+  await assertMaterialHeaderActionOpens('material-library-mpLib', '新建小程序卡片', '#fMpAppid', 'materials-miniprograms-create');
+  await navigateMaterialWorkspace('attachments', 'materials-attachments', '上传附件', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", '/api/admin/attachment-library', '素材工作台附件');
+  await assertMaterialHeaderActionOpens('material-library-attach', '上传附件', '#fAttUpFile', 'materials-attachments-upload');
+  await assertMaterialAlias('/admin/image-library', 'images', "Boolean(document.querySelector('[data-image-library-host-mounted=\"true\"]'))", 'materials-image-alias');
+  await assertMaterialAlias('/admin/images.html', 'images', "Boolean(document.querySelector('[data-image-library-host-mounted=\"true\"]'))", 'materials-image-html-alias');
+  await assertMaterialAlias('/admin/attachment-library', 'attachments', "Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", 'materials-attachment-alias');
+  await assertMaterialAlias('/admin/attach.html', 'attachments', "Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", 'materials-attachment-html-alias');
+  await assertMaterialAlias('/admin/miniprogram-library', 'miniprograms', "Boolean(document.querySelector('#fMpQuery'))", 'materials-miniprogram-alias');
+  await assertMaterialAlias('/admin/mpLib.html', 'miniprograms', "Boolean(document.querySelector('#fMpQuery'))", 'materials-miniprogram-html-alias');
 
   await navigate("/admin/automation-agents", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "automation-agents", "embedded", embeddedTitle, true, true);
   const ownerMounted = await navigate("/admin/owner-migration", "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"ready\"]')) && Boolean(document.querySelector('[data-owner-migration-page] .owner-migration-status-bar')) && Boolean(document.querySelector('[data-owner-migration-page] [data-owner-picker=\"source\"]'))", "owner-migration", "standard", "[data-owner-picker=\"source\"]", false, true);

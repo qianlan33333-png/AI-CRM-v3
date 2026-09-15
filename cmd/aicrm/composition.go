@@ -1906,7 +1906,12 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	mediaUI := mediaModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets media.MediaAssets) error {
 		endpoint := map[string]string{"images": "api.admin_image_library_workspace", "mpLib": "api.admin_miniprogram_library_workspace", "attach": "api.admin_attachment_library_workspace"}[page]
-		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, ImageLibraryFilterHostJS: assets.ImageLibraryFilterHostJS})
+		title := map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page]
+		if request.URL.Path == "/admin/materials" {
+			title = "素材库"
+			endpoint = "api.admin_materials_workspace"
+		}
+		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, title, "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, ImageLibraryFilterHostJS: assets.ImageLibraryFilterHostJS, MaterialLibraryHostJS: assets.MaterialLibraryHostJS})
 	})
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
 		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
@@ -2489,9 +2494,12 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/cyclesDetail.html", http.NotFoundHandler())
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
-	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
-	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
-	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
+	for _, path := range []string{
+		"/admin/image-library", "/admin/miniprogram-library", "/admin/attachment-library",
+		"/admin/images.html", "/admin/mpLib.html", "/admin/attach.html", "/admin/materials",
+	} {
+		mux.Handle(path, requireAdminSession(authentication, mediaUI))
+	}
 	// Product aliases mount the existing V3 Host. This retains the frozen
 	// workspace fields and all currently-approved Product actions beneath the
 	// new shell rather than letting a generic dist document mask them.
@@ -2662,7 +2670,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		styleSource := "'self'"
-		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
+		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library" || request.URL.Path == "/admin/images.html" || request.URL.Path == "/admin/mpLib.html" || request.URL.Path == "/admin/attach.html" || request.URL.Path == "/admin/materials"
 		sidebarPage := request.URL.Path == webshell.SidebarPagePath
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
 		productPage := isProductShellPath(request.URL.Path)

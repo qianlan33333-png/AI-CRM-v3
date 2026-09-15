@@ -94,7 +94,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		t.Fatalf("admin layout navigation status=%d", navigation.Code)
 	}
 	for _, href := range []string{
-		"/admin/automation-conversion", "/admin/operation-cycles", "/admin/automation-conversion/group-ops/ui", "/admin/channels", "/admin/cloud-orchestrator/plans", "/admin/customers", "/admin/hxc-dashboard", "/admin/questionnaires", "/admin/radar-links", "/admin/wecom-tags", "/admin/orders", "/admin/wechat-pay/products", "/admin/service-period-products", "/admin/coupons", "/admin/image-library", "/admin/miniprogram-library", "/admin/attachment-library", "/admin/automation-agents", "/admin/owner-migration", "/admin/config", "/admin/api-docs",
+		"/admin/automation-conversion", "/admin/operation-cycles", "/admin/automation-conversion/group-ops/ui", "/admin/channels", "/admin/cloud-orchestrator/plans", "/admin/customers", "/admin/hxc-dashboard", "/admin/questionnaires", "/admin/radar-links", "/admin/wecom-tags", "/admin/orders", "/admin/wechat-pay/products", "/admin/service-period-products", "/admin/coupons", "/admin/materials", "/admin/automation-agents", "/admin/owner-migration", "/admin/config", "/admin/api-docs",
 	} {
 		if !strings.Contains(navigation.Body.String(), `href="`+href+`"`) {
 			t.Fatalf("admin layout navigation href=%q is absent from the actual Webshell menu", href)
@@ -135,9 +135,15 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/wechat-pay/products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/service-period-products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/coupons", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/image-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/miniprogram-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/attachment-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/materials?tab=images", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/materials?tab=miniprograms", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/materials?tab=attachments", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/image-library", canonicalPath: "/admin/materials?tab=images", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/miniprogram-library", canonicalPath: "/admin/materials?tab=miniprograms", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/attachment-library", canonicalPath: "/admin/materials?tab=attachments", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/images.html", canonicalPath: "/admin/materials?tab=images", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/mpLib.html", canonicalPath: "/admin/materials?tab=miniprograms", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/attach.html", canonicalPath: "/admin/materials?tab=attachments", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/automation-agents", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/owner-migration", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/config", marker: `data-runtime-release-host`, expectTopbar: true},
@@ -220,7 +226,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	}
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
-		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
+		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "materials-images-1280.png", "materials-images-1440.png", "materials-miniprograms-1280.png", "materials-miniprograms-1440.png", "materials-attachments-1280.png", "materials-attachments-1440.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
@@ -260,11 +266,44 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	// full navigation matrix. Its bounded three-minute context includes release
 	// staging and browser startup; individual browser waits remain unchanged.
 	fixture := &adminShellLayoutFixture{productExternalPushChromiumFixture: newProductExternalPushChromiumFixtureWithTimeout(t, 3*time.Minute), screenshots: screenshots}
+	seedAdminShellLayoutMaterials(t, fixture.ctx, fixture.application)
 	seedAdminShellLayoutHXC(t, fixture.ctx, fixture.application)
 	fixture.radarID = seedAdminShellLayoutRadar(t, fixture.ctx, fixture.application)
 	fixture.aiPlanID = seedAdminShellLayoutAIAssistantPlan(t, fixture.ctx, fixture.application)
 	fixture.nativeOrderReference = seedAdminShellLayoutNativeOrder(t, fixture.ctx, fixture.application, fixture.productID)
 	return fixture
+}
+
+// seedAdminShellLayoutMaterials inserts local Media-owned facts through the
+// fixture database so the browser reads existing Owner endpoints. It creates
+// neither identity facts, jobs nor Provider work; upload/create controls are
+// observed only as existing page callbacks.
+func seedAdminShellLayoutMaterials(t *testing.T, ctx context.Context, application *composedApplication) {
+	t.Helper()
+	const imageName = "素材工作台缩略图"
+	imageContent := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82}
+	imageDigestBytes := sha256.Sum256(imageContent)
+	imageDigest := fmt.Sprintf("sha256:%x", imageDigestBytes)
+	pool := application.pool.Native()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, imageDigest, len(imageContent), imageContent); err != nil {
+		t.Fatal(err)
+	}
+	var imageID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,'material-layout.png',$2,'素材工作台浏览器夹具','layout,material','layout','image/png',$3,1,1,true,1,1) RETURNING id`, imageDigest, imageName, len(imageContent)).Scan(&imageID); err != nil {
+		t.Fatal(err)
+	}
+	attachmentContent := []byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+	attachmentDigestBytes := sha256.Sum256(attachmentContent)
+	attachmentDigest := fmt.Sprintf("sha256:%x", attachmentDigestBytes)
+	if _, err := pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'application/pdf',$2,$3)`, attachmentDigest, len(attachmentContent), attachmentContent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_attachments(blob_digest,file_name,name,description,tags,mime_type,byte_size,enabled,created_by,updated_by,created_at,updated_at) VALUES($1,'素材工作台附件.pdf','素材工作台附件','浏览器夹具','["layout","fixture"]'::jsonb,'application/pdf',$2,true,1,1,$3,$3)`, attachmentDigest, len(attachmentContent), time.Date(2026, time.September, 15, 1, 2, 3, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_miniprograms(name,app_id,page_path,title,thumb_image_id,enabled,created_by,updated_by,created_at,updated_at) VALUES('素材工作台小程序','wx_material_layout','pages/material/index','素材工作台小程序卡片',$1,true,1,1,$2,$2)`, imageID, time.Date(2026, time.September, 15, 2, 3, 4, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func authenticatedAdminGet(t *testing.T, handler interface {
