@@ -120,13 +120,19 @@ func (r *Repository) ReadAdminOrderDetail(ctx context.Context, attributionID int
 		return value, mapError(err)
 	}
 	rows.Close()
-	rows, err = tx.Query(ctx, `SELECT id,settlement_reference,amount_minor,currency,state,provider_deadline_at,created_at,updated_at FROM distribution_settlements WHERE commission_id=$1 ORDER BY id`, commissionID)
+	rows, err = tx.Query(ctx, `SELECT s.id,s.settlement_reference,s.amount_minor,s.currency,s.state,s.provider_deadline_at,
+		(SELECT MAX(ae.occurred_at) FROM distribution_audit_events ae
+		 WHERE ae.aggregate_type='commission' AND ae.aggregate_id=s.commission_id
+		   AND ae.event_type='distribution.settlement_paid.v1'
+		   AND ae.payload->>'settlement_reference'=s.settlement_reference),
+		s.created_at,s.updated_at
+		FROM distribution_settlements s WHERE s.commission_id=$1 ORDER BY s.id`, commissionID)
 	if err != nil {
 		return value, mapError(err)
 	}
 	for rows.Next() {
 		var item distributionport.AdminSettlement
-		if err = rows.Scan(&item.ID, &item.Reference, &item.AmountMinor, &item.Currency, &item.State, &item.ProviderDeadlineAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err = rows.Scan(&item.ID, &item.Reference, &item.AmountMinor, &item.Currency, &item.State, &item.ProviderDeadlineAt, &item.SettlementConfirmedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			rows.Close()
 			return value, mapError(err)
 		}
@@ -201,7 +207,7 @@ func (r *Repository) adminExceptionsForCommission(ctx context.Context, tx interf
 func (r *Repository) adminExceptionsWhere(ctx context.Context, tx interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, where string, value int64) ([]distributionport.AdminException, error) {
-	rows, err := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,d.customer_id,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,e.reason,COALESCE(s.payment_instruction_reference,''),e.evidence_reference,e.actor_scope,e.created_at,e.updated_at,e.version,CASE WHEN e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[1-9][0-9]*$' THEN 'unfreeze' WHEN COALESCE(s.payment_instruction_reference,'') ~ '^psinst_[1-9][0-9]*$' THEN 'split' ELSE '' END,(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','querying') AND ((e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[1-9][0-9]*$') OR (COALESCE(s.payment_instruction_reference,'') ~ '^psinst_[1-9][0-9]*$' AND c.status NOT IN ('cancelled','zero_commission') AND GREATEST(c.current_payable_minor-c.paid_minor,0)>0))),(e.status IN ('open','resolved') AND c.status NOT IN ('cancelled','zero_commission') AND (CASE WHEN e.kind='buyer_refund_after_paid' THEN GREATEST(c.paid_minor-c.current_payable_minor,0) WHEN e.kind='qualification_revoked_after_paid' AND e.reason='qualification_revoked_after_paid' THEN c.paid_minor ELSE 0 END) > COALESCE((SELECT SUM(recorded.delta_minor) FROM distribution_commission_adjustments recorded WHERE recorded.commission_id=c.id AND recorded.kind IN ('manual_recovery','merchant_liability')),0)),(e.status IN ('open','resolved') AND c.status NOT IN ('cancelled','zero_commission') AND (CASE WHEN e.kind='buyer_refund_after_paid' THEN GREATEST(c.paid_minor-c.current_payable_minor,0) WHEN e.kind='qualification_revoked_after_paid' AND e.reason='qualification_revoked_after_paid' THEN c.paid_minor ELSE 0 END) > COALESCE((SELECT SUM(recorded.delta_minor) FROM distribution_commission_adjustments recorded WHERE recorded.commission_id=c.id AND recorded.kind IN ('manual_recovery','merchant_liability')),0)) FROM distribution_exceptions e JOIN distribution_commissions c ON c.id=e.commission_id JOIN distribution_distributors d ON d.id=c.distributor_id LEFT JOIN distribution_settlements s ON s.id=e.settlement_id WHERE `+where+` ORDER BY e.id`, value)
+	rows, err := tx.Query(ctx, `SELECT e.id,e.commission_id,d.public_no,d.customer_id,'order-'||c.order_id,e.kind,e.status,e.unpaid_due_minor,e.already_paid_minor,e.amount_minor,'CNY',e.reason,COALESCE(s.payment_instruction_reference,''),e.evidence_reference,e.actor_scope,e.created_at,e.updated_at,e.version,CASE WHEN e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[1-9][0-9]*$' THEN 'unfreeze' WHEN COALESCE(s.payment_instruction_reference,'') ~ '^psinst_[1-9][0-9]*$' THEN 'split' ELSE '' END,(e.kind <> 'settlement_deadline_imminent' AND e.status IN ('open','querying') AND ((e.kind='unfreeze_final_failed' AND e.evidence_reference ~ '^psunfreeze_[1-9][0-9]*$') OR (COALESCE(s.payment_instruction_reference,'') ~ '^psinst_[1-9][0-9]*$' AND c.status NOT IN ('cancelled','zero_commission') AND GREATEST(c.current_payable_minor-c.paid_minor,0)>0))),(e.status IN ('open','resolved') AND c.status NOT IN ('cancelled','zero_commission') AND (CASE WHEN e.kind='buyer_refund_after_paid' THEN GREATEST(c.paid_minor-c.current_payable_minor,0) WHEN e.kind='qualification_revoked_after_paid' AND e.reason='qualification_revoked_after_paid' THEN c.paid_minor ELSE 0 END) > COALESCE((SELECT SUM(recorded.delta_minor) FROM distribution_commission_adjustments recorded WHERE recorded.commission_id=c.id AND recorded.kind IN ('manual_recovery','merchant_liability')),0)),(e.status IN ('open','resolved') AND c.status NOT IN ('cancelled','zero_commission') AND (CASE WHEN e.kind='buyer_refund_after_paid' THEN GREATEST(c.paid_minor-c.current_payable_minor,0) WHEN e.kind='qualification_revoked_after_paid' AND e.reason='qualification_revoked_after_paid' THEN c.paid_minor ELSE 0 END) > COALESCE((SELECT SUM(recorded.delta_minor) FROM distribution_commission_adjustments recorded WHERE recorded.commission_id=c.id AND recorded.kind IN ('manual_recovery','merchant_liability')),0)) FROM distribution_exceptions e JOIN distribution_commissions c ON c.id=e.commission_id JOIN distribution_distributors d ON d.id=c.distributor_id LEFT JOIN distribution_settlements s ON s.id=e.settlement_id WHERE `+where+` ORDER BY e.id`, value)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -209,7 +215,7 @@ func (r *Repository) adminExceptionsWhere(ctx context.Context, tx interface {
 	items := []distributionport.AdminException{}
 	for rows.Next() {
 		var item distributionport.AdminException
-		if err = rows.Scan(&item.ExceptionID, &item.CommissionID, &item.DistributorPublicNo, &item.DistributorCustomerID, &item.OrderReference, &item.Kind, &item.Status, &item.UnpaidDueMinor, &item.AlreadyPaidMinor, &item.AmountMinor, &item.Reason, &item.PaymentInstructionReference, &item.EvidenceReference, &item.ActorScope, &item.CreatedAt, &item.UpdatedAt, &item.Version, &item.ReconcileTarget, &item.CanReconcile, &item.CanRecordRecovery, &item.CanRecordMerchantLiability); err != nil {
+		if err = rows.Scan(&item.ExceptionID, &item.CommissionID, &item.DistributorPublicNo, &item.DistributorCustomerID, &item.OrderReference, &item.Kind, &item.Status, &item.UnpaidDueMinor, &item.AlreadyPaidMinor, &item.AmountMinor, &item.Currency, &item.Reason, &item.PaymentInstructionReference, &item.EvidenceReference, &item.ActorScope, &item.CreatedAt, &item.UpdatedAt, &item.Version, &item.ReconcileTarget, &item.CanReconcile, &item.CanRecordRecovery, &item.CanRecordMerchantLiability); err != nil {
 			return nil, mapError(err)
 		}
 		items = append(items, item)

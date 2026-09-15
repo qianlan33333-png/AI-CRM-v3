@@ -88,17 +88,19 @@ const (
 )
 
 type AdminException struct {
-	ExceptionID, CommissionID                                                 int64
-	DistributorCustomerID                                                     customerdomain.CustomerID
-	DistributorPublicNo, DistributorDisplayName, OrderReference, Kind, Status string
-	UnpaidDueMinor, AlreadyPaidMinor, AmountMinor                             int64
-	Reason, PaymentInstructionReference, EvidenceReference                    string
-	ActorScope                                                                string
-	ReconcileTarget                                                           AdminReconcileTarget
-	CreatedAt, UpdatedAt                                                      time.Time
-	Version                                                                   int64
-	CanReconcile, CanRecordRecovery, CanRecordMerchantLiability               bool
-	Audit                                                                     []AdminExceptionAuditFact
+	ExceptionID, CommissionID int64
+	DistributorCustomerID     customerdomain.CustomerID
+	// Currency is the Distribution-owned currency for every exception amount.
+	// Audit facts inherit it; callers must not select a display fallback.
+	DistributorPublicNo, DistributorDisplayName, OrderReference, Kind, Status, Currency string
+	UnpaidDueMinor, AlreadyPaidMinor, AmountMinor                                       int64
+	Reason, PaymentInstructionReference, EvidenceReference                              string
+	ActorScope                                                                          string
+	ReconcileTarget                                                                     AdminReconcileTarget
+	CreatedAt, UpdatedAt                                                                time.Time
+	Version                                                                             int64
+	CanReconcile, CanRecordRecovery, CanRecordMerchantLiability                         bool
+	Audit                                                                               []AdminExceptionAuditFact
 }
 type AdminPage[T any] struct {
 	Items      []T

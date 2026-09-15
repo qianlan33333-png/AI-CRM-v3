@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,7 +85,14 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	assertDistributionOrderProviderCollisionReadModel(t, ctx, application, seed)
 	assertDistributionAdminDetailFacts(t, ctx, application, seed)
 	assertDistributionAdminDeadlineWarningReadModel(t, ctx, application, seed.commissionID)
-	server.Config.Handler = application.handler
+	var overviewFailures atomic.Int32
+	server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/admin/overview" && request.URL.Query().Get("period") == "30d" && overviewFailures.Add(1) == 1 {
+			http.Error(writer, "overview fixture unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		application.handler.ServeHTTP(writer, request)
+	})
 	disabledServer.Config.Handler = disabledApplication.handler
 	server.StartTLS()
 	disabledServer.StartTLS()
@@ -91,7 +100,7 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	runJourney := func(phase, want string) {
 		t.Helper()
 		command := exec.CommandContext(ctx, "node", journey)
-		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ORDER_COLLISION_REFERENCE="+seed.orderCollisionReference, "AICRM_DISTRIBUTION_BROWSER_ORDER_SETTLED_AT="+seed.orderSettledAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_PRODUCT="+seed.earningsProduct, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_ORDER="+seed.earningsOrderReference, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_GROSS_MINOR="+strconv.FormatInt(seed.earningsGrossMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_COMMISSION_MINOR="+strconv.FormatInt(seed.earningsCommissionMinor, 10), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
+		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_SETTLEMENT_CONFIRMED_AT="+seed.detailSettlementConfirmedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ORDER_COLLISION_REFERENCE="+seed.orderCollisionReference, "AICRM_DISTRIBUTION_BROWSER_ORDER_SETTLED_AT="+seed.orderSettledAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_PRODUCT="+seed.earningsProduct, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_ORDER="+seed.earningsOrderReference, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_GROSS_MINOR="+strconv.FormatInt(seed.earningsGrossMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_COMMISSION_MINOR="+strconv.FormatInt(seed.earningsCommissionMinor, 10), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
 		output, runErr := command.CombinedOutput()
 		if runErr != nil || !strings.Contains(string(output), want) {
 			t.Fatalf("Distribution Chromium %s phase err=%v output=%s", phase, runErr, strings.TrimSpace(string(output)))
@@ -107,20 +116,20 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 }
 
 type distributionChromiumSeed struct {
-	session, promotion, productCode, csrf       string
-	adminDisplayName                            string
-	registrationCustomerID                      int64
-	productID, applicationTargetID              int64
-	commissionID, detailAttributionID           int64
-	detailExceptionID                           int64
-	receiverEffectID                            int64
-	detailCreatedAt                             time.Time
-	orderCollisionReference                     string
-	orderSettledAt                              time.Time
-	earningsProduct                             string
-	earningsOrderReference                      string
-	earningsGrossMinor, earningsCommissionMinor int64
-	receiverCount, effectCount, intentCount     int64
+	session, promotion, productCode, csrf        string
+	adminDisplayName                             string
+	registrationCustomerID                       int64
+	productID, applicationTargetID               int64
+	commissionID, detailAttributionID            int64
+	detailExceptionID                            int64
+	receiverEffectID                             int64
+	detailCreatedAt, detailSettlementConfirmedAt time.Time
+	orderCollisionReference                      string
+	orderSettledAt                               time.Time
+	earningsProduct                              string
+	earningsOrderReference                       string
+	earningsGrossMinor, earningsCommissionMinor  int64
+	receiverCount, effectCount, intentCount      int64
 }
 
 func assertDistributionH5OAuthStart(t *testing.T, handler http.Handler) {
@@ -200,6 +209,7 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 	}
 	var commission, detailAttribution, detailCommission, detailException int64
 	detailCreatedAt := now.Add(2 * time.Minute)
+	detailSettlementConfirmedAt := detailCreatedAt.Add(time.Minute)
 	for offset := int64(0); offset < 11; offset++ {
 		attributedAt := now.Add(time.Duration(offset) * time.Second)
 		orderID := int64(9001) + offset
@@ -231,6 +241,15 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 		if err := pool.QueryRow(ctx, "INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,payment_instruction_reference,payment_effect_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'dstl_browser_partial',495,'CNY','payment:browser:9010','psinst_1','','outcome_unknown',$2,1,$3,$3) RETURNING id", detailCommission, detailCreatedAt.Add(24*time.Hour), detailCreatedAt).Scan(&settlementID); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := pool.Exec(ctx, "INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,payment_instruction_reference,payment_effect_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'dstl_browser_confirmed',100,'CNY','payment:browser:9010','psinst_confirmed','','receiver_succeeded',$2,1,$3,$4)", detailCommission, detailCreatedAt.Add(24*time.Hour), detailCreatedAt, detailCreatedAt.Add(8*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, "INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at) VALUES('distribution.settlement_paid.v1','commission',$1,'worker:distribution-due',jsonb_build_object('settlement_reference','dstl_browser_confirmed'),$2)", detailCommission, detailSettlementConfirmedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, "INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,payment_instruction_reference,payment_effect_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'dstl_browser_unrecorded',200,'CNY','payment:browser:9010','psinst_unrecorded','','receiver_succeeded',$2,1,$3,$4)", detailCommission, detailCreatedAt.Add(24*time.Hour), detailCreatedAt, detailCreatedAt.Add(9*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
 		if err := pool.QueryRow(ctx, "INSERT INTO distribution_exceptions(commission_id,settlement_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at) VALUES($1,$2,'settlement_unknown','open',495,0,495,'settlement_outcome_unknown','reconcile:browser-partial','worker:distribution-due',1,$3,$3) RETURNING id", detailCommission, settlementID, detailCreatedAt).Scan(&detailException); err != nil {
 			t.Fatal(err)
 		}
@@ -253,7 +272,7 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_provider_intents`).Scan(&intentCount); err != nil {
 		t.Fatal(err)
 	}
-	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", adminDisplayName: adminDisplayName, registrationCustomerID: registrationCustomer, productID: product, applicationTargetID: applicationTarget, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, receiverEffectID: receiverEffectID, detailCreatedAt: detailCreatedAt, orderCollisionReference: orderCollisionReference, orderSettledAt: orderSettledAt, earningsProduct: "分销浏览器商品", earningsGrossMinor: 9900000, earningsCommissionMinor: 990000, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
+	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", adminDisplayName: adminDisplayName, registrationCustomerID: registrationCustomer, productID: product, applicationTargetID: applicationTarget, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, receiverEffectID: receiverEffectID, detailCreatedAt: detailCreatedAt, detailSettlementConfirmedAt: detailSettlementConfirmedAt, orderCollisionReference: orderCollisionReference, orderSettledAt: orderSettledAt, earningsProduct: "分销浏览器商品", earningsGrossMinor: 9900000, earningsCommissionMinor: 990000, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
 }
 
 // seedDistributionChromiumProviderCollision creates two real Order rows with
@@ -709,10 +728,31 @@ func assertDistributionAdminDetailFacts(t *testing.T, ctx context.Context, appli
 	response := httptest.NewRecorder()
 	application.handler.ServeHTTP(response, request)
 	body := response.Body.String()
-	for _, want := range []string{`"delta_minor":-495`, `"resulting_payable_minor":495`, `"reference":"dstl_browser_partial"`, `"amount_minor":495`, `"created_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
+	for _, want := range []string{`"delta_minor":-495`, `"resulting_payable_minor":495`, `"reference":"dstl_browser_partial"`, `"reference":"dstl_browser_confirmed"`, `"reference":"dstl_browser_unrecorded"`, `"amount_minor":495`, `"currency":"CNY"`, `"created_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
 		if response.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("admin order detail omitted real fact %s status=%d body=%s", want, response.Code, body)
 		}
+	}
+	var detailPayload struct {
+		Settlements []struct {
+			Reference             string     `json:"reference"`
+			SettlementConfirmedAt *time.Time `json:"settlement_confirmed_at"`
+		} `json:"settlements"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &detailPayload); err != nil {
+		t.Fatalf("decode admin order detail: %v", err)
+	}
+	var confirmed, unrecorded *time.Time
+	for _, settlement := range detailPayload.Settlements {
+		if settlement.Reference == "dstl_browser_confirmed" {
+			confirmed = settlement.SettlementConfirmedAt
+		}
+		if settlement.Reference == "dstl_browser_unrecorded" {
+			unrecorded = settlement.SettlementConfirmedAt
+		}
+	}
+	if confirmed == nil || !confirmed.Equal(seed.detailSettlementConfirmedAt) || unrecorded != nil {
+		t.Fatalf("admin order settlement confirmation evidence confirmed=%v want=%v unrecorded=%v", confirmed, seed.detailSettlementConfirmedAt, unrecorded)
 	}
 	if strings.Contains(body, `"DeltaMinor"`) || strings.Contains(body, `"CreatedAt"`) {
 		t.Fatalf("admin order detail leaked Go-shaped DTO: %s", body)
@@ -722,7 +762,7 @@ func assertDistributionAdminDetailFacts(t *testing.T, ctx context.Context, appli
 	response = httptest.NewRecorder()
 	application.handler.ServeHTTP(response, request)
 	body = response.Body.String()
-	for _, want := range []string{`"event_type":"distribution.exception_opened.v1"`, `"actor_scope":"worker:distribution-due"`, `"amount_minor":495`, `"payment_instruction_reference":"psinst_1"`, `"reconcile_target":"split"`, `"can_reconcile":true`, `"occurred_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
+	for _, want := range []string{`"event_type":"distribution.exception_opened.v1"`, `"actor_scope":"worker:distribution-due"`, `"amount_minor":495`, `"currency":"CNY"`, `"payment_instruction_reference":"psinst_1"`, `"reconcile_target":"split"`, `"can_reconcile":true`, `"occurred_at":"` + seed.detailCreatedAt.Format(time.RFC3339Nano) + `"`} {
 		if response.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("admin exception detail omitted real audit fact %s status=%d body=%s", want, response.Code, body)
 		}
@@ -732,7 +772,7 @@ func assertDistributionAdminDetailFacts(t *testing.T, ctx context.Context, appli
 	response = httptest.NewRecorder()
 	application.handler.ServeHTTP(response, request)
 	body = response.Body.String()
-	for _, want := range []string{`"exception_id":` + strconv.FormatInt(seed.detailExceptionID, 10), `"payment_instruction_reference":"psinst_1"`, `"reconcile_target":"split"`, `"can_reconcile":true`} {
+	for _, want := range []string{`"exception_id":` + strconv.FormatInt(seed.detailExceptionID, 10), `"currency":"CNY"`, `"payment_instruction_reference":"psinst_1"`, `"reconcile_target":"split"`, `"can_reconcile":true`} {
 		if response.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("admin exception list rejected Payment stable instruction projection %s status=%d body=%s", want, response.Code, body)
 		}

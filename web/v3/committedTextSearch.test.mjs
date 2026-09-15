@@ -51,6 +51,7 @@ const dom = new JSDOM(`<!doctype html><body data-page="channels">
   <input id="admin-access-search">
   <input id="admin-access-employee-search">
   <input data-survey-log-search>
+  <input aria-label="仅筛选当前已加载页">
   <section id="group-ops-app"><input name="keyword" data-filter><select data-filter><option>all</option></select></section>
 </body>`, {
   url: 'https://test.invalid/admin/channels', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
@@ -89,12 +90,24 @@ try {
   window.document.querySelector('#admin-access-search').addEventListener('input', () => { newCalls.accessUsers += 1; });
   window.document.querySelector('#admin-access-employee-search').addEventListener('input', () => { newCalls.accessEmployees += 1; });
   window.document.querySelector('[data-survey-log-search]').addEventListener('input', () => { newCalls.surveyLogs += 1; });
+  let distributionFilterCalls = 0;
+  window.document.querySelector('input[aria-label="仅筛选当前已加载页"]').addEventListener('input', () => { distributionFilterCalls += 1; });
   window.document.querySelector('#group-ops-app select[data-filter]').addEventListener('change', () => { newCalls.groupSelect += 1; });
 
   // The two production bundles both call the installer. The document-scoped
   // Symbol state keeps exactly one capture policy for forwarded events.
   window.eval(installer);
   window.eval(installer);
+
+  const distributionFilter = window.document.querySelector('input[aria-label="仅筛选当前已加载页"]');
+  distributionFilter.value = '输入法草稿';
+  distributionFilter.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }));
+  distributionFilter.dispatchEvent(new window.Event('input', { bubbles: true, cancelable: true }));
+  assert.equal(distributionFilterCalls, 0, 'distribution current-page filtering keeps an IME draft without a redraw');
+  distributionFilter.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }));
+  await pause();
+  enter(window, distributionFilter);
+  assert.equal(distributionFilterCalls, 1, 'distribution current-page filtering forwards one deliberate Enter');
 
   let channelInput = window.document.querySelector('input[aria-label="搜索渠道名称"]');
   channelInput.value = '中';

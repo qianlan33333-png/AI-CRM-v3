@@ -26,6 +26,9 @@ const registeredSearches: RegisteredSearch[] = [
   { selector: 'input[data-image-library-query]', trigger: 'input' },
   { selector: 'input[data-open-platform-doc-search]', trigger: 'input' },
   { selector: 'input[data-field-mapping-variable-search]', trigger: 'input' },
+  // Distribution is a current-page-only client filter. It shares the same
+  // explicit commit boundary so an IME draft never redraws the admin table.
+  { selector: 'input[aria-label="仅筛选当前已加载页"]', trigger: 'input' },
   // V3-owned access and survey Hosts keep their own read/filter functions.
   // These precise seams prevent the shared policy from touching provisioning,
   // role, login, binding, or controlled external-push controls.
