@@ -73,6 +73,7 @@ run_frontend_and_stage_checks() {
   node web/v3/shared/ui/selectionSession.test.mjs
   node web/v3/shared/ui/selectionDialog.test.mjs
   node web/v3/shared/ui/confirmationDialog.test.mjs
+  node web/v3/shared/ui/tableActionMenu.test.mjs
   node web/v3/shared/ui/materialPickerAdapter.test.mjs
   node --test web/v3/shared/ui/contentPresentation.test.mjs
   node --test web/v3/shared/ui/contentComposer.test.mjs

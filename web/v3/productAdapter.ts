@@ -12,6 +12,9 @@ import { downloadQr, renderQr } from '../src/admin/sections/qr';
 import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
+import { mountTableActionMenu, type TableActionMenu } from './shared/ui/tableActionMenu';
+import { mountPageHeaderActionElements } from './shared/ui/pageHeaderActions';
+import { formatShanghaiDateTime } from './adminDateTime';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -132,7 +135,7 @@ function productLifecycleKey(productID: number, version: number, enabled: boolea
   return key;
 }
 
-type ProductArchiveRow = { resourceId?: number; version?: number; name?: string };
+type ProductArchiveRow = { resourceId?: number; version?: number; name?: string; status?: string; updated?: string };
 type ProductArchiveController = { init(): Promise<void>; db: { rows: { products: ProductArchiveRow[]; spProducts: ProductArchiveRow[] } } };
 
 async function archiveProduct(controller: ProductArchiveController, kind: 'ordinary' | 'service-period', row: ProductArchiveRow): Promise<void> {
@@ -1758,6 +1761,8 @@ productController.renderVals = function renderProductListWithArchiveActions() {
       })) : ordinaryRows,
       spProducts: this.page === 'spProducts' ? serviceRows.map((row) => ({
         ...row,
+        status: row.status === 'enabled' ? '已启用' : row.status === 'disabled' ? '已停用' : row.status === 'draft' ? '草稿' : row.status,
+        updated: typeof row.updated === 'string' ? formatShanghaiDateTime(row.updated) : row.updated,
         archive: () => confirmBox(
           '删除周期商品',
           `确认删除“${row.name || '未命名周期商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买和成员发放；既有成员权益、订单和审计记录会保留。`,
@@ -1770,16 +1775,111 @@ productController.renderVals = function renderProductListWithArchiveActions() {
   };
 };
 
-// The service-period table is a byte-frozen donor template. Reuse its one
-// archive action and only relabel the mounted DOM so the owner sees the same
-// “删除” verb as ordinary products; the owner command remains Archive.
+// The Product list fragments are byte-frozen. This V3 presentation pass keeps
+// their source controls and callbacks, only relocating page-level creation and
+// collapsing overflow actions after the donor has mounted a list row.
+const productListActionMenus = new Map<HTMLElement, TableActionMenu>();
+const productListHeaderCleanups = new Map<'products' | 'spProducts', () => void>();
+
+function productListPage(): 'products' | 'spProducts' | undefined {
+  const page = document.body?.dataset.page;
+  return page === 'products' || page === 'spProducts' ? page : undefined;
+}
+
 function relabelServiceProductDeleteAction(): void {
-  if (typeof document === 'undefined' || !document.body || document.body.dataset.page !== 'spProducts') return;
+  if (productListPage() !== 'spProducts') return;
   for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
     if (button.textContent?.trim() === '归档') button.textContent = '删除';
   }
 }
-const serviceProductDeleteLabelObserver = new MutationObserver(relabelServiceProductDeleteAction);
-serviceProductDeleteLabelObserver.observe(document, { childList: true, subtree: true });
-window.addEventListener('pagehide', () => serviceProductDeleteLabelObserver.disconnect(), { once: true });
-relabelServiceProductDeleteAction();
+
+function productListStage(): HTMLElement | undefined {
+  const stage = document.getElementById('stage');
+  return stage instanceof HTMLElement ? stage : undefined;
+}
+
+function removeDonorProductHeading(stage: HTMLElement, title: string): void {
+  const heading = Array.from(stage.querySelectorAll<HTMLElement>('div'))
+    .find((node) => node.children.length === 0 && node.textContent?.trim() === title);
+  if (!heading) return;
+  let donorHeading: HTMLElement = heading;
+  while (donorHeading.parentElement && donorHeading.parentElement !== stage) donorHeading = donorHeading.parentElement;
+  if (donorHeading.parentElement === stage) donorHeading.remove();
+}
+
+function hasProductListHeaderOrigin(stage: HTMLElement): boolean {
+  const stack: Node[] = Array.from(stage.childNodes);
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node) continue;
+    if (node.nodeType === Node.COMMENT_NODE && node.nodeValue === 'aicrm-page-header-action-origin') return true;
+    stack.push(...Array.from(node.childNodes));
+  }
+  return false;
+}
+
+function moveProductListCreateAction(page: 'products' | 'spProducts'): void {
+  const stage = productListStage();
+  if (!stage || !document.querySelector('.admin-topbar')) return;
+  const createLabel = page === 'products' ? '创建商品' : '创建周期商品';
+  const title = page === 'products' ? '商品管理' : '周期商品管理';
+  const create = Array.from(stage.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => button.textContent?.trim() === createLabel);
+  const prior = productListHeaderCleanups.get(page);
+  if (!create) {
+    // A same-document mutation caused by moving the existing control leaves
+    // its shared-action origin marker in the donor content. A fresh donor
+    // render does not; clear the former header action when permission no
+    // longer exposes a replacement source control.
+    if (hasProductListHeaderOrigin(stage)) return;
+    prior?.();
+    productListHeaderCleanups.delete(page);
+    return;
+  }
+  prior?.();
+  productListHeaderCleanups.set(page, mountPageHeaderActionElements(`product-list-${page}`, [create]));
+  // The V3 shell now owns this page's one title. Remove only the donor's
+  // matching direct stage child after its original create control is retained.
+  removeDonorProductHeading(stage, title);
+}
+
+function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
+  for (const [container, menu] of productListActionMenus) {
+    if (container.isConnected) continue;
+    menu.dispose();
+    productListActionMenus.delete(container);
+  }
+  for (const row of document.querySelectorAll<HTMLTableRowElement>('tbody tr')) {
+    const container = row.lastElementChild?.querySelector<HTMLElement>(':scope > div');
+    if (!container || productListActionMenus.has(container)) continue;
+    const menu = mountTableActionMenu(container, { owner: `product-${page}`, primaryCount: 2 });
+    if (menu) productListActionMenus.set(container, menu);
+  }
+}
+
+let productListPresentationQueued = false;
+function presentProductLists(): void {
+  productListPresentationQueued = false;
+  const page = productListPage();
+  if (!page) return;
+  relabelServiceProductDeleteAction();
+  moveProductListCreateAction(page);
+  mountProductListActionMenus(page);
+}
+
+function scheduleProductListPresentation(): void {
+  if (productListPresentationQueued) return;
+  productListPresentationQueued = true;
+  queueMicrotask(presentProductLists);
+}
+
+const productListPresentationObserver = new MutationObserver(scheduleProductListPresentation);
+productListPresentationObserver.observe(document, { childList: true, subtree: true });
+window.addEventListener('pagehide', () => {
+  productListPresentationObserver.disconnect();
+  for (const menu of productListActionMenus.values()) menu.dispose();
+  productListActionMenus.clear();
+  for (const cleanup of productListHeaderCleanups.values()) cleanup();
+  productListHeaderCleanups.clear();
+}, { once: true });
+scheduleProductListPresentation();

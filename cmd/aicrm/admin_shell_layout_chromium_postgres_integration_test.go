@@ -131,8 +131,8 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		{path: "/admin/radarForm.html?id=" + strconv.FormatInt(fixture.radarID, 10), marker: `data-page="radarForm"`, expectTopbar: true},
 		{path: "/admin/wecom-tags", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/orders", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/wechat-pay/products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
-		{path: "/admin/service-period-products", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
+		{path: "/admin/wechat-pay/products", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
+		{path: "/admin/service-period-products", marker: `admin-workspace-stage--embedded`, expectTopbar: true},
 		{path: "/admin/coupons", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/image-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
 		{path: "/admin/miniprogram-library", marker: `admin-workspace-stage--embedded`, expectTopbar: false},
@@ -220,6 +220,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
+		"products-actions-1440.png", "service-period-products-actions-1440.png", "products-actions-1280.png", "service-period-products-actions-1280.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))

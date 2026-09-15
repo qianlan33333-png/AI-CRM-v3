@@ -441,7 +441,9 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// Product list pages use the shared V3 shell title and action slot. Editor
+	// and member-data pages retain their frozen embedded layout.
+	data.ShowPageHeader = page == "products" || page == "spProducts"
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
 	if err != nil {

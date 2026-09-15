@@ -670,6 +670,31 @@ try {
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);
   await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "products", "embedded", frozenListToolbarTitle, true, true);
   await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "service-period-products", "embedded", frozenListToolbarTitle, true, true);
+  const assertProductListPresentation = async (page, label) => {
+    const presentation = await evaluate(cdp, `(() => {
+      const title = ${JSON.stringify(page === 'products' ? '商品管理' : '周期商品管理')};
+      const create = ${JSON.stringify(page === 'products' ? '创建商品' : '创建周期商品')};
+      const leaf = [...document.querySelectorAll('div')].find(node => node.children.length === 0 && String(node.textContent || '').trim() === title);
+      const header = leaf?.closest('div[style*="height:52px"]');
+      const button = [...document.querySelectorAll('button')].find(node => String(node.textContent || '').trim() === create);
+      const menu = document.querySelector('[data-table-action-menu-owner="product-' + ${JSON.stringify(page)} + '"]');
+      const trigger = document.querySelector('[data-table-action-menu-trigger="product-' + ${JSON.stringify(page)} + '"]');
+      const row = document.querySelector('tbody tr');
+      const status = row?.children[3]?.textContent?.trim() || '';
+      const updated = row?.children[5]?.textContent?.trim() || '';
+      return { titleCount:[...document.querySelectorAll('div')].filter(node => node.children.length === 0 && String(node.textContent || '').trim() === title).length, createInHeader:Boolean(header && button && button.parentElement === header), menu:menu instanceof HTMLElement, triggerVisible:trigger instanceof HTMLElement && trigger.getBoundingClientRect().width > 1, bodyOverflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1, status, updated };
+    })()`);
+    const invalid = presentation.titleCount !== 1 || !presentation.createInHeader || !presentation.menu || !presentation.triggerVisible || presentation.bodyOverflow || (page === 'spProducts' && (presentation.status !== '已启用' || /T\d{2}:\d{2}/.test(presentation.updated)));
+    if (invalid) throw new Error(label + ' product list presentation invalid ' + JSON.stringify(presentation));
+  };
+  for (const width of [1440, 1280]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+    await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", `products-actions-${width}`, "embedded", frozenListToolbarTitle, true);
+    await assertProductListPresentation('products', `products-actions-${width}`);
+    await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", `service-period-products-actions-${width}`, "embedded", frozenListToolbarTitle, true);
+    await assertProductListPresentation('spProducts', `service-period-products-actions-${width}`);
+  }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   const assertProductDimensions = async (prefix) => {
     const result = await evaluate(cdp, `(${function(prefix) {
       const ids = ['sale', 'media', 'action', 'wecom', 'push'].map(key => `${prefix}-${key}`);
