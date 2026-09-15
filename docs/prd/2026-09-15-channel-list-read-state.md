@@ -1,7 +1,7 @@
 # 渠道码中心列表读取状态：诊断与最小 PRD
 
 日期：2026-09-15
-状态：只读诊断，未创建代码候选、未修改 #335 或 #322。
+状态：已实现并完成本地集成验证，待最终审阅与推送。
 
 ## 业务判断与边界
 
@@ -43,12 +43,13 @@
 
 成功定义必须同时满足：`Response.ok`/generated client 的 2xx 解包成功，且响应中 `channels` 或 `items` 为数组。缺字段、非数组、解析失败都属于失败，不能通过当前 `list()` fallback 降级成 `[]`。
 
-## 最小变更范围（待实现时复核）
+## 实际最小变更范围
 
 1. 在 `web/v3/surfaceFeedbackHost.ts` 的已有全局反馈入口中增加小型、通用的列表读取状态 renderer（或同目录受它公开 API 的共享 UI 文件），支持 loading、confirmed-empty、no-match、error-retain-rows；使用现有 `presentation.css`，不内联复制样式。
 2. 在 `web/v3/channelCenterAdapter.ts` 的 `AdminController.renderVals` 稳定包装 seam 中，从已提交的 `rows.channelQuery` 和 `rows.channels` 计算显示状态；通过 in-memory template 或渲染后节点插入一行 `td[colspan="6"]`。仅在确认的空/无匹配时插入，不能根据裸 `tbody` 推断成功。
-3. 为渠道读取 DTO 增加局部 fail-closed 校验（优先放在 `web/src/api/admin.ts` 的渠道映射边界；若共享 DTO 模式已有合适校验则复用），避免 2xx malformed body 被映射为空数组。不得影响其它列表的既有 DTO 兼容性。
-4. 不触及 #335 的 header action、搜索的 committed Enter/IME 行为、渠道归档 CAS/幂等、渠道表单、后端 API、donor source。
+3. 在 `web/v3/channelCenterAdapter.ts` 的渠道请求适配边界对 `channels`／`items` 数组做 fail-closed 校验：2xx 但不含有效数组转换为 502，再交给既有读取错误路径；不修改冻结 donor 或其他列表的 DTO 兼容性。
+4. 以当前读取 generation 绑定成功、失败与展示提交，拒绝过期响应；重试保持 singleflight。401／403 锁存并清除已缓存行，只有当前成功读取才解除。
+5. 不触及 #335 的 header action、搜索的 committed Enter/IME 行为、渠道归档 CAS/幂等、渠道表单、后端 API、donor source。
 
 ## 验收与测试
 
@@ -60,8 +61,10 @@
   5. 401/403/5xx/网络失败不会显示为空；已有行保留；
   6. 2xx malformed DTO fail-closed。
 - 扩展现有 `TestPostgreSQLChannelCenterCommittedSearchChromiumJourney` 或紧邻真实 PG Chromium journey，使用服务端实际渠道列表，覆盖至少 1280/1440 视口的成功空和 committed-query 无匹配，并保存截图。
-- 复跑现有 channel archive refresh 断言，证明读取失败不把已确认归档的列表更新伪造成空成功。
+- 复跑现有 channel archive refresh 断言，证明读取失败不把已确认归档的列表更新伪造成空成功；每行继续只保留一个归档删除入口。
 - 类型检查、受影响 V3 host build/stage；不把 mock-only 作为最终交付。
+
+本地完成记录：Node 读取状态／归档合同、真实 PostgreSQL Chromium 的已加载、有效空目录与 committed-query 无匹配（1280／1440），以及管理壳组合预检均通过；完整原始日志与截图在 `aicrm-artifacts/channel-list-read-state-20260915`。
 
 ## 参考与治理
 
