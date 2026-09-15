@@ -174,6 +174,11 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     beforeParse(window) {
+      // JSDOM supplies HTMLDialogElement but not its native methods. The
+      // frozen-admin journey exercises both the existing overlay and V3
+      // dialogs, so model browser open/close and their close event together.
+      window.HTMLDialogElement.prototype.showModal = function showModal() { this.open = true; };
+      window.HTMLDialogElement.prototype.close = function close() { this.open = false; this.dispatchEvent(new window.Event('close')); };
       if (rel === 'admin/orders.html' || rel === 'admin/orderDetail.html') {
         window.Request = Request;
         window.Response = Response;
@@ -2523,9 +2528,11 @@ console.log('admin/products.html（真实状态、销量与分享）');
   // the live document after the asynchronous share response, just as a browser
   // user sees the overlay rather than retaining a detached test node.
   d = dom.window.document;
-  const expected = 'http://localhost/p/P%2F%E6%98%A5%E5%AD%A3%20sale', svg = d.querySelector('#shareQrBox svg');
+  const expected = 'http://localhost/p/P%2F%E6%98%A5%E5%AD%A3%20sale';
+  const dialog = d.querySelector('dialog[data-shared-qr-dialog="true"]');
+  const svg = dialog?.querySelector('.shared-qr-dialog__code svg');
   ok('普通商品分享调用真实后端接口', test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/share' && call.method === 'GET'));
-  ok('分享弹窗接受 Owner 编码商品码并生成同源二维码', d.querySelector('input[readonly]')?.value === expected && svg?.getAttribute('data-qr-payload') === expected && svg?.querySelector('path'));
+  ok('分享弹窗接受 Owner 编码商品码并生成同源二维码', dialog?.open === true && dialog.classList.contains('shared-detail-drawer--center') && dialog.querySelector('input[readonly]')?.value === expected && svg?.getAttribute('data-qr-payload') === expected && svg?.querySelector('path'));
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '预览'));
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存二维码'));
   await sleep(20);
