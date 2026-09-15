@@ -219,6 +219,10 @@ function applyApplicationTarget(value: ApplicationTargetRead): void {
 function clearAuthorizedFacts(): void {
   me = undefined;
   agreement = undefined;
+  // The application target is read with the authorized distribution session.
+  // Do not retain a product name from a session that has just lost access.
+  applicationTarget = undefined;
+  applicationTargetState = applicationContext ? "failed" : "none";
   products = [];
   productCursor = "";
   productEmptyReason = "";
@@ -262,14 +266,12 @@ function renderAuthorizationDenied(): void {
 async function handleCurrentAuthorizationFailure(
   statusCode: number,
   isCurrent: () => boolean,
-  nextApplicationTarget?: ApplicationTargetRead,
 ): Promise<void> {
   if (!isCurrent()) return;
   accessEpoch += 1;
   const recoveryEpoch = accessEpoch;
   const recoveryGeneration = ++reloadGeneration;
   clearAuthorizedFacts();
-  if (nextApplicationTarget) applyApplicationTarget(nextApplicationTarget);
   const recoveryIsCurrent = (): boolean =>
     recoveryEpoch === accessEpoch && recoveryGeneration === reloadGeneration;
   if (statusCode === 403) {
@@ -345,6 +347,11 @@ async function reload(): Promise<void> {
       return;
     }
     const selectedStatus = commissionStatus;
+    // A reload and a status change can both read the same status value. The
+    // status alone is not ownership: A -> B -> A would otherwise let an older
+    // reload overwrite the later A result. Capture the filter generation with
+    // this reload and only commit while both generations still match.
+    const selectedFilterGeneration = commissionFilterGeneration;
     const commissionQuery = selectedStatus
       ? `?status=${encodeURIComponent(selectedStatus)}&limit=50`
       : "?limit=50";
@@ -363,7 +370,8 @@ async function reload(): Promise<void> {
     );
     if (
       !isCurrentRead(generation, epoch) ||
-      selectedStatus !== commissionStatus
+      selectedStatus !== commissionStatus ||
+      selectedFilterGeneration !== commissionFilterGeneration
     )
       return;
     me = nextMe;
@@ -392,7 +400,6 @@ async function reload(): Promise<void> {
       await handleCurrentAuthorizationFailure(
         responseStatus(error)!,
         () => isCurrentRead(generation, epoch),
-        nextApplicationTarget,
       );
       return;
     }

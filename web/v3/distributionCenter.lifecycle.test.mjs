@@ -12,8 +12,8 @@ const profile = (overrides = {}) => ({ distributor: { public_no: 'D-001', enable
 const earnings = { gross_paid_sales_minor: 1000, successful_refunds_minor: 0, initial_commission_minor: 100, commission_adjustments_minor: 0, unsettled_payable_minor: 100, paid_commission_minor: 0, recovered_minor: 0, currency: 'CNY' };
 const product = (name) => ({ product_id: 7, product_type: 'standard_product', cover_url: '', purchase_url: '/p/growth-course', name, price_minor: 1000, currency: 'CNY', commission_rate_basis_points: 100, estimated_commission_minor: 10, wait_days: 1, promotion_ready: true, promotion_block_reason: '' });
 const commission = (id, status, name = id) => ({ commission_id: id, order_reference: `O-${id}`, product_name: name, initial_minor: 100, current_payable_minor: 100, paid_minor: status === 'paid' ? 100 : 0, status, hold_reason: '', cancel_reason: '', exception_reason: '', paid_confirmed_at: '2026-09-15T00:00:00Z', due_at: '2026-09-16T00:00:00Z', settlement_confirmed_at: '', created_at: '2026-09-15T00:00:00Z', currency: 'CNY' });
-function viewWith(fetch) {
-  const view = new JSDOM('<!doctype html><main id="distribution-root"></main>', { url: 'https://crm.example/distribution', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
+function viewWith(fetch, url = 'https://crm.example/distribution') {
+  const view = new JSDOM('<!doctype html><main id="distribution-root"></main>', { url, runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
     window.Response = Response; window.Headers = Headers; window.URL = URL;
     window.fetch = fetch;
   } });
@@ -68,6 +68,42 @@ await delay(30);
 assert.match(filters.window.document.body.textContent, /新 paid 结果/, 'stale filter result overwrote the newest selection');
 assert.doesNotMatch(filters.window.document.body.textContent, /旧 pending 结果/, 'stale filter data leaked into the newest selection');
 filters.window.close();
+
+// A reload owns the filter generation it started with. Returning to the same
+// status is still a new selection: an older reload for A must not overwrite a
+// later A after A -> B -> A.
+const staleReloadAll = deferred(); const freshAll = deferred(); const pendingSwitch = deferred(); let allReads = 0;
+const reloadFilters = viewWith(async (input) => {
+  const url = new URL(String(input), 'https://crm.example');
+  if (url.pathname === '/api/v1/distribution/me') return json(profile({ settlement: { enabled: false, reason: 'merchant_settlement_unavailable' } }));
+  if (url.pathname === '/api/v1/distribution/products') return json({ items: [product('重载筛选商品')], next_cursor: '' });
+  if (url.pathname === '/api/v1/distribution/earnings') return json(earnings);
+  if (url.pathname === '/api/v1/distribution/commissions') {
+    if (url.search === '?limit=50') {
+      allReads += 1;
+      if (allReads === 1) return json({ items: [commission('all-initial', 'pending', '初始 A 结果')], next_cursor: '' });
+      if (allReads === 2) return staleReloadAll.promise;
+      if (allReads === 3) return freshAll.promise;
+    }
+    if (url.search === '?status=pending&limit=50') return pendingSwitch.promise;
+  }
+  return json({ error: 'not_found' }, 404);
+});
+await waitFor(() => reloadFilters.window.document.body.textContent.includes('重载筛选商品'), 'reload/filter fixture did not render');
+refresh(reloadFilters);
+await waitFor(() => allReads === 2, 'reload did not start its A status read');
+earningsTab(reloadFilters);
+const reloadSelect = reloadFilters.window.document.querySelector('select[name="commission-status"]');
+reloadSelect.value = 'pending'; reloadSelect.dispatchEvent(new reloadFilters.window.Event('change', { bubbles: true }));
+reloadSelect.value = ''; reloadSelect.dispatchEvent(new reloadFilters.window.Event('change', { bubbles: true }));
+await waitFor(() => allReads === 3, 'new A selection did not start after A -> B -> A');
+freshAll.resolve(json({ items: [commission('all-fresh', 'pending', '新 A 结果')], next_cursor: '' }));
+await waitFor(() => reloadFilters.window.document.body.textContent.includes('新 A 结果'), 'new A result did not render');
+staleReloadAll.resolve(json({ items: [commission('all-stale', 'pending', '旧 reload A 结果')], next_cursor: '' }));
+await delay(30);
+assert.match(reloadFilters.window.document.body.textContent, /新 A 结果/, 'stale reload overwrote the newer same-status selection');
+assert.doesNotMatch(reloadFilters.window.document.body.textContent, /旧 reload A 结果/, 'stale reload leaked into the newer A result');
+reloadFilters.window.close();
 
 let failedStatusReads = 0;
 const failedFilter = viewWith(async (input) => {
@@ -159,6 +195,24 @@ await waitFor(() => access.window.document.body.textContent.includes('使用微�
 assert.doesNotMatch(access.window.document.body.textContent, /新会话商品|旧会话商品/, 'current 401 left sensitive facts visible');
 assert.equal(bridges, 1, 'current 401 must attempt one controlled bridge');
 access.window.close();
+
+// A successful application-context read belongs to the same authorized
+// session. If the later profile read loses authorization, its product name
+// must not be put back while the controlled bridge is pending.
+const contextBridge = deferred();
+const context401 = viewWith(async (input) => {
+  const url = new URL(String(input), 'https://crm.example');
+  if (url.pathname === '/api/v1/distribution/application-context') return json({ product_id: 7, product_type: 'standard_product', name: '失权前申请商品' });
+  if (url.pathname === '/api/v1/distribution/me') return json({ error: 'distribution_session_required' }, 401);
+  if (url.pathname === '/api/v1/distribution/session/bridge') return contextBridge.promise;
+  return json({ error: 'not_found' }, 404);
+}, 'https://crm.example/distribution?product_id=7&product_type=standard_product');
+await waitFor(() => context401.window.document.body.textContent.includes('正在确认微信登录状态'), 'profile 401 did not start the controlled bridge');
+assert.doesNotMatch(context401.window.document.body.textContent, /失权前申请商品/, 'authorization failure restored an application target from the old session');
+contextBridge.resolve(json({ error: 'distribution_session_required' }, 401));
+await waitFor(() => context401.window.document.body.textContent.includes('使用微信登录'), 'failed bridge did not return to login');
+assert.doesNotMatch(context401.window.document.body.textContent, /失权前申请商品/, 'login after failed bridge retained the old application target');
+context401.window.close();
 
 // Current authorization failures from secondary reads share the same clearing
 // path as reload. During a pending bridge no previous product or commission
