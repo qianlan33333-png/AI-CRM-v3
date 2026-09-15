@@ -465,6 +465,9 @@ func (service *ServicePeriodService) CopyServicePeriodProduct(ctx context.Contex
 		if sourceProjection.Version != normalized.ExpectedVersion {
 			return ErrConflict
 		}
+		if sourceProjection.Archived || sourceProjection.Lifecycle == productport.ServicePeriodArchived {
+			return ErrNotFound
+		}
 		projection, projectionErr := servicePeriodProjectionForLifecycle(source.LegacyAdminProjection, productport.ServicePeriodDraft)
 		if projectionErr != nil {
 			return projectionErr

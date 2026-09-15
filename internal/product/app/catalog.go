@@ -407,6 +407,13 @@ func (s *Service) Update(ctx context.Context, command productport.UpdateCommand)
 		if !validProduct(current) {
 			return ErrUnavailable
 		}
+		currentLifecycle, projectionErr := projectLocalProduct(current)
+		if projectionErr != nil {
+			return projectionErr
+		}
+		if currentLifecycle.Lifecycle == productport.LocalProductArchived {
+			return ErrNotFound
+		}
 		if current.Version != int64(command.ExpectedVersion) {
 			return ErrConflict
 		}
@@ -415,6 +422,18 @@ func (s *Service) Update(ctx context.Context, command productport.UpdateCommand)
 		}
 		if len(command.LegacyAdminProjection) == 0 {
 			command.LegacyAdminProjection = append(json.RawMessage(nil), current.LegacyAdminProjection...)
+		}
+		nextLifecycle, projectionErr := projectLocalProduct(productport.Product{
+			ID: current.ID, ProductCode: current.ProductCode, Name: command.Name, Description: command.Description,
+			PriceMinor: command.PriceMinor, Currency: command.Currency, StockQuantity: command.StockQuantity, Images: command.Images,
+			CreatedBy: current.CreatedBy, CreatedAt: current.CreatedAt, UpdatedAt: current.UpdatedAt, Version: current.Version,
+			LegacyAdminProjection: command.LegacyAdminProjection,
+		})
+		if projectionErr != nil {
+			return projectionErr
+		}
+		if nextLifecycle.Lifecycle == productport.LocalProductArchived {
+			return ErrInvalidProduct
 		}
 		result, e = s.store.Update(tx, command, now)
 		if e != nil {

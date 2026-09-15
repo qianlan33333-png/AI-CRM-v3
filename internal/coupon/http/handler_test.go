@@ -78,10 +78,13 @@ func (f *recordingTargetOptions) ReadProductTargets(_ context.Context, reference
 }
 
 type fakeRules struct {
-	created    couponport.UpsertCommand
-	page       couponport.Page
-	item       couponport.Coupon
-	publishKey string
+	created        couponport.UpsertCommand
+	page           couponport.Page
+	item           couponport.Coupon
+	publishKey     string
+	archiveID      couponport.ID
+	archiveVersion int64
+	archiveKey     string
 }
 
 type fakeClaims struct {
@@ -144,7 +147,8 @@ func (f *fakeRules) Publish(_ context.Context, _ couponport.ID, _ int64, key str
 func (f *fakeRules) Stop(context.Context, couponport.ID, int64, string) (couponport.Coupon, error) {
 	return f.item, nil
 }
-func (f *fakeRules) Archive(context.Context, couponport.ID, int64, string) (couponport.Coupon, error) {
+func (f *fakeRules) Archive(_ context.Context, id couponport.ID, expected, _ int64, key string) (couponport.Coupon, error) {
+	f.archiveID, f.archiveVersion, f.archiveKey = id, expected, key
 	return f.item, nil
 }
 func (f *fakeRules) Delete(context.Context, couponport.ID, int64, string) (couponport.Coupon, error) {
@@ -214,6 +218,30 @@ func TestGeneratedCouponPublishEmptyBodyWithHostKey(t *testing.T) {
 		} else if res.Code != http.StatusOK || rules.publishKey != key || !strings.Contains(res.Body.String(), `"id":3`) {
 			t.Fatalf("publish receipt: status=%d key=%q body=%s", res.Code, rules.publishKey, res.Body.String())
 		}
+	}
+}
+
+func TestCouponDeleteArchivesFrozenVersion(t *testing.T) {
+	rules := &fakeRules{item: couponFixture()}
+	h, err := NewHandler(rules, fakeOptions{}, fakeSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodDelete, "/api/admin/coupons/3", strings.NewReader(`{"expected_version":1}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "coupon-archive-http-0001")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || rules.archiveID != 3 || rules.archiveVersion != 1 || rules.archiveKey != "coupon-archive-http-0001" || !strings.Contains(response.Body.String(), `"status":"draft"`) {
+		t.Fatalf("archive response=%d body=%s command=%+v", response.Code, response.Body.String(), rules)
+	}
+
+	invalid := httptest.NewRequest(http.MethodDelete, "/api/admin/coupons/3", nil)
+	invalid.Header.Set("Idempotency-Key", "coupon-archive-http-0002")
+	invalidResponse := httptest.NewRecorder()
+	h.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusBadRequest || rules.archiveKey != "coupon-archive-http-0001" {
+		t.Fatalf("missing version archive status=%d body=%s command=%+v", invalidResponse.Code, invalidResponse.Body.String(), rules)
 	}
 }
 func TestCouponProductOptionsAndExcludedClaims(t *testing.T) {

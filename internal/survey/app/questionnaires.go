@@ -119,6 +119,13 @@ func (s *Service) Update(ctx context.Context, command surveyport.UpdateCommand) 
 		return surveyport.Questionnaire{}, surveyport.ErrInvalid
 	}
 	return s.mutate(ctx, "definition_update", value.ID, command.ActorID, command.IdempotencyKey, digest, payload, func(tx context.Context, now time.Time) (surveyport.Questionnaire, error) {
+		current, err := s.store.Get(tx, value.ID, true)
+		if err != nil {
+			return surveyport.Questionnaire{}, err
+		}
+		if current.Status == surveyport.StatusArchived {
+			return surveyport.Questionnaire{}, surveyport.ErrNotFound
+		}
 		return s.store.Replace(tx, value, command.ExpectedVersion, command.ActorID, now)
 	})
 }
@@ -134,6 +141,9 @@ func (s *Service) Duplicate(ctx context.Context, id surveyport.ID, actor int64, 
 		source, err := s.store.Get(tx, id, true)
 		if err != nil {
 			return surveyport.Questionnaire{}, err
+		}
+		if source.Status == surveyport.StatusArchived {
+			return surveyport.Questionnaire{}, surveyport.ErrNotFound
 		}
 		source.ID, source.Version, source.CreatedBy = 0, 1, actor
 		source.Name += " copy"
@@ -155,12 +165,14 @@ func (s *Service) Publish(ctx context.Context, id surveyport.ID, expected, actor
 }
 
 func (s *Service) SetStatus(ctx context.Context, id surveyport.ID, expected int64, status surveyport.QuestionnaireStatus, actor int64, key string) (surveyport.Questionnaire, error) {
-	if status != surveyport.StatusPublished && status != surveyport.StatusDisabled {
+	if status != surveyport.StatusPublished && status != surveyport.StatusDisabled && status != surveyport.StatusArchived {
 		return surveyport.Questionnaire{}, surveyport.ErrInvalid
 	}
 	operation := "definition_enable"
 	if status == surveyport.StatusDisabled {
 		operation = "definition_disable"
+	} else if status == surveyport.StatusArchived {
+		operation = "definition_archive"
 	}
 	return s.statusMutation(ctx, operation, id, expected, actor, key, status, false)
 }
@@ -175,6 +187,13 @@ func (s *Service) statusMutation(ctx context.Context, operation string, id surve
 		Status   surveyport.QuestionnaireStatus `json:"status"`
 	}{id, expected, status})
 	return s.mutate(ctx, operation, id, actor, key, digest, payload, func(tx context.Context, now time.Time) (surveyport.Questionnaire, error) {
+		current, err := s.store.Get(tx, id, true)
+		if err != nil {
+			return surveyport.Questionnaire{}, err
+		}
+		if current.Status == surveyport.StatusArchived {
+			return surveyport.Questionnaire{}, surveyport.ErrNotFound
+		}
 		if publish {
 			return s.store.Publish(tx, id, expected, actor, now)
 		}
@@ -254,7 +273,7 @@ func digestPayload(v any) (json.RawMessage, [32]byte, error) {
 }
 func validKey(v string) bool { v = strings.TrimSpace(v); return len(v) >= 16 && len(v) <= 200 }
 func validStatus(v surveyport.QuestionnaireStatus) bool {
-	return v == surveyport.StatusDraft || v == surveyport.StatusPublished || v == surveyport.StatusDisabled
+	return v == surveyport.StatusDraft || v == surveyport.StatusPublished || v == surveyport.StatusDisabled || v == surveyport.StatusArchived
 }
 func classify(err error) error {
 	if err == nil {

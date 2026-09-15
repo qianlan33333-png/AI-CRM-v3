@@ -32,7 +32,7 @@ function overview(period, { amount = 12500, refund = 1200 } = {}) {
 let scenario = 'today';
 let releaseDeferred;
 const calls = [];
-const dom = new JSDOM('<!doctype html><main id="overview-admin-root"></main>', {
+const dom = new JSDOM('<!doctype html><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">经营总览</h1></div></header><main id="overview-admin-root"></main>', {
   url: 'https://crm.example/admin', runScripts: 'outside-only', pretendToBeVisual: true,
   beforeParse(window) {
     window.Response = Response; window.Headers = Headers;
@@ -57,6 +57,16 @@ dom.window.eval(bundle);
 await waitFor(() => dom.window.document.body.textContent.includes('已确认支付'), 'overview did not render its first response');
 assert.equal(calls[0].pathname, '/api/admin/overview');
 assert.equal(calls[0].search, '?period=today', 'initial request must explicitly use today');
+const topbar = dom.window.document.querySelector('.admin-topbar');
+const headerActions = topbar?.querySelector('[data-page-header-actions="overview-range"]');
+assert.equal(dom.window.document.querySelectorAll('.admin-topbar').length, 1, 'overview must retain the shell’s single topbar');
+assert.equal(dom.window.document.querySelectorAll('.admin-page-title').length, 1, 'overview must retain the shell’s single title');
+assert.equal(headerActions?.querySelectorAll('button').length, 4, 'all four interval controls must mount once in the shell header');
+assert.equal(topbar?.contains(headerActions || null), true, 'interval controls must stay inside the existing shell header');
+assert.equal(dom.window.document.querySelector('[data-overview-period]'), null, 'the content area must not retain parallel interval controls');
+assert.equal(dom.window.document.querySelector('.overview-toolbar'), null, 'the content area must not repeat the overview heading');
+assert.equal(dom.window.document.body.textContent.includes('统计口径以各项数据的确认时间为准'), false, 'the redundant statistics-copy must be removed');
+assert.equal(headerActions?.querySelector('[data-page-header-action="period-today"]')?.getAttribute('aria-pressed'), 'true', 'the active header range must expose its state');
 assert.ok(dom.window.document.body.textContent.includes('来源待核实'), 'missing provenance must be visible');
 assert.ok(dom.window.document.body.textContent.includes('最近读取：'), 'a warning must retain its section observation time');
 assert.ok(dom.window.document.body.textContent.includes('数据读取：支付'), 'the unified observation summary must include normal section timestamps');
@@ -68,8 +78,12 @@ assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').len
 assert.equal(dom.window.document.querySelector('.overview-chart__bar')?.getAttribute('height'), '112', 'the maximum payment amount must use the defined SVG plot height');
 
 scenario = 'deferred';
-[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 7 天').click();
+const sevenDayButton = headerActions?.querySelector('[data-page-header-action="period-7d"]');
+sevenDayButton?.focus();
+sevenDayButton?.click();
 await waitFor(() => typeof releaseDeferred === 'function', 'deferred preset request did not start');
+assert.equal(topbar?.querySelector('[data-page-header-action="period-7d"]'), sevenDayButton, 'loading must not replace a focused header action');
+assert.equal(dom.window.document.activeElement, sevenDayButton, 'loading must preserve the current header action focus');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '自定义').click();
 assert.equal(dom.window.document.querySelector('[data-overview-custom]')?.classList.contains('is-open'), true, 'custom draft must open while a preset request is pending');
 releaseDeferred();

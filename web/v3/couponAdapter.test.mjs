@@ -17,6 +17,11 @@ const feedback = (await build({ stdin: { contents: 'import {initFeedback} from "
 const publishAction = (await build({ stdin: { contents: `import {walkChildren} from './web/src/shared/ui/runtime.ts'; import {confirmBox} from './web/src/shared/ui/feedback.ts'; import {publishLegacyCoupon} from './web/src/api/generated/p4-coupon-compat/p4-coupon-compat.ts'; const stage=document.createElement('div');stage.innerHTML='<button id="publishActual" onclick="{{ publish }}">发布</button>';document.body.append(stage);walkChildren(stage,{publish:()=>confirmBox('发布优惠券','确认发布？','确认发布',true,()=>publishLegacyCoupon(21).then(r=>window.publishReceipt=r))});`, resolveDir: root }, bundle: true, format: 'iife', write: false })).outputFiles[0].text;
 const donorForm = await fs.readFile(path.join(root, 'web/donors/standard-components-production/coupons/coupon_form.html'), 'utf8');
 const donorStyle = await fs.readFile(path.join(root, 'web/donors/standard-components-production/coupons/coupon_styles.html'), 'utf8');
+const couponListTemplate = (await fs.readFile(path.join(root, 'web/src/admin/templates/coupons.html'), 'utf8'))
+  .replace(/<sc-for list="([^"]+)" as="([^"]+)"([^>]*)>/g, '<template data-sc-for="$1" data-as="$2"$3>')
+  .replace(/<\/sc-for>/g, '</template>')
+  .replace(/<sc-if value="([^"]+)"([^>]*)>/g, '<template data-sc-if="$1"$2>')
+  .replace(/<\/sc-if>/g, '</template>');
 const runtimeBlock = donorForm.indexOf('{% block scripts_extra %}'); const runtimeOpen = donorForm.indexOf('<script>', runtimeBlock); const runtimeClose = donorForm.indexOf('</script>', runtimeOpen);
 const donorRuntime = donorForm.slice(runtimeOpen + '<script>'.length, runtimeClose);
 assert.equal(crypto.createHash('sha256').update(donorRuntime).digest('hex'), 'a3e15d50e97609d934a4edcab1adb2a2048d23e0dd7517e46ad4b9b677b6c88c', 'runtime fixture must use the exact extracted donor script bytes');
@@ -109,6 +114,7 @@ const dom = new JSDOM('<!doctype html><body data-page="couponForm"><main id="sta
   beforeParse(window) {
     window.Request = Request; window.Response = Response; window.Headers = Headers;
     window.fetch = async (input, init = {}) => {
+      init ||= {};
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method)).toUpperCase(); const headers = new Headers(init.headers); calls.push({ url, method, headers, body: init.body || '' });
       if (url.pathname === '/assets/standard-components/coupon_form.html') return new Response(donorForm, { status: 200 });
@@ -146,8 +152,13 @@ try {
   document.querySelector('#fb-ok').click();
   await waitFor(() => dom.window.publishReceipt, 'confirmed publish must use the actual generated HTTP client');
   assert.equal(dom.window.publishReceipt.status, 200); assert.equal(document.querySelector('#fb-toast').textContent, '', 'publish confirmation must not emit the unbound-action error');
-  await dom.window.fetch('/api/admin/coupons/21/publish', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21/stop', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21/publish', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21', { method: 'DELETE' });
-  const publish = calls.filter((call) => call.url.pathname.endsWith('/publish')); const stop = calls.find((call) => call.url.pathname.endsWith('/stop')); assert.match(publish[0].headers.get('Idempotency-Key'), /^coupon-/, 'publish must include the server-required idempotency receipt'); assert.match(publish[2].headers.get('Idempotency-Key'), /^coupon-/, 'republishing after a confirmed stop must include a fresh receipt'); assert.notEqual(publish[1].headers.get('Idempotency-Key'), publish[2].headers.get('Idempotency-Key'), 'a confirmed publish -> stop -> publish is a new lifecycle intent'); assert.match(stop.headers.get('Idempotency-Key'), /^coupon-/, 'stop has its own lifecycle key'); assert.match(calls.find((call) => call.method === 'DELETE').headers.get('Idempotency-Key'), /^coupon-/, 'delete must have a lifecycle idempotency key');
+  await dom.window.fetch('/api/admin/coupons/21/publish', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21/stop', { method: 'POST', body: '' }); await dom.window.fetch('/api/admin/coupons/21/publish', { method: 'POST', body: '' });
+  const writesBeforeInvalidDelete = calls.length;
+  const invalidDelete = await dom.window.fetch('/api/admin/coupons/21', { method: 'DELETE', body: JSON.stringify({ expected_revision: 1 }) });
+  assert.equal(invalidDelete.status, 400, 'Coupon DELETE rejects the GroupOps-only expected_revision field before any write');
+  assert.equal(calls.length, writesBeforeInvalidDelete, 'invalid DELETE has zero transport calls');
+  await dom.window.fetch('/api/admin/coupons/21', { method: 'DELETE', body: JSON.stringify({ expected_version: 1 }) });
+  const publish = calls.filter((call) => call.url.pathname.endsWith('/publish')); const stop = calls.find((call) => call.url.pathname.endsWith('/stop')); const deleteCall = calls.find((call) => call.method === 'DELETE'); assert.match(publish[0].headers.get('Idempotency-Key'), /^coupon-/, 'publish must include the server-required idempotency receipt'); assert.match(publish[2].headers.get('Idempotency-Key'), /^coupon-/, 'republishing after a confirmed stop must include a fresh receipt'); assert.notEqual(publish[1].headers.get('Idempotency-Key'), publish[2].headers.get('Idempotency-Key'), 'a confirmed publish -> stop -> publish is a new lifecycle intent'); assert.match(stop.headers.get('Idempotency-Key'), /^coupon-/, 'stop has its own lifecycle key'); assert.match(deleteCall.headers.get('Idempotency-Key'), /^coupon-/, 'delete must have a lifecycle idempotency key'); assert.deepEqual(JSON.parse(deleteCall.body), { expected_version: 1 }, 'delete passes the frozen expected version as a JSON body');
   assert.equal(createAttempts, 1, 'one completed submit must create exactly once');
   const unknownBody = '{"name":"unknown-create"}';
   await assert.rejects(() => dom.window.fetch('/api/admin/coupons', { method: 'POST', body: unknownBody }), /response lost/);
@@ -155,7 +166,12 @@ try {
   const recovered = await dom.window.fetch('/api/admin/coupons', { method: 'POST', body: unknownBody }); assert.equal(recovered.status, 201, 'same payload retries the original server receipt after a lost response');
   const unknownCalls = calls.filter((call) => call.method === 'POST' && call.url.pathname === '/api/admin/coupons' && String(call.body).includes('unknown-create')); assert.equal(unknownCalls.length, 2, 'only the original logical create is retried'); assert.equal(unknownCalls[0].headers.get('Idempotency-Key'), unknownCalls[1].headers.get('Idempotency-Key'), 'unknown retry retains its original key'); assert.equal(unknownCreateAttempts, 2);
   const malformed = await dom.window.fetch('/api/admin/coupons', { method: 'POST', body: '{"name":"empty-receipt"}' }); assert.equal(malformed.status, 503, '200 without a coupon ID remains create outcome unknown and cannot show a false saved state');
-} finally { dom.window.document.body.dataset.page = 'closed'; dom.window.close(); }
+} finally {
+  // The Coupon Host's scoped observer may still settle after the form save.
+  // This standalone Node process owns teardown, so avoid closing its document
+  // during the adjacent list fixture's initialization.
+  dom.window.document.body.dataset.page = 'closed';
+}
 
 // Existing draft: real donor submit plus real global feedback, with a durable
 // receipt-shaped response. A failed or malformed save must never show success.
@@ -225,7 +241,97 @@ try {
   }
   editDom.window.fetch = async () => Response.json({ code: 'CREATE_OUTCOME_UNKNOWN', message: 'untrusted machine detail' }, { status: 503 });
   await assert.rejects(api.requestJson('/api/admin/coupons/18', { method: 'PUT', body: {} }), /保存结果未知/);
-} finally { editDom.window.document.body.dataset.page = 'closed'; editDom.window.close(); }
+} finally {
+  // Keep this observed document alive through the list fixture as above.
+  editDom.window.document.body.dataset.page = 'closed';
+}
+
+// The list remains the frozen table/runtime. The V3 Coupon adapter changes
+// only its two archive/draft callbacks into one owned DELETE action, freezing
+// the rendered id and version. The normal list authority excludes archived
+// rows; retained history remains addressable only through its direct read. A
+// conflict retry must retain that exact body and receipt key; only the
+// authoritative controller reread removes the row.
+const archiveFixtureCoupon = {
+  id: 63, version: 4, name: '待删除优惠券', discount_amount_total: 100, status: 'stopped', availability_status: 'stopped', total_issue_limit: 3, per_user_issue_limit: 1, issued_count: 1,
+  claim_starts_at: '2026-09-08T00:00:00Z', claim_ends_at: '2026-09-15T15:59:59Z', validity_mode: 'relative_days', target_refs: ['standard_product:32'], target_products: [{ target_ref: 'standard_product:32', name: '删除验收商品', state: 'available' }],
+};
+const archivedFixtureCoupon = {
+  ...archiveFixtureCoupon, id: 64, version: 9, name: '历史优惠券', status: 'archived', availability_status: 'archived',
+};
+let archiveRows = [archiveFixtureCoupon];
+let archiveOutcome = 'conflict';
+const archiveCalls = [];
+const archiveErrors = [];
+const archiveConsole = new VirtualConsole();
+archiveConsole.on('jsdomError', (error) => archiveErrors.push(error));
+const archiveDom = new JSDOM(`<!doctype html><body class="admin-shell" data-page="coupons"><main id="stage"></main><template id="tpl">${couponListTemplate}</template></body>`, {
+  url: 'https://test.invalid/admin/coupons', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: archiveConsole,
+  beforeParse(window) {
+    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method)).toUpperCase();
+      const headers = new Headers(init.headers);
+      archiveCalls.push({ path: url.pathname, method, headers, body: String(init.body || '') });
+      if (url.pathname === '/api/admin/coupons' && method === 'GET') {
+        return Response.json({ coupons: archiveRows, items: archiveRows, total: archiveRows.length, limit: 50, offset: 0 });
+      }
+      if (url.pathname === '/api/admin/coupons/64' && method === 'GET') {
+        return Response.json({ coupon: archivedFixtureCoupon });
+      }
+      if (url.pathname === '/api/admin/coupons/63' && method === 'DELETE') {
+        if (archiveOutcome === 'conflict') return Response.json({ code: 'conflict' }, { status: 409 });
+        if (archiveOutcome === 'wrong-id') return Response.json({ ok: true, coupon: { id: 999, version: 5, status: 'archived' } });
+        archiveRows = [];
+        return Response.json({ ok: true, coupon: { id: 63, version: 5, status: 'archived' } });
+      }
+      return Response.json({ items: [], total: 0, limit: 50, offset: 0 });
+    };
+  },
+});
+try {
+  archiveDom.window.eval(feedback);
+  archiveDom.window.eval(host);
+  const document = archiveDom.window.document;
+  await waitFor(() => document.querySelector('tbody')?.textContent.includes('待删除优惠券'), 'actual frozen coupon table did not render the archive fixture');
+  const historicalCoupon = await archiveDom.window.fetch('/api/admin/coupons/64');
+  assert.equal((await historicalCoupon.json()).coupon.status, 'archived', 'the retained coupon history read remains available outside the normal list');
+  assert.equal(document.querySelector('tbody')?.textContent.includes('历史优惠券'), false, 'the normal list must not reintroduce an archived coupon from historical storage');
+  const deleteActions = () => [...document.querySelectorAll('tbody a')].filter((node) => node.textContent?.trim() === '删除');
+  assert.equal(deleteActions().length, 1, 'the frozen row must expose exactly one visible delete action');
+  assert.equal([...document.querySelectorAll('tbody a')].some((node) => /归档|删除草稿/.test(node.textContent || '')), false, 'legacy archive and draft-delete entries must not remain beside the owned delete action');
+  assert.equal(deleteActions()[0].__dcBound, true, 'the retained delete action must declare its real V3 handler before feedback capture');
+  assert.equal(deleteActions()[0].dataset.capabilityState, 'real');
+  deleteActions()[0].click();
+  assert.equal(document.getElementById('fb-head')?.textContent, '删除优惠券');
+  assert.match(document.getElementById('fb-body')?.textContent || '', /停止新的领取和后续使用/);
+  assert.match(document.getElementById('fb-body')?.textContent || '', /已下单、已核销和订单历史会保留/);
+  document.getElementById('fb-ok').click();
+  await waitFor(() => document.getElementById('fb-toast')?.textContent.includes('优惠券内容已变化'), 'a rejected delete must show the bounded conflict message');
+  assert.equal(deleteActions().length, 1, 'a rejected delete keeps the single original action available for explicit retry');
+  archiveOutcome = 'wrong-id';
+  deleteActions()[0].click();
+  document.getElementById('fb-ok').click();
+  await waitFor(() => document.getElementById('fb-toast')?.textContent.includes('删除结果无法确认'), 'a 200 receipt for another coupon must not be treated as this delete succeeding');
+  assert.equal(deleteActions().length, 1, 'an unconfirmed 200 receipt must keep the authoritative row and require an explicit retry');
+  archiveOutcome = 'success';
+  deleteActions()[0].click();
+  document.getElementById('fb-ok').click();
+  await waitFor(() => !document.querySelector('tbody')?.textContent.includes('待删除优惠券'), 'only an authoritative controller reread may remove the deleted row');
+  const deletes = archiveCalls.filter((call) => call.path === '/api/admin/coupons/63' && call.method === 'DELETE');
+  assert.equal(deletes.length, 3, 'conflict and unconfirmed-receipt retries each require an explicit DELETE');
+  assert.deepEqual(JSON.parse(deletes[0].body), { expected_version: 4 }, 'delete freezes the rendered version in the JSON body');
+  assert.equal(deletes[1].body, deletes[0].body, 'conflict retry preserves the original delete body');
+  assert.equal(deletes[2].body, deletes[0].body, 'unconfirmed-result retry preserves the original delete body');
+  assert.equal(deletes[1].headers.get('Idempotency-Key'), deletes[0].headers.get('Idempotency-Key'), 'conflict retry preserves the original idempotency receipt key');
+  assert.equal(deletes[2].headers.get('Idempotency-Key'), deletes[0].headers.get('Idempotency-Key'), 'unconfirmed-result retry preserves the original idempotency receipt key');
+  assert.equal(document.getElementById('fb-toast')?.textContent.includes('后端能力未就绪'), false, 'the owned delete action must not trigger the frozen feedback fallback');
+  assert.deepEqual(archiveErrors, []);
+} finally {
+  // Keep the observed frozen-list document alive until this direct Node test exits.
+  archiveDom.window.document.body.dataset.page = 'closed';
+}
 
 // A Product batch-read failure is an unavailable Coupon detail, not a missing
 // or unnamed Product.  The editor must surface that safe Chinese state and

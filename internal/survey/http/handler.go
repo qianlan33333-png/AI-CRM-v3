@@ -115,6 +115,14 @@ type publicPublishRequest struct {
 	ExpectedQuestionnaireVersion *int64 `json:"expected_questionnaire_version"`
 }
 
+// archiveDefinitionRequest freezes the version displayed to the owner before
+// they confirm archive. The handler never substitutes a fresh server version:
+// doing so would let a stale confirmation archive a later edit and would make
+// an exact Idempotency-Key replay conflict after the successful archive.
+type archiveDefinitionRequest struct {
+	ExpectedVersion int64 `json:"expected_version"`
+}
+
 type definitionRequest struct {
 	Name              string                       `json:"name"`
 	Title             string                       `json:"title"`
@@ -270,17 +278,17 @@ func (h *Handler) adminTail(w http.ResponseWriter, r *http.Request, tail string)
 			if !ok {
 				return
 			}
-			current, e := h.definitions.Get(r.Context(), surveyport.ID(id))
+			var body archiveDefinitionRequest
+			if decode(r, &body) != nil || body.ExpectedVersion < 1 {
+				writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			q, e := h.definitions.SetStatus(r.Context(), surveyport.ID(id), body.ExpectedVersion, surveyport.StatusArchived, principal.InternalID, idempotency(r))
 			if e != nil {
 				resultError(w, e)
 				return
 			}
-			e = h.definitions.DeleteDraft(r.Context(), surveyport.ID(id), current.Version, principal.InternalID, idempotency(r))
-			if e != nil {
-				resultError(w, e)
-				return
-			}
-			writeJSON(w, 200, map[string]any{"ok": true, "questionnaire_id": id, "write_model_status": "deleted", "deleted": true, "delete_mode": "hard_delete"})
+			writeJSON(w, 200, definitionEnvelope(q, "archived", 0))
 		default:
 			method(w, "GET, PUT, DELETE")
 		}
@@ -391,6 +399,8 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id int64, st
 	state := "enabled"
 	if status == surveyport.StatusDisabled {
 		state = "disabled"
+	} else if status == surveyport.StatusArchived {
+		state = "archived"
 	}
 	writeJSON(w, 200, definitionEnvelope(q, state, 0))
 }
@@ -1083,7 +1093,7 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {
-	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status != surveyport.StatusPublished, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/q/" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
+	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status != surveyport.StatusPublished, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled", surveyport.StatusArchived: "archived"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/q/" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
 }
 func definitionEnvelope(q surveyport.Questionnaire, status string, source int64) map[string]any {
 	value := definitionResponse(q)

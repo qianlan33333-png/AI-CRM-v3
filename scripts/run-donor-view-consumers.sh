@@ -99,6 +99,7 @@ run_frontend_and_stage_checks() {
   node web/v3/productAdapter.field_mapping.test.mjs
   node web/v3/productAdapter.save_recovery.test.mjs
   node web/v3/productAdapter.sp_material.test.mjs
+  node web/v3/productAdapter.archive.test.mjs
   node web/v3/orderAdapter.test.mjs
   node web/v3/couponAdapter.test.mjs
   node web/v3/channelAdmissionHost.test.mjs

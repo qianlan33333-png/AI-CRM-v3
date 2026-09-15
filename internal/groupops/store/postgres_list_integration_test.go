@@ -51,25 +51,28 @@ func TestPostgreSQLListProjectsBoundGroupCounts(t *testing.T) {
 	}
 
 	first := groupOpsListPage(t, ctx, uow, repository, 2, 0)
-	if len(first) != 2 || first[0].ID != archived || first[0].Status != groupopsport.PlanArchived || first[0].BoundGroupCount != 1 || first[1].ID != empty || first[1].BoundGroupCount != 0 {
+	if len(first) != 2 || first[0].ID != empty || first[0].BoundGroupCount != 0 || first[1].ID != older || first[1].BoundGroupCount != 2 || first[1].Owner.StaffID != actor || first[1].Owner.DisplayName != "列表负责人" || first[1].QueueCount != 0 {
 		t.Fatalf("first page=%+v", first)
 	}
 	second := groupOpsListPage(t, ctx, uow, repository, 2, 2)
-	if len(second) != 1 || second[0].ID != older || second[0].BoundGroupCount != 2 || second[0].Owner.StaffID != actor || second[0].Owner.DisplayName != "列表负责人" || second[0].QueueCount != 0 {
+	if len(second) != 0 {
 		t.Fatalf("second page=%+v", second)
+	}
+	if count := groupOpsListCount(t, ctx, uow, repository); count != 2 {
+		t.Fatalf("normal list count=%d want=2 (archived plan must not be counted)", count)
 	}
 	if _, err = pool.Exec(ctx, `DELETE FROM group_ops_plan_group_assets WHERE plan_id=$1 AND asset_reference='missing-directory-b'`, older); err != nil {
 		t.Fatal(err)
 	}
-	afterRemoval := groupOpsListPage(t, ctx, uow, repository, 2, 2)
-	if len(afterRemoval) != 1 || afterRemoval[0].BoundGroupCount != 1 {
+	afterRemoval := groupOpsListPage(t, ctx, uow, repository, 2, 0)
+	if len(afterRemoval) != 2 || afterRemoval[1].ID != older || afterRemoval[1].BoundGroupCount != 1 {
 		t.Fatalf("after removal=%+v", afterRemoval)
 	}
 	if _, err = pool.Exec(ctx, `INSERT INTO group_ops_plan_group_assets(plan_id,asset_reference) VALUES ($1,'bound-after-read')`, older); err != nil {
 		t.Fatal(err)
 	}
-	afterBinding := groupOpsListPage(t, ctx, uow, repository, 2, 2)
-	if len(afterBinding) != 1 || afterBinding[0].BoundGroupCount != 2 {
+	afterBinding := groupOpsListPage(t, ctx, uow, repository, 2, 0)
+	if len(afterBinding) != 2 || afterBinding[1].ID != older || afterBinding[1].BoundGroupCount != 2 {
 		t.Fatalf("after binding=%+v", afterBinding)
 	}
 }
@@ -85,6 +88,19 @@ func groupOpsListPage(t *testing.T, ctx context.Context, uow *platformpostgres.U
 		t.Fatal(err)
 	}
 	return result
+}
+
+func groupOpsListCount(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *Repository) int64 {
+	t.Helper()
+	var count int64
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		count, err = repository.Count(tx)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func groupOpsListPlan(t *testing.T, ctx context.Context, pool *pgxpool.Pool, actor int64, name string, status groupopsport.PlanStatus, updated time.Time) int64 {

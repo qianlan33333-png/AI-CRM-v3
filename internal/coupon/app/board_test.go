@@ -256,20 +256,34 @@ func TestUpdateDraftLocksPublishedRules(t *testing.T) {
 
 func TestCouponRuleMutationsUseReceiptReplayAndConflicts(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
-	first, second := couponTestItem(7, now), couponTestItem(8, now)
-	first.Status, second.Status = "draft", "draft"
-	store, events := newCouponTestStore(first, second), &couponTestEvents{}
+	first, second, third := couponTestItem(7, now), couponTestItem(8, now), couponTestItem(9, now)
+	first.Status, second.Status, third.Status = "draft", "draft", "draft"
+	store, events := newCouponTestStore(first, second, third), &couponTestEvents{}
 	service := couponTestService(now, store, events)
 	key := "archive-key-00001"
-	archived, err := service.Archive(context.Background(), 7, 9, key)
+	archived, err := service.Archive(context.Background(), 7, first.Version, 9, key)
 	if err != nil || archived.Status != "archived" || len(events.rows) != 1 {
 		t.Fatalf("archive=%#v err=%v events=%d", archived, err, len(events.rows))
 	}
-	if replay, replayErr := service.Archive(context.Background(), 7, 9, key); replayErr != nil || replay.ID != archived.ID || replay.Status != archived.Status || len(events.rows) != 1 {
+	if replay, replayErr := service.Archive(context.Background(), 7, first.Version, 9, key); replayErr != nil || replay.ID != archived.ID || replay.Status != archived.Status || len(events.rows) != 1 {
 		t.Fatalf("archive replay=%#v err=%v events=%d", replay, replayErr, len(events.rows))
 	}
-	if _, err = service.Archive(context.Background(), 8, 9, key); !errors.Is(err, ErrConflict) {
+	if _, err = service.Archive(context.Background(), 8, second.Version, 9, key); !errors.Is(err, ErrConflict) {
 		t.Fatalf("cross-coupon same-key error=%v", err)
+	}
+	if _, err = service.Copy(context.Background(), 7, 9, "copy-archived-key-01"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("archived copy error=%v", err)
+	}
+	if _, err = service.Publish(context.Background(), 7, 9, "publish-archived-001"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("archived publish error=%v", err)
+	}
+	archivedEdit := store.coupons[7]
+	archivedEdit.Name = "不能编辑的归档券"
+	if _, err = service.Update(context.Background(), couponport.UpsertCommand{Coupon: archivedEdit, Actor: 9, IdempotencyKey: "update-archived-key-01"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("archived update error=%v", err)
+	}
+	if got := store.coupons[7]; got.Status != "archived" || got.Name != first.Name || store.updates != 0 || len(events.rows) != 1 {
+		t.Fatalf("terminal coupon changed=%#v updates=%d events=%d", got, store.updates, len(events.rows))
 	}
 	deleted, err := service.Delete(context.Background(), 8, 9, "delete-key-000001")
 	if err != nil || deleted.Status != "deleted" {
@@ -278,11 +292,11 @@ func TestCouponRuleMutationsUseReceiptReplayAndConflicts(t *testing.T) {
 	if replay, replayErr := service.Delete(context.Background(), 8, 9, "delete-key-000001"); replayErr != nil || replay.Status != "deleted" {
 		t.Fatalf("delete replay=%#v err=%v", replay, replayErr)
 	}
-	copied, err := service.Copy(context.Background(), 7, 9, "copy-key-00000001")
-	if err != nil || copied.ID == 7 || copied.Name != "满减券 副本" || copied.Status != "draft" || copied.AvailabilityStatus != "draft" || copied.IssuedCount != 0 || copied.CreatedBy != 9 || copied.UpdatedBy != 9 {
+	copied, err := service.Copy(context.Background(), 9, 9, "copy-key-00000001")
+	if err != nil || copied.ID == 9 || copied.Name != "满减券 副本" || copied.Status != "draft" || copied.AvailabilityStatus != "draft" || copied.IssuedCount != 0 || copied.CreatedBy != 9 || copied.UpdatedBy != 9 {
 		t.Fatalf("copy=%#v err=%v", copied, err)
 	}
-	if replay, replayErr := service.Copy(context.Background(), 7, 9, "copy-key-00000001"); replayErr != nil || replay.ID != copied.ID || len(events.rows) != 3 || events.rows[2].Type != "coupon.copied" {
+	if replay, replayErr := service.Copy(context.Background(), 9, 9, "copy-key-00000001"); replayErr != nil || replay.ID != copied.ID || len(events.rows) != 3 || events.rows[2].Type != "coupon.copied" {
 		t.Fatalf("copy replay=%#v err=%v events=%#v", replay, replayErr, events.rows)
 	}
 	if _, err = service.Copy(context.Background(), 8, 9, "copy-key-00000001"); !errors.Is(err, ErrConflict) {

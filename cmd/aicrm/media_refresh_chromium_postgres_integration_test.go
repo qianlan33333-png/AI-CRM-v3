@@ -99,7 +99,10 @@ func TestPostgreSQLMediaRefreshChromiumJourney(t *testing.T) {
 		}
 	}()
 
-	server.Config.Handler = application.handler
+	// Only the disposable browser fixture delays its own thumbnail bytes. This
+	// makes the V3 card's loading layer observable before the browser settles;
+	// production Media reads, authorization and writes remain unchanged.
+	server.Config.Handler = delayedMediaRefreshThumbnailReads(application.handler, 900*time.Millisecond)
 	server.StartTLS()
 	artifactDirectory := filepath.Join(os.TempDir(), "aicrm-daily-media-refresh-browser-artifacts")
 	if err = os.MkdirAll(artifactDirectory, 0o755); err != nil {
@@ -134,6 +137,15 @@ func TestPostgreSQLMediaRefreshChromiumJourney(t *testing.T) {
 		t.Fatalf("manual refresh did not replace prior credential: fake uploads=%d", uploads)
 	}
 	t.Logf("media refresh Chromium screenshot: %s", screenshot)
+}
+
+func delayedMediaRefreshThumbnailReads(next http.Handler, delay time.Duration) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/api/admin/image-library/") && strings.Contains(request.URL.Path, "/variants/") {
+			time.Sleep(delay)
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 // The release artifact is prepared by the browser build stage.  This fixture

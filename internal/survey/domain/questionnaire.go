@@ -272,7 +272,7 @@ func validDisplay(value surveyport.AnswerDisplayMode) bool {
 	return value == surveyport.DisplayAllInOne || value == surveyport.DisplayOneByOne
 }
 func validStatus(value surveyport.QuestionnaireStatus) bool {
-	return value == surveyport.StatusDraft || value == surveyport.StatusPublished || value == surveyport.StatusDisabled
+	return value == surveyport.StatusDraft || value == surveyport.StatusPublished || value == surveyport.StatusDisabled || value == surveyport.StatusArchived
 }
 func validText(value string, maximum int) bool {
 	return value != "" && validOptionalText(value, maximum)

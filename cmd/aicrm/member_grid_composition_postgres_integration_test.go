@@ -247,6 +247,9 @@ func (memberGridPGLifecycle) SetLocalProductEnabled(context.Context, productport
 func (memberGridPGLifecycle) CopyLocalProduct(context.Context, productport.CopyLocalProductCommand) (productport.LocalProduct, error) {
 	return productport.LocalProduct{}, nil
 }
+func (memberGridPGLifecycle) ArchiveLocalProduct(context.Context, productport.ArchiveLocalProductCommand) (productport.LocalProduct, error) {
+	return productport.LocalProduct{}, nil
+}
 func (memberGridPGLifecycle) DeleteLocalProduct(context.Context, productport.DeleteLocalProductCommand) (productport.DeleteLocalProductResult, error) {
 	return productport.DeleteLocalProductResult{}, nil
 }
