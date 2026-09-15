@@ -323,6 +323,8 @@ function observeOriginalRadarDraft(): void {
   }, true);
 }
 
+observeOriginalRadarDraft();
+
 function radarLegacyImage(item: MaterialItem): ImageItem {
   return {
     resourceId: String(item.library_id), name: item.title || `图片素材 ${item.library_id}`, size: '', tag: '', tone: 'ok', bg: '#EFF4FF', desc: item.subtitle || '', tags: '', enabled: true, uploadedAt: '',
