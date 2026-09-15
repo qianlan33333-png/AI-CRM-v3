@@ -229,11 +229,14 @@ try {
     // for the actual source control rather than treating selector presence as
     // evidence that a user can submit a retry.
     await wait(cdp, `(()=>{const button=${expression};if(!(button instanceof HTMLButtonElement)||button.disabled)return false;button.scrollIntoView({block:'center',inline:'center'});const rect=button.getBoundingClientRect(),style=getComputedStyle(button),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&button.contains(hit)})()`, 'recovery action did not become visible after its owner readback');
-    // The owner refresh can replace this row between CDP calls. Resolve,
-    // verify, and activate the current element in one settled DOM turn so a
-    // former, detached text match cannot receive the retry action.
-    const activated = await value(cdp, `new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{const button=${expression};if(!(button instanceof HTMLButtonElement)||button.disabled||!button.isConnected){resolve({activated:false,reason:'missing'});return;}button.scrollIntoView({block:'center',inline:'center'});const rect=button.getBoundingClientRect(),style=getComputedStyle(button),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2),visible=rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&button.contains(hit);if(!visible){resolve({activated:false,reason:'unreachable',rect:{width:rect.width,height:rect.height}});return;}button.click();resolve({activated:true});})))`);
-    assert.equal(activated?.activated, true, `登记追回 retry control was not reachable after settle: ${JSON.stringify(activated)}`);
+    // The owner refresh can replace this row between CDP calls. Resolve a
+    // stable, current row after two frames, then preserve the journey's native
+    // CDP mouse path. A detached text match must never supply coordinates.
+    const point = await value(cdp, `new Promise(resolve=>{const ready=()=>{const button=${expression};const row=button?.closest(${JSON.stringify(`[data-exception="${id}"]`)});if(!(button instanceof HTMLButtonElement)||button.disabled||!button.isConnected||!(row instanceof HTMLElement)||!row.isConnected)return null;button.scrollIntoView({block:'center',inline:'center'});const rect=button.getBoundingClientRect(),style=getComputedStyle(button),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2),visible=rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&button.contains(hit);return visible?{button,row,x:rect.left+rect.width/2,y:rect.top+rect.height/2}:null;};requestAnimationFrame(()=>{const first=ready();requestAnimationFrame(()=>{const current=ready();if(!first||!current||current.button!==first.button||current.row!==first.row){resolve({visible:false,reason:'replaced'});return;}resolve({x:current.x,y:current.y,visible:true,row:current.row.dataset.exception||''});});});})`);
+    assert.equal(point?.visible, true, `登记追回 retry control was not reachable after settle: ${JSON.stringify(point)}`);
+    assert.equal(point?.row, String(id), `登记追回 retry control detached from its current exception row: ${JSON.stringify(point)}`);
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
   };
   await clickRecovery(confirmationException);
   await wait(cdp,"document.querySelector('[data-v3-confirmation-dialog]')?.textContent.includes('登记追回')",'recovery confirmation dialog did not open');
