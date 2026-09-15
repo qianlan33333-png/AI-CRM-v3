@@ -35,6 +35,43 @@ func DistDistributionAdminAssets(distRoot string) (DistributionAssets, bool) {
 	return DistributionAssets{CSS: "/" + css, DetailDrawerCSS: "/" + drawerCSS, AdminJS: "/" + js}, true
 }
 
+// DistOverviewAdminAssets resolves the V3 overview stylesheet and Host module
+// recorded in the release manifest. A missing or malformed pair leaves the
+// generic administrator shell available rather than falling back to a frozen
+// home document.
+func DistOverviewAdminAssets(distRoot string) (OverviewAssets, bool) {
+	if distRoot == "" {
+		return OverviewAssets{}, false
+	}
+	var manifest struct {
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
+	}
+	raw, err := os.ReadFile(filepath.Join(distRoot, "asset-manifest.json"))
+	if err != nil || json.Unmarshal(raw, &manifest) != nil {
+		return OverviewAssets{}, false
+	}
+	asset := func(name, suffix string) (string, bool) {
+		entry := manifest.Entries[name]
+		if !strings.HasPrefix(entry, "assets/") || path.Clean(entry) != entry || !strings.HasSuffix(entry, suffix) || manifest.Files[entry] == nil {
+			return "", false
+		}
+		if info, statErr := os.Stat(filepath.Join(distRoot, filepath.FromSlash(entry))); statErr != nil || info.IsDir() {
+			return "", false
+		}
+		return "/" + entry, true
+	}
+	css, ok := asset("overviewStyles", ".css")
+	if !ok {
+		return OverviewAssets{}, false
+	}
+	js, ok := asset("overviewAdmin", ".js")
+	if !ok {
+		return OverviewAssets{}, false
+	}
+	return OverviewAssets{CSS: css, AdminJS: js}, true
+}
+
 // DistComponentStatesAssets resolves the complete V3-owned style and Host
 // closure for the authenticated state-demo route. Frozen group/material paint
 // is referenced only by its staged manifest paths; this function never reads

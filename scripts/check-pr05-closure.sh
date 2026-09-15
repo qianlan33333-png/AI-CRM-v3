@@ -12,6 +12,7 @@ staged_root="$repo_root/web/donors/coupons-v2/src"
 hash_file="$repo_root/docs/migration/coupon/pr05-donor-sha256.txt"
 shell_file="$repo_root/internal/webshell/templates/admin_base.html"
 contract_file="$repo_root/internal/webshell/contract.go"
+navigation_file="$repo_root/internal/webshell/static/admin_console/admin-navigation.v3.json"
 build_file="$donor_root/web/scripts/build.mjs"
 main_file="$donor_root/web/src/admin/main.ts"
 legacy_file="$donor_root/web/src/admin/legacy.ts"
@@ -135,11 +136,16 @@ else
   else
     printf 'PASS v3 admin_base contains no donor sidebar markup\n'
   fi
-  if ! rg -q 'api\.admin_coupons_page.*?/admin/coupons' "$contract_file" || ! rg -q 'Key: "coupons".*Endpoint: "api\.admin_coupons_page"' "$contract_file"; then
+  if ! rg -q '"api\.admin_coupons_page":.*"/admin/coupons"' "$contract_file"; then
+    printf 'FAIL PR10 Coupons canonical endpoint/route is not visible\n' >&2
+    failed=1
+  elif [[ -f "$navigation_file" ]] && rg -Uq '"key": "coupons",\s+"label": "优惠券",\s+"endpoint": "api\.admin_coupons_page",\s+"href": "/admin/coupons",' "$navigation_file"; then
+    printf 'PASS PR10 Coupons route/nav ownership is V3 JSON-owned\n'
+  elif rg -q 'Key: "coupons".*Endpoint: "api\.admin_coupons_page"' "$contract_file"; then
+    printf 'PASS PR10 Coupons route/nav ownership is v3-owned\n'
+  else
     printf 'FAIL PR10 Coupons route/nav ownership is not visible\n' >&2
     failed=1
-  else
-    printf 'PASS PR10 Coupons route/nav ownership is v3-owned\n'
   fi
 fi
 
