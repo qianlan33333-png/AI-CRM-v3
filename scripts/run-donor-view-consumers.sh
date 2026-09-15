@@ -68,6 +68,8 @@ run_frontend_and_stage_checks() {
   node scripts/build-v3-host-adapters.mjs
   node --test web/v3/publicCommerceHost.test.mjs
   node scripts/groupops-host-adapter-e2e.mjs
+  node web/v3/pageHeaderActions.test.mjs
+  node web/v3/distributionAdmin.test.mjs
   node web/v3/shared/ui/selectionSession.test.mjs
   node web/v3/shared/ui/selectionDialog.test.mjs
   node web/v3/shared/ui/confirmationDialog.test.mjs

@@ -133,6 +133,57 @@ func TestPostgreSQLAdminDistributorOrderDetailPagination(t *testing.T) {
 	}
 }
 
+// TestPostgreSQLAdminOrderDetailSettlementConfirmationMatchesReference keeps
+// a generic settlement row update distinct from the actual receiver-success
+// audit. The administrator detail must present the same settlement-reference
+// evidence that the Order read model uses, never its updated_at as a proxy.
+func TestPostgreSQLAdminOrderDetailSettlementConfirmationMatchesReference(t *testing.T) {
+	pool, cleanup := settlementWarningPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 15, 8, 0, 0, 0, time.UTC)
+	distributor := seedAdminDetailDistributor(t, ctx, pool, 501, "DSTDETAIL501", now)
+	policy := seedAdminDetailPolicy(t, ctx, pool, now)
+	credential := seedAdminDetailCredential(t, ctx, pool, distributor, now)
+	attribution := seedAdminDetailAttribution(t, ctx, pool, distributor, credential, policy, 9501, "确认时间商品", now)
+	var commissionID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM distribution_commissions WHERE attribution_id=$1`, attribution).Scan(&commissionID); err != nil {
+		t.Fatal(err)
+	}
+	confirmedAt := now.Add(2 * time.Minute)
+	updatedAt := now.Add(8 * time.Minute)
+	if _, err := pool.Exec(ctx, `INSERT INTO distribution_settlements(commission_id,settlement_reference,amount_minor,currency,original_payment_reference,state,provider_deadline_at,version,created_at,updated_at) VALUES($1,'dstl_admin_confirmed',100,'CNY','payment:admin:9501','receiver_succeeded',$2,2,$3,$4)`, commissionID, now.Add(24*time.Hour), now, updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at) VALUES('distribution.settlement_paid.v1','commission',$1,'worker:distribution-due',jsonb_build_object('settlement_reference','dstl_admin_confirmed'),$2),('distribution.settlement_paid.v1','commission',$1,'worker:distribution-due',jsonb_build_object('settlement_reference','dstl_other'),$3)`, commissionID, confirmedAt, now.Add(12*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail distributionport.AdminOrderDetail
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		detail, readErr = repository.ReadAdminOrderDetail(tx, attribution)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Settlements) != 1 || detail.Settlements[0].SettlementConfirmedAt == nil || !detail.Settlements[0].SettlementConfirmedAt.Equal(confirmedAt) || detail.Settlements[0].UpdatedAt == nil || !detail.Settlements[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("settlement confirmation must match its audit reference rather than row update: %+v", detail.Settlements)
+	}
+}
+
 func updateAdminDetailCommission(t *testing.T, ctx context.Context, pool *pgxpool.Pool, attributionID, successfulRefund, initial, payable int64, status string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `UPDATE distribution_commissions SET successful_refund_minor=$2,initial_minor=$3,current_payable_minor=$4,status=$5 WHERE attribution_id=$1`, attributionID, successfulRefund, initial, payable, status); err != nil {
