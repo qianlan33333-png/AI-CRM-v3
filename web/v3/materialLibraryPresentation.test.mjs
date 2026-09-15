@@ -23,7 +23,7 @@ function domFor(page, markup, fetcher) {
 async function settle() { await sleep(); await sleep(); }
 
 {
-  let reads = 0;
+  let reads = 0; let resolveInitial;
   const dom = domFor('attach', `
     <div style="height:52px"><button id="upload">上传附件</button></div>
     <section><div><input placeholder="搜索附件名"></div><table><thead><tr><th>附件名</th><th>标签</th><th>类型</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody><tr data-material-library-id="7"><td><span>PDF</span><span>课程表.pdf</span></td><td>课程</td><td>PDF</td><td>1 B</td><td>旧时间</td><td><button>编辑</button></td></tr></tbody></table></section>
@@ -31,7 +31,9 @@ async function settle() { await sleep(); await sleep(); }
     const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     if (url.pathname !== '/api/admin/attachment-library') throw new Error(`unexpected attachment request ${url.pathname}`);
     reads += 1;
-    return response({ items: [{ id: 7, name: '课程表.pdf', file_name: 'course.pdf', mime_type: 'application/pdf', file_size: 417430, description: '', tags: ['课程'], enabled: true, version: 3, created_by: 1, updated_by: 1, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' }], total: 1, limit: 100, offset: 0 });
+    const payload = { items: [{ id: 7, name: '课程表.pdf', file_name: 'course.pdf', mime_type: 'application/pdf', file_size: 417430, description: '', tags: ['课程'], enabled: true, version: 3, created_by: 1, updated_by: 1, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' }], total: 1, limit: 100, offset: 0 };
+    if (reads === 1) return new Promise((resolve) => { resolveInitial = () => resolve(response(payload)); });
+    return response(payload);
   });
   try {
     let uploads = 0;
@@ -39,6 +41,10 @@ async function settle() { await sleep(); await sleep(); }
     dom.window.eval(host);
     dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
     await settle();
+    assert.equal(reads, 1, 'an initial delayed attachment read remains bounded while the donor table is rendered');
+    assert.match(dom.window.document.body.textContent, /当前可见附件未返回稳定素材标识/, 'a pending typed read leaves one safe identity notice');
+    resolveInitial();
+    await settle(); await settle();
     const topbarUpload = dom.window.document.querySelector('[data-page-header-actions="material-library-attach"] #upload');
     assert.equal(topbarUpload, dom.window.document.querySelector('#upload'), 'the original attachment upload control is moved, not recreated');
     topbarUpload.click(); assert.equal(uploads, 1, 'the original attachment upload callback remains connected');
@@ -215,26 +221,35 @@ console.log('material library presentation: PASS');
 }
 
 {
-  let available = true;
+  let availability = 'ok'; let reads = 0;
   const dom = domFor('attach', `
     <div style="height:52px"><button>上传附件</button></div>
     <section><div><input placeholder="搜索附件名"></div><table><thead><tr><th>附件名</th><th>标签</th><th>类型</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody><tr data-material-library-id="13"><td><span>PDF</span><span>保留附件.pdf</span></td><td>课程</td><td>PDF</td><td>1 B</td><td>旧时间</td><td><button>编辑</button></td></tr></tbody></table></section>`, async (input) => {
     const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     if (url.pathname !== '/api/admin/attachment-library') throw new Error(`unexpected unavailable attachment request ${url.pathname}`);
-    if (!available) return response({ code: 'UNAVAILABLE' }, 503);
+    reads += 1;
+    if (availability === 'unavailable') return response({ code: 'UNAVAILABLE' }, 503);
+    if (availability === 'forbidden') return response({ code: 'FORBIDDEN' }, 403);
     return response({ items: [{ id: 13, name: '保留附件.pdf', file_name: 'keep.pdf', mime_type: 'application/pdf', file_size: 417430, description: '', tags: ['课程'], enabled: true, version: 3, created_by: 1, updated_by: 1, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' }], total: 1, limit: 100, offset: 0 });
   });
   try {
     dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
     await settle();
     assert.equal(dom.window.document.querySelector('tbody tr').cells[3].textContent, '408 KB', 'available attachment read enriches the existing owner row');
-    available = false;
+    availability = 'unavailable';
     const input = dom.window.document.querySelector('input[placeholder="搜索附件名"]');
     input.value = '保留'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
     await settle(); await settle();
     assert.equal(dom.window.document.querySelector('tbody tr').cells[3].textContent, '408 KB', 'a 503 preserves the last readable attachment metadata');
     assert.equal(dom.window.document.querySelector('button').disabled, false, 'a 503 does not turn existing local controls into an authorization failure');
     assert.match(dom.window.document.body.textContent, /素材列表暂不可读取/, 'a 503 remains distinct from authorization loss');
+    availability = 'forbidden';
+    input.value = '无权'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    await settle(); await settle();
+    assert.equal(reads, 3, 'an attachment 403 clears one current read without a presentation-owned retry loop');
+    assert.equal(dom.window.document.querySelector('#stage').dataset.materialLibraryReadonly, 'true', 'an attachment 403 makes the existing workspace read-only');
+    assert.equal(dom.window.document.querySelector('tbody tr').cells[3].textContent, '1 B', 'an attachment 403 clears previously enriched metadata back to its donor value');
+    assert.match(dom.window.document.body.textContent, /当前账号无权查看该类素材/, 'an attachment 403 presents its authorization-specific recovery state');
   } finally { dom.window.close(); }
 }
 

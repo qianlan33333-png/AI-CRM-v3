@@ -127,6 +127,7 @@ class FrozenMaterialPresentation {
   private action?: HTMLElement;
   private releaseAction?: () => void;
   private observer?: MutationObserver;
+  private syncQueued = false;
   private attachmentQuery?: HTMLInputElement;
   private readAbort?: AbortController;
   private readGeneration = 0;
@@ -154,10 +155,23 @@ class FrozenMaterialPresentation {
 
   start(): void {
     this.sync();
-    this.observer = new MutationObserver(() => this.sync());
+    this.observer = new MutationObserver(() => this.queueSync());
     this.observer.observe(this.stage, { childList: true, subtree: true });
     window.addEventListener(mediaContentChangedEvent, () => this.invalidateCurrentMetadata());
     document.addEventListener('click', (event) => this.blockUnauthorizedMutation(event), true);
+  }
+
+  private queueSync(): void {
+    // A donor redraw can add several descendants in one turn. Coalesce that
+    // work, but keep the next turn available for a genuine owner redraw.
+    // Rendering below is idempotent, so a presentation-owned DOM update cannot
+    // sustain a microtask loop.
+    if (this.syncQueued) return;
+    this.syncQueued = true;
+    queueMicrotask(() => {
+      this.syncQueued = false;
+      this.sync();
+    });
   }
 
   private sync(): void {
@@ -457,7 +471,8 @@ class FrozenMaterialPresentation {
 
   private clearEnrichedMetadata(): void {
     const table = this.attachmentTable();
-    if (table && this.attachmentHeader) {
+    const attachmentMetadataApplied = Boolean(table && (table.dataset.materialLibraryAttachmentTable === 'true' || table.querySelector('tbody tr[data-material-library-metadata-version]')));
+    if (table && this.attachmentHeader && attachmentMetadataApplied) {
       const header = table.querySelector<HTMLTableRowElement>('thead tr');
       if (header) {
         while (header.cells.length > this.attachmentHeader.length) header.deleteCell(5);
@@ -470,9 +485,12 @@ class FrozenMaterialPresentation {
         source.cells.forEach((snapshot, index) => restoreNode(row.cells[index]!, snapshot));
         delete row.dataset.materialLibraryMetadataVersion;
       }
-      table.removeAttribute('data-material-library-attachment-table');
+      if (table.hasAttribute('data-material-library-attachment-table')) table.removeAttribute('data-material-library-attachment-table');
     }
     for (const card of this.stage.querySelectorAll<HTMLElement>('[data-material-library-mini-directory] > [data-material-library-metadata-version]')) {
+      // An unresolved row already renders safe placeholders. Rebuilding its
+      // source tree would only emit another presentation-owned child mutation.
+      if (card.dataset.materialLibraryMetadataVersion?.startsWith('unresolved:')) continue;
       const source = this.miniCards.get(card);
       if (!source) continue;
       restoreNode(source.coverNode, source.cover);
@@ -512,7 +530,7 @@ class FrozenMaterialPresentation {
       // A complete current read that no longer contains this visible ID must
       // never leave fields from an earlier typed record on the donor row.
       this.clearEnrichedMetadata();
-      table.dataset.materialLibraryAttachmentTable = 'unresolved';
+      if (table.dataset.materialLibraryAttachmentTable !== 'unresolved') table.dataset.materialLibraryAttachmentTable = 'unresolved';
       let notice = table.parentElement?.querySelector<HTMLElement>('[data-material-library-identity-notice="attachment"]');
       if (!notice) {
         notice = document.createElement('p');
@@ -520,11 +538,12 @@ class FrozenMaterialPresentation {
         notice.style.cssText = 'margin:8px 12px;color:#646A73;font-size:12px;line-height:18px';
         table.before(notice);
       }
-      notice.textContent = '当前可见附件未返回稳定素材标识；保留原有记录和操作。';
+      const message = '当前可见附件未返回稳定素材标识；保留原有记录和操作。';
+      if (notice.textContent !== message) notice.textContent = message;
       return;
     }
     table.parentElement?.querySelector('[data-material-library-identity-notice="attachment"]')?.remove();
-    table.dataset.materialLibraryAttachmentTable = 'true';
+    if (table.dataset.materialLibraryAttachmentTable !== 'true') table.dataset.materialLibraryAttachmentTable = 'true';
     const header = table.querySelector<HTMLTableRowElement>('thead tr');
     if (header && !this.attachmentHeader) this.attachmentHeader = Array.from(header.cells).map((cell) => snapshotNode(cell));
     if (header && header.cells.length === 6) {
@@ -662,7 +681,10 @@ class FrozenMaterialPresentation {
       : status === 403
         ? '当前账号无权查看该类素材。'
         : '素材列表暂不可读取，当前内容已保留。';
-    if (existing) { existing.textContent = message; return; }
+    if (existing) {
+      if (existing.textContent !== message) existing.textContent = message;
+      return;
+    }
     const node = document.createElement('p');
     node.dataset.materialLibraryReadError = 'true'; node.setAttribute('role', 'alert'); node.textContent = message;
     node.style.cssText = 'margin:0;color:#B42318;font-size:12px;line-height:20px';
