@@ -2188,7 +2188,7 @@ productController.pickCommerceImages = function (kind) {
   // new owner starts its own read, so the late old result cannot open a dialog.
   if (productPickerPreopen) {
     const active = productPickerPreopen;
-    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.draftKey === context.draftKey;
+    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.dimension === context.dimension && active.draftKey === context.draftKey;
     if (sameOwnerDraft) return;
     productPickerPreopen = undefined;
   }

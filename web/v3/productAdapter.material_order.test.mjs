@@ -140,9 +140,25 @@ holdProductMetadata = false;
 await wait(30);
 assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null, 'a late prior-product pre-open may not open a picker after the route changes');
 
+// The owner draft can retain the same image URLs while its active dimension
+// changes. A new picker gesture then belongs to the new dimension, so it may
+// not join the stale pre-open and silently disappear when that old context is
+// rejected.
+dom.window.history.replaceState(null, '', '/admin/productForm.html?id=101');
+holdProductMetadata = true;
+open.click();
+await waitFor(() => heldProductMetadata.length === 2, 'a current media-dimension pre-open must read both recognised records');
+document.querySelector('a[href="#product-sale"]').click();
+open.click();
+await waitFor(() => heldProductMetadata.length === 4, 'a picker gesture after a dimension change must start its own current pre-open');
+releaseHeldProductMetadata();
+holdProductMetadata = false;
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'the current-dimension picker request must not join a stale pre-open');
+document.querySelector('[data-v3-picker-cancel]').click();
+document.querySelector('a[href="#product-media"]').click();
+
 // The current owner draft can also change through its original remove control
 // while metadata is in flight. It must win over the old selectedRecords input.
-dom.window.history.replaceState(null, '', '/admin/productForm.html?id=101');
 holdProductMetadata = true;
 open.click();
 await waitFor(() => heldProductMetadata.length === 2, 'a fresh current-page pre-open must read the two recognised records');
