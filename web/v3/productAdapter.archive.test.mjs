@@ -17,7 +17,7 @@ const transform = (html) => html
 
 const bundle = await build({
   stdin: {
-    contents: "import './web/v3/productAdapter';\nimport { AdminController } from './web/src/admin/controller';\nimport { mount } from './web/src/shared/ui/runtime';\nwindow.ProductControllerFixture = AdminController;\nwindow.ProductMountFixture = mount;",
+    contents: "import './web/v3/productAdapter';\nimport { AdminController } from './web/src/admin/controller';\nimport { mount } from './web/src/shared/ui/runtime';\nimport { api } from './web/src/shared/api/client';\nwindow.ProductControllerFixture = AdminController;\nwindow.ProductMountFixture = mount;\nwindow.ProductApiFixture = api;",
     resolveDir: root,
     loader: 'ts',
   },
@@ -184,6 +184,81 @@ try {
 }
 
 console.log('product and service-period delete DOM lifecycle: PASS');
+
+// The overflow panel lives under document.body, while the original lifecycle
+// action was rendered in a particular list row. A refresh may reorder or
+// remove rows while a stale panel is still visible. The Host must retain the
+// original Product subject (not the old array position), and reject a removed
+// source row before it can produce a lifecycle write.
+{
+  const lifecycleCalls = [];
+  let rawProducts = [];
+  const raw = (id, version) => ({ id, lifecycle: 'enabled', enabled: true, version, paid_order_count: 1, refund_order_count: 0, sold_count: 1, admin_projection: { enabled: true } });
+  const lifecycle = new JSDOM('<!doctype html><body data-page="products"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">商品管理</h1></div></header><main id="stage"></main></body>', {
+    url: 'https://test.invalid/admin/products.html', runScripts: 'outside-only', pretendToBeVisual: true,
+    beforeParse(window) {
+      window.__AICRM_TEST_MOCK__ = true;
+      window.Request = Request; window.Response = Response; window.Headers = Headers;
+      window.fetch = async (url, init = {}) => {
+        const requestURL = new URL(String(url), window.location.href);
+        const method = String(init.method || 'GET').toUpperCase();
+        if (requestURL.pathname === '/api/v1/products') return new Response(JSON.stringify({ items: rawProducts }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (method === 'POST' && /^\/api\/admin\/wechat-pay\/products\/(501|502)\/disable$/.test(requestURL.pathname)) {
+          lifecycleCalls.push(requestURL.pathname);
+          const id = Number(requestURL.pathname.split('/')[5]);
+          return new Response(JSON.stringify({ id, version: 4, lifecycle: 'disabled', enabled: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      };
+    },
+  });
+  try {
+    lifecycle.window.eval(bundle.outputFiles[0].text);
+    const api = lifecycle.window.ProductApiFixture;
+    const first = source(501, '原始商品 A', 3);
+    const second = source(502, '原始商品 B', 3);
+    // Seed the MockApi base rows before its Product adapter validates the
+    // authoritative `/api/v1/products` facts against those rows.
+    rawProducts = [];
+    const stored = await api.loadDb({ page: 'products' });
+    stored.rows.products = [first, second];
+    lifecycle.window.sessionStorage.setItem('aicrm.mock.db.v4', JSON.stringify(stored));
+    rawProducts = [raw(501, 3), raw(502, 3)];
+    await api.loadDb({ page: 'products' });
+    const controller = new lifecycle.window.ProductControllerFixture({ mode: 'mock' }, 'products');
+    controller.db.rows.products = [first, second]; controller.db.rows.spProducts = [];
+    lifecycle.window.ProductMountFixture(lifecycle.window.document.getElementById('stage'), transform(readFileSync(path.join(root, 'web/src/admin/templates/products.html'), 'utf8')), controller);
+    const action = async (name) => {
+      const row = await waitFor(() => [...lifecycle.window.document.querySelectorAll('tbody tr')].find((item) => item.textContent.includes(name)), `missing ${name} row`);
+      const trigger = await waitFor(() => row.querySelector('button[data-table-action-menu-trigger]'), `missing ${name} overflow trigger`);
+      trigger.click();
+      return waitFor(() => {
+        const panel = lifecycle.window.document.getElementById(trigger.getAttribute('aria-controls'));
+        return panel && [...panel.querySelectorAll('button')].find((button) => button.textContent?.trim() === '停用');
+      }, `missing ${name} overflow lifecycle action`);
+    };
+    const originalA = await action('原始商品 A');
+    rawProducts = [raw(502, 3), raw(501, 3)];
+    await api.loadDb({ page: 'products' });
+    originalA.click();
+    await waitFor(() => lifecycleCalls.length === 1, 'reordered list did not issue its original lifecycle command');
+    assert.deepEqual(lifecycleCalls, ['/api/admin/wechat-pay/products/501/disable'], 'a reordered read must not retarget the retained action to product B');
+
+    const removedB = await action('原始商品 B');
+    rawProducts = [raw(501, 3)];
+    await api.loadDb({ page: 'products' });
+    const bRow = [...lifecycle.window.document.querySelectorAll('tbody tr')].find((item) => item.textContent.includes('原始商品 B'));
+    bRow.remove();
+    removedB.click();
+    await pause(20);
+    assert.equal(lifecycleCalls.length, 1, 'a removed source row must not issue a lifecycle write from its stale overflow panel');
+    assert.match(lifecycle.window.document.body.textContent, /商品操作上下文已失效/, 'a removed source row gives an explicit no-write refresh message');
+  } finally {
+    lifecycle.window.dispatchEvent(new lifecycle.window.Event('pagehide'));
+    lifecycle.window.close();
+  }
+}
+console.log('product overflow lifecycle retains its original subject and rejects stale rows: PASS');
 
 const projection = {
   schema_version: 1, status: 'archived', enabled: false, buy_button_text: '', require_mobile: false,
