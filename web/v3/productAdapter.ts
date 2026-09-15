@@ -5,7 +5,7 @@ import { createFieldMappingEditor, type FieldMapping, type MappingField, type Ma
 import { api } from '../src/shared/api/client';
 // @ts-ignore Byte-frozen controller; navigation is adapted only at the Host.
 import { AdminController } from '../src/admin/controller';
-import { apiRequestOptions } from '../src/api/transport';
+import { apiRequestOptions, request } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
 import { emptyAdminDb, productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr } from '../src/admin/sections/qr';
@@ -14,6 +14,7 @@ import { rememberActionClicks, rememberActionInputs, runAction } from './actionF
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord } from './shared/ui/materialPickerAdapter';
 import { openShareQrDialog } from './shared/ui/shareQrDialog';
+import { renderMaterialThumbnail } from './shared/ui/materialThumbnailPresentation';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -1720,8 +1721,18 @@ type ProductController = {
   currentCommerceImageUrls(kind: 'product' | 'service'): string[];
   setCommerceImageUrls(kind: 'product' | 'service', urls: string[]): void;
   pickCommerceImages(kind: 'product' | 'service'): void;
+  removeCommerceImage(kind: 'product' | 'service', url: string): void;
+  uploadCommerceImage(kind: 'product' | 'service', event: Event): void;
 };
 const productController = AdminController.prototype as unknown as ProductController;
+// The frozen controller is a prototype. Track the live editor instance before
+// it mounts so V3 presentation work never reads or writes prototype state.
+let activeProductMaterialController: ProductController | undefined;
+const donorProductInit = productController.init;
+productController.init = async function () {
+  activeProductMaterialController = this;
+  return donorProductInit.call(this);
+};
 const donorProductQuery = productController.qs;
 productController.qs = function () {
   const query = donorProductQuery.call(this);
@@ -1768,6 +1779,7 @@ type ProductPickerContext = {
   kind: 'product' | 'service';
   page: string;
   locationKey: string;
+  dimension: string;
   draft: string[];
   draftKey: string;
 };
@@ -1787,17 +1799,359 @@ function productPickerContext(controller: ProductController, kind: 'product' | '
   let locationKey: string;
   try { locationKey = `${location.pathname}${location.search}`; } catch { return undefined; }
   const draft = [...controller.currentCommerceImageUrls(kind)];
-  return { controller, kind, page: controller.page, locationKey, draft, draftKey: productPickerDraftKey(draft) };
+  return {
+    controller, kind, page: controller.page, locationKey,
+    dimension: activeProductDimension(expectedPrefix),
+    draft, draftKey: productPickerDraftKey(draft),
+  };
 }
 
 function productPickerContextIsCurrent(context: ProductPickerContext): boolean {
   const current = productPickerContext(context.controller, context.kind);
-  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.draftKey === context.draftKey);
+  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.dimension === context.dimension && current.draftKey === context.draftKey);
 }
 
 function productPickerPreopenIsCurrent(preopen: ProductPickerPreopen): boolean {
   return productPickerPreopen?.generation === preopen.generation && productPickerContextIsCurrent(preopen);
 }
+
+type ProductMaterialEditorContext = ProductPickerContext & { productID: number; version: number };
+type ProductControllerDraftState = { state?: { pfImageUrls?: string[] | null; spfImageUrls?: string[] | null } };
+
+function activeProductDimension(prefix: 'pf' | 'spf'): string {
+  const first = prefix === 'pf' ? 'product-sale' : 'sp-sale';
+  const nav = document.querySelector<HTMLAnchorElement>(`a[href="#${first}"]`)?.parentElement;
+  return nav?.dataset.productDimension || first;
+}
+
+function productMaterialEditorContext(controller: ProductController, kind: 'product' | 'service'): ProductMaterialEditorContext | undefined {
+  const picker = productPickerContext(controller, kind);
+  const route = productEditorRoute();
+  const prefix = kind === 'product' ? 'pf' : 'spf';
+  if (!picker || !route || route.prefix !== prefix) return undefined;
+  const rows = kind === 'product' ? controller.db.rows.products : controller.db.rows.spProducts;
+  const row = rows.find((item) => item.resourceId === route.id);
+  const version = Number(row?.version);
+  if (!Number.isSafeInteger(version) || version < 0) return undefined;
+  return { ...picker, productID: route.id, version };
+}
+
+function productMaterialEditorContextIsCurrent(context: ProductMaterialEditorContext): boolean {
+  const current = productMaterialEditorContext(context.controller, context.kind);
+  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.productID === context.productID && current.version === context.version && current.dimension === context.dimension);
+}
+
+function productMediaRoot(kind: 'product' | 'service'): HTMLElement | undefined {
+  const root = document.getElementById(kind === 'product' ? 'product-media' : 'sp-media');
+  return root instanceof HTMLElement ? root : undefined;
+}
+
+function productMediaListHost(root: HTMLElement): HTMLElement {
+  const existing = root.querySelector<HTMLElement>(':scope > [data-v3-product-material-list]');
+  if (existing) return existing;
+  const source = Array.from(root.children).find((node): node is HTMLElement => node instanceof HTMLElement && (
+    Boolean(node.querySelector('img')) || node.textContent?.includes('暂无页面素材') === true
+  ));
+  const host = document.createElement('div');
+  host.dataset.v3ProductMaterialList = '';
+  host.style.cssText = 'display:grid;gap:10px';
+  if (source) {
+    source.hidden = true;
+    source.after(host);
+  } else {
+    root.append(host);
+  }
+  return host;
+}
+
+const productMaterialRecordsByOriginalURL = new Map<string, ProductMaterial>();
+
+function rememberProductMaterial(material: ProductMaterial): string {
+  const originalURL = productSelectedURL(material);
+  productMaterialRecordsByOriginalURL.set(originalURL, material);
+  return originalURL;
+}
+
+function productMediaItemLabel(controller: ProductController, url: string): { title: string; thumbnail: string } {
+  const canonical = productImageOriginalURL(url);
+  const typed = canonical ? productMaterialRecordsByOriginalURL.get(canonical) : undefined;
+  const image = controller.db.rows.images.find((item) => item.originalUrl === url || item.originalUrl === canonical);
+  return {
+    title: typed?.title || image?.name || url,
+    thumbnail: typed?.thumbnail_url || image?.thumbnailUrl || canonical?.replace('/variants/original', '/variants/thumb_320') || '',
+  };
+}
+
+function productMediaStableKey(url: string): string {
+  const canonical = productImageOriginalURL(url);
+  const id = canonical ? /^\/api\/admin\/image-library\/([1-9]\d*)\/variants\/original$/.exec(canonical)?.[1] : undefined;
+  return id ? `image:${id}` : `url:${url}`;
+}
+
+function updateProductMaterialDraft(controller: ProductController, kind: 'product' | 'service', urls: readonly string[]): void {
+  const state = controller as unknown as ProductControllerDraftState;
+  if (!state.state) throw new Error('当前商品草稿不可用，请刷新后重试。');
+  if (urls.length > 10) throw new Error('页面素材最多 10 张；未改动当前商品草稿。');
+  if (kind === 'product') state.state.pfImageUrls = [...urls];
+  else state.state.spfImageUrls = [...urls];
+  renderProductMaterialDraft(controller, kind);
+}
+
+function moveProductMaterialDraft(controller: ProductController, kind: 'product' | 'service', from: number, to: number): void {
+  const urls = [...controller.currentCommerceImageUrls(kind)];
+  if (from < 0 || from >= urls.length || to < 0 || to >= urls.length || from === to) return;
+  const [moved] = urls.splice(from, 1);
+  urls.splice(to, 0, moved);
+  updateProductMaterialDraft(controller, kind, urls);
+}
+
+function renderProductMaterialDraft(controller: ProductController, kind: 'product' | 'service'): void {
+  const root = productMediaRoot(kind);
+  if (!root) return;
+  const urls = [...controller.currentCommerceImageUrls(kind)];
+  const host = productMediaListHost(root);
+  const draftKey = productPickerDraftKey(urls);
+  if (host.dataset.productMaterialDraftKey === draftKey) return;
+  const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  const focusRow = focused?.closest<HTMLElement>('[data-v3-product-material-key]');
+  const focusKey = focusRow?.dataset.v3ProductMaterialKey;
+  const focusAction = focused?.dataset.v3ProductMaterialAction;
+  host.dataset.productMaterialDraftKey = draftKey;
+  host.replaceChildren();
+  const count = root.firstElementChild?.querySelector<HTMLElement>('span');
+  if (count) count.textContent = `${urls.length} 张`;
+  const summaryLabel = Array.from(document.querySelectorAll<HTMLElement>('span')).find((label) =>
+    label.textContent?.trim() === '页面素材' && label.parentElement?.querySelector(':scope > strong'),
+  );
+  const summaryCount = summaryLabel?.parentElement?.querySelector<HTMLElement>(':scope > strong');
+  if (summaryCount) summaryCount.textContent = String(urls.length);
+  const persistenceHint = Array.from(root.querySelectorAll<HTMLElement>('div')).find((node) =>
+    node.children.length === 0 && node.textContent?.includes('保存后写入 V2 product_images') === true,
+  );
+  if (persistenceHint) persistenceHint.textContent = '保存后按当前顺序展示。';
+  if (!urls.length) {
+    const empty = document.createElement('div');
+    empty.textContent = '暂无页面素材，请上传图片或从素材库选择';
+    empty.style.cssText = 'min-height:72px;display:grid;place-items:center;padding:18px;border:1px dashed #D7DBE0;border-radius:10px;background:#FAFBFC;color:#8F959E;font-size:13px';
+    host.append(empty);
+    return;
+  }
+  let dragging = -1;
+  urls.forEach((url, index) => {
+    const label = productMediaItemLabel(controller, url);
+    const row = document.createElement('div');
+    row.draggable = true;
+    row.dataset.v3ProductMaterialKey = productMediaStableKey(url);
+    row.style.cssText = 'display:grid;grid-template-columns:24px 92px minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 12px;border:1px solid #EFF0F1;border-radius:10px;background:#fff';
+    const handle = document.createElement('span');
+    handle.textContent = '⠿'; handle.title = '拖动排序'; handle.setAttribute('aria-hidden', 'true');
+    handle.style.cssText = 'color:#8F959E;font-size:18px;cursor:grab;text-align:center';
+    const preview = document.createElement('div');
+    preview.style.cssText = 'width:92px;height:52px;overflow:hidden;border-radius:6px;background:#F2F3F5';
+    // The shared thumbnail layer owns visible loading/error/no-preview states.
+    // This caller supplies only its already-authorised typed Media URL.
+    renderMaterialThumbnail(preview, {
+      url: label.thumbnail, alt: '', loadingLabel: '加载预览…', unavailableLabel: '预览暂不可用', noURLLabel: '暂无预览',
+      imageDisplay: 'block', loadingDisplay: 'grid', fallbackDisplay: 'grid',
+      imageClassName: 'aicrm-material-thumbnail__image', fallbackClassName: 'aicrm-material-thumbnail__fallback',
+    });
+    const image = preview.querySelector<HTMLElement>('.aicrm-material-thumbnail__image');
+    if (image) {
+      image.style.width = '92px'; image.style.height = '52px'; image.style.objectFit = 'cover';
+      image.style.borderRadius = '6px'; image.style.background = '#F2F3F5';
+    }
+    for (const state of preview.querySelectorAll<HTMLElement>('.aicrm-material-thumbnail__loading,.aicrm-material-thumbnail__fallback')) {
+      state.style.width = '92px'; state.style.height = '52px'; state.style.placeItems = 'center';
+      state.style.padding = '4px'; state.style.boxSizing = 'border-box'; state.style.color = '#667085';
+      state.style.fontSize = '12px'; state.style.textAlign = 'center'; state.style.background = '#F2F3F5';
+    }
+    const copy = document.createElement('div'); copy.style.minWidth = '0';
+    const name = document.createElement('div'); name.textContent = label.title; name.style.cssText = 'font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+    const meta = document.createElement('div'); meta.textContent = `第 ${index + 1} 张 · 拖动或使用排序按钮调整`; meta.style.cssText = 'font-size:12px;color:#8F959E;margin-top:2px';
+    copy.append(name, meta);
+    const actions = document.createElement('div'); actions.style.cssText = 'display:inline-flex;gap:6px;align-items:center';
+    const button = (text: string, title: string, action: string): HTMLButtonElement => {
+      const node = document.createElement('button'); node.type = 'button'; node.textContent = text; node.title = title;
+      node.dataset.v3ProductMaterialAction = action;
+      node.style.cssText = 'height:26px;padding:0 9px;border:1px solid #DEE0E3;border-radius:5px;background:#fff;color:#344054;font-size:12px;cursor:pointer;white-space:nowrap';
+      return node;
+    };
+    const up = button('上移', '上移一位', 'up'); up.disabled = index === 0; if (up.disabled) up.style.cssText += 'opacity:.45;cursor:not-allowed;background:#F7F8FA;color:#98A2B3'; up.onclick = () => moveProductMaterialDraft(controller, kind, index, index - 1);
+    const down = button('下移', '下移一位', 'down'); down.disabled = index === urls.length - 1; if (down.disabled) down.style.cssText += 'opacity:.45;cursor:not-allowed;background:#F7F8FA;color:#98A2B3'; down.onclick = () => moveProductMaterialDraft(controller, kind, index, index + 1);
+    const remove = button('移除', '移除当前素材', 'remove'); remove.style.borderColor = '#FBC4C2'; remove.style.background = '#FFF5F5'; remove.style.color = '#D83931';
+    // Preserve the frozen owner's removal semantics. It resolves the current
+    // draft and invokes the V3 local draft setter above, without a save/write.
+    remove.onclick = () => donorRemoveCommerceImage.call(controller, kind, url);
+    actions.append(up, down, remove);
+    row.append(handle, preview, copy, actions);
+    row.addEventListener('dragstart', (event) => { dragging = index; event.dataTransfer?.setData('text/plain', row.dataset.v3ProductMaterialKey || ''); });
+    row.addEventListener('dragover', (event) => event.preventDefault());
+    row.addEventListener('drop', (event) => { event.preventDefault(); const source = dragging; dragging = -1; moveProductMaterialDraft(controller, kind, source, index); });
+    host.append(row);
+  });
+  if (focusKey && focusAction) {
+    const row = Array.from(host.querySelectorAll<HTMLElement>('[data-v3-product-material-key]'))
+      .find((candidate) => candidate.dataset.v3ProductMaterialKey === focusKey);
+    const actions = row ? Array.from(row.querySelectorAll<HTMLButtonElement>('[data-v3-product-material-action]')) : [];
+    // Moving to either boundary can disable the exact button that initiated
+    // the move. Keep keyboard users on the same row via its next enabled
+    // sorting action, then its remove action when it has no move left.
+    const replacement = actions.find((action) => action.dataset.v3ProductMaterialAction === focusAction && !action.disabled)
+      || actions.find((action) => (action.dataset.v3ProductMaterialAction === 'up' || action.dataset.v3ProductMaterialAction === 'down') && !action.disabled)
+      || actions.find((action) => !action.disabled);
+    replacement?.focus();
+  }
+}
+const donorRemoveCommerceImage = productController.removeCommerceImage;
+productController.setCommerceImageUrls = function (kind, urls) {
+  // setState would rebuild the frozen editor and return its side navigation to
+  // 售卖信息. Keep the same owner draft in memory and redraw only 页面素材.
+  updateProductMaterialDraft(this, kind, urls);
+};
+
+const productMaterialPresentationObserver = new MutationObserver(() => {
+  const controller = activeProductMaterialController;
+  if (!controller) return;
+  const page = document.body?.dataset.page;
+  if (page === 'productForm' && controller.page === page) renderProductMaterialDraft(controller, 'product');
+  if (page === 'spProductForm' && controller.page === page) renderProductMaterialDraft(controller, 'service');
+});
+productMaterialPresentationObserver.observe(document, { childList: true, subtree: true });
+
+const productUploadIntentKeys = new Map<string, string>();
+const confirmedProductUploadMaterials = new Map<string, ProductMaterial>();
+const productUploadContentDigests = new WeakMap<File, Promise<string>>();
+
+async function productUploadContentDigest(file: File): Promise<string> {
+  const existing = productUploadContentDigests.get(file);
+  if (existing) return existing;
+  const pending = (async () => {
+    const subtle = globalThis.crypto?.subtle;
+    if (!subtle || typeof file.arrayBuffer !== 'function') throw new Error('当前浏览器无法安全校验图片内容；未开始上传。');
+    const bytes = await file.arrayBuffer();
+    const digest = new Uint8Array(await subtle.digest('SHA-256', bytes));
+    return Array.from(digest, (item) => item.toString(16).padStart(2, '0')).join('');
+  })();
+  productUploadContentDigests.set(file, pending);
+  try { return await pending; } catch (error) { productUploadContentDigests.delete(file); throw error; }
+}
+
+async function productUploadIntentFingerprint(context: ProductMaterialEditorContext, file: File): Promise<string> {
+  // The idempotency identity starts with content rather than metadata, then
+  // binds every field sent in this multipart payload. Same bytes under a new
+  // filename or MIME type are a different request body and therefore never
+  // reuse an unknown prior write key.
+  const contentDigest = await productUploadContentDigest(file);
+  return [context.kind, context.productID, context.dimension, contentDigest, file.name, file.type].join('\u001F');
+}
+
+async function productUploadIntent(context: ProductMaterialEditorContext, file: File): Promise<{ fingerprint: string; key: string; confirmed?: ProductMaterial }> {
+  const fingerprint = await productUploadIntentFingerprint(context, file);
+  const confirmed = confirmedProductUploadMaterials.get(fingerprint);
+  if (confirmed) return { fingerprint, key: productUploadIntentKeys.get(fingerprint) || '', confirmed };
+  const known = productUploadIntentKeys.get(fingerprint);
+  if (known) return { fingerprint, key: known };
+  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const key = `product-media-upload-${context.kind}-${suffix}`;
+  productUploadIntentKeys.set(fingerprint, key);
+  return { fingerprint, key };
+}
+
+function productUploadNewDraftSlots(current: readonly string[], intents: readonly { fingerprint: string; confirmed?: ProductMaterial }[]): number {
+  const knownURLs = new Set(current);
+  const pending = new Set<string>();
+  for (const intent of intents) {
+    if (intent.confirmed) {
+      const url = productSelectedURL(intent.confirmed);
+      if (!knownURLs.has(url)) knownURLs.add(url);
+    } else {
+      pending.add(intent.fingerprint);
+    }
+  }
+  return knownURLs.size - current.length + pending.size;
+}
+
+async function uploadProductMaterial(file: File, context: ProductMaterialEditorContext, existingIntent?: { fingerprint: string; key: string; confirmed?: ProductMaterial }): Promise<{ material: ProductMaterial; fingerprint: string; cached: boolean }> {
+  const intent = existingIntent || await productUploadIntent(context, file);
+  if (intent.confirmed) return { material: intent.confirmed, fingerprint: intent.fingerprint, cached: true };
+  const form = new FormData();
+  form.append('image', file);
+  form.append('name', file.name);
+  const response = await request('/api/admin/image-library/upload', { method: 'POST', body: form, headers: { 'Idempotency-Key': intent.key } });
+  const payload = object(await response.json().catch(() => ({})));
+  const material = productMaterialRecord(object(payload.item ?? payload.image));
+  if (!material || !productSelectedURL(material)) throw new Error('图片素材上传完成但未返回可用于当前商品的受控素材记录。');
+  confirmedProductUploadMaterials.set(intent.fingerprint, material);
+  rememberProductMaterial(material);
+  return { material, fingerprint: intent.fingerprint, cached: false };
+}
+type ProductUploadFlight = {
+  controller: ProductController;
+  kind: 'product' | 'service';
+  context: ProductMaterialEditorContext;
+  pending: Promise<void>;
+};
+const productUploadFlights = new Set<ProductUploadFlight>();
+
+function productUploadOwnsCurrentEditor(flight: ProductUploadFlight, context: ProductMaterialEditorContext): boolean {
+  return flight.controller === context.controller && flight.kind === context.kind &&
+    flight.context.page === context.page && flight.context.locationKey === context.locationKey &&
+    flight.context.productID === context.productID && flight.context.version === context.version &&
+    flight.context.dimension === context.dimension;
+}
+
+productController.uploadCommerceImage = function (kind, event) {
+  const input = event.target instanceof HTMLInputElement ? event.target : null;
+  const files = input ? Array.from(input.files || []) : [];
+  if (!input || !files.length) return;
+  input.value = '';
+  const context = productMaterialEditorContext(this, kind);
+  const expectedDimension = kind === 'product' ? 'product-media' : 'sp-media';
+  if (!context || context.dimension !== expectedDimension) {
+    showMessage('当前商品页面素材维度已切换，未上传图片。');
+    return;
+  }
+  // A duplicate event for this same product/version/dimension joins the active
+  // upload. A prior upload from another route remains isolated instead of
+  // blocking the editor that the user has subsequently opened.
+  if ([...productUploadFlights].some((flight) => productUploadOwnsCurrentEditor(flight, context))) return;
+  let flight: ProductUploadFlight;
+  const pending = (async () => {
+    const intents = await Promise.all(files.map((file) => productUploadIntent(context, file)));
+    if (!productMaterialEditorContextIsCurrent(context)) return;
+    const currentAtStart = this.currentCommerceImageUrls(kind);
+    if (currentAtStart.length + productUploadNewDraftSlots(currentAtStart, intents) > 10) {
+      showMessage('页面素材最多 10 张；未开始上传。');
+      return;
+    }
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const uploaded = await uploadProductMaterial(file, context, intents[index]);
+      const material = uploaded.material;
+      if (!productMaterialEditorContextIsCurrent(context)) {
+        showMessage('图片已上传到素材库，但当前商品、版本或页面维度已变化；未加入其它商品草稿。');
+        return;
+      }
+      const url = productSelectedURL(material);
+      const current = this.currentCommerceImageUrls(kind);
+      if (current.includes(url)) continue;
+      // The user may choose another material while an upload is pending. Check
+      // the latest local draft before every append, not only when it began.
+      if (current.length >= 10) {
+        showMessage('页面素材已达到 10 张；图片已上传到素材库，未加入当前商品草稿。');
+        return;
+      }
+      updateProductMaterialDraft(this, kind, [...current, url]);
+      // Render each acknowledged item before the next upload. A later failure
+      // therefore cannot hide, clear, or re-upload an already-successful item.
+      showMessage(`已加入当前商品页面素材：${material.title}`, true);
+    }
+  })().catch((error) => {
+    showMessage(error instanceof Error ? error.message : '图片上传失败；已成功的页面素材仍保留。');
+  }).finally(() => productUploadFlights.delete(flight));
+  flight = { controller: this, kind, context, pending };
+  productUploadFlights.add(flight);
+};
 
 productController.pickCommerceImages = function (kind) {
   const controller = this;
@@ -1811,7 +2165,7 @@ productController.pickCommerceImages = function (kind) {
   // new owner starts its own read, so the late old result cannot open a dialog.
   if (productPickerPreopen) {
     const active = productPickerPreopen;
-    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.draftKey === context.draftKey;
+    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.dimension === context.dimension && active.draftKey === context.draftKey;
     if (sameOwnerDraft) return;
     productPickerPreopen = undefined;
   }
@@ -1823,6 +2177,7 @@ productController.pickCommerceImages = function (kind) {
     if (!picker) throw new Error('页面素材选择组件尚未就绪，请稍后重试。');
     const selectedRecords = (await Promise.all(preopen.draft.map(verifiedProductInitialMaterial))).flatMap((record) => record ? [record] : []);
     if (!productPickerPreopenIsCurrent(preopen)) return;
+    selectedRecords.forEach(rememberProductMaterial);
     const selectedIds = [...new Set(selectedRecords.map((item) => item.library_id))];
     const protectedCount = preopen.draft.length - selectedRecords.length;
     const availableSlots = 10 - protectedCount;
@@ -1837,6 +2192,7 @@ productController.pickCommerceImages = function (kind) {
       selectedIds, selectedRecords, limit: availableSlots,
       async onCommit(result) {
         if (!productPickerContextIsCurrent(preopen)) throw new Error('商品页面或原始素材草稿已改变；请取消后重新打开选择器。');
+        result.selected.forEach(rememberProductMaterial);
         const urls = mergeProtectedProductURLs(preopen.draft, result.selected);
         if (urls.length > 10) throw new Error('页面素材最多 10 张；未改动当前商品草稿。');
         controller.setCommerceImageUrls(kind, urls);
