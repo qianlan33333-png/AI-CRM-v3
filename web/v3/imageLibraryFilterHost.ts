@@ -5,12 +5,14 @@ import { imagePageDto, saveImageItemDto } from "../src/api/admin";
 import { deleteLegacyImage, getLegacyImage, getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
 import { ApiError, apiRequestOptions, unwrapGenerated } from "../src/api/transport";
 import type { ImageItem } from "../src/shared/api/types";
+import { mountMaterialLibraryTabs } from "./materialLibraryPresentation";
+import { mountPageHeaderActions } from "./shared/ui/pageHeaderActions";
 import { installCommittedTextSearch } from "./shared/ui/committedTextSearch";
+import { renderMaterialThumbnail } from "./shared/ui/materialThumbnailPresentation";
 
 installCommittedTextSearch();
 
 const PAGE_SIZE = 20;
-const SEARCH_DELAY_MS = 250;
 const MEDIA_CONTENT_CHANGED_EVENT = "aicrm:media-content-changed";
 
 type ImageListResponse = {
@@ -19,6 +21,15 @@ type ImageListResponse = {
   limit?: unknown;
   offset?: unknown;
   has_more?: unknown;
+};
+
+// The generated image DTO intentionally keeps the editing contract small.
+// The directory only reads these already-present Media fields to present a
+// compact table; it neither changes their owner nor writes them back.
+type ImageDirectoryItem = ImageItem & {
+  fileName: string;
+  width?: number;
+  height?: number;
 };
 
 type Dialog =
@@ -107,6 +118,35 @@ function chinaTime(value: string): string {
   return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`;
 }
 
+function formatFileSize(value: string): string {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return value || "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function imageDimensions(item: ImageDirectoryItem): string {
+  return Number.isSafeInteger(item.width) && Number.isSafeInteger(item.height) && item.width! > 0 && item.height! > 0
+    ? `${item.width} × ${item.height}`
+    : "—";
+}
+
+function imageDirectoryDto(value: unknown): ImageDirectoryItem {
+  const item = imagePageDto(value);
+  const source = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const fileName = typeof source.file_name === 'string'
+    ? source.file_name
+    : typeof source.filename === 'string' ? source.filename : item.name;
+  const dimension = (field: 'width' | 'height'): number | undefined => {
+    const number = Number(source[field]);
+    return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+  };
+  const width = dimension('width');
+  const height = dimension('height');
+  return { ...item, fileName, ...(width ? { width } : {}), ...(height ? { height } : {}) };
+}
+
 function imageDeleteMutationKey(): string {
   return `image-delete-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
@@ -115,7 +155,6 @@ class ImageLibraryHost {
   private readonly stage: HTMLElement;
   private readonly scroll: HTMLElement;
   private readonly workspace: HTMLElement;
-  private readonly headerNode: HTMLElement;
   private readonly toolbarNode: HTMLElement;
   private readonly stateNode: HTMLElement;
   private readonly cardsNode: HTMLElement;
@@ -123,7 +162,7 @@ class ImageLibraryHost {
   private readonly dialogLayer: HTMLElement;
   private queryInput!: HTMLInputElement;
   private includeInactiveInput!: HTMLInputElement;
-  private items: ImageItem[] = [];
+  private items: ImageDirectoryItem[] = [];
   private query = "";
   private includeInactive = false;
   // Offset always identifies the last successfully-read page. A requested
@@ -139,7 +178,6 @@ class ImageLibraryHost {
   private dialog: Dialog;
   private readGeneration = 0;
   private readAbort?: AbortController;
-  private searchTimer?: number;
   private deleteIntent?: DeleteIntent;
   private nextDialogID = 0;
 
@@ -154,32 +192,37 @@ class ImageLibraryHost {
     this.workspace = document.createElement("section");
     this.workspace.dataset.imageLibraryWorkspace = "true";
     this.workspace.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-content:start";
-    this.headerNode = this.header();
     this.toolbarNode = this.toolbar();
     this.stateNode = document.createElement("section");
     this.cardsNode = document.createElement("section");
     this.cardsNode.dataset.imageLibraryCards = "true";
-    this.cardsNode.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px";
+    this.cardsNode.style.cssText = "overflow-x:auto;background:#fff;border:1px solid #DEE0E3;border-radius:8px";
     this.paginationNode = document.createElement("section");
     this.dialogLayer = document.createElement("section");
     this.dialogLayer.dataset.imageLibraryDialogLayer = "true";
     this.workspace.append(this.toolbarNode, this.stateNode, this.cardsNode, this.paginationNode);
     this.scroll.append(this.workspace);
-    // Keep the workspace title bar at the embedded stage edge. The scroll
-    // region owns the refresh panel and all data-bearing content below it,
-    // while this stable header preserves the shared shell geometry contract.
-    this.stage.replaceChildren(this.headerNode, this.scroll, this.dialogLayer);
+    this.stage.replaceChildren(this.scroll, this.dialogLayer);
+    if (this.stage.dataset.materialLibraryWorkspace === "true") {
+      mountMaterialLibraryTabs(this.stage, "images");
+    }
   }
 
   start(): void {
+    if (this.stage.dataset.materialLibraryWorkspace === "true") {
+      mountPageHeaderActions("image-library", [{
+        label: "上传图片", variant: "primary", onClick: () => this.openDialog(this.newUploadDialog()),
+      }]);
+    }
     this.render();
     void this.load(0);
   }
 
-  private scheduleSearch(value: string): void {
+  private commitSearch(value: string): void {
     this.query = value;
-    // Abort and invalidate immediately. The debounce waits only to start the
-    // new request; an older response must never describe the newly typed text.
+    // Abort and invalidate only after an explicit committed search. The input
+    // itself remains a browser-owned draft so IME composition never starts a
+    // read or replaces the focused control.
     this.readAbort?.abort();
     this.readAbort = undefined;
     this.readGeneration += 1;
@@ -187,19 +230,11 @@ class ImageLibraryHost {
     this.searchPending = true;
     this.failedOffset = undefined;
     this.error = "";
-    if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
-    this.searchTimer = window.setTimeout(() => {
-      this.searchTimer = undefined;
-      void this.load(0);
-    }, SEARCH_DELAY_MS);
+    void this.load(0);
     this.render();
   }
 
   private async load(offset = this.offset): Promise<LoadResult> {
-    if (this.searchTimer !== undefined) {
-      window.clearTimeout(this.searchTimer);
-      this.searchTimer = undefined;
-    }
     this.readAbort?.abort();
     const abort = new AbortController();
     this.readAbort = abort;
@@ -226,7 +261,7 @@ class ImageLibraryHost {
       if (!Number.isSafeInteger(total) || total < 0 || responseLimit !== PAGE_SIZE || responseOffset !== offset || rawItems.length > PAGE_SIZE) {
         throw new Error("图片素材分页响应无效");
       }
-      this.items = rawItems.map(imagePageDto);
+      this.items = rawItems.map(imageDirectoryDto);
       this.total = total;
       this.offset = offset;
       this.hasSuccessfulRead = true;
@@ -255,25 +290,6 @@ class ImageLibraryHost {
     this.renderPagination();
   }
 
-  private header(): HTMLElement {
-    const header = document.createElement("header");
-    header.dataset.imageLibraryTitle = "true";
-    header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:52px;padding:0 20px;background:#fff;border:1px solid #DEE0E3;border-radius:8px";
-    const titles = document.createElement("div");
-    titles.style.minWidth = "0";
-    const crumb = document.createElement("div");
-    crumb.textContent = "客户管理后台 / 素材";
-    crumb.style.cssText = "font-size:12px;color:#8F959E;line-height:14px";
-    const title = document.createElement("h1");
-    title.textContent = "图片素材库";
-    title.style.cssText = "margin:3px 0 0;font-size:16px;font-weight:600;line-height:22px;color:#1F2329";
-    titles.append(crumb, title);
-    const upload = button("上传图片", "primary");
-    upload.addEventListener("click", () => this.openDialog(this.newUploadDialog()));
-    header.append(titles, upload);
-    return header;
-  }
-
   private toolbar(): HTMLElement {
     const toolbar = document.createElement("section");
     toolbar.className = "admin-filter-bar admin-toolbar";
@@ -284,7 +300,7 @@ class ImageLibraryHost {
     input.dataset.imageLibraryQuery = "true";
     input.setAttribute("aria-label", "搜索图片素材");
     input.style.cssText = "flex:1 1 240px";
-    input.addEventListener("input", () => this.scheduleSearch(input.value));
+    input.addEventListener("input", () => this.commitSearch(input.value));
     this.queryInput = input;
     const includeLabel = document.createElement("label");
     includeLabel.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;color:#646A73;margin-left:auto;cursor:pointer";
@@ -347,52 +363,103 @@ class ImageLibraryHost {
       const empty = document.createElement("p");
       empty.dataset.imageLibraryEmpty = "true";
       empty.textContent = "没有符合当前筛选条件的图片素材。";
-      empty.style.cssText = "grid-column:1/-1;margin:0;padding:24px;border:1px dashed #DEE0E3;border-radius:8px;background:#fff;color:#646A73;text-align:center";
+      empty.style.cssText = "margin:0;padding:24px;color:#646A73;text-align:center";
       this.cardsNode.append(empty);
       return;
     }
-    for (const item of this.items) this.cardsNode.append(this.card(item));
+    const table = document.createElement("table");
+    table.dataset.imageLibraryDirectory = "true";
+    table.style.cssText = "width:100%;border-collapse:collapse;table-layout:fixed";
+    const header = document.createElement("thead");
+    const heading = document.createElement("tr");
+    for (const [label, width] of [["图片 / 名称", "52%"], ["大小", "12%"], ["上传时间", "19%"], ["状态", "9%"], ["操作", "8%"]] as const) {
+      const cell = document.createElement("th");
+      cell.textContent = label;
+      cell.style.cssText = `padding:10px 12px;width:${width};font-size:12px;font-weight:500;color:#8F959E;text-align:left;background:#FAFAFB;border-bottom:1px solid #DEE0E3;white-space:nowrap`;
+      heading.append(cell);
+    }
+    header.append(heading);
+    const body = document.createElement("tbody");
+    for (const item of this.items) body.append(this.row(item));
+    table.append(header, body);
+    this.cardsNode.append(table);
   }
 
-  private card(item: ImageItem): HTMLElement {
-    const card = document.createElement("article");
-    card.style.cssText = `background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden;${item.enabled ? "" : "opacity:.55"}`;
-    const preview = document.createElement("img");
-    preview.src = item.thumbnailUrl || "";
-    preview.alt = item.name;
-    preview.style.cssText = "display:block;width:100%;height:128px;object-fit:cover;background:#EFF4FF;border-bottom:1px solid #EFF0F1;cursor:pointer";
+  private row(item: ImageDirectoryItem): HTMLTableRowElement {
+    const row = document.createElement("tr");
+    row.dataset.imageLibraryRow = item.resourceId || "";
+    row.style.cssText = item.enabled ? "" : "opacity:.64";
+    const cell = () => {
+      const node = document.createElement("td");
+      node.style.cssText = "padding:10px 12px;border-bottom:1px solid #F2F3F5;font-size:13px;text-align:left;vertical-align:middle";
+      return node;
+    };
+    const identity = cell();
+    const identityWrap = document.createElement("div");
+    identityWrap.style.cssText = "display:flex;align-items:center;gap:10px;min-width:0";
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.dataset.imageLibraryThumbnail = "true";
+    preview.setAttribute("aria-label", `查看图片素材：${item.name}`);
+    preview.style.cssText = "display:grid;place-items:center;position:relative;width:64px;height:48px;flex:none;padding:0;border:0;border-radius:5px;background:#EFF4FF;overflow:hidden;cursor:pointer;color:#646A73;font:inherit";
+    const thumbnail = renderMaterialThumbnail(preview, {
+      url: item.thumbnailUrl,
+      alt: item.name,
+      loadingLabel: "加载图片…",
+      unavailableLabel: "预览不可用",
+      noURLLabel: "暂无预览",
+      imageDisplay: "block",
+      loadingDisplay: "grid",
+      fallbackDisplay: "grid",
+    });
+    for (const status of [thumbnail.loading, thumbnail.fallback]) {
+      status.style.position = "absolute";
+      status.style.inset = "0";
+      status.style.placeItems = "center";
+      status.style.padding = "4px";
+      status.style.fontSize = "10px";
+      status.style.lineHeight = "14px";
+      status.style.textAlign = "center";
+      status.style.overflowWrap = "anywhere";
+      status.style.background = "#EFF4FF";
+    }
+    preview.title = "图片预览暂不可用时仍可编辑素材";
+    if (thumbnail.image) {
+      thumbnail.image.style.width = "100%";
+      thumbnail.image.style.height = "48px";
+      thumbnail.image.style.objectFit = "contain";
+      thumbnail.image.style.background = "#F7F9FC";
+    }
     preview.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
-    const body = document.createElement("div");
-    body.style.cssText = "padding:10px 12px";
+    const labels = document.createElement("div");
+    labels.style.cssText = "min-width:0;display:grid;gap:3px";
     const name = document.createElement("strong");
     name.textContent = item.name;
     name.style.cssText = "display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;color:#1F2329";
     name.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
-    const detail = document.createElement("div");
-    detail.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px";
-    const size = document.createElement("span");
-    size.textContent = item.size;
-    size.style.cssText = "font-size:12px;color:#A6AAB0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
-    const tag = document.createElement("span");
-    tag.textContent = item.tag || "未分类";
-    tag.style.cssText = "display:inline-flex;align-items:center;min-width:0;max-width:76px;height:20px;padding:0 7px;border-radius:4px;background:#F2F3F5;color:#646A73;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
-    const state = document.createElement("span");
-    state.className = "admin-chip";
-    state.textContent = item.enabled ? "已启用" : "已停用";
-    state.style.cssText = `min-height:20px;padding:0 7px;font-size:11px;${item.enabled ? "color:#237804;background:#F6FFED" : "color:#8F959E;background:#F2F3F5"}`;
-    detail.append(size, tag, state);
-    const actions = document.createElement("div");
-    actions.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #F5F6F7";
-    const time = document.createElement("span");
-    time.textContent = chinaTime(item.uploadedAt);
-    time.style.cssText = "font-size:11px;color:#A6AAB0";
+    const details = document.createElement("span");
+    const groupValue = [item.tag, item.tags].filter(Boolean).join(" · ");
+    details.textContent = [imageDimensions(item), item.fileName, groupValue].filter(Boolean).join(" · ");
+    details.style.cssText = "font-size:12px;color:#8F959E;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    labels.append(name, details);
+    identityWrap.append(preview, labels);
+    identity.append(identityWrap);
+    const size = cell(); size.textContent = formatFileSize(item.size); size.style.color = "#646A73";
+    const time = cell(); time.textContent = chinaTime(item.uploadedAt); time.style.cssText += ";color:#646A73;overflow-wrap:anywhere;line-height:18px";
+    const state = cell();
+    const chip = document.createElement("span");
+    chip.className = "admin-chip";
+    chip.textContent = item.enabled ? "已启用" : "已停用";
+    chip.style.cssText = `display:inline-flex;min-height:20px;padding:0 7px;align-items:center;border-radius:4px;font-size:11px;${item.enabled ? "color:#237804;background:#F6FFED" : "color:#8F959E;background:#F2F3F5"}`;
+    state.append(chip);
+    const actions = cell();
+    actions.style.textAlign = "right";
     const edit = button("编辑");
     edit.style.cssText = "height:24px;padding:0 8px;border:0;border-radius:4px;background:transparent;color:#245BDB;font-size:12px;cursor:pointer";
     edit.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
-    actions.append(time, edit);
-    body.append(name, detail, actions);
-    card.append(preview, body);
-    return card;
+    actions.append(edit);
+    row.append(identity, size, time, state, actions);
+    return row;
   }
 
   private renderPagination(): void {

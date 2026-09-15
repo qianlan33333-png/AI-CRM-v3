@@ -32,6 +32,26 @@ async function assertImageLibraryLayout(cdp, width, height) {
  await value(cdp,"document.querySelector('button[aria-label=关闭弹窗]').click();true");
  await wait(cdp,"!document.querySelector('form[data-image-library-dialog]')",`image library ${width}px close dialog`);
 }
+async function assertImageLibraryThumbnailStates(cdp) {
+ await wait(cdp,"Boolean([...document.querySelectorAll('[data-image-library-thumbnail]')].find(node=>node.closest('tr')?.textContent?.includes('浏览器刷新素材'))?.querySelector('img'))",'image library thumbnail');
+ const states=await value(cdp,`(()=>{const visual=[...document.querySelectorAll('[data-image-library-thumbnail]')].find(node=>node.closest('tr')?.textContent?.includes('浏览器刷新素材'));const image=visual?.querySelector('img');if(!(image instanceof HTMLImageElement)||!visual)return null;const box=node=>{const rect=node.getBoundingClientRect();return {width:rect.width,height:rect.height}};const state=()=>{const nodes={loading:visual.querySelector('.aicrm-material-thumbnail__loading'),image,fallback:visual.querySelector('.aicrm-material-thumbnail__fallback')};const visible=node=>Boolean(node)&&getComputedStyle(node).display!=='none'&&getComputedStyle(node).visibility!=='hidden';return {state:visual.dataset.materialThumbnailState,visual:box(visual),loading:{display:getComputedStyle(nodes.loading).display,visible:visible(nodes.loading),box:box(nodes.loading)},image:{display:getComputedStyle(nodes.image).display,visible:visible(nodes.image),box:box(nodes.image)},fallback:{display:getComputedStyle(nodes.fallback).display,visible:visible(nodes.fallback),box:box(nodes.fallback)}}};image.dispatchEvent(new Event('error'));const error=state();image.dispatchEvent(new Event('load'));const loaded=state();return {error,loaded};})()`);
+ const sameBox=(left,right)=>Boolean(left&&right&&Math.abs(left.width-right.width)<=2&&Math.abs(left.height-right.height)<=2);
+ const only=(snapshot, expected)=>snapshot&&snapshot.state===expected&&snapshot.loading.visible===false&&snapshot.image.visible===(expected==='loaded')&&snapshot.fallback.visible===(expected==='error')&&snapshot.loading.display==='none'&&snapshot.image.display===(expected==='loaded'?'block':'none')&&snapshot.fallback.display===(expected==='error'?'grid':'none')&&sameBox(snapshot.visual,expected==='loaded'?snapshot.image.box:snapshot.fallback.box);
+ if(!only(states?.error,'error')||!only(states?.loaded,'loaded')) throw new Error(`image-library thumbnail computed states=${JSON.stringify(states)}`);
+}
+async function assertImageLibraryThumbnailLoadingGeometry(cdp) {
+ await wait(cdp,"Boolean([...document.querySelectorAll('[data-image-library-thumbnail]')].find(node=>node.closest('tr')?.textContent?.includes('浏览器刷新素材')))",'image library thumbnail card');
+ const state=await value(cdp,`(()=>{const visual=[...document.querySelectorAll('[data-image-library-thumbnail]')].find(node=>node.closest('tr')?.textContent?.includes('浏览器刷新素材'));const loading=visual?.querySelector('.aicrm-material-thumbnail__loading');const image=visual?.querySelector('img');const fallback=visual?.querySelector('.aicrm-material-thumbnail__fallback');if(!visual||!loading||!image||!fallback)return null;const box=node=>{const rect=node.getBoundingClientRect();return {width:rect.width,height:rect.height}};const visible=node=>getComputedStyle(node).display!=='none'&&getComputedStyle(node).visibility!=='hidden';return {state:visual.dataset.materialThumbnailState,visual:box(visual),loading:{visible:visible(loading),box:box(loading)},image:{visible:visible(image)},fallback:{visible:visible(fallback)}};})()`);
+ const sameBox=(left,right)=>Boolean(left&&right&&Math.abs(left.width-right.width)<=2&&Math.abs(left.height-right.height)<=2);
+ if(!state||state.state!=='loading'||!state.loading.visible||state.image.visible||state.fallback.visible||!sameBox(state.visual,state.loading.box)) throw new Error(`image-library thumbnail loading geometry=${JSON.stringify(state)}`);
+}
+async function captureImageLibraryViewport(cdp, width, height) {
+ await cdp.call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+ const output=path.join(path.dirname(screenshot),`media-refresh-chromium-${width}.png`);
+ const image=await cdp.call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+ await fs.writeFile(output,Buffer.from(image.data,'base64'));
+ return output;
+}
 const waitForExit = (child, ms) => new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) return resolve(true); const timer = setTimeout(() => resolve(false), ms); child.once("exit", () => { clearTimeout(timer); resolve(true); }); });
 const stopBrowser = async (child) => {
  if (!child || child.exitCode !== null || child.signalCode !== null) return null;
@@ -61,7 +81,7 @@ try {
  const tab=await (await fetch(`${await devtools(profile)}/json/new?about:blank`,{method:"PUT"})).json(); const socket=new WebSocket(tab.webSocketDebuggerUrl); await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",reject,{once:true});}); cdp=new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
  await cdp.call("Page.navigate",{url:`${baseURL}/login?next=%2Fadmin%2Fimage-library`}); await wait(cdp,"Boolean(document.querySelector('form[action=\"/login\"] input[name=login_csrf_token]'))","login page");
  await value(cdp,`(()=>{document.querySelector('input[name=username]').value=${JSON.stringify(username)};document.querySelector('input[name=password]').value=${JSON.stringify(password)};document.querySelector('form[action="/login"]').requestSubmit();return true})()`);
- await wait(cdp,"location.pathname==='/admin/image-library'&&document.body?.dataset.page==='images'&&document.title.includes('图片素材库')","image Host title");
+ await wait(cdp,"location.pathname==='/admin/materials'&&document.body?.dataset.page==='images'&&document.title.includes('素材库')","material workspace title");
  await wait(cdp,"Boolean(document.querySelector('[data-image-library-query]')&&document.querySelector('[data-image-library-cards]'))",'V3 image library controls');
  await value(cdp,"(()=>{const fetcher=window.fetch.bind(window);window.__mediaRefreshRequests=[];window.fetch=async(...args)=>{const response=await fetcher(...args);window.__mediaRefreshRequests.push(`${args[1]?.method||'GET'} ${typeof args[0]==='string'?args[0]:args[0].url} ${response.status} ${await response.clone().text()}`);return response};return true})()");
  // The V3 image Host keeps this query as a draft until a deliberate Enter.
@@ -75,8 +95,15 @@ try {
  await wait(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===1",'image-library ordinary Enter did not issue exactly one existing list read');
  const imageSearchFocus=await value(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return Boolean(field&&document.activeElement===field&&field.value==='Chromium素材')})()");
  if(!imageSearchFocus)throw new Error('image-library ordinary Enter did not retain focused draft query');
- await wait(cdp,`Boolean(document.querySelector('#material-refresh-panel')&&document.querySelector('#material-refresh-panel').textContent.includes('素材刷新状态')&&document.querySelector('#material-refresh-panel').textContent.includes(${JSON.stringify(missingSourceRef)})&&document.querySelector('#material-refresh-panel').textContent.includes('原文件缺失，请补传'))`,`refresh panel and missing source ${missingSourceRef}`);
- await assertImageLibraryLayout(cdp,780,700); await assertImageLibraryLayout(cdp,390,420); await cdp.call("Emulation.clearDeviceMetricsOverride");
+ // The Enter check intentionally leaves a committed search active. Reset through
+ // the existing Host control before asserting page-wide refresh facts so the
+ // fixture's historical source is visible again.
+ await value(cdp,"document.querySelector('button[data-image-library-reset=\"true\"]')?.click();true");
+ await wait(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return field instanceof HTMLInputElement&&field.value===''&&window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===2})()",'image-library reset did not restore the unfiltered list');
+ await wait(cdp,"(()=>{const panel=document.querySelector('#material-refresh-panel');return Boolean(panel&&panel.textContent.includes('素材刷新：')&&panel.textContent.includes('有刷新异常需处理')&&panel.querySelector('[data-material-refresh-details]'))})()",'refresh panel summary with an actionable anomaly');
+ await value(cdp,"(()=>{const summary=document.querySelector('#material-refresh-panel [data-material-refresh-details] > summary');if(!(summary instanceof HTMLElement))return false;summary.click();return true})()");
+ await wait(cdp,`Boolean(document.querySelector('#material-refresh-panel [data-material-refresh-details]')?.open&&document.querySelector('#material-refresh-panel')?.textContent.includes(${JSON.stringify(missingSourceRef)})&&document.querySelector('#material-refresh-panel')?.textContent.includes('原文件缺失，请补传'))`,`expanded refresh details and missing source ${missingSourceRef}`);
+ await assertImageLibraryLayout(cdp,1280,800); await assertImageLibraryLayout(cdp,1440,900); await assertImageLibraryLayout(cdp,780,700); await assertImageLibraryLayout(cdp,390,420); await cdp.call("Emulation.clearDeviceMetricsOverride");
  await value(cdp,"(()=>{const region=[...document.querySelectorAll('main#stage div')].find(n=>n.style.overflow==='auto');if(!region)return false;region.scrollTop=180;return region.scrollTop>=0})()");
  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='上传图片').click();true"); await wait(cdp,"Boolean(document.querySelector('#fImgUpFile'))","image upload dialog");
  await value(cdp,`(()=>{const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII='),c=>c.charCodeAt(0));const input=document.querySelector('#fImgUpFile');const dt=new DataTransfer();dt.items.add(new File([png],'browser-source.png',{type:'image/png'}));input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#fImgUpName').value='浏览器刷新素材';[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='上传').click();return true})()`);
@@ -85,7 +112,10 @@ try {
  await value(cdp,"(()=>{const fetcher=window.fetch.bind(window);window.__mediaRefreshRequests=[];window.fetch=async(...args)=>{const response=await fetcher(...args);window.__mediaRefreshRequests.push(`${args[1]?.method||'GET'} ${typeof args[0]==='string'?args[0]:args[0].url} ${response.status}`);return response};return true})()");
  await value(cdp,"document.querySelector('[data-material-refresh-all=true]').click();true"); await wait(cdp,"window.__mediaRefreshRequests.some(value=>value.includes('POST /api/admin/media-preparations/refresh-rounds 202'))","manual refresh accepted");
  for(let i=0;i<40;i++){ await value(cdp,"document.querySelector('[data-material-refresh-round]')?.click();true"); await sleep(250); if(await value(cdp,"document.querySelector('#material-refresh-panel')?.textContent.includes('成功 1')")) break; if(i===39) throw new Error("manual refresh round did not complete"); }
- await cdp.call("Page.navigate",{url:`${baseURL}/admin/image-library`}); await wait(cdp,"document.querySelector('#material-refresh-panel')?.textContent.includes('fixture-media-2')&&document.querySelector('#material-refresh-panel')?.textContent.includes('当前凭据可用')","old credential refreshed into usable credential");
+ await cdp.call('Network.enable'); await cdp.call('Network.setCacheDisabled',{cacheDisabled:true});
+ await cdp.call("Page.navigate",{url:`${baseURL}/admin/image-library`}); await assertImageLibraryThumbnailLoadingGeometry(cdp); await wait(cdp,"document.querySelector('#material-refresh-panel')?.textContent.includes('fixture-media-2')&&document.querySelector('#material-refresh-panel')?.textContent.includes('当前凭据可用')","old credential refreshed into usable credential");
+ await assertImageLibraryThumbnailStates(cdp);
+ await captureImageLibraryViewport(cdp,1280,800); await captureImageLibraryViewport(cdp,1440,900); await cdp.call('Emulation.clearDeviceMetricsOverride');
  await cdp.call("Page.captureScreenshot",{format:"png",captureBeyondViewport:true}).then(async result=>fs.writeFile(screenshot,Buffer.from(result.data,"base64")));
  await cdp.call("Page.navigate",{url:`${baseURL}/admin/operation-cycles`}); await wait(cdp,"Boolean([...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情'))","operation cycles");
  await value(cdp,"[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情').click();true"); await wait(cdp,"Boolean([...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次'))","strategy detail");

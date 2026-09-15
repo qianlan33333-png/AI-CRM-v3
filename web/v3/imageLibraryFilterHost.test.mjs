@@ -20,6 +20,8 @@ function item(id, name, enabled = true) {
     description: "素材说明",
     tags: ["回归"],
     category: "海报",
+    width: 160,
+    height: 90,
     enabled,
     created_at: "2026-09-12T00:00:00Z",
     original_url: `/api/admin/image-library/${id}/variants/original`,
@@ -53,8 +55,8 @@ let failConfirmedDeleteReadback = false;
 
 const virtualConsole = new VirtualConsole();
 virtualConsole.forwardTo(console);
-const dom = new JSDOM(`<!doctype html><html><body data-page="images"><main id="stage" data-image-library-v3-root></main><script>${materialHost}</script><script>${imageHost}</script></body></html>`, {
-  url: "https://test.invalid/admin/image-library",
+const dom = new JSDOM(`<!doctype html><html><body data-page="images"><header class="admin-topbar"><div class="admin-topbar-head"><h1>素材库</h1></div><div class="admin-topbar-meta"></div></header><main id="stage" data-image-library-v3-root data-material-library-workspace="true"></main><script>${materialHost}</script><script>${imageHost}</script></body></html>`, {
+  url: "https://test.invalid/admin/materials?tab=images",
   runScripts: "dangerously",
   pretendToBeVisual: true,
   virtualConsole,
@@ -186,6 +188,16 @@ assert.ok(dom.window.document.body.textContent.includes("默认启用素材"), "
 assert.ok(dom.window.document.body.textContent.includes("已启用"), "enabled image did not render a Chinese status");
 assert.ok(dom.window.document.body.textContent.includes("2026-09-12 08:00:00"), "image time did not render in Asia/Shanghai YYYY-MM-DD HH:mm:ss form");
 assert.ok(!dom.window.document.body.textContent.includes("2026-09-12T00:00:00Z"), "raw ISO time leaked into the image workspace");
+const directoryHeaders = [...dom.window.document.querySelectorAll('[data-image-library-directory] th')].map((node) => node.textContent?.trim());
+assert.deepEqual(directoryHeaders, ["图片 / 名称", "大小", "上传时间", "状态", "操作"], "image directory keeps dimensions and tags with the compact image identity");
+assert.match(dom.window.document.body.textContent || "", /160 × 90 · 默认启用素材\.png · 海报 · 回归/, "image dimensions, filename, and existing tags render beneath the name");
+const initialThumbnail = dom.window.document.querySelector('[data-image-library-thumbnail="true"]');
+const initialImage = initialThumbnail?.querySelector('img');
+assert.equal(initialThumbnail?.dataset.materialThumbnailState, "loading", "source-owned card exposes the shared thumbnail loading state");
+assert.equal(initialImage?.style.objectFit, "contain", "image directory thumbnail preserves complete landscape and portrait sources");
+initialImage?.dispatchEvent(new dom.window.Event('error'));
+assert.equal(initialThumbnail?.dataset.materialThumbnailState, "error", "a source-owned card keeps the shared thumbnail error state");
+assert.match(initialThumbnail?.textContent || "", /预览不可用/, "image directory error has a visible fallback");
 
 let current = controls();
 current.input.value = "旧";
@@ -225,8 +237,8 @@ current.input.value = "弹窗延迟";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 commitSearch(current.input);
 await waitFor(() => typeof releaseDialogRead === "function", "delayed dialog read did not start");
-const upload = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "上传图片");
-assert.ok(upload, "upload action missing from source-owned Host");
+const upload = dom.window.document.querySelector('[data-page-header-actions="image-library"] button');
+assert.ok(upload?.textContent === "上传图片", "upload action missing from the one shared page header");
 upload.click();
 await waitFor(() => Boolean(dom.window.document.querySelector("#fImgUpFile")), "upload dialog did not open during pending read");
 const pendingFile = dom.window.document.querySelector("#fImgUpFile");
@@ -317,7 +329,7 @@ assert.ok(!(dom.window.document.getElementById("stage")?.textContent || "").incl
 current.input.value = "";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 commitSearch(current.input);
-await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材"), "controlled-error recovery did not restore the active list");
+await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材") && [...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "下一页" && !button.disabled), "controlled-error recovery did not restore the active list");
 
 failSecondPage = true;
 const failingNext = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "下一页");

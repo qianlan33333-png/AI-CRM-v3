@@ -549,6 +549,10 @@ for (const spec of [
   [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态").click();
   await waitFor(() => dom.window.document.querySelector("#material-refresh-panel")?.textContent?.includes("cover.png"), "material preparation contract did not render after manual retry");
   const panelText = dom.window.document.querySelector("#material-refresh-panel")?.textContent || "";
+  const refreshDetails = dom.window.document.querySelector("[data-material-refresh-details]");
+  if (!(refreshDetails instanceof dom.window.HTMLDetailsElement) || refreshDetails.open || !refreshDetails.querySelector("summary")?.textContent?.includes("刷新设置与明细")) fail("material refresh starts with a duplicate per-source table instead of a collapsed disclosure");
+  refreshDetails.open = true;
+  refreshDetails.dispatchEvent(new dom.window.Event("toggle"));
   if (
     panelText.includes("成功 0") ||
     !panelText.includes("结果待核实 · 凭据已过期") ||
@@ -569,6 +573,7 @@ for (const spec of [
   const progressRefresh = [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "刷新进度");
   progressRefresh.click();
   await waitFor(() => dom.window.document.querySelector("#material-refresh-panel")?.textContent?.includes("成功 98"), "explicit refresh-round counts were not rendered");
+  if (!(dom.window.document.querySelector("[data-material-refresh-details]") instanceof dom.window.HTMLDetailsElement) || !dom.window.document.querySelector("[data-material-refresh-details]").open) fail("material refresh diagnostics collapsed after a readback");
   const countedPanel = dom.window.document.querySelector("#material-refresh-panel")?.textContent || "";
   if (!countedPanel.includes("成功 98") || !countedPanel.includes("待核实 2")) fail("explicit refresh-round counts were not preserved");
   const full = [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "立即刷新全部启用素材");

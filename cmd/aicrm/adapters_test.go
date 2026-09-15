@@ -429,9 +429,13 @@ func TestTransactionRouteKeepsShellButReportsBackendUnavailable(t *testing.T) {
 func TestSecurityHeadersAllowBlobImagesOnlyOnMediaAndSidebarPages(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	for path, allowsBlob := range map[string]bool{
+		"/admin/materials":                            true,
 		"/admin/image-library":                        true,
 		"/admin/miniprogram-library":                  true,
 		"/admin/attachment-library":                   true,
+		"/admin/images.html":                          true,
+		"/admin/mpLib.html":                           true,
+		"/admin/attach.html":                          true,
 		webshell.SidebarPagePath:                      true,
 		"/admin/campaigns.html?view=external-effects": false,
 		"/admin/orders":                               false,

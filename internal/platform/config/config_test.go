@@ -535,6 +535,17 @@ func TestChromiumJourneyRequiredUsesConfigurationBoundary(t *testing.T) {
 	}
 }
 
+func TestProductExternalPushDarwinChromiumDiagnosticUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM", "")
+	if ProductExternalPushDarwinChromiumDiagnosticAllowed() {
+		t.Fatal("missing Darwin diagnostic flag allowed the journey")
+	}
+	t.Setenv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM", "1")
+	if !ProductExternalPushDarwinChromiumDiagnosticAllowed() {
+		t.Fatal("explicit Darwin diagnostic flag did not allow the journey")
+	}
+}
+
 func TestAdminLayoutScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	t.Setenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR", "")
 	if value := AdminLayoutScreenshotDirectory(); value != "" {
@@ -587,6 +598,17 @@ func TestComponentStatesScreenshotDirectoryUsesConfigurationBoundary(t *testing.
 	t.Setenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR", "/tmp/aicrm-component-states-evidence")
 	if value := ComponentStatesScreenshotDirectory(); value != "/tmp/aicrm-component-states-evidence" {
 		t.Fatalf("component state screenshot directory=%q", value)
+	}
+}
+
+func TestAutomationFixedContentScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR", "")
+	if value := AutomationFixedContentScreenshotDirectory(); value != "" {
+		t.Fatalf("missing automation fixed-content screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR", "/tmp/aicrm-automation-content-evidence")
+	if value := AutomationFixedContentScreenshotDirectory(); value != "/tmp/aicrm-automation-content-evidence" {
+		t.Fatalf("automation fixed-content screenshot directory=%q", value)
 	}
 }
 
