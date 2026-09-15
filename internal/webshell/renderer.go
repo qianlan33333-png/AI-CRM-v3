@@ -397,6 +397,47 @@ func (renderer *Renderer) RenderHXC(writer http.ResponseWriter, data AdminPageDa
 // RenderMedia mounts immutable Media donor templates in the v3 shell. The
 // image library is source-owned and deliberately receives its own stable host;
 // the other Media workspaces receive only verified release templates.
+//
+// The frozen templates expose display names but the running controller carries
+// a stable resourceId for every attachment and mini-program. Add that ID at the
+// v3 render seam so presentation code can join read-only metadata without
+// guessing from a name or row position. This changes the rendered copy only;
+// the byte-frozen release template remains untouched. A changed loop shape
+// fails closed instead of silently reintroducing a name-based join.
+func materialTemplateIdentitySeams(page, donorTemplate string) (string, error) {
+	type seam struct {
+		loop   string
+		needle string
+		withID string
+	}
+	var expected seam
+	switch page {
+	case "attach":
+		expected = seam{
+			loop:   `data-sc-for="{{ rows.attachItems }}"`,
+			needle: `<tr style="{{ a.rowStyle }}">`,
+			withID: `<tr data-material-library-id="{{ a.resourceId }}" style="{{ a.rowStyle }}">`,
+		}
+	case "mpLib":
+		expected = seam{
+			loop:   `data-sc-for="{{ rows.mpItems }}"`,
+			needle: `<div style="background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden">`,
+			withID: `<div data-material-library-id="{{ m.resourceId }}" style="background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden">`,
+		}
+	default:
+		return donorTemplate, nil
+	}
+	if !strings.Contains(donorTemplate, expected.loop) {
+		// Small renderer contract tests use a minimal donor fragment. Only a
+		// template that declares the relevant real loop needs the seam.
+		return donorTemplate, nil
+	}
+	if strings.Count(donorTemplate, expected.needle) != 1 {
+		return "", errors.New("media donor identity seam is missing or ambiguous")
+	}
+	return strings.Replace(donorTemplate, expected.needle, expected.withID, 1), nil
+}
+
 func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets MediaAssets) error {
 	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.MaterialSaveHostJS == "" || assets.MaterialLibraryHostJS == "" || (page == "images" && assets.ImageLibraryFilterHostJS == "") || (page != "images" && page != "attach" && page != "mpLib") || (page != "images" && donorTemplate == "") {
 		return errors.New("media shell assets are required")
@@ -412,6 +453,11 @@ func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPage
 	if page == "images" {
 		content = `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded" data-image-library-v3-root` + workspaceAttribute + `></main>`
 	} else {
+		var seamErr error
+		donorTemplate, seamErr = materialTemplateIdentitySeams(page, donorTemplate)
+		if seamErr != nil {
+			return seamErr
+		}
 		content += `<template id="tpl">` + donorTemplate + `</template>`
 	}
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Media: true, MediaPage: page, MediaAssets: assets})

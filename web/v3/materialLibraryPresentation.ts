@@ -54,6 +54,28 @@ const tabItems = [
   { value: 'miniprograms', label: '小程序' },
 ] as const;
 
+function isNonnegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCompleteAttachmentList(value: unknown): value is LegacyAttachmentListSuccess {
+  const response = value as Partial<LegacyAttachmentListSuccess>;
+  return Array.isArray(response.items) && isNonnegativeInteger(response.total) && isNonnegativeInteger(response.offset) && typeof response.limit === 'number' && Number.isSafeInteger(response.limit) && response.limit >= 1 &&
+    response.items.every((item) => Number.isSafeInteger(item.id) && item.id > 0 && typeof item.name === 'string' && typeof item.file_size === 'number' && Number.isFinite(item.file_size) && typeof item.enabled === 'boolean' && Number.isSafeInteger(item.version) && item.version > 0 && typeof item.created_at === 'string');
+}
+
+function isCompleteMiniProgramList(value: unknown): value is LegacyMiniProgramListResponse {
+  const response = value as Partial<LegacyMiniProgramListResponse>;
+  return response.ok === true && Array.isArray(response.items) && Array.isArray(response.miniprograms) && isNonnegativeInteger(response.total) && isNonnegativeInteger(response.offset) && typeof response.limit === 'number' && Number.isSafeInteger(response.limit) && response.limit >= 1 && response.local_only === true && response.provider_call_executed === false && response.real_external_call_executed === false &&
+    response.items.every((item) => Number.isSafeInteger(item.id) && item.id > 0 && typeof item.name === 'string' && typeof item.appid === 'string' && typeof item.pagepath === 'string' && typeof item.page_path === 'string' && typeof item.title === 'string' && typeof item.enabled === 'boolean' && Number.isSafeInteger(item.version) && item.version > 0 && typeof item.updated_at === 'string');
+}
+
+function apiStatus(error: unknown): number | undefined {
+  if (error instanceof ApiError) return error.status;
+  const status = error && typeof error === 'object' ? (error as { status?: unknown }).status : undefined;
+  return typeof status === 'number' && Number.isSafeInteger(status) ? status : undefined;
+}
+
 function donorHeader(control: HTMLElement): HTMLElement | undefined {
   for (let current: HTMLElement | null = control.parentElement; current; current = current.parentElement) {
     if (current.tagName === 'DIV' && current.style.height === '52px') return current;
@@ -107,6 +129,8 @@ class FrozenMaterialPresentation {
   private miniPrograms: LegacyMiniProgram[] = [];
   private listSignature = '';
   private metadataReadFailed = false;
+  private metadataLoaded = false;
+  private authorizationLost = false;
   private readonly attachmentRows = new WeakMap<HTMLTableRowElement, AttachmentRowSource>();
   private attachmentHeader?: NodePresentation[];
   private readonly miniCards = new WeakMap<HTMLElement, MiniCardSource>();
@@ -140,14 +164,19 @@ class FrozenMaterialPresentation {
         this.releaseAction = undefined;
         this.action = undefined;
       }
+      this.reapplyAuthorizationReadOnly();
       return;
     }
-    if (action === this.action && pageHeaderActionElementsHaveConnectedOrigins(`material-library-${this.page}`, [action])) return;
+    if (action === this.action && pageHeaderActionElementsHaveConnectedOrigins(`material-library-${this.page}`, [action])) {
+      this.reapplyAuthorizationReadOnly();
+      return;
+    }
     this.releaseAction?.();
     this.action = action;
     const header = donorHeader(action);
     if (header) hideDonorHeader(header);
     this.releaseAction = mountPageHeaderActionElements(`material-library-${this.page}`, [action]);
+    this.reapplyAuthorizationReadOnly();
   }
 
   private ensureTabs(): void {
@@ -204,26 +233,34 @@ class FrozenMaterialPresentation {
       if (this.page === 'attach') {
         const response = unwrapGenerated(await listLegacyAttachments({
           limit: '100', offset: '0', enabled_only: 'false', ...(query ? { q: query } : {}),
-        }, apiRequestOptions({ signal: abort.signal }))) as LegacyAttachmentListSuccess;
+        }, apiRequestOptions({ signal: abort.signal })));
         if (generation !== this.readGeneration) return;
-        this.attachments = Array.isArray(response.items) ? response.items : [];
+        if (!isCompleteAttachmentList(response)) throw new Error('附件素材列表响应不完整');
+        this.attachments = response.items;
       } else {
         const response = unwrapGenerated(await listLegacyMiniPrograms({
           limit: 100, offset: 0, enabled_only: false, ...(query ? { q: query } : {}),
-        }, apiRequestOptions({ signal: abort.signal }))) as LegacyMiniProgramListResponse;
+        }, apiRequestOptions({ signal: abort.signal })));
         if (generation !== this.readGeneration) return;
-        this.miniPrograms = Array.isArray(response.items) ? response.items : [];
+        if (!isCompleteMiniProgramList(response)) throw new Error('小程序素材列表响应不完整');
+        this.miniPrograms = response.items;
       }
       this.metadataReadFailed = false;
+      this.metadataLoaded = true;
+      this.authorizationLost = false;
       this.setMutationReadOnly(false);
+      this.stage.querySelector('[data-material-library-read-error]')?.remove();
       this.applyCachedMetadata();
     } catch (error) {
       if (generation !== this.readGeneration || (error instanceof DOMException && error.name === 'AbortError')) return;
       this.metadataReadFailed = true;
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      const status = apiStatus(error);
+      if (status === 401 || status === 403) {
         this.attachments = [];
         this.miniPrograms = [];
         this.metadataQuery = '';
+        this.metadataLoaded = false;
+        this.authorizationLost = true;
         this.clearEnrichedMetadata();
         this.setMutationReadOnly(true);
       }
@@ -232,7 +269,11 @@ class FrozenMaterialPresentation {
   }
 
   private hasUsableMetadata(): boolean {
-    return !this.metadataReadFailed && (this.page === 'attach' ? this.attachments.length > 0 : this.miniPrograms.length > 0);
+    return !this.metadataReadFailed && this.metadataLoaded;
+  }
+
+  private reapplyAuthorizationReadOnly(): void {
+    if (this.authorizationLost) this.setMutationReadOnly(true);
   }
 
   private setMutationReadOnly(readonly: boolean): void {
@@ -306,25 +347,13 @@ class FrozenMaterialPresentation {
     const table = this.attachmentTable();
     if (!table || !this.attachments.length) return;
     const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tbody tr'));
-    const byName = new Map<string, LegacyAttachmentItem>();
-    const duplicated = new Set<string>();
-    for (const item of this.attachments) {
-      if (byName.has(item.name)) duplicated.add(item.name);
-      else byName.set(item.name, item);
-    }
-    const matched = rows.map((row) => {
-      const name = row.cells[0]?.querySelector('span:last-child')?.textContent?.trim() || '';
-      return !duplicated.has(name) ? byName.get(name) : undefined;
-    });
-    // A donor row does not expose its typed ID. Do not guess from position or
-    // duplicate names: retain its original presentation until every visible
-    // row can be matched to the same Media-owned DTO by a unique name.
+    const byID = new Map(this.attachments.map((item) => [String(item.id), item]));
+    const matched = rows.map((row) => byID.get(row.dataset.materialLibraryId || ''));
+    // The V3 render seam carries the controller's resourceId into each donor
+    // row. If that shape changes, preserve the owner row rather than guessing
+    // from a display name, list position, search result, or page offset.
     if (!rows.length) return;
     if (matched.some((item) => !item)) {
-      // The frozen attachment rows expose no stable entity ID. A duplicate
-      // display name therefore cannot be joined safely to a typed DTO. Keep
-      // the original row and its bound callbacks intact instead of applying a
-      // neighboring record's metadata.
       table.dataset.materialLibraryAttachmentTable = 'unresolved';
       let notice = table.parentElement?.querySelector<HTMLElement>('[data-material-library-identity-notice="attachment"]');
       if (!notice) {
@@ -336,6 +365,7 @@ class FrozenMaterialPresentation {
       notice.textContent = '存在同名附件，补充信息待确认；原有记录和操作保持不变。';
       return;
     }
+    table.parentElement?.querySelector('[data-material-library-identity-notice="attachment"]')?.remove();
     table.dataset.materialLibraryAttachmentTable = 'true';
     const header = table.querySelector<HTMLTableRowElement>('thead tr');
     if (header && !this.attachmentHeader) this.attachmentHeader = Array.from(header.cells).map((cell) => snapshotNode(cell));
@@ -380,13 +410,7 @@ class FrozenMaterialPresentation {
     const grid = Array.from(this.stage.querySelectorAll<HTMLElement>('div'))
       .find((candidate) => candidate.dataset.materialLibraryMiniDirectory === 'true' || (candidate.style.display === 'grid' && candidate.style.gridTemplateColumns.includes('repeat(4')));
     if (!grid) return;
-    const knownNames = new Set(this.miniPrograms.map((item) => item.name));
-    const byName = new Map<string, LegacyMiniProgram>();
-    const duplicated = new Set<string>();
-    for (const item of this.miniPrograms) {
-      if (byName.has(item.name)) duplicated.add(item.name);
-      else byName.set(item.name, item);
-    }
+    const byID = new Map(this.miniPrograms.map((item) => [String(item.id), item]));
     grid.dataset.materialLibraryMiniDirectory = 'true';
     grid.setAttribute('role', 'table');
     grid.setAttribute('aria-label', '小程序素材目录');
@@ -404,15 +428,11 @@ class FrozenMaterialPresentation {
     }
     const cards = Array.from(grid.children).filter((node): node is HTMLElement => node instanceof HTMLElement && node.dataset.materialLibraryMiniHeader !== 'true');
     cards.forEach((card, index) => {
-      const sourceName = card.dataset.materialLibrarySourceName || Array.from(card.querySelectorAll<HTMLElement>('div'))
-        .map((node) => node.textContent?.trim() || '')
-        .find((value) => knownNames.has(value)) || `未识别素材 ${index + 1}`;
-      card.dataset.materialLibrarySourceName = sourceName;
-      // Names are display values, not identities. Only a uniquely named typed
-      // record may enrich the donor row. Ambiguous rows use the visible owner
-      // fields and explicit unknown values, never a guessed neighbor record.
-      const item = !duplicated.has(sourceName) ? byName.get(sourceName) : undefined;
-      const metadataVersion = item ? `${item.id}:${item.version}` : `unresolved:${sourceName}`;
+      // Names are display values, never an identity. `m.resourceId` is added
+      // by the V3 render seam and remains correct across duplicate names,
+      // pagination and committed searches.
+      const item = byID.get(card.dataset.materialLibraryId || '');
+      const metadataVersion = item ? `${item.id}:${item.version}` : `unresolved:${card.dataset.materialLibraryId || index + 1}`;
       if (card.dataset.materialLibraryMetadataVersion === metadataVersion) return;
       const inner = card.firstElementChild as HTMLElement | null;
       const cover = inner?.firstElementChild as HTMLElement | null;
@@ -453,9 +473,10 @@ class FrozenMaterialPresentation {
 
   private renderMetadataError(error: unknown): void {
     const existing = this.stage.querySelector<HTMLElement>('[data-material-library-read-error]');
-    const message = error instanceof ApiError && error.status === 401
+    const status = apiStatus(error);
+    const message = status === 401
       ? '登录状态已失效，请重新登录后查看素材。'
-      : error instanceof ApiError && error.status === 403
+      : status === 403
         ? '当前账号无权查看该类素材。'
         : '素材列表暂不可读取，当前内容已保留。';
     if (existing) { existing.textContent = message; return; }
@@ -463,7 +484,9 @@ class FrozenMaterialPresentation {
     node.dataset.materialLibraryReadError = 'true'; node.setAttribute('role', 'alert'); node.textContent = message;
     node.style.cssText = 'margin:0;color:#B42318;font-size:12px;line-height:20px';
     const input = this.stage.querySelector<HTMLElement>(this.config.querySelector);
-    input?.closest('div')?.parentElement?.after(node);
+    const section = input?.closest('div')?.parentElement || input?.parentElement;
+    if (section) section.after(node);
+    else this.stage.prepend(node);
   }
 }
 

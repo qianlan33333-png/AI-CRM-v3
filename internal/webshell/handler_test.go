@@ -586,6 +586,22 @@ func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing
 	}
 }
 
+func TestMaterialTemplateIdentitySeamsUseControllerResourceIDs(t *testing.T) {
+	attachment := `<template data-sc-for="{{ rows.attachItems }}" data-as="a"><tr style="{{ a.rowStyle }}"><td>{{ a.name }}</td></tr></template>`
+	withAttachmentID, err := materialTemplateIdentitySeams("attach", attachment)
+	if err != nil || !strings.Contains(withAttachmentID, `data-material-library-id="{{ a.resourceId }}"`) || strings.Count(withAttachmentID, `data-material-library-id=`) != 1 {
+		t.Fatalf("attachment identity seam err=%v template=%q", err, withAttachmentID)
+	}
+	mini := `<template data-sc-for="{{ rows.mpItems }}" data-as="m"><div style="background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden">{{ m.name }}</div></template>`
+	withMiniID, err := materialTemplateIdentitySeams("mpLib", mini)
+	if err != nil || !strings.Contains(withMiniID, `data-material-library-id="{{ m.resourceId }}"`) || strings.Count(withMiniID, `data-material-library-id=`) != 1 {
+		t.Fatalf("mini-program identity seam err=%v template=%q", err, withMiniID)
+	}
+	if _, err = materialTemplateIdentitySeams("attach", strings.Replace(attachment, `</template>`, `<tr style="{{ a.rowStyle }}"></tr></template>`, 1)); err == nil {
+		t.Fatal("ambiguous attachment donor row must fail closed")
+	}
+}
+
 func TestRenderHXCMountsLiveDashboardInTheV3Shell(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
