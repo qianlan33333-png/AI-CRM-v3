@@ -369,7 +369,10 @@ type RuntimeStore interface {
 	ReconcileExecution(context.Context, int64, string, bool, time.Time) (Execution, error)
 	RecordGroupMessageDelivery(context.Context, GroupMessageReceipt, string) error
 	FindPlanByWebhookReference(context.Context, string) (int64, error)
-	ListDirectoryGroups(context.Context, int64, int32, int32) ([]GroupDirectoryItem, int64, error)
+	// ListDirectoryGroups is a local authorised projection read. `query` is a
+	// bounded plain-text group name/reference search; callers must not use it to
+	// infer or resolve a customer identity.
+	ListDirectoryGroups(context.Context, int64, string, int32, int32) ([]GroupDirectoryItem, int64, error)
 	ReplaceDirectoryGroups(context.Context, int64, []GroupDirectoryItem, time.Time) error
 	RecordDirectoryRefresh(context.Context, string, int64, int64, [sha256.Size]byte, string, int32, bool, time.Time) error
 	CompleteEffect(context.Context, string, ExecutionState, bool, bool, string, int32, time.Time) error

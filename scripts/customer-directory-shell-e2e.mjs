@@ -2,12 +2,39 @@ import { JSDOM } from 'jsdom';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 const REPOSITORY = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const templateSource = fs.readFileSync(path.join(REPOSITORY, 'internal/webshell/templates/admin_customers.html'), 'utf8');
 const javascript = fs.readFileSync(path.join(REPOSITORY, 'internal/webshell/static/admin_console/admin_customers.js'), 'utf8');
+// This fixture deliberately executes the V3 picker that the SSR controller
+// opens in production.  It does not substitute a test picker or operate the
+// hidden selects directly: the following assertion must pass through the
+// picker commit and then the existing preview/command transport.
+const tagPickerBundle = (await build({
+  stdin: {
+    contents: "import { installTagPickerAdapter } from './web/v3/shared/ui/tagPickerAdapter'; installTagPickerAdapter();",
+    resolveDir: REPOSITORY,
+    sourcefile: 'customer-directory-shell-v3-tag-picker.ts',
+  },
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2020',
+  write: false,
+})).outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
 const sleep = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const fail = (message) => { throw new Error(`customer directory shell regression: ${message}`); };
+
+async function waitFor(predicate, timeout = 600) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const result = predicate();
+    if (result) return result;
+    await sleep(10);
+  }
+  return undefined;
+}
 
 function response(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -62,7 +89,7 @@ async function load(url, requests, sections) {
   const template = templateSource
     .replace('{{define "admin_customers"}}', '')
     .replace(/{{if eq \.RequestPath "\/admin\/customers"}}([\s\S]*?){{else}}([\s\S]*?){{end}}\s*<\/div>\s*{{end}}\s*$/, `${detail ? '$2' : '$1'}\n</div>`);
-  const dom = new JSDOM(`<!doctype html><html lang="zh-CN"><body>${template}<script>${javascript}</script></body></html>`, {
+  const dom = new JSDOM(`<!doctype html><html lang="zh-CN"><body>${template}<script>${tagPickerBundle}</script><script>${javascript}</script></body></html>`, {
     url,
     runScripts: 'dangerously',
     pretendToBeVisual: true,
@@ -76,7 +103,17 @@ async function load(url, requests, sections) {
       window.fetch = async (input, options = {}) => {
         const requestURL = new URL(String(input), window.location.origin);
         requests.push({ url: requestURL, options });
-        if (requestURL.pathname === '/api/admin/wecom/tags') return response({ items: [{ id: 7, group_name: '分组', tag_name: '标签七' }, { id: 8, group_name: '分组', tag_name: '标签八' }] });
+        if (requestURL.pathname === '/api/admin/wecom/tags') return response({
+          read_model_status: 'ready',
+          groups: [{ group_id: 17, group_name: '分组' }],
+          items: [
+            { tag_id: 7, group_id: 17, group_name: '分组', tag_name: '标签七' },
+            { tag_id: 8, group_id: 17, group_name: '分组', tag_name: '标签八' },
+          ],
+          count: 2,
+          total_tags: 2,
+          tag_limit: 1000,
+        });
         if (requestURL.pathname === '/api/v1/customer-tag-commands/preview') return response({ state: 'preview', lines: [{ customer_id: 42, state: 'eligible' }] });
         if (requestURL.pathname === '/api/v1/customer-tag-commands') return response({ state: 'queued', lines: [{ customer_id: 42, state: 'queued', effect_ref: 'eer_42' }] }, 202);
         if (requestURL.pathname === '/api/v1/customers/42/tag-commands') return response({ items: [{ id: 9, state: 'queued', lines: [{ customer_id: 42, state: 'queued' }] }] });
@@ -129,7 +166,26 @@ try {
   selector.checked = true;
   selector.dispatchEvent(new list.window.Event('change', { bubbles: true }));
   const batch = document.querySelector('#customer-tag-batch');
-  for (const option of batch.querySelector('[name="add_tag_ids"]').options) option.selected = ['7', '8'].includes(option.value);
+  const addTags = batch.querySelector('[name="add_tag_ids"]');
+  const openPicker = addTags.parentElement.querySelector('button');
+  if (!openPicker) fail('actual V3 tag picker button was not attached to the batch add-tag draft');
+  openPicker.click();
+  const picker = await waitFor(() => document.querySelector('[data-v3-selection-session="tag"]'));
+  if (!picker) fail('actual V3 tag picker did not open from the batch add-tag draft');
+  const rows = await waitFor(() => {
+    const entries = [...picker.querySelectorAll('[data-v3-tag-key]')];
+    return entries.length === 2 ? entries : undefined;
+  });
+  if (!rows || rows.length !== 2) fail('actual V3 tag picker did not render the complete controlled Owner catalog');
+  // Each toggle redraws the result list, so resolve the second live row after
+  // selecting the first instead of clicking a detached pre-rendered node.
+  rows[0].click();
+  const secondRow = await waitFor(() => [...picker.querySelectorAll('[data-v3-tag-key]')].find((row) => row.getAttribute('aria-pressed') === 'false'));
+  if (!secondRow) fail('actual V3 tag picker did not retain a live second row after selecting the first tag');
+  secondRow.click();
+  picker.querySelector('[data-v3-tag-confirm]')?.click();
+  if (!await waitFor(() => !document.querySelector('[data-v3-selection-session="tag"]'))) fail('actual V3 tag picker did not commit its selected draft');
+  if ([...addTags.selectedOptions].map((option) => option.value).join(',') !== '7,8') fail('actual V3 tag picker did not update the existing batch add-tag draft');
   batch.dispatchEvent(new list.window.Event('submit', { bubbles: true, cancelable: true }));
   await sleep(30);
   const tagCalls = listRequests.filter((item) => item.url.pathname.startsWith('/api/v1/customer-tag-commands'));

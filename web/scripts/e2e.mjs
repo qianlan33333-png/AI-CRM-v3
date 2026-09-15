@@ -196,20 +196,25 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         const test = window.__ownerHandoffHttpTest = { calls: [], pickerOpens: [] };
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data });
         const textResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'text/html' }), text: async () => data, json: async () => JSON.parse(data) });
-        window.OperationMemberPicker = {
+        window.AICRMStaffPicker = {
           open: async (options) => {
-            test.pickerOpens.push({ scope: options.scope, includeInactive: options.includeInactive, title: options.title });
-            const selected = staff.find((member) => options.includeInactive ? !member.Active : member.Active);
-            if (selected) options.onSelect({ user_id: selected.UserID });
+            test.pickerOpens.push({ source: options.source, scope: options.scope, title: options.title, directoryHint: options.directoryHint });
+            const page = await options.loadPage({ query: '', signal: new AbortController().signal });
+            const selected = page.items.find((member) => options.title === '选择原负责人' ? member.active === false : member.active !== false);
+            if (selected) options.onCommit({ selected: [selected] });
           },
         };
         window.fetch = async (input, init = {}) => {
           const url = new URL(String(input), window.location.origin);
           const method = init.method || 'GET';
           const body = init.body ? JSON.parse(String(init.body)) : undefined;
-          test.calls.push({ path: url.pathname, method, body, credentials: init.credentials });
+          test.calls.push({ path: url.pathname, query: url.search, method, body, credentials: init.credentials });
           if (url.pathname === '/static/admin_console/owner_migration_dd8d60d.html' && method === 'GET') return textResponse(OWNER_HANDOFF_DONOR);
           if (url.pathname === '/api/admin/customers/owner-handoffs/context' && method === 'GET') return json({ staff, operator: '管理员 #42' });
+          if (url.pathname === '/api/admin/common/operation-members' && method === 'GET') {
+            const includeInactive = url.searchParams.get('include_inactive') === 'true';
+            return json({ items: staff.filter((member) => includeInactive || member.Active).map((member) => ({ staff_id: member.ID, user_id: member.UserID, display_name: member.DisplayName, active: member.Active })) });
+          }
           if (url.pathname === '/api/admin/customers/owner-handoffs/previews' && method === 'POST') {
             const externalUserIDs = body.scope === 'excel_include' ? body.external_userids : ['external-42'];
             return json({ ID: 'preview-owner-host', Mode: body.mode, SourceStaffID: body.source_staff_id, TargetStaffID: body.target_staff_id, Hash: 'preview-hash', ConfirmationPhrase: 'CONFIRM', ExpiresAt: '2026-09-06T12:00:00Z', Rows: externalUserIDs.map((ExternalUserID, index) => ({ Line: index + 1, CustomerID: index + 42, ExternalUserID, CustomerDisplayName: `客户 ${index + 42}`, CurrentOwnerUserID: 'inactive-source', State: 'ready' })) });
@@ -2907,10 +2912,11 @@ console.log('admin/ownerMig.html（冻结负责人迁移页 Host → Picker → 
   await sleep(20);
   click(dom, root.querySelector('[data-owner-picker="target"]'));
   await sleep(20);
-  ok('原/目标负责人经共享 Picker 分别选择停用源和在职目标', root.querySelector('[data-owner-userid="source"]')?.value === '10' && root.querySelector('[data-owner-userid="target"]')?.value === '20' && JSON.stringify(test.pickerOpens) === JSON.stringify([
-    { scope: 'owner_migration', includeInactive: true, title: '选择原负责人' },
-    { scope: 'owner_migration', includeInactive: false, title: '选择目标负责人' },
-  ]));
+  const memberDirectoryCalls = test.calls.filter((call) => call.path === '/api/admin/common/operation-members');
+  ok('原/目标负责人经 V3 Staff Picker 分别选择停用源和在职目标', root.querySelector('[data-owner-userid="source"]')?.value === '10' && root.querySelector('[data-owner-userid="target"]')?.value === '20' && JSON.stringify(test.pickerOpens.map(({ source, scope, title }) => ({ source, scope, title }))) === JSON.stringify([
+    { source: 'owner_migration.operation_members', scope: 'owner_migration', title: '选择原负责人' },
+    { source: 'owner_migration.operation_members', scope: 'owner_migration', title: '选择目标负责人' },
+  ]) && memberDirectoryCalls.some((call) => call.query.includes('scope=owner_migration') && call.query.includes('include_inactive=true')) && memberDirectoryCalls.some((call) => call.query.includes('scope=owner_migration') && call.query.includes('include_inactive=false')));
   click(dom, root.querySelector('[data-preview]'));
   await sleep(100);
   const preview = ownerCalls().find((call) => call.path.endsWith('/previews'));

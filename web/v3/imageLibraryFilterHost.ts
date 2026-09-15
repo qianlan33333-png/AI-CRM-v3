@@ -5,6 +5,9 @@ import { imagePageDto, saveImageItemDto } from "../src/api/admin";
 import { deleteLegacyImage, getLegacyImage, getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
 import { ApiError, apiRequestOptions, unwrapGenerated } from "../src/api/transport";
 import type { ImageItem } from "../src/shared/api/types";
+import { installCommittedTextSearch } from "./shared/ui/committedTextSearch";
+
+installCommittedTextSearch();
 
 const PAGE_SIZE = 20;
 const SEARCH_DELAY_MS = 250;

@@ -776,27 +776,20 @@ func (r *Repository) FindPlanByWebhookReference(ctx context.Context, reference s
 	return id, err
 }
 
-func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, limit, offset int32) ([]groupopsport.GroupDirectoryItem, int64, error) {
+func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, query string, limit, offset int32) ([]groupopsport.GroupDirectoryItem, int64, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
+	query = strings.TrimSpace(query)
+	where, args := directoryGroupFilter(owner, query)
 	var total int64
-	if owner > 0 {
-		err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_directory_groups WHERE owner_staff_id=$1`, owner).Scan(&total)
-	} else {
-		err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_directory_groups`).Scan(&total)
-	}
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_directory_groups`+where, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups ORDER BY refreshed_at DESC,chat_reference LIMIT $1 OFFSET $2`
-	args := []any{limit, offset}
-	if owner > 0 {
-		query = `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups WHERE owner_staff_id=$1 ORDER BY refreshed_at DESC,chat_reference LIMIT $2 OFFSET $3`
-		args = []any{owner, limit, offset}
-	}
-	rows, err := tx.Query(ctx, query, args...)
+	pageArgs := append(args, limit, offset)
+	rows, err := tx.Query(ctx, `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups`+where+` ORDER BY refreshed_at DESC,chat_reference LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2), pageArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -810,6 +803,26 @@ func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, limit
 		items = append(items, item)
 	}
 	return items, total, rows.Err()
+}
+
+func directoryGroupFilter(owner int64, query string) (string, []any) {
+	clauses := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	if owner > 0 {
+		args = append(args, owner)
+		clauses = append(clauses, `owner_staff_id=$`+strconv.Itoa(len(args)))
+	}
+	if query != "" {
+		// Query text is literal user input, not a SQL pattern. Escaping % and _
+		// keeps a search for those characters scoped to the stored opaque ref.
+		pattern := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query) + "%"
+		args = append(args, pattern)
+		clauses = append(clauses, `(display_name ILIKE $`+strconv.Itoa(len(args))+` ESCAPE '\' OR chat_reference ILIKE $`+strconv.Itoa(len(args))+` ESCAPE '\')`)
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
 func (r *Repository) ReplaceDirectoryGroups(ctx context.Context, owner int64, items []groupopsport.GroupDirectoryItem, now time.Time) error {

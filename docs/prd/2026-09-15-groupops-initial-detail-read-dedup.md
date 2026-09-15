@@ -1,7 +1,7 @@
 # GroupOps 计划详情：合并首次 hydration 的重复读取
 
-**状态：** 已审方案，实施完成后待 root 差异复审  
-**开发基线：** `f13f65b79659309555a0653321f7c52a02893270`（fresh `origin/main` worktree）  
+**状态：** 已审方案，实施完成后待 root 差异复审
+**开发基线：** `f13f65b79659309555a0653321f7c52a02893270`（fresh `origin/main` worktree）
 **用户入口：** `/admin/groupops.html` 的计划详情（例如计划 #14）
 
 ## 业务判断与源码证据

@@ -14,11 +14,12 @@ for (const pathname of ['/admin/channels/17/edit','/admin/customers/9']) {
  try {
   dom.window.document.cookie='aicrm_admin_csrf=test-csrf';
   dom.window.eval(bundle);
-  await dom.window.fetch('/api/admin/common/operation-members/sync',{method:'POST',headers:{Accept:'application/json'},credentials:'same-origin'});
+  const unscoped={method:'POST',headers:{Accept:'application/json'},credentials:'same-origin'};
+  await dom.window.fetch('/api/admin/common/operation-members/sync',unscoped);
   assert.equal(calls.length,1);
-  assert.equal(calls[0].init.headers.get('X-CSRF-Token'),'test-csrf');
-  assert.match(calls[0].init.headers.get('Idempotency-Key'),/^operation-members-/);
-  assert.deepEqual(JSON.parse(calls[0].init.body),{scope:'group_ops',page_size:100});
+  assert.equal(calls[0].init,unscoped,'the loader must not assign an unrelated caller the group_ops scope');
+  assert.equal(calls[0].init.body,undefined,'the loader must not manufacture a refresh body for an unscoped caller');
+  assert.equal(calls[0].init.headers['X-CSRF-Token'],undefined,'the loader must not add a cross-page CSRF envelope');
   const explicit={method:'POST',body:'{"scope":"custom"}',headers:{'Idempotency-Key':'existing'}};
   await dom.window.fetch('/api/admin/common/operation-members/sync',explicit);
   assert.equal(calls[1].init,explicit,'explicit V3 envelopes must not be changed');
@@ -27,51 +28,10 @@ for (const pathname of ['/admin/channels/17/edit','/admin/customers/9']) {
   assert.equal(calls[2].init,foreign,'never attach CSRF to another origin');
  } finally {dom.window.close();}
 }
-console.log('shared staff refresh envelopes on channel and customer Hosts: PASS');
+console.log('standard component loader leaves every staff refresh scope to its caller: PASS');
 
-// Exercise the real frozen picker, including its selection state. The Host
-// intercepts refresh once and leaves rows intact when the Provider read fails.
 const fs = await import('node:fs/promises');
 const picker = await fs.readFile(path.join(root,'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js'),'utf8');
-const tagPickerArtifact = path.join(root, 'web/dist/assets/standard-components/wecom_tag_picker.js');
-let tagPicker;
-try {
-  tagPicker = await fs.readFile(tagPickerArtifact, 'utf8');
-} catch (error) {
-  throw new Error(`missing manifest-verified standard tag-picker release artifact at ${tagPickerArtifact}; run npm run build and node scripts/build-v3-host-adapters.mjs before this suite`, { cause: error });
-}
-const pause = (ms) => new Promise(resolve=>setTimeout(resolve,ms));
-for (const syncStatus of [200,503]) {
- let posts=0;let reads=0;let selected;
- const dom=new JSDOM('<!doctype html><body></body>',{url:'https://test.invalid/admin/channels/17/edit',runScripts:'dangerously',beforeParse(w){
-  w.Request=Request;w.Response=Response;w.Headers=Headers;
-  w.AdminApi={responseErrorMessage:(_r,_d,f)=>f,errorMessage:(e,f)=>e?.message||f};
-  w.fetch=async (input,init={})=>{
-   if (init.method==='POST') { posts++;return new Response(JSON.stringify({ok:syncStatus===200}),{status:syncStatus}); }
-   reads++;return new Response(JSON.stringify({items:[{staff_id:12,user_id:'alice',display_name:posts&&syncStatus===200?'刷新后昵称':'原昵称'}]}),{status:200});
-  };
- }});
- try {
-  dom.window.document.cookie='aicrm_admin_csrf=test-csrf';
-  dom.window.eval(bundle);dom.window.eval(picker);
-  await dom.window.OperationMemberPicker.open({scope:'channel_code',onSelect:m=>{selected=m;}});
-  dom.window.document.querySelector('[data-operation-member-row-select]').click();
-  dom.window.document.querySelector('[data-operation-member-refresh]').click();
-  await pause(350);
-  assert.equal(posts,1,'the Host and frozen picker must not issue duplicate refresh commands');
-  if (syncStatus===503) {
-   assert.equal(reads,1,'a failed refresh must keep the existing picker state');
-   assert.match(dom.window.document.querySelector('[role="alert"]').textContent,/HTTP 503/);
-   assert.match(dom.window.document.querySelector('[data-operation-member-list]').textContent,/原昵称/);
-  } else {
-   assert.equal(reads,2,'a successful refresh reloads through the existing search pathway');
-   assert.match(dom.window.document.querySelector('[data-operation-member-list]').textContent,/刷新后昵称/);
-  }
-  dom.window.document.querySelector('[data-operation-member-confirm]').click();
-  assert.equal(selected.user_id,'alice','selection remains confirmable after refresh');
- } finally {dom.window.close();}
-}
-console.log('frozen staff selector refresh success and failure retention: PASS');
 
 // The shared picker accepts an explicit selection contract. A multi-select
 // limit must stay a finite, positive integer and the owner context is always
@@ -98,6 +58,50 @@ console.log('frozen staff selector refresh success and failure retention: PASS')
  } finally {dom.window.close();}
 }
 console.log('frozen staff selector selection contract: PASS');
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+{
+  const queries = [];
+  const dom = new JSDOM('<!doctype html><body><div data-customer-directory-root></div></body>', { url: 'https://test.invalid/admin/channels/17/edit', runScripts: 'dangerously', pretendToBeVisual: true, beforeParse(window) {
+    window.Request = Request; window.Response = Response; window.Headers = Headers;
+    window.AdminApi = { responseErrorMessage: (_response, _body, fallback) => fallback, errorMessage: (error, fallback) => error?.message || fallback };
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+      queries.push(url.searchParams.get('q'));
+      return new Response(JSON.stringify({ items: [{ staff_id: 12, user_id: 'alice', display_name: 'Alice' }] }), { status: 200 });
+    };
+  }});
+  try {
+    dom.window.eval(bundle);
+    dom.window.eval(picker);
+    await dom.window.OperationMemberPicker.open({ scope: 'channel_code' });
+    await pause(30);
+    const search = dom.window.document.querySelector('[data-operation-member-search]');
+    search.focus(); search.value = '草稿';
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true, cancelable: true }));
+    await pause(300);
+    assert.deepEqual(queries, [null], 'typing a frozen staff search only changes its local draft');
+    search.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }));
+    search.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true }));
+    const candidate = new dom.window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' });
+    Object.defineProperty(candidate, 'keyCode', { value: 229 });
+    search.dispatchEvent(candidate);
+    assert.equal(candidate.defaultPrevented, false, 'IME candidate Enter remains owned by the browser');
+    await pause(30);
+    search.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
+    await pause(30);
+    assert.deepEqual(queries, [null, '草稿'], 'ordinary Enter forwards exactly the current committed frozen picker query');
+  } finally { dom.window.close(); }
+}
+console.log('frozen staff selector uses the shared committed-query interaction: PASS');
+
+const tagPickerArtifact = path.join(root, 'web/dist/assets/standard-components/wecom_tag_picker.js');
+let tagPicker;
+try {
+  tagPicker = await fs.readFile(tagPickerArtifact, 'utf8');
+} catch (error) {
+  throw new Error(`missing manifest-verified standard tag-picker release artifact at ${tagPickerArtifact}; run npm run build and node scripts/build-v3-host-adapters.mjs before this suite`, { cause: error });
+}
 
 const componentSources = {
  operationMembers: '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948',

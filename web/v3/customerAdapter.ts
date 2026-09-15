@@ -6,6 +6,7 @@
  * customers nor changes Customer mutations, OneID resolution, or ownership.
  */
 import { formatShanghaiDateTime } from "./adminDateTime";
+import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 
 export {};
 
@@ -428,12 +429,11 @@ async function customerSurvey(id: number, init?: RequestInit): Promise<Response>
   });
 }
 
-type StandardTag = { tag_id: string; tag_name?: string; group_name?: string };
 type StandardMember = { staff_id?: number; user_id?: string; display_name?: string };
 type StandardSelectorWindow = Window & {
   AICRMStandardComponents?: { ready(): Promise<void> };
   OperationMemberPicker?: { open(options: { title: string; scope: string; page_size: number; selectedMember?: StandardMember; onSelect(member: StandardMember | null): void }): void };
-  AICRMWeComTagPicker?: { open(options: { title: string; mode: 'single'; catalog: unknown; value: StandardTag[]; allowManual: false; onConfirm(tag: StandardTag | null): void; onClear(): void }): void };
+  AICRMTagPicker?: { open(options: { title: string; source: string; scope: string; selectedRecords: TagPickerRecord[]; mode: 'single'; loadPage: ReturnType<typeof createTagCatalogPageLoader>; onCommit(value: { selected: TagPickerRecord[] }): void; accessLossMessage(error: unknown): string | undefined }): void };
 };
 
 function standardSelectors(): StandardSelectorWindow {
@@ -468,19 +468,15 @@ function selectorButton(input: HTMLInputElement, label: string): HTMLButtonEleme
   return button;
 }
 
-function tagCatalog(): Promise<unknown> {
-  return originalCustomerFetch('/api/admin/wecom/tags', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
-    .then(async (response) => {
-      const catalog = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(`标签目录读取失败（HTTP ${response.status}）`);
-      const payload = record(catalog);
-      return { groups: items({ items: payload.groups }), items: items({ items: payload.items }) };
-    });
+function tagCatalogLoadFailure(response: Response): Error {
+  const error = new Error(`标签目录读取失败（HTTP ${response.status}）`) as Error & { status?: number };
+  error.status = response.status;
+  return error;
 }
 
 function attachTagSelector(inputID: string, title: string): void {
   const input = inputFor(inputID);
-  const picker = standardSelectors().AICRMWeComTagPicker;
+  const picker = standardSelectors().AICRMTagPicker;
   if (!input || !picker || input.dataset.standardSelectorReady) return;
   input.dataset.standardSelectorReady = 'true';
   const button = selectorButton(input, '选择标签');
@@ -488,25 +484,24 @@ function attachTagSelector(inputID: string, title: string): void {
   const sync = (): void => { summary.textContent = input.value ? `已选标签 #${input.value}` : '暂未选择标签'; };
   sync();
   button.addEventListener('click', () => {
-    button.disabled = true;
-    void tagCatalog().then((catalog) => {
-      picker.open({
-        title,
-        mode: 'single',
-        catalog,
-        value: input.value ? [{ tag_id: input.value }] : [],
-        allowManual: false,
-        onConfirm(tag) {
-          const id = positiveInteger(tag?.tag_id);
-          if (id == null) return;
-          input.value = String(id);
-          sync();
-        },
-        onClear() { input.value = ''; sync(); },
-      });
-    }).catch((error) => {
-      summary.textContent = error instanceof Error ? error.message : '标签目录读取失败';
-    }).finally(() => { button.disabled = false; });
+    const source = 'local_tag_catalog';
+    picker.open({
+      title,
+      source,
+      scope: 'customer.filter.tag',
+      mode: 'single',
+      selectedRecords: input.value ? [unresolvedTagRecord(source, input.value)].filter((value): value is TagPickerRecord => Boolean(value)) : [],
+      loadPage: createTagCatalogPageLoader(source, async ({ signal }) => {
+        const response = await originalCustomerFetch('/api/admin/wecom/tags', { credentials: 'same-origin', headers: { Accept: 'application/json' }, signal });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw tagCatalogLoadFailure(response);
+        return payload;
+      }),
+      onCommit(value) { input.value = value.selected[0]?.tag_id || ''; sync(); },
+      accessLossMessage(error) {
+        return (error as { status?: number } | undefined)?.status === 403 ? '标签目录权限已失效；当前筛选条件仍保留，请取消后重新登录。' : undefined;
+      },
+    });
   });
 }
 

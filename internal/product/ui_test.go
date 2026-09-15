@@ -25,7 +25,7 @@ func TestProductUIAllowlistUsesDonorTemplateAndMountsDataPage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manifest := buildManifest{Entries: map[string]string{"tokens": "assets/tokens.css", "labs": "assets/labs.css", "productDistributionStyles": "assets/product-distribution.css", "productHost": "assets/product-host.js", "standardComponentsHost": "assets/standard-components-host.js"}, Files: map[string]json.RawMessage{"assets/tokens.css": json.RawMessage("null"), "assets/labs.css": json.RawMessage("null"), "assets/product-distribution.css": json.RawMessage("null"), "assets/product-host.js": json.RawMessage("null"), "assets/standard-components-host.js": json.RawMessage("null"), "assets/standard-components/material_picker.css": json.RawMessage("null"), "assets/standard-components/send_content_composer.css": json.RawMessage("null"), "assets/standard-components/wecom_tag_picker.css": json.RawMessage("null")}}
+	manifest := buildManifest{Entries: map[string]string{"tokens": "assets/tokens.css", "labs": "assets/labs.css", "productDistributionStyles": "assets/product-distribution.css", "productHost": "assets/product-host.js", "standardComponentsHost": "assets/standard-components-host.js", "selectionDialogStyles": "assets/selection-dialog.css"}, Files: map[string]json.RawMessage{"assets/tokens.css": json.RawMessage("null"), "assets/labs.css": json.RawMessage("null"), "assets/product-distribution.css": json.RawMessage("null"), "assets/product-host.js": json.RawMessage("null"), "assets/standard-components-host.js": json.RawMessage("null"), "assets/selection-dialog.css": json.RawMessage("null"), "assets/standard-components/material_picker.css": json.RawMessage("null"), "assets/standard-components/send_content_composer.css": json.RawMessage("null"), "assets/standard-components/wecom_tag_picker.css": json.RawMessage("null")}}
 	rawManifest, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestProductUIAllowlistUsesDonorTemplateAndMountsDataPage(t *testing.T) {
 	if err = os.MkdirAll(filepath.Join(dist, "assets", "standard-components"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for name, content := range map[string]string{"tokens.css": "tokens", "labs.css": "labs", "product-distribution.css": "product distribution", "product-host.js": "host", "standard-components-host.js": "standard host", "standard-components/material_picker.css": "material", "standard-components/send_content_composer.css": "composer", "standard-components/wecom_tag_picker.css": "tag"} {
+	for name, content := range map[string]string{"tokens.css": "tokens", "labs.css": "labs", "product-distribution.css": "product distribution", "product-host.js": "host", "standard-components-host.js": "standard host", "selection-dialog.css": "selection dialog", "standard-components/material_picker.css": "material", "standard-components/send_content_composer.css": "composer", "standard-components/wecom_tag_picker.css": "tag"} {
 		if err = os.WriteFile(filepath.Join(dist, "assets", name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func TestProductUIAllowlistUsesDonorTemplateAndMountsDataPage(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/products.html", nil))
-	if recorder.Code != http.StatusOK || rendered.page != "products" || !strings.Contains(rendered.body, "donor body") || rendered.assets.ProductCSS != "/product-assets/product-distribution.css" || rendered.assets.HostJS != "/product-assets/product-host.js" || rendered.assets.StandardHostJS != "/product-assets/standard-components-host.js" || len(rendered.assets.StandardCSS) != 3 {
+	if recorder.Code != http.StatusOK || rendered.page != "products" || !strings.Contains(rendered.body, "donor body") || rendered.assets.ProductCSS != "/product-assets/product-distribution.css" || rendered.assets.HostJS != "/product-assets/product-host.js" || rendered.assets.StandardHostJS != "/product-assets/standard-components-host.js" || len(rendered.assets.StandardCSS) != 4 || rendered.assets.StandardCSS[3] != "/product-assets/selection-dialog.css" {
 		t.Fatalf("status=%d page=%q body=%q assets=%+v", recorder.Code, rendered.page, rendered.body, rendered.assets)
 	}
 

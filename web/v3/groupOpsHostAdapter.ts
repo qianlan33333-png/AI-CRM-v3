@@ -1,12 +1,22 @@
 // V3 Host adapter for the byte-derived Group Ops presentation. It owns only
 // authenticated transport and DTO projection; plan, node and directory facts
 // remain in internal/groupops and the existing WeCom read adapter.
+import { openGroupPicker, type GroupPickerRecord } from './shared/ui/groupPickerAdapter';
+import { installStaffPickerAdapter } from './shared/ui/staffPickerAdapter';
+import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord, type MaterialType } from './shared/ui/materialPickerAdapter';
+import { openContentComposer, openReadonlyContentPresentation, type ContentComposerResult } from './shared/ui/contentComposer';
+import type { ContentMaterialKind, ContentMaterialRecord } from './shared/ui/contentPresentation';
+import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+
+installCommittedTextSearch();
+
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
 const revisions = new Map<number, number>();
 const planGroupViews = new Map<number, Json[]>();
+const planGroupDirectoryViews = new Map<number, Map<string, GroupPickerRecord>>();
 const planSummaryViews = new Map<number, Json>();
-type InitialDetailReadKind = "plan" | "groups";
+type InitialDetailReadKind = 'plan' | 'groups';
 type InitialDetailReadEpoch = {
   id: number;
   generation: number;
@@ -15,93 +25,16 @@ type InitialDetailReadEpoch = {
   pairable: boolean;
   claims: number;
   detail: Promise<Json>;
-  directory: Promise<Json[]>;
   groups: Promise<Json[]> | null;
 };
 const initialDetailReadEpochs = new Map<number, InitialDetailReadEpoch>();
 const detailReadGenerations = new Map<number, number>();
+type GroupSelectionStep = { planID: number; kind: "add" | "remove"; reference: string; idempotencyKey: string; body?: Json };
+type GroupSelectionOperation = { signature: string; steps: Map<string, GroupSelectionStep> };
+const groupSelectionOperations = new Map<number, GroupSelectionOperation>();
 let refreshedGroupTotal: number | null = null;
-const operationMembersPath = "/api/admin/common/operation-members";
-const nativeFetch = window.fetch.bind(window);
-
-function requestURL(input: RequestInfo | URL): URL {
-  if (input instanceof URL) return new URL(input.toString(), window.location.origin);
-  if (typeof input === "string") return new URL(input, window.location.origin);
-  return new URL(input.url, window.location.origin);
-}
-
-function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
-  if (init?.method) return init.method.toUpperCase();
-  if (typeof input !== "string" && !(input instanceof URL)) return input.method.toUpperCase();
-  return "GET";
-}
-
-function pickerMembersPayload(source: Json): Json | null {
-  if (!Array.isArray(source.items)) return null;
-  const items = source.items.flatMap((value: Json) => {
-    const staffID = Number(value.staff_id);
-    if (!Number.isSafeInteger(staffID) || staffID < 1) return [];
-    return [{
-      // The picker shows `user_id` as its second line. Keep the real WeCom
-      // identity there, while preserving the local staff ID as the value that
-      // plan commands write through the Host.
-      user_id: String(value.sender_userid || staffID),
-      staff_id: String(staffID),
-      display_name: memberDisplayName(value),
-    }];
-  });
-  return { scope: "group_ops", page_size: source.page_size, items };
-}
-
-function memberDisplayName(value: Json): string {
-  const name = String(value.display_name || "").trim();
-  const userID = String(value.sender_userid || "").trim();
-  // Imported placeholder names are not real WeCom profile names.
-  if (!name || (value.name_source !== "wecom_profile" && (name === `企微客服 ${userID}` || name === userID))) return "姓名待同步";
-  return name;
-}
-
-// The frozen picker reads this endpoint directly instead of AdminApi.requestJson.
-// Keep its byte-derived implementation untouched and make the single Group Ops
-// read compatible at the V3 Host boundary. The frozen refresh call predates
-// the V3 scoped command body, so add its scope, CSRF and idempotency envelope
-// here without changing the donor picker.
-window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = requestURL(input);
-  if (url.origin !== window.location.origin) return nativeFetch(input, init);
-  const method = requestMethod(input, init);
-  if (method === "POST" && url.pathname === `${operationMembersPath}/sync`) {
-    const headers = new Headers(init?.headers || (typeof input === "string" || input instanceof URL ? undefined : input.headers));
-    headers.set("Accept", "application/json");
-    headers.set("Content-Type", "application/json");
-    headers.set("Idempotency-Key", key());
-    const token = csrf();
-    if (token) headers.set("X-CSRF-Token", token);
-    return nativeFetch(input, {
-      ...init,
-      method: "POST",
-      headers,
-      credentials: "same-origin",
-      body: JSON.stringify({ scope: "group_ops", page_size: 100 }),
-    });
-  }
-  const response = await nativeFetch(input, init);
-  if (
-    method !== "GET" ||
-    url.pathname !== operationMembersPath ||
-    url.searchParams.get("scope") !== "group_ops" ||
-    !response.ok
-  ) return response;
-  const source = await response.clone().json().catch(() => null);
-  const projected = source && typeof source === "object" ? pickerMembersPayload(source as Json) : null;
-  if (!projected) return response;
-  return new Response(JSON.stringify(projected), {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
-};
-
+let openingGroupPicker = false;
+let activeGroupPickerPlan: number | undefined;
 function csrf(): string {
   return (
     document.cookie
@@ -225,6 +158,20 @@ function responseMessage(data: Json, fallback: string): string {
 function isOperationsConflict(data: Json): boolean {
   return data?.code === "operations_conflict" || (data?.error as Json)?.code === "operations_conflict";
 }
+function announceDirectoryReadFailure(): void {
+  // The detail renderer has a second, decorative owner-scoped group read.
+  // Its failure must remain visible without changing the saved bindings. The
+  // groups list owns its own explicit failed-read state instead.
+  if (document.getElementById("group-ops-app")?.dataset.pageMode !== "detail") return;
+  window.setTimeout(() => {
+    const notice = document.querySelector<HTMLElement>("#group-ops-app .group-ops__notice");
+    if (notice) {
+      notice.hidden = false;
+      notice.classList.add("group-ops__notice--error");
+      notice.textContent = "群目录读取失败，请重试；已绑定群仍可查看。";
+    }
+  }, 0);
+}
 function planIDFromAPIURL(value: string): number | null {
   const match = new URL(value, window.location.origin).pathname.match(/\/plans\/(\d+)(?:\/|$)/);
   if (!match) return null;
@@ -237,7 +184,12 @@ async function nativeRequest(url: string, options: Json = {}, onOperationsConfli
   if (options.body !== undefined)
     headers.set("Content-Type", "application/json");
   if (options.method && options.method !== "GET") {
-    headers.set("Idempotency-Key", options.privateCreateRecoveryKey || key());
+    headers.set(
+      "Idempotency-Key",
+      typeof options.idempotencyKey === "string"
+        ? options.idempotencyKey
+        : options.privateCreateRecoveryKey || key(),
+    );
     const token = csrf();
     if (token) headers.set("X-CSRF-Token", token);
   }
@@ -246,7 +198,7 @@ async function nativeRequest(url: string, options: Json = {}, onOperationsConfli
     headers,
     credentials: "same-origin",
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    signal: options.signal,
+    signal: options.signal && typeof options.signal === "object" ? options.signal as AbortSignal : undefined,
   });
   const raw = await response.text();
   let data: Json = {};
@@ -265,7 +217,7 @@ async function nativeRequest(url: string, options: Json = {}, onOperationsConfli
         else revisions.delete(planID);
       }
     }
-    const error = new Error(responseMessage(data, `HTTP ${response.status}`));
+    const error = new Error(responseMessage(data, `HTTP ${response.status}`)) as Error & { status?: number; payload?: Json };
     Object.assign(error, { status: response.status, payload: data });
     throw error;
   }
@@ -347,6 +299,8 @@ function plan(value: Json, publishRevision = true): Json {
   };
 }
 function node(value: Json): Json {
+  const resolvedRecords = contentRecordsFromUnknown(value.content_material_records);
+  const records = resolvedRecords.length ? resolvedRecords : materialRecordsFor(value.material_plan);
   return {
     id: Number(value.node_id),
     day_index: Number(value.day_index || 1),
@@ -356,10 +310,48 @@ function node(value: Json): Json {
     action_title: value.action_title || "",
     text_content: value.message_text || "",
     content_package_json: packageFor(value.material_plan),
+    // This is a UI read projection of the exact owner sequence. The eventual
+    // node command checks it against content_package_json before mapping it
+    // back to material_plan.references; labels never become domain facts.
+    content_material_records: records,
+    content_material_order_json: records,
     attachments: [],
     sort_order: Number(value.position || 1),
     status: value.status || "active",
   };
+}
+const materialKinds = ['image', 'miniprogram', 'attachment', 'group_invite'] as const;
+type GroupOpsMaterialKind = typeof materialKinds[number];
+const materialPackageFields: Record<GroupOpsMaterialKind, string> = {
+  image: 'image_library_ids', miniprogram: 'miniprogram_library_ids', attachment: 'attachment_library_ids', group_invite: 'group_invite_library_ids',
+};
+const materialLabels: Record<GroupOpsMaterialKind, string> = {
+  image: '图片', miniprogram: '小程序', attachment: '附件', group_invite: '群邀请',
+};
+function materialKind(value: unknown): GroupOpsMaterialKind | undefined {
+  const candidate = String(value || '').trim();
+  return (materialKinds as readonly string[]).includes(candidate) ? candidate as GroupOpsMaterialKind : undefined;
+}
+function materialID(value: unknown): number | undefined {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+function materialRecord(kind: GroupOpsMaterialKind, id: number): ContentMaterialRecord {
+  return { source: 'media-library', kind, id, label: `${materialLabels[kind]}素材 #${id}`, disabledReason: '素材状态待目录确认' };
+}
+function materialRecordsFor(value: Json | undefined): ContentMaterialRecord[] {
+  const output: ContentMaterialRecord[] = [];
+  const seen = new Set<string>();
+  for (const reference of Array.isArray(value?.references) ? value!.references : []) {
+    const kind = materialKind(reference?.kind);
+    const id = materialID(reference?.id);
+    if (!kind || id === undefined) continue;
+    const key = `${kind}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(materialRecord(kind, id));
+  }
+  return output;
 }
 function packageFor(value: Json | undefined): Json {
   const result: Json = {
@@ -382,26 +374,77 @@ function packageFor(value: Json | undefined): Json {
   }
   return result;
 }
+function packageReferences(value: unknown): Array<{ kind: GroupOpsMaterialKind; id: number }> {
+  const pkg = value && typeof value === 'object' ? value as Json : {};
+  const output: Array<{ kind: GroupOpsMaterialKind; id: number }> = [];
+  const seen = new Set<string>();
+  for (const kind of materialKinds) {
+    const raw = (pkg[materialPackageFields[kind]]);
+    const items = Array.isArray(raw) ? raw : [];
+    for (const candidate of items) {
+      const id = materialID(candidate);
+      if (id === undefined) throw new Error('素材标识无效，请重新打开内容编辑器。');
+      const key = `${kind}:${id}`;
+      if (seen.has(key)) throw new Error('同一类型的素材不能重复，请重新确认内容。');
+      seen.add(key);
+      output.push({ kind, id });
+    }
+  }
+  return output;
+}
+function persistedMaterialOrder(value: unknown, expected: readonly { kind: GroupOpsMaterialKind; id: number }[]): Array<{ kind: GroupOpsMaterialKind; id: number }> | undefined {
+  if (value === undefined) return undefined; // Existing form: stable historic per-kind order.
+  if (!Array.isArray(value)) throw new Error('素材顺序信息无效，请重新打开内容编辑器。');
+  const expectedKeys = new Set(expected.map((reference) => `${reference.kind}:${reference.id}`));
+  const output: Array<{ kind: GroupOpsMaterialKind; id: number }> = [];
+  const seen = new Set<string>();
+  for (const record of value) {
+    if (!record || typeof record !== 'object' || (record as Json).source !== 'media-library') throw new Error('素材来源无效，请重新打开内容编辑器。');
+    const kind = materialKind((record as Json).kind);
+    const id = materialID((record as Json).id);
+    if (!kind || id === undefined) throw new Error('素材顺序信息无效，请重新打开内容编辑器。');
+    const key = `${kind}:${id}`;
+    if (!expectedKeys.has(key) || seen.has(key)) throw new Error('素材顺序与当前内容不一致，请重新确认内容。');
+    seen.add(key);
+    output.push({ kind, id });
+  }
+  if (output.length !== expected.length || seen.size !== expectedKeys.size) throw new Error('素材顺序与当前内容不一致，请重新确认内容。');
+  return output;
+}
 function materialPlan(input: Json): Json {
-  const pkg = input.content_package_json || {};
-  const refs: Json[] = [];
-  const kinds: Array<[string, string]> = [
-    ["image_library_ids", "image"],
-    ["miniprogram_library_ids", "miniprogram"],
-    ["attachment_library_ids", "attachment"],
-    ["group_invite_library_ids", "group_invite"],
-  ];
-  for (const [field, kind] of kinds)
-    for (const id of pkg[field] || [])
-      if (Number(id) > 0) refs.push({ kind, id: Number(id) });
-  return { references: refs };
+  const references = packageReferences(input.content_package_json);
+  const persisted = persistedMaterialOrder(input.content_material_order_json, references);
+  return { references: (persisted || references).map((reference) => ({ kind: reference.kind, id: reference.id })) };
 }
 async function detail(id: number, onOperationsConflict?: (planID: number) => void): Promise<Json> {
+  // This path feeds the donor's full plan projection and also supplies
+  // revision checks before a node command. It never starts a Media lookup.
   return nativeRequest(`${base}/plans/${id}`, {}, onOperationsConflict);
 }
 async function revision(id: number): Promise<number> {
   if (!revisions.has(id)) plan(await detail(id).then((v) => v.plan || v));
   return revisions.get(id) || 0;
+}
+function groupView(asset: Json, directoryItem?: GroupPickerRecord): Json {
+  const external = directoryItem?.external_member_count;
+  const total = directoryItem?.member_count;
+  const knownExternal = external !== null && external !== undefined && Number.isFinite(Number(external));
+  const knownTotal = total !== null && total !== undefined && Number.isFinite(Number(total));
+  return {
+    chat_id: String(asset.asset_reference || asset.chat_reference || ''),
+    group_name: String(directoryItem?.display_name || asset.display_name || '群名称待同步'),
+    owner_userid: directoryItem?.owner_staff_id ? String(directoryItem.owner_staff_id) : '',
+    internal_member_count_snapshot: knownTotal && knownExternal ? Number(total) - Number(external) : null,
+    external_member_count_snapshot: knownExternal ? Number(external) : null,
+  };
+}
+async function groupsForPlan(id: number, source?: Pick<InitialDetailReadEpoch, 'detail'>): Promise<Json[]> {
+  const value = await (source?.detail || detail(id));
+  const known = planGroupDirectoryViews.get(id) || new Map<string, GroupPickerRecord>();
+  // Group bindings are Owner facts. This read only decorates them with a
+  // scoped picker page already authorised for this plan; it never starts a
+  // whole-directory crawl while the detail or node form is loading.
+  return (value.group_assets || []).map((asset: Json) => groupView(asset, known.get(String(asset.asset_reference || ''))));
 }
 async function expectedRevision(body: Json, id: number): Promise<number> {
   if (Object.prototype.hasOwnProperty.call(body, "expected_revision"))
@@ -485,22 +528,6 @@ async function completeCreateConfiguration(
     throw createRecoveryError(error, recovery);
   }
 }
-async function directory(): Promise<Json[]> {
-  const items: Json[] = [];
-  let offset = 0;
-  try {
-    for (;;) {
-      const data = await nativeRequest(`${base}/groups?limit=200&offset=${offset}`);
-      if (!Array.isArray(data.items)) throw new Error("invalid directory page");
-      items.push(...data.items);
-      if (!data.has_more) return items;
-      if (!data.items.length) throw new Error("directory pagination did not advance");
-      offset += data.items.length;
-    }
-  } catch {
-    throw new Error("群目录读取失败，请重试");
-  }
-}
 function newInitialDetailReadEpoch(id: number): InitialDetailReadEpoch {
   const generation = (detailReadGenerations.get(id) || 0) + 1;
   detailReadGenerations.set(id, generation);
@@ -517,25 +544,22 @@ function newInitialDetailReadEpoch(id: number): InitialDetailReadEpoch {
     pairable: true,
     claims: 0,
     detail: detail(id, clearCurrentRevisionOnConflict),
-    directory: directory(),
     groups: null,
   };
-  // Both reads begin together. Keep a handled branch even if the other read
-  // rejects first, so a failed detail never leaves the directory rejection
-  // unobserved while the caller takes its existing error path.
+  // The donor starts its plan/groups pair synchronously. A later standalone
+  // read gets a fresh epoch even when this first request is still pending.
   void epoch.detail.catch(() => undefined);
-  void epoch.directory.catch(() => undefined);
   queueMicrotask(() => { epoch.pairable = false; });
   return epoch;
 }
 function claimInitialDetailRead(id: number, kind: InitialDetailReadKind): { epoch: InitialDetailReadEpoch; release: () => void } {
   let epoch = initialDetailReadEpochs.get(id);
-  const alreadyClaimed = epoch && (kind === "plan" ? epoch.planClaimed : epoch.groupsClaimed);
+  const alreadyClaimed = epoch && (kind === 'plan' ? epoch.planClaimed : epoch.groupsClaimed);
   if (!epoch || !epoch.pairable || alreadyClaimed) {
     epoch = newInitialDetailReadEpoch(id);
     initialDetailReadEpochs.set(id, epoch);
   }
-  if (kind === "plan") epoch.planClaimed = true;
+  if (kind === 'plan') epoch.planClaimed = true;
   else epoch.groupsClaimed = true;
   epoch.claims += 1;
   let released = false;
@@ -560,28 +584,6 @@ function invalidateInitialDetailRead(id: number): void {
 function groupsForInitialDetailRead(epoch: InitialDetailReadEpoch): Promise<Json[]> {
   if (!epoch.groups) epoch.groups = groupsForPlan(epoch.id, epoch);
   return epoch.groups;
-}
-async function groupsForPlan(id: number, source?: Pick<InitialDetailReadEpoch, "detail" | "directory">): Promise<Json[]> {
-  const [value, directoryItems] = await Promise.all([source?.detail || detail(id), source?.directory || directory()]);
-  return (value.group_assets || []).map((asset: Json) => {
-    const found =
-      directoryItems.find(
-        (item) => item.chat_reference === asset.asset_reference,
-      ) || {};
-    const external = found.external_member_count;
-    const knownExternal = external !== null && external !== undefined && Number.isFinite(Number(external));
-    const total = found.member_count;
-    const knownTotal = total !== null && total !== undefined && Number.isFinite(Number(total));
-    return {
-      chat_id: asset.asset_reference,
-      group_name: found.display_name || "群名称待同步",
-      owner_userid: found.owner_staff_id ? String(found.owner_staff_id) : "",
-      // The provider directory has a total and (when member types are complete)
-      // an external count. Internal count is derived only from both facts.
-      internal_member_count_snapshot: knownTotal && knownExternal ? Number(total) - Number(external) : null,
-      external_member_count_snapshot: knownExternal ? Number(external) : null,
-    };
-  });
 }
 async function summary(id: number): Promise<Json> {
   return summarizeGroups(await groupsForPlan(id));
@@ -623,7 +625,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   if (id && method !== "GET") invalidateInitialDetailRead(id);
   if (parsedURL.pathname === `${base}/plans` && method === "GET") {
     const requested = requestedPlanPage(parsedURL);
-    const data = await nativeRequest(url, { signal: options.signal });
+    const data = await nativeRequest(url, { signal: options.signal && typeof options.signal === "object" ? options.signal as AbortSignal : undefined });
     if (!Array.isArray(data.items)) throw new Error("计划列表数据无效");
     const total = requiredNumericNonNegativeInteger(data.total, "计划列表总数数据无效");
     const limit = requiredNumericPositiveInteger(data.limit, "计划列表页码数据无效");
@@ -719,8 +721,8 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
       method: "POST",
       body: { expected_revision: await expectedRevision(body, id) },
     });
-  if (id && /\/groups$/.test(url) && method === "GET") {
-    const claimed = claimInitialDetailRead(id, "groups");
+  if (id && /\/groups$/.test(url) && method === 'GET') {
+    const claimed = claimInitialDetailRead(id, 'groups');
     try {
       const items = await groupsForInitialDetailRead(claimed.epoch);
       return { items, summary: publishGroupViews(id, items, currentInitialDetailRead(claimed.epoch)) };
@@ -810,8 +812,8 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     if (Number.isSafeInteger(Number(updated.revision))) revisions.set(id, Number(updated.revision));
     return value;
   }
-  if (id && url === `${base}/plans/${id}` && method === "GET") {
-    const claimed = claimInitialDetailRead(id, "plan");
+  if (id && url === `${base}/plans/${id}` && method === 'GET') {
+    const claimed = claimInitialDetailRead(id, 'plan');
     try {
       const [value, items] = await Promise.all([claimed.epoch.detail, groupsForInitialDetailRead(claimed.epoch)]);
       const rawPlan = value.plan || {};
@@ -869,11 +871,18 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     let data: Json;
     try {
       data = await nativeRequest(url);
-    } catch {
+    } catch (error) {
       refreshedGroupTotal = null;
-      throw new Error("群目录读取失败，请重试");
+      announceDirectoryReadFailure();
+      // The groups screen distinguishes a directory outage from a confirmed
+      // empty page and retains any rows it already rendered. Do not translate
+      // a failed read into an empty success payload.
+      throw error;
     }
-    if (!Array.isArray(data.items)) throw new Error("群目录读取失败，请重试");
+    if (!Array.isArray(data.items)) {
+      refreshedGroupTotal = null;
+      throw new Error("群聊列表暂不可读取");
+    }
     return {
       ...data,
       items: (data.items || []).map((item: Json) => {
@@ -893,8 +902,6 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   }
   if (url === `${base}/groups/sync`) {
     refreshedGroupTotal = null;
-    const planID = Number(document.getElementById("group-ops-app")?.dataset.planId);
-    if (planID > 0) invalidateInitialDetailRead(planID);
     const result = await nativeRequest(url, {
       method,
       body: {
@@ -902,15 +909,37 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
         limit: Number(body.limit || 100),
       },
     });
+    const planID = Number(document.getElementById("group-ops-app")?.dataset.planId);
     if (planID > 0) {
       try {
-        // Update only read projections held by the donor. Do not reload its
-        // plan or form: an unsaved owner/name/dimension remains a draft.
-        const rows = await groupsForPlan(planID);
+        // A scoped-directory refresh changes the projection a current detail
+        // load would decorate. Its authoritative plan read must therefore
+        // publish from a new generation, never an earlier hydration epoch.
+        invalidateInitialDetailRead(planID);
+        // Refresh returns the current owner-scoped directory page. Merge only
+        // matching decoration into the Host cache; plan bindings remain Owner
+        // facts and an unsaved form still does not trigger a plan write.
+        const refreshed = new Map<string, GroupPickerRecord>((result.items || []).flatMap((item: Json): [string, GroupPickerRecord][] => {
+          const record = groupRecord({ asset_reference: item.chat_reference }, item);
+          return record.chat_reference ? [[record.chat_reference, record]] : [];
+        }));
+        const directoryViews = planGroupDirectoryViews.get(planID) || new Map<string, GroupPickerRecord>();
+        for (const [reference, directoryRecord] of refreshed) directoryViews.set(reference, directoryRecord);
+        planGroupDirectoryViews.set(planID, directoryViews);
+        // Read the Owner binding again and decorate only references returned
+        // by this scoped refresh. Do not reload the donor form or create a
+        // broader directory read, so an unsaved owner/name draft remains local.
+        const persisted = await detail(planID);
+        const rows = (persisted.group_assets || []).map((asset: Json) => {
+          const reference = String(asset.asset_reference || "");
+          return groupView(asset, refreshed.get(reference) || directoryViews.get(reference));
+        });
         const view = planGroupViews.get(planID);
         if (view) view.splice(0, view.length, ...rows);
         const counts = planSummaryViews.get(planID);
-        if (counts) Object.assign(counts, summarizeGroups(rows));
+        const summaryValue = summarizeGroups(rows);
+        if (counts) Object.assign(counts, summaryValue);
+        window.dispatchEvent(new CustomEvent("aicrm:groupops-directory-decoration", { detail: { planId: planID, rows, summary: summaryValue } }));
       } catch {
         throw new Error("群聊已刷新，但页面读回失败，请重新打开页面查看");
       }
@@ -918,7 +947,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     if (Number.isSafeInteger(result.total) && result.total >= 0) refreshedGroupTotal = result.total;
     return result;
   }
-  if (url.startsWith(operationMembersPath)) {
+  if (url.startsWith("/api/admin/common/operation-members")) {
     const data = await nativeRequest(url);
     return {
       ...data,
@@ -936,6 +965,342 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   }
   return nativeRequest(url, options);
 }
+
+
+type GroupOpsContentBridgeOptions = {
+  title?: unknown;
+  value?: unknown;
+  selectedRecords?: unknown;
+  onConfirm?(result: ContentComposerResult): void | Promise<void>;
+  onCancel?(): void;
+  /** The frozen node form owns whether the opening request still belongs to it. */
+  isCurrent?(): boolean;
+  /** A native action remains visible while one node's authorised detail reads settle. */
+  loadingTarget?: unknown;
+};
+type GroupOpsReadonlyContentOptions = Omit<GroupOpsContentBridgeOptions, 'onConfirm' | 'onCancel'>;
+type MaterialPickerBridge = {
+  open(options: {
+    type: MaterialType;
+    title?: string;
+    selectedIds?: number[];
+    selectedRecords?: MaterialPickerRecord[];
+    limit?: number;
+    onCommit?(result: { selected: MaterialPickerRecord[]; added: MaterialPickerRecord[]; removed: MaterialPickerRecord[] }): void | Promise<void>;
+    onCancel?(): void;
+  }): unknown;
+};
+const groupOpsMaterialLimits: Record<GroupOpsMaterialKind, number> = { image: 3, miniprogram: 1, attachment: 9, group_invite: 1 };
+const groupOpsMaterialEndpoints: Record<GroupOpsMaterialKind, string> = {
+  image: '/api/admin/image-library', miniprogram: '/api/admin/miniprogram-library', attachment: '/api/admin/attachment-library', group_invite: '/api/admin/group-invite-library',
+};
+function wellFormedUnicode(value: string): boolean {
+  const nativeCheck = (String.prototype as unknown as { isWellFormed?: (this: string) => boolean }).isWellFormed;
+  if (typeof nativeCheck === 'function') return nativeCheck.call(value);
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const following = value.charCodeAt(index + 1);
+      if (following < 0xdc00 || following > 0xdfff) return false;
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+  }
+  return true;
+}
+function groupOpsMessageIssue(value: string): string | undefined {
+  if (!wellFormedUnicode(value)) return '话术包含无效字符，请重新输入。';
+  if (value.trim() !== value) return '话术首尾不能包含空白字符，请调整后确认。';
+  return undefined;
+}
+function contentRecordFromUnknown(value: unknown): ContentMaterialRecord | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Json;
+  const kind = materialKind(input.kind);
+  const id = materialID(input.id);
+  if (input.source !== 'media-library' || !kind || id === undefined) return undefined;
+  return {
+    source: 'media-library', kind, id,
+    label: String(input.label || `${materialLabels[kind]}素材 #${id}`),
+    subtitle: input.subtitle ? String(input.subtitle) : undefined,
+    thumbnailURL: input.thumbnailURL ? String(input.thumbnailURL) : undefined,
+    disabledReason: input.disabledReason ? String(input.disabledReason) : undefined,
+  };
+}
+function contentRecordsFromUnknown(value: unknown): ContentMaterialRecord[] {
+  if (!Array.isArray(value)) return [];
+  const output: ContentMaterialRecord[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    const record = contentRecordFromUnknown(candidate);
+    if (!record) continue;
+    const key = `${record.kind}:${record.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(record);
+  }
+  return output;
+}
+function pickerRecordFromContent(record: ContentMaterialRecord): MaterialPickerRecord {
+  return {
+    type: record.kind as MaterialType,
+    library_id: record.id,
+    title: record.label,
+    subtitle: record.subtitle,
+    thumbnail_url: record.thumbnailURL,
+    selectable: !record.disabledReason,
+    enabled: !record.disabledReason,
+    unavailable_reason: record.disabledReason,
+  };
+}
+function contentRecordFromPicker(value: MaterialPickerRecord, expectedKind: ContentMaterialKind): ContentMaterialRecord | undefined {
+  const kind = materialKind(value.type);
+  const id = materialID(value.library_id);
+  if (!kind || kind !== expectedKind || id === undefined) return undefined;
+  return {
+    source: 'media-library', kind, id,
+    label: String(value.title || `${materialLabels[kind]}素材 #${id}`),
+    subtitle: value.subtitle ? String(value.subtitle) : undefined,
+    thumbnailURL: value.thumbnail_url ? String(value.thumbnail_url) : undefined,
+    disabledReason: value.unavailable_reason ? String(value.unavailable_reason) : undefined,
+  };
+}
+function mediaTitle(kind: GroupOpsMaterialKind, value: Json, id: number): string {
+  return String(value.title || value.name || value.file_name || value.description || `${materialLabels[kind]}素材 #${id}`).trim() || `${materialLabels[kind]}素材 #${id}`;
+}
+function mediaSubtitle(kind: GroupOpsMaterialKind, value: Json): string {
+  return String(value.subtitle || value.description || value.appid || value.app_id || value.mime_type || value.file_name || (kind === 'group_invite' ? value.join_url : '') || '').trim();
+}
+function mediaThumbnail(value: Json): string | undefined {
+  const candidate = value.thumb_320_url || value.thumb_160_url || value.thumb_image_url || value.thumbnail_url || value.variant_url;
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : undefined;
+}
+function mediaPickerRecord(kind: GroupOpsMaterialKind, value: Json): MaterialPickerRecord | undefined {
+  const id = materialID(value.id ?? value.library_id ?? value.resource_id);
+  if (id === undefined) return undefined;
+  const enabled = value.enabled !== false;
+  return {
+    type: kind, library_id: id, title: mediaTitle(kind, value, id), subtitle: mediaSubtitle(kind, value), thumbnail_url: mediaThumbnail(value),
+    enabled, selectable: enabled, metadata: value, unavailable_reason: enabled ? undefined : '素材已停用',
+  };
+}
+function detailPayload(kind: GroupOpsMaterialKind, value: Json): Json {
+  const named = kind === 'image' ? value.image : kind === 'miniprogram' ? (value.miniprogram || value.mini_program) : kind === 'attachment' ? value.attachment : value.group_invite;
+  const item = value.item || named || value;
+  return item && typeof item === 'object' ? item as Json : {};
+}
+function unresolvedMaterialRecord(kind: GroupOpsMaterialKind, id: number, reason: string): ContentMaterialRecord {
+  return { source: 'media-library', kind, id, label: `${materialLabels[kind]}素材 #${id}`, disabledReason: reason };
+}
+async function readGroupOpsMaterialRecord(kind: GroupOpsMaterialKind, id: number, signal?: AbortSignal): Promise<ContentMaterialRecord> {
+  try {
+    const payload = await nativeRequest(`${groupOpsMaterialEndpoints[kind]}/${id}`, { signal });
+    const normalized = mediaPickerRecord(kind, detailPayload(kind, payload));
+    if (!normalized || normalized.library_id !== id) return unresolvedMaterialRecord(kind, id, '素材详情返回无效，保留当前引用；可明确移除。');
+    return {
+      source: 'media-library', kind, id,
+      label: String(normalized.title || `${materialLabels[kind]}素材 #${id}`), subtitle: normalized.subtitle || undefined, thumbnailURL: normalized.thumbnail_url || undefined,
+      disabledReason: normalized.unavailable_reason || undefined,
+    };
+  } catch (error) {
+    const status = (error as { status?: unknown })?.status;
+    const reason = status === 404 ? '素材已删除，保留当前引用；可明确移除。'
+      : status === 401 || status === 403 ? '当前无权确认素材状态，保留当前引用。'
+        : '素材详情暂时无法读取，保留当前引用。';
+    return unresolvedMaterialRecord(kind, id, reason);
+  }
+}
+async function resolveGroupOpsContentRecords(records: readonly ContentMaterialRecord[], controller = new AbortController()): Promise<ContentMaterialRecord[]> {
+  // The page only needs labels for the one node the operator asked to view or
+  // edit. Keep that bounded: a stale Media read becomes an explicit retained
+  // state rather than delaying plan rendering or a node save indefinitely.
+  const timeout = window.setTimeout(() => controller.abort(), 2500);
+  const resolved = new Array<ContentMaterialRecord>(records.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= records.length) return;
+      const record = records[index];
+      resolved[index] = await readGroupOpsMaterialRecord(record.kind as GroupOpsMaterialKind, record.id, controller.signal);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, records.length) }, worker));
+    return resolved;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function loadGroupOpsMaterialPage(request: MaterialPickerLoadRequest): Promise<{ items: MaterialPickerRecord[]; nextCursor?: string }> {
+  const kind = materialKind(request.type);
+  if (!kind) throw new Error('素材类型无效，请重新打开内容编辑器。');
+  const offset = Number(request.cursor || '0');
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('素材目录分页标记无效，请重新打开内容编辑器。');
+  const query = new URLSearchParams({ limit: '50', offset: String(offset), enabled_only: 'false' });
+  if (request.query.trim()) query.set('q', request.query.trim());
+  const page = await nativeRequest(`${groupOpsMaterialEndpoints[kind]}?${query.toString()}`, { signal: request.signal });
+  if (request.signal.aborted) throw new DOMException('素材目录读取已替换', 'AbortError');
+  const entries = Array.isArray(page.items) ? page.items : [];
+  const items = entries.flatMap((entry: Json) => {
+    const record = mediaPickerRecord(kind, entry);
+    return record ? [record] : [];
+  });
+  return { items, nextCursor: page.has_more === true && entries.length ? String(offset + entries.length) : undefined };
+}
+function ensureGroupOpsMaterialPicker(): MaterialPickerBridge {
+  installMaterialPickerAdapter({
+    source: 'groupops-node-content', scope: 'group_ops.node_material_plan', loadPage: loadGroupOpsMaterialPage,
+    accessLossMessage: (error) => {
+      const status = (error as { status?: unknown })?.status;
+      return status === 401 || status === 403 ? '素材目录权限已失效；已选素材仍可查看，请取消后重新登录。' : undefined;
+    },
+  });
+  const picker = (window as unknown as { AICRMMaterialPicker?: MaterialPickerBridge }).AICRMMaterialPicker;
+  if (!picker || typeof picker.open !== 'function') throw new Error('素材选择器尚未加载完成，请刷新页面后重试。');
+  return picker;
+}
+function chooseGroupOpsMaterials(request: { kind: ContentMaterialKind; selectedRecords: readonly ContentMaterialRecord[]; limit: number }): Promise<readonly ContentMaterialRecord[] | undefined> {
+  return new Promise((resolve, reject) => {
+    try {
+      const picker = ensureGroupOpsMaterialPicker();
+      picker.open({
+        type: request.kind as MaterialType,
+        title: `选择${materialLabels[request.kind as GroupOpsMaterialKind]}`,
+        selectedIds: request.selectedRecords.map((record) => record.id),
+        selectedRecords: request.selectedRecords.map(pickerRecordFromContent),
+        limit: request.limit,
+        onCommit: async ({ selected }) => {
+          const records = selected.map((record) => contentRecordFromPicker(record, request.kind)).filter((record): record is ContentMaterialRecord => Boolean(record));
+          if (records.length !== selected.length) throw new Error('素材选择返回了不匹配的类型，未更新当前草稿。');
+          resolve(records);
+        },
+        onCancel: () => resolve(undefined),
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+type GroupOpsContentSession = {
+  token: number;
+  controller: AbortController;
+  resolving: boolean;
+  loadingTarget?: HTMLButtonElement;
+  loadingLabel?: string;
+};
+let groupOpsContentSequence = 0;
+let activeGroupOpsContentSession: GroupOpsContentSession | undefined;
+
+function contentBridgeCurrent(options: GroupOpsContentBridgeOptions): boolean {
+  try { return options.isCurrent ? options.isCurrent() : true; } catch { return false; }
+}
+function setContentLoading(session: GroupOpsContentSession, active: boolean): void {
+  const target = session.loadingTarget;
+  if (!target || !target.isConnected) return;
+  target.disabled = active;
+  target.toggleAttribute('aria-busy', active);
+  if (active) target.textContent = '正在读取素材详情…';
+  else if (session.loadingLabel) target.textContent = session.loadingLabel;
+}
+function releaseGroupOpsContentSession(session: GroupOpsContentSession): void {
+  if (activeGroupOpsContentSession !== session) return;
+  setContentLoading(session, false);
+  activeGroupOpsContentSession = undefined;
+}
+function cancelPendingGroupOpsContent(): void {
+  const session = activeGroupOpsContentSession;
+  if (!session || !session.resolving) return;
+  groupOpsContentSequence += 1;
+  session.controller.abort();
+  releaseGroupOpsContentSession(session);
+}
+function presentGroupOpsContentComposer(options: GroupOpsContentBridgeOptions, selectedRecords: ContentMaterialRecord[], session: GroupOpsContentSession): void {
+  openContentComposer({
+    title: String(options.title || '配置群运营动作内容'),
+    value: options.value || {}, selectedRecords, materialOrder: 'caller_persisted', ordering: 'all_persisted',
+    textEnabled: true, materialKinds: materialKinds as readonly ContentMaterialKind[], limits: groupOpsMaterialLimits, totalLimit: 9,
+    textRule: {
+      maximum: 1000,
+      // internal/groupops validates UTF-8 runes, so use JavaScript code points
+      // rather than textarea's UTF-16 maxLength semantics.
+      count: (value) => Array.from(value).length,
+      // Match validText in internal/groupops/app: the caller gets an explicit
+      // error instead of previewing one value and silently trimming it on save.
+      validate: groupOpsMessageIssue,
+      normalize: (value) => value,
+    },
+    validateContent: ({ package: contentPackage, selectedRecords: draftRecords }) => {
+      if (!contentPackage.content_text && !draftRecords.length) return '请填写话术或添加至少一项素材后再确认。';
+      return undefined;
+    },
+    variableNotice: '当前场景未声明可用变量；话术按原文保存和展示。',
+    selectMaterials: chooseGroupOpsMaterials,
+    onConfirm: async (result) => {
+      if (activeGroupOpsContentSession !== session || !contentBridgeCurrent(options)) {
+        throw new Error('当前动作已关闭或切换，未更新草稿。');
+      }
+      await options.onConfirm?.(result);
+      releaseGroupOpsContentSession(session);
+    },
+    onCancel: () => {
+      releaseGroupOpsContentSession(session);
+      options.onCancel?.();
+    },
+  });
+}
+function presentGroupOpsReadonlyContent(options: GroupOpsReadonlyContentOptions, selectedRecords: ContentMaterialRecord[], session: GroupOpsContentSession): void {
+  openReadonlyContentPresentation({
+    title: String(options.title || '已保存群运营内容'), value: options.value || {}, selectedRecords,
+    materialOrder: 'caller_persisted', variableNotice: '当前场景未声明可用变量；话术按原文保存和展示。',
+    onClose: () => releaseGroupOpsContentSession(session),
+  });
+}
+function beginGroupOpsContentSession(options: GroupOpsContentBridgeOptions): GroupOpsContentSession | undefined {
+  if (activeGroupOpsContentSession) return undefined;
+  const target = options.loadingTarget instanceof HTMLButtonElement ? options.loadingTarget : undefined;
+  const session: GroupOpsContentSession = {
+    token: ++groupOpsContentSequence,
+    controller: new AbortController(),
+    resolving: true,
+    loadingTarget: target,
+    loadingLabel: target?.textContent || undefined,
+  };
+  activeGroupOpsContentSession = session;
+  setContentLoading(session, true);
+  return session;
+}
+function resolveGroupOpsContentSession(
+  options: GroupOpsContentBridgeOptions,
+  present: (options: GroupOpsContentBridgeOptions, records: ContentMaterialRecord[], session: GroupOpsContentSession) => void,
+): void {
+  const session = beginGroupOpsContentSession(options);
+  if (!session) return;
+  const initial = contentRecordsFromUnknown(options.selectedRecords);
+  const resolved = initial.length ? resolveGroupOpsContentRecords(initial, session.controller) : Promise.resolve(initial);
+  void resolved.then((records) => {
+    if (activeGroupOpsContentSession !== session || session.token !== groupOpsContentSequence || !contentBridgeCurrent(options)) {
+      releaseGroupOpsContentSession(session);
+      return;
+    }
+    session.resolving = false;
+    setContentLoading(session, false);
+    present(options, records, session);
+  }).catch(() => {
+    if (activeGroupOpsContentSession !== session) return;
+    releaseGroupOpsContentSession(session);
+    const target = options.loadingTarget instanceof HTMLElement ? options.loadingTarget : undefined;
+    if (target?.isConnected) target.setAttribute('data-v3-content-load-error', '1');
+  });
+}
+function openGroupOpsContentComposer(options: GroupOpsContentBridgeOptions): void {
+  resolveGroupOpsContentSession(options, presentGroupOpsContentComposer);
+}
+function openGroupOpsReadonlyContent(options: GroupOpsReadonlyContentOptions): void {
+  resolveGroupOpsContentSession(options, presentGroupOpsReadonlyContent);
+}
+
+(window as any).AICRMGroupOpsV3Content = { open: openGroupOpsContentComposer, openReadonly: openGroupOpsReadonlyContent, cancelPending: cancelPendingGroupOpsContent };
 
 (window as any).AdminApi = {
   ...(window as any).AdminApi,
@@ -989,6 +1354,285 @@ function installSaveFailureFeedback(): void {
     return nodes;
   }) as typeof app.querySelectorAll;
 }
+function groupRecord(asset: Json, directoryItem?: Json): GroupPickerRecord {
+  const reference = String(asset.asset_reference || asset.chat_reference || "").trim();
+  const displayName = String(directoryItem?.display_name || asset.display_name || "群名称待同步").trim() || "群名称待同步";
+  return {
+    chat_reference: reference,
+    display_name: displayName,
+    owner_staff_id: Number.isSafeInteger(Number(directoryItem?.owner_staff_id)) ? Number(directoryItem?.owner_staff_id) : undefined,
+    member_count: Number.isFinite(Number(directoryItem?.member_count)) ? Number(directoryItem?.member_count) : undefined,
+    external_member_count: directoryItem?.external_member_count === null ? null : Number.isFinite(Number(directoryItem?.external_member_count)) ? Number(directoryItem?.external_member_count) : undefined,
+    unavailable_reason: directoryItem ? undefined : "群目录状态待确认，仍保留已绑定记录。",
+  };
+}
+
+async function selectedGroupRecords(planID: number): Promise<{ records: GroupPickerRecord[]; ownerStaffID: number | undefined; status: string }> {
+  const value = await detail(planID);
+  const current = value.plan || value;
+  const ownerStaffID = Number(current?.owner?.staff_id);
+  const owner = Number.isSafeInteger(ownerStaffID) && ownerStaffID > 0 ? ownerStaffID : undefined;
+  return {
+    ownerStaffID: owner,
+    status: String(current?.status || ""),
+    records: (value.group_assets || []).flatMap((asset: Json) => {
+      // The bound plan asset is authoritative even when the local directory
+      // is unavailable. A previous scoped picker page may enrich it, but opening
+      // never discards or blocks a persisted binding behind a full crawl.
+      const reference = String(asset.asset_reference || "");
+      const row = groupRecord(asset, planGroupDirectoryViews.get(planID)?.get(reference));
+      return row.chat_reference ? [row] : [];
+    }),
+  };
+}
+
+function updateGroupRevision(planID: number, value: Json): void {
+  const candidate = value.plan && typeof value.plan === "object" ? value.plan : value;
+  const next = Number(candidate.revision);
+  if (Number.isSafeInteger(next) && next >= 0) revisions.set(planID, next);
+}
+
+function selectionSignature(added: GroupPickerRecord[], removed: GroupPickerRecord[]): string {
+  return [
+    ...added.map((record) => `add:${record.chat_reference}`),
+    ...removed.map((record) => `remove:${record.chat_reference}`),
+  ].sort().join("|");
+}
+
+function selectionOperation(planID: number, added: GroupPickerRecord[], removed: GroupPickerRecord[]): GroupSelectionOperation {
+  const signature = selectionSignature(added, removed);
+  const previous = groupSelectionOperations.get(planID);
+  if (previous?.signature === signature) return previous;
+  const operation: GroupSelectionOperation = { signature, steps: new Map() };
+  const prefix = `groupops-group-selection-${planID}-${crypto.randomUUID()}`;
+  for (const [kind, records] of [["add", added], ["remove", removed]] as const) {
+    for (const record of records) {
+      const reference = String(record.chat_reference || "").trim();
+      if (!reference) continue;
+      const stepKey = `${kind}:${reference}`;
+      operation.steps.set(stepKey, { planID, kind, reference, idempotencyKey: `${prefix}-${operation.steps.size + 1}` });
+    }
+  }
+  groupSelectionOperations.set(planID, operation);
+  return operation;
+}
+
+type PersistedGroupSelection = { value: Json; references: Set<string>; revision: number };
+
+async function readPersistedGroupSelection(planID: number): Promise<PersistedGroupSelection> {
+  const value = await detail(planID);
+  updateGroupRevision(planID, value);
+  const current = value.plan && typeof value.plan === "object" ? value.plan : value;
+  const revisionValue = Number(current.revision);
+  if (!Number.isSafeInteger(revisionValue) || revisionValue < 1) throw new Error("群聊绑定读回缺少有效版本，请刷新计划后重试。");
+  return {
+    value,
+    references: new Set((value.group_assets || []).map((asset: Json) => String(asset.asset_reference || "")).filter(Boolean)),
+    revision: revisionValue,
+  };
+}
+
+function stepReached(selection: PersistedGroupSelection, step: GroupSelectionStep): boolean {
+  return step.kind === "add" ? selection.references.has(step.reference) : !selection.references.has(step.reference);
+}
+
+function partialSaveError(cause: unknown, confirmed: GroupSelectionStep[]): Error {
+  const confirmedText = confirmed.length
+    ? `已实际保存：${confirmed.map((step) => `${step.kind === "add" ? "添加" : "移除"} ${step.reference}`).join("、")}；`
+    : "尚未确认新的保存步骤；";
+  return new Error(`${confirmedText}${errorMessage(cause, "保存结果未确认")}。已保留本次选择，请使用原确认操作重试未完成差异。`);
+}
+
+function updateRenderedGroupBindings(planID: number, persisted: PersistedGroupSelection, selected: GroupPickerRecord[]): void {
+  // This cache intentionally retains source directory records. The renderer
+  // projection (`groupView`) has different field names, so caching it here
+  // would make a confirmed group fall back to “群名称待同步” on reopen.
+  const directoryViews = planGroupDirectoryViews.get(planID) || new Map<string, GroupPickerRecord>();
+  for (const record of selected) directoryViews.set(record.chat_reference, { ...record });
+  planGroupDirectoryViews.set(planID, directoryViews);
+  const rows: Json[] = (persisted.value.group_assets || []).map((asset: Json): Json => groupView(asset, directoryViews.get(String(asset.asset_reference || ""))));
+  planGroupViews.set(planID, rows);
+  const summaryValue = summarizeGroups(rows);
+  const summaryView = planSummaryViews.get(planID) || {};
+  Object.assign(summaryView, summaryValue);
+  planSummaryViews.set(planID, summaryView);
+
+  // Let the existing Group Ops renderer own the DOM refresh and event binding.
+  // It calls this Host's cached request adapter, so the immediate readback stays
+  // local and no full directory is introduced merely to repaint a binding.
+  window.dispatchEvent(new CustomEvent("aicrm:groupops-detail-refresh", { detail: { planId: planID } }));
+}
+
+async function refreshGroupBindingsAfterCancel(planID: number): Promise<void> {
+  try {
+    const persisted = await readPersistedGroupSelection(planID);
+    updateRenderedGroupBindings(planID, persisted, []);
+    window.setTimeout(() => {
+      const notice = document.querySelector<HTMLElement>("#group-ops-app .group-ops__notice");
+      if (notice) {
+        notice.hidden = false;
+        notice.textContent = "已关闭群聊选择；已保存的群聊不会因取消而撤销。";
+      }
+    }, 0);
+  } catch (error) {
+    const notice = document.querySelector<HTMLElement>("#group-ops-app .group-ops__notice");
+    if (notice) {
+      notice.hidden = false;
+      notice.textContent = `已关闭群聊选择；无法读回实际绑定，请重新打开页面查看：${errorMessage(error, "读取失败")}`;
+    }
+  }
+}
+
+function commandForStep(step: GroupSelectionStep, revision: number): { url: string; method: string; body: Json } {
+  if (!step.body) step.body = step.kind === "add"
+    ? { expected_revision: revision, asset_reference: step.reference }
+    : { expected_revision: revision };
+  return {
+    url: step.kind === "add"
+      ? `${base}/plans/${currentSelectionPlanID(step)}/groups`
+      : `${base}/plans/${currentSelectionPlanID(step)}/groups/${encodeURIComponent(step.reference)}`,
+    method: step.kind === "add" ? "POST" : "DELETE",
+    body: step.body,
+  };
+}
+
+// The plan ID is not part of a receipt key, but command URLs are. Attach it
+// once when an operation is created so a later explicit retry sends the exact
+// same full command body and endpoint.
+function currentSelectionPlanID(step: GroupSelectionStep): number {
+  const planID = Number(step.planID);
+  if (!Number.isSafeInteger(planID) || planID < 1) throw new Error("群聊保存步骤缺少计划标识。");
+  return planID;
+}
+
+function explicitCASConflict(error: unknown): boolean {
+  return (error as { status?: unknown })?.status === 409;
+}
+
+async function saveGroupSelection(planID: number, selected: GroupPickerRecord[], added: GroupPickerRecord[], removed: GroupPickerRecord[]): Promise<void> {
+  const operation = selectionOperation(planID, added, removed);
+  let persisted = await readPersistedGroupSelection(planID);
+  const confirmed: GroupSelectionStep[] = [];
+  for (const step of operation.steps.values()) {
+    if (stepReached(persisted, step)) continue;
+    try {
+      const command = commandForStep(step, persisted.revision);
+      const value = await nativeRequest(command.url, {
+        method: command.method,
+        idempotencyKey: step.idempotencyKey,
+        body: command.body,
+      });
+      updateGroupRevision(planID, value);
+      persisted = await readPersistedGroupSelection(planID);
+      if (!stepReached(persisted, step)) throw new Error("群聊保存后读回未达到原选择，请刷新后检查。");
+      confirmed.push(step);
+    } catch (cause) {
+      // A lost response is outcome-unknown. Read the Owner fact first; only a
+      // matching receipt replay with the frozen command may prove completion.
+      try {
+        persisted = await readPersistedGroupSelection(planID);
+        if (stepReached(persisted, step)) {
+          confirmed.push(step);
+          continue;
+        }
+      } catch {
+        // Keep the original cause; a failed readback is not permission to guess.
+      }
+      if (explicitCASConflict(cause)) {
+        // HTTP 409 proves this exact command did not mutate. Drop only this
+        // operation after preserving the draft so the next explicit confirm
+        // can make a new intent from the current revision and new keys.
+        groupSelectionOperations.delete(planID);
+        throw new Error(`${partialSaveError(cause, confirmed).message} 计划版本已变化；该步骤未提交，请再次确认后创建新的保存意图。`);
+      }
+      throw partialSaveError(cause, confirmed);
+    }
+  }
+  updateRenderedGroupBindings(planID, persisted, selected);
+  groupSelectionOperations.delete(planID);
+}
+
+function installGroupPickerBridge(): void {
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("#group-ops-app button[data-action='open-group-picker']") : null;
+    if (!target) return;
+    const app = document.getElementById("group-ops-app");
+    const planID = Number(app?.dataset.planId);
+    if (!Number.isSafeInteger(planID) || planID < 1) return;
+    if (openingGroupPicker || activeGroupPickerPlan === planID || document.querySelector('[data-v3-selection-session="group"]')) return;
+    // Capture before the frozen donor's click listener. The standard picker
+    // remains untouched; this V3 overlay has no legacy raw chat_id channel.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    openingGroupPicker = true;
+    target.disabled = true;
+    void (async () => {
+      try {
+        const initial = await selectedGroupRecords(planID);
+        activeGroupPickerPlan = planID;
+        openGroupPicker({
+          source: `groupops-plan-${planID}`,
+          scope: "group_ops.plan_group_assets",
+          selectedRecords: initial.records,
+          readonlyReason: initial.status === "draft" ? undefined : initial.status === "archived"
+            ? "计划已归档，不能修改群聊。"
+            : "当前计划状态不允许修改群聊；仅草稿计划可编辑。",
+          loadPage: async ({ query, cursor, signal }) => {
+            const offset = Number(cursor || "0");
+            if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("群目录分页标记无效，请重新打开选择器。");
+            const params = new URLSearchParams({ limit: "50", offset: String(offset) });
+            // The Owner port scopes this local projection before pagination.
+            // Client-side disabled text remains a defensive presentation of
+            // any historic/cached record, not a substitute for server scope.
+            if (initial.ownerStaffID) params.set("owner_userid", String(initial.ownerStaffID));
+            if (query.trim()) params.set("q", query.trim());
+            const page = await nativeRequest(`${base}/groups?${params.toString()}`, { signal });
+            if (signal.aborted) throw new DOMException("群目录读取已替换", "AbortError");
+            const items = Array.isArray(page.items) ? page.items : [];
+            const records = items.flatMap((entry: Json) => {
+              const record = groupRecord({ chat_reference: entry.chat_reference }, entry);
+              if (!record.chat_reference) return [];
+              // Cache the raw directory record before adding picker-only
+              // disabled text, so the plan renderer keeps actual owner/counts.
+              const directoryViews = planGroupDirectoryViews.get(planID) || new Map<string, GroupPickerRecord>();
+              directoryViews.set(record.chat_reference, { ...record });
+              planGroupDirectoryViews.set(planID, directoryViews);
+              if (!initial.ownerStaffID) record.unavailable_reason = "计划尚未配置负责人，不能选择新群。";
+              else if (record.owner_staff_id !== initial.ownerStaffID) record.unavailable_reason = "当前负责人不可管理此群。";
+              return [record];
+            });
+            return {
+              items: records,
+              nextCursor: page.has_more === true && items.length ? String(offset + items.length) : undefined,
+            };
+          },
+          accessLossMessage: (error) => { const status = (error as { status?: unknown }).status; return status === 401 || status === 403 ? '群目录权限已失效；已绑定群仍可查看，请取消后重新登录。' : undefined; },
+          onCommit: async ({ selected, added, removed }) => {
+            await saveGroupSelection(planID, selected, added, removed);
+            activeGroupPickerPlan = undefined;
+          },
+          onCancel: ({ saveAttempted }) => {
+            activeGroupPickerPlan = undefined;
+            // A pure draft cancel never contacted the Owner, so do not imply a
+            // rollback or a persisted binding. After any save attempt, however,
+            // only Owner readback can state what remains real.
+            if (saveAttempted) void refreshGroupBindingsAfterCancel(planID);
+          },
+        });
+      } catch (error) {
+        activeGroupPickerPlan = undefined;
+        const notice = document.querySelector<HTMLElement>("#group-ops-app .group-ops__notice");
+        if (notice) { notice.hidden = false; notice.textContent = `群聊选择器无法打开：${errorMessage(error, "请重试")}`; }
+      } finally {
+        openingGroupPicker = false;
+        target.disabled = false;
+      }
+    })();
+  }, true);
+}
+installGroupPickerBridge();
+installStaffPickerAdapter();
+
 installSaveFailureFeedback();
 // @ts-expect-error The standard donor script is intentionally JavaScript.
 void import("./groupOpsStandard.js");
