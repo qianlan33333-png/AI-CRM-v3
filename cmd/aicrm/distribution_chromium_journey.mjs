@@ -229,7 +229,13 @@ try {
     // for the actual source control rather than treating selector presence as
     // evidence that a user can submit a retry.
     await wait(cdp, `(()=>{const button=${expression};if(!(button instanceof HTMLButtonElement)||button.disabled)return false;button.scrollIntoView({block:'center',inline:'center'});const rect=button.getBoundingClientRect(),style=getComputedStyle(button),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&button.contains(hit)})()`, 'recovery action did not become visible after its owner readback');
-    await clickVisibleButton(cdp, expression, '登记追回');
+    // Resolve the point from the same rendered source node after two frames.
+    // Re-evaluating a text-only selector after an owner redraw could target an
+    // obsolete button that no longer occupies the tested hit point.
+    const point = await value(cdp, `new Promise(resolve=>{const button=${expression};if(!(button instanceof HTMLButtonElement)){resolve(null);return;}button.scrollIntoView({block:'center',inline:'center'});requestAnimationFrame(()=>requestAnimationFrame(()=>{const rect=button.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);resolve({x:rect.left+rect.width/2,y:rect.top+rect.height/2,visible:rect.width>0&&rect.height>0&&button.contains(hit)});}));})`);
+    assert.equal(point?.visible, true, `登记追回 retry control was not reachable after settle: ${JSON.stringify(point)}`);
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
   };
   await clickRecovery(confirmationException);
   await wait(cdp,"document.querySelector('[data-v3-confirmation-dialog]')?.textContent.includes('登记追回')",'recovery confirmation dialog did not open');
