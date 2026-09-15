@@ -535,6 +535,17 @@ func TestChromiumJourneyRequiredUsesConfigurationBoundary(t *testing.T) {
 	}
 }
 
+func TestProductExternalPushDarwinChromiumDiagnosticUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM", "")
+	if ProductExternalPushDarwinChromiumDiagnosticAllowed() {
+		t.Fatal("missing Darwin diagnostic flag allowed the journey")
+	}
+	t.Setenv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM", "1")
+	if !ProductExternalPushDarwinChromiumDiagnosticAllowed() {
+		t.Fatal("explicit Darwin diagnostic flag did not allow the journey")
+	}
+}
+
 func TestAdminLayoutScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	t.Setenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR", "")
 	if value := AdminLayoutScreenshotDirectory(); value != "" {
