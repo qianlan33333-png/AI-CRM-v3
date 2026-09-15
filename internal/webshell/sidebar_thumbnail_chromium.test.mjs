@@ -168,7 +168,7 @@ try {
       const pathname = new URL(String(params.response?.url || "")).pathname;
       const status = Number(params.response?.status) || 0;
       if (pathname === "/sidebar/bind-mobile") sidebarCSP = String(params.response?.headers?.["content-security-policy"] || params.response?.headers?.["Content-Security-Policy"] || "");
-      if (pathname === "/login" || pathname === "/admin" || pathname === "/admin/customers.html") loginResponses.set(pathname, status);
+      if (pathname === "/login" || pathname === "/admin") loginResponses.set(pathname, status);
       if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/(sidebarHost|sidebarStandardOverlay|sidebarImageResourceLoader)-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, status);
     } catch (_) {}
   });
@@ -176,9 +176,9 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   try {
-    await waitFor(cdp, "location.pathname === '/admin/customers.html' && !document.querySelector('form[action=\"/login\"]')", "login did not reach the authenticated shell document");
+    await waitFor(cdp, "location.pathname === '/admin' && !document.querySelector('form[action=\"/login\"]')", "login did not reach the authenticated admin Host");
   } catch (_) {
-    const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), login: loginResponses.get("/login") || 0, admin: loginResponses.get("/admin") || 0, customers: loginResponses.get("/admin/customers.html") || 0, exceptions });
+    const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), login: loginResponses.get("/login") || 0, admin: loginResponses.get("/admin") || 0, exceptions });
     throw new Error(`login did not establish the Access session: ${diagnostic}`);
   }
   const cookies = await cdp.call("Network.getAllCookies");

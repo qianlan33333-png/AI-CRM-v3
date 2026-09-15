@@ -139,7 +139,12 @@ type composedApplication struct {
 	// remains unexported and is retained so same-package PostgreSQL journeys can
 	// exercise an EER terminal callback through the exact Production observer
 	// wiring without contacting a Provider.
-	paymentDistribution   effectport.CompletionSink
+	paymentDistribution effectport.CompletionSink
+	// paymentSession remains private to the Composition Root. Same-package
+	// PostgreSQL browser journeys use it only to issue a provider-verified test
+	// session through the exact OneID-backed session service before exercising
+	// public read paths.
+	paymentSession        *paymentsession.Service
 	channelEntrantActions *channelstore.EntrantActionStore
 	customerSync          wecom.CustomerSyncService
 	adminOps              *adminopsapp.ProjectionService
@@ -882,11 +887,26 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	// Public commerce presentation is a release-only browser closure. Resolve
+	// its manifest lazily on the public route, consistent with the other UI
+	// bindings below: workers and non-UI composition fixtures need no cwd
+	// artifact, while an actual public request still fails closed if web/dist is
+	// missing, altered, or incomplete.
+	publicCommerceAssets, err := producthttp.NewDeferredPublicPresentationAssets("web/dist")
+	if err != nil {
+		return fail(err)
+	}
+	if err = publicProductHandler.SetPublicPresentationAssets(publicCommerceAssets); err != nil {
+		return fail(err)
+	}
 	if err = publicProductHandler.SetPublicMediaReader(mediaService); err != nil {
 		return fail(err)
 	}
 	publicServicePeriodHandler, err := producthttp.NewServicePeriodPublicHandler(productServicePeriod)
 	if err != nil {
+		return fail(err)
+	}
+	if err = publicServicePeriodHandler.SetPublicPresentationAssets(publicCommerceAssets); err != nil {
 		return fail(err)
 	}
 	productTargets, err := productapp.NewTargetReader(productCatalog, productServicePeriod)
@@ -1897,7 +1917,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return producthttp.RenderMemberGridInternal(writer, request, request.URL.Query().Get("id"))
 		}
 		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品", "spProductData": "周期商品 · 会员数据"}
-		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page", "spProductData": "api.admin_service_period_member_grid"}
+		// These are presentation-only active navigation identifiers. They use
+		// the canonical V3 admin routes shared by the server shell and the
+		// release-document navigation Host; Product remains the owner of its
+		// page data and commands.
+		endpoints := map[string]string{"products": "api.admin_wechat_pay_products_page", "productForm": "api.admin_wechat_pay_products_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_products_page", "spProductData": "api.admin_service_period_products_page"}
 		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, ProductCSS: assets.ProductCSS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
 	})
 	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
@@ -2031,7 +2055,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = runtimeReleaseService.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: runtimeSnapshot.Revision, Source: runtimeSnapshot.Source, Role: string(cfg.Role), ReleaseSHA: cfg.ReleaseSHA, SnapshotChecksum: runtimeSnapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
 		return fail(err)
 	}
-	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, paymentSession: paymentSession, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
@@ -2141,7 +2165,7 @@ func mountOrderUI(next, adminUI http.Handler, authentication accessAuthenticatio
 
 func mountPublicProduct(next, products http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/api/h5/product-images/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
+		if strings.HasPrefix(r.URL.Path, "/product-public-assets/") || strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/api/h5/product-images/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
 			products.ServeHTTP(w, r)
 			return
 		}

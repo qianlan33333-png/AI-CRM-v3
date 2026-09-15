@@ -8,6 +8,8 @@
 
 不包含全局 `window.confirm` 替换、其他页面迁移、任何 API/业务规则/权限模型改造或生产操作。
 
+本次会话的 Skills catalog 没有可用的 Product Design 路由，故该步骤未完成；本次沿用已审核的管理端视觉基线与 shared visual token，不安装、替代或伪称已使用该插件。
+
 ## 分类
 
 - **OneID：不涉及。** 调用点不读取、解析、创建或合并客户身份。

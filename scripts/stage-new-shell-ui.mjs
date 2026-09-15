@@ -25,6 +25,12 @@ const entryKeys = [
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost',
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
+  // These two files are the narrowly mounted anonymous Product-public
+  // closure. They must be present in the verified release manifest before
+  // Composition can expose them under /product-public-assets/; they remain
+  // assets only and do not add a second public document surface.
+  'publicCommerceHost', 'publicCommerceStyles',
+  'navigationHost', 'overviewAdmin', 'overviewStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
