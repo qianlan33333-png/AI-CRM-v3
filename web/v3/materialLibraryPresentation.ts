@@ -527,6 +527,12 @@ class FrozenMaterialPresentation {
     // from a display name, list position, search result, or page offset.
     if (!rows.length) return;
     if (matched.some((item) => !item)) {
+      // Authorization loss has its own recovery message. Do not mask it with
+      // a generic loading notice after the typed fields have been cleared.
+      if (this.authorizationLost) {
+        table.parentElement?.querySelector('[data-material-library-identity-notice="attachment"]')?.remove();
+        return;
+      }
       // A complete current read that no longer contains this visible ID must
       // never leave fields from an earlier typed record on the donor row.
       this.clearEnrichedMetadata();
@@ -538,7 +544,9 @@ class FrozenMaterialPresentation {
         notice.style.cssText = 'margin:8px 12px;color:#646A73;font-size:12px;line-height:18px';
         table.before(notice);
       }
-      const message = '当前可见附件未返回稳定素材标识；保留原有记录和操作。';
+      const message = this.metadataLoaded
+        ? '部分附件信息暂不可用，已保留原有记录。'
+        : '正在读取附件信息…';
       if (notice.textContent !== message) notice.textContent = message;
       return;
     }

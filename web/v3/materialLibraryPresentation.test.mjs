@@ -42,7 +42,7 @@ async function settle() { await sleep(); await sleep(); }
     dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
     await settle();
     assert.equal(reads, 1, 'an initial delayed attachment read remains bounded while the donor table is rendered');
-    assert.match(dom.window.document.body.textContent, /当前可见附件未返回稳定素材标识/, 'a pending typed read leaves one safe identity notice');
+    assert.match(dom.window.document.body.textContent, /正在读取附件信息…/, 'a pending typed read leaves one user-facing loading notice');
     resolveInitial();
     await settle(); await settle();
     const topbarUpload = dom.window.document.querySelector('[data-page-header-actions="material-library-attach"] #upload');
