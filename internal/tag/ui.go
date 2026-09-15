@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS, PageHeaderActionHostJS string }
 type TagsPageRenderer func(http.ResponseWriter, *http.Request, string, TagsAssets) error
 type tagsUI struct {
 	dist   string
@@ -90,7 +90,11 @@ func tagAssets(dist string) (TagsAssets, error) {
 	if e != nil {
 		return TagsAssets{}, e
 	}
-	return TagsAssets{tokens, labs, admin}, nil
+	pageHeaderActions, e := get("pageHeaderActionHost")
+	if e != nil {
+		return TagsAssets{}, e
+	}
+	return TagsAssets{tokens, labs, admin, pageHeaderActions}, nil
 }
 
 // The frozen donor opens a tag detail through ?id=<positive>. Preserve that

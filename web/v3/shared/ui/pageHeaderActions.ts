@@ -98,20 +98,11 @@ function actionHost(owner: string): HTMLElement | undefined {
     .find((candidate) => candidate.dataset.pageHeaderActions === owner);
 }
 
-/** Updates only an already-mounted button's disabled state without replacing
- * the control, preserving its DOM identity and surrounding header focus. */
-export function setPageHeaderActionDisabled(owner: string, action: string, disabled: boolean): boolean {
-  const control = Array.from(actionHost(owner)?.querySelectorAll<HTMLElement>(':scope > [data-page-header-action]') || [])
-    .find((candidate) => candidate.dataset.pageHeaderAction === action);
-  if (!(control instanceof HTMLButtonElement)) return false;
-  control.dataset.pageHeaderActionBusinessDisabled = String(disabled);
-  applyDisabled(control);
-  return true;
-}
+const relocatedActionOrigins = new WeakMap<HTMLElement, Comment>();
 
-export function mountPageHeaderActions(owner: string, actions: readonly PageHeaderAction[]): () => void {
+function ensureActionHost(owner: string): { meta: HTMLElement; host: HTMLElement } | undefined {
   const topbar = document.querySelector<HTMLElement>('.admin-topbar');
-  if (!topbar) return () => {};
+  if (!topbar) return undefined;
   let meta = topbar.querySelector<HTMLElement>(':scope > .admin-topbar-meta');
   if (!meta) {
     meta = document.createElement('div');
@@ -127,6 +118,59 @@ export function mountPageHeaderActions(owner: string, actions: readonly PageHead
     host.dataset.pageHeaderActions = owner;
     meta.append(host);
   }
+  return { meta, host };
+}
+
+function restoreRelocatedAction(element: HTMLElement): void {
+  const marker = relocatedActionOrigins.get(element);
+  if (marker?.parentNode) {
+    marker.replaceWith(element);
+    relocatedActionOrigins.delete(element);
+  }
+  delete element.dataset.pageHeaderActionElement;
+}
+
+function restoreRelocatedActions(host: HTMLElement): void {
+  for (const element of Array.from(host.querySelectorAll<HTMLElement>(':scope > [data-page-header-action-element]'))) {
+    restoreRelocatedAction(element);
+  }
+}
+
+/**
+ * Indicates whether this owner's relocated controls still have live source
+ * positions. A Host uses this after a donor redraw replaces the source with a
+ * loading/error state, before replacement controls are available.
+ */
+export function pageHeaderActionElementsHaveConnectedOrigins(owner: string, elements: readonly HTMLElement[]): boolean {
+  return elements.length > 0 && elements.every((element) =>
+    element.dataset.pageHeaderActionElement === owner && Boolean(relocatedActionOrigins.get(element)?.parentNode?.isConnected),
+  );
+}
+
+function refocus(element: HTMLElement | undefined): void {
+  if (!element?.isConnected || !(element instanceof HTMLElement)) return;
+  // Moving a focused, domain-owned command through a marker temporarily
+  // disconnects it in some browsers. Restore focus to that same node; never
+  // synthesize a click or change the page's command state.
+  element.focus({ preventScroll: true });
+}
+
+/** Updates only an already-mounted button's disabled state without replacing
+ * the control, preserving its DOM identity and surrounding header focus. */
+export function setPageHeaderActionDisabled(owner: string, action: string, disabled: boolean): boolean {
+  const control = Array.from(actionHost(owner)?.querySelectorAll<HTMLElement>(':scope > [data-page-header-action]') || [])
+    .find((candidate) => candidate.dataset.pageHeaderAction === action);
+  if (!(control instanceof HTMLButtonElement)) return false;
+  control.dataset.pageHeaderActionBusinessDisabled = String(disabled);
+  applyDisabled(control);
+  return true;
+}
+
+export function mountPageHeaderActions(owner: string, actions: readonly PageHeaderAction[]): () => void {
+  const mounted = ensureActionHost(owner);
+  if (!mounted) return () => {};
+  const { meta, host } = mounted;
+  restoreRelocatedActions(host);
   const revision = crypto.randomUUID();
   host.dataset.pageHeaderActionsRevision = revision;
   host.replaceChildren(...actions.map(actionElement));
@@ -136,5 +180,63 @@ export function mountPageHeaderActions(owner: string, actions: readonly PageHead
     // Remove only a container created by this helper and only when no other
     // page actions, SSR tabs or link actions occupy it.
     if (meta?.dataset.pageHeaderActionsMeta === 'created' && meta.childElementCount === 0) meta.remove();
+  };
+}
+
+/**
+ * Places existing, page-owned controls in the one admin topbar without
+ * recreating them. Their listeners, hrefs, disabled/busy state and domain
+ * command ownership remain attached to the original DOM nodes.
+ */
+export function mountPageHeaderActionElements(owner: string, elements: readonly HTMLElement[]): () => void {
+  // A page can only relocate controls it owns. Never silently steal a live
+  // command from another page's action group if a caller's selector is broad.
+  const controls = Array.from(new Set(elements)).filter((element) =>
+    element.isConnected && (!element.dataset.pageHeaderActionElement || element.dataset.pageHeaderActionElement === owner),
+  );
+  if (controls.length === 0) return () => {};
+  // Capture focus before any source control leaves its parent. `replaceChildren`
+  // may synchronously blur a first-time move, so reading activeElement later
+  // cannot recover that focus.
+  const sourceFocus = controls.find((element) => document.activeElement === element);
+  const mounted = ensureActionHost(owner);
+  if (!mounted) return () => {};
+  const { meta, host } = mounted;
+  const priorFocus = sourceFocus || Array.from(host.querySelectorAll<HTMLElement>(':scope > [data-page-header-action-element]'))
+    .find((element) => document.activeElement === element);
+  restoreRelocatedActions(host);
+  // An old header control is still document-connected before restoration, but
+  // its source marker may now belong to a donor subtree just removed by a
+  // redraw. Re-check after restoration so a stale caller cannot resurrect
+  // that detached action in the topbar.
+  const connectedControls = controls.filter((element) => element.isConnected);
+  if (connectedControls.length === 0) {
+    host.replaceChildren();
+    host.remove();
+    if (meta.dataset.pageHeaderActionsMeta === 'created' && meta.childElementCount === 0) meta.remove();
+    return () => {};
+  }
+  for (const element of connectedControls) {
+    let marker = relocatedActionOrigins.get(element);
+    if (!marker?.isConnected) {
+      marker = document.createComment('aicrm-page-header-action-origin');
+      element.before(marker);
+      relocatedActionOrigins.set(element, marker);
+    }
+    element.dataset.pageHeaderActionElement = owner;
+  }
+  const revision = crypto.randomUUID();
+  host.dataset.pageHeaderActionsRevision = revision;
+  host.replaceChildren(...connectedControls);
+  refocus(connectedControls.find((element) => element === priorFocus));
+  return () => {
+    if (host.dataset.pageHeaderActionsRevision !== revision) return;
+    const focused = connectedControls.find((element) => document.activeElement === element);
+    for (const element of connectedControls) {
+      if (element.dataset.pageHeaderActionElement === owner && element.parentElement === host) restoreRelocatedAction(element);
+    }
+    refocus(focused);
+    host.remove();
+    if (meta.dataset.pageHeaderActionsMeta === 'created' && meta.childElementCount === 0) meta.remove();
   };
 }
