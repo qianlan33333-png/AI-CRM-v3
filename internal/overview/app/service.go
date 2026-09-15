@@ -102,12 +102,13 @@ type Refunds struct {
 
 type Distribution struct {
 	Section
-	PeriodPaidSalesMinor    int64  `json:"period_paid_sales_minor"`
-	PeriodInitialCommission int64  `json:"period_initial_commission_minor"`
-	PeriodCommissionCount   int64  `json:"period_commission_count"`
-	CurrentUnsettledMinor   int64  `json:"current_unsettled_minor"`
-	CurrentSettledMinor     int64  `json:"current_settled_minor"`
-	Currency                string `json:"currency"`
+	PeriodPaidSalesMinor       int64  `json:"period_paid_sales_minor"`
+	PeriodInitialCommission    int64  `json:"period_initial_commission_minor"`
+	PeriodCommissionCount      int64  `json:"period_commission_count"`
+	CurrentUnsettledMinor      int64  `json:"current_unsettled_minor"`
+	CurrentSettledMinor        int64  `json:"current_settled_minor"`
+	CurrentExceptionOrderCount int64  `json:"current_exception_order_count"`
+	Currency                   string `json:"currency"`
 }
 
 type Todo struct {
@@ -364,7 +365,7 @@ func refundResponse(asOf time.Time, facts paymentport.RefundOverview, refundErr 
 }
 
 func distributionResponse(asOf time.Time, facts distributionport.Overview, err error) Distribution {
-	result := Distribution{Section: baseSection(asOf), PeriodPaidSalesMinor: facts.PeriodPaidSalesMinor, PeriodInitialCommission: facts.PeriodInitialCommission, PeriodCommissionCount: facts.PeriodCommissionCount, CurrentUnsettledMinor: facts.CurrentUnsettledMinor, CurrentSettledMinor: facts.CurrentSettledMinor, Currency: facts.Currency}
+	result := Distribution{Section: baseSection(asOf), PeriodPaidSalesMinor: facts.PeriodPaidSalesMinor, PeriodInitialCommission: facts.PeriodInitialCommission, PeriodCommissionCount: facts.PeriodCommissionCount, CurrentUnsettledMinor: facts.CurrentUnsettledMinor, CurrentSettledMinor: facts.CurrentSettledMinor, CurrentExceptionOrderCount: facts.CurrentExceptionOrderCount, Currency: facts.Currency}
 	if result.Currency == "" {
 		result.Currency = "CNY"
 	}
@@ -372,7 +373,7 @@ func distributionResponse(asOf time.Time, facts distributionport.Overview, err e
 		result.Section = failedReadSection(asOf, "distribution_aggregate", err)
 		return result
 	}
-	if facts.PeriodPaidSalesMinor == 0 && facts.PeriodInitialCommission == 0 && facts.PeriodCommissionCount == 0 && facts.CurrentUnsettledMinor == 0 && facts.CurrentSettledMinor == 0 {
+	if facts.PeriodPaidSalesMinor == 0 && facts.PeriodInitialCommission == 0 && facts.PeriodCommissionCount == 0 && facts.CurrentUnsettledMinor == 0 && facts.CurrentSettledMinor == 0 && facts.CurrentExceptionOrderCount == 0 {
 		result.Section = zeroSection(asOf)
 	}
 	return result

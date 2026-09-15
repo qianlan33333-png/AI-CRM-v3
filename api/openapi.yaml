@@ -4331,13 +4331,18 @@ components:
       allOf:
         - {$ref: "#/components/schemas/AdminOverviewSection"}
         - type: object
-          required: [period_paid_sales_minor, period_initial_commission_minor, period_commission_count, current_unsettled_minor, current_settled_minor, currency]
+          required: [period_paid_sales_minor, period_initial_commission_minor, period_commission_count, current_unsettled_minor, current_settled_minor, current_exception_order_count, currency]
           properties:
             period_paid_sales_minor: {type: integer, format: int64, minimum: 0}
             period_initial_commission_minor: {type: integer, format: int64, minimum: 0}
             period_commission_count: {type: integer, format: int64, minimum: 0}
             current_unsettled_minor: {type: integer, format: int64, minimum: 0}
             current_settled_minor: {type: integer, format: int64, minimum: 0}
+            current_exception_order_count:
+              type: integer
+              format: int64
+              minimum: 0
+              description: Current distinct commission order_id count with at least one Distribution exception in open or querying status; not period-filtered and not an exception-record count.
             currency: {const: CNY}
     AdminOverviewTodos:
       allOf:

@@ -447,8 +447,9 @@ func assertAdminOverviewResponse(t *testing.T, response *httptest.ResponseRecord
 			Completed int64  `json:"completed_count"`
 		} `json:"refunds"`
 		Distribution struct {
-			Status    string `json:"status"`
-			Unsettled int64  `json:"current_unsettled_minor"`
+			Status          string `json:"status"`
+			Unsettled       int64  `json:"current_unsettled_minor"`
+			ExceptionOrders int64  `json:"current_exception_order_count"`
 		} `json:"distribution"`
 		Todos struct {
 			Status string `json:"status"`
@@ -462,7 +463,7 @@ func assertAdminOverviewResponse(t *testing.T, response *httptest.ResponseRecord
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || body.Paid.Status != "ready" || body.Paid.OrderCount != 3 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != 1 || len(body.Paid.Gross) != 1 || body.Paid.Gross[0].AmountMinor != 2400 || body.Paid.Gross[0].Currency != "CNY" || body.Customers.Status != "ready" || body.Customers.Count != 1 || body.Refunds.Status != "ready" || body.Refunds.Completed != 1 || body.Distribution.Status != "ready" || body.Distribution.Unsettled != 120 || body.Todos.Status != "ready" || len(body.Todos.Items) != 1 || body.Todos.Items[0].Code != "distribution_exceptions" || body.Todos.Items[0].Count != 1 || body.Todos.Items[0].Href != "/admin/distribution" {
+	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || body.Paid.Status != "ready" || body.Paid.OrderCount != 3 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != 1 || len(body.Paid.Gross) != 1 || body.Paid.Gross[0].AmountMinor != 2400 || body.Paid.Gross[0].Currency != "CNY" || body.Customers.Status != "ready" || body.Customers.Count != 1 || body.Refunds.Status != "ready" || body.Refunds.Completed != 1 || body.Distribution.Status != "ready" || body.Distribution.Unsettled != 120 || body.Distribution.ExceptionOrders != 1 || body.Todos.Status != "ready" || len(body.Todos.Items) != 1 || body.Todos.Items[0].Code != "distribution_exceptions" || body.Todos.Items[0].Count != 1 || body.Todos.Items[0].Href != "/admin/distribution" {
 		t.Fatalf("overview response status=%d body=%s", response.Code, response.Body.String())
 	}
 }

@@ -221,7 +221,11 @@ func (h *productUI) assets() (ProductAssets, error) {
 	if err != nil {
 		return ProductAssets{}, err
 	}
-	standardCSS := make([]string, 0, 4)
+	detailDrawerCSS, err := get("sharedDetailDrawerStyles")
+	if err != nil {
+		return ProductAssets{}, err
+	}
+	standardCSS := make([]string, 0, 5)
 	for _, name := range []string{"material_picker.css", "send_content_composer.css", "wecom_tag_picker.css"} {
 		relative := "assets/standard-components/" + name
 		if _, ok := manifest.Files[relative]; !ok {
@@ -232,7 +236,7 @@ func (h *productUI) assets() (ProductAssets, error) {
 		}
 		standardCSS = append(standardCSS, "/product-assets/standard-components/"+name)
 	}
-	standardCSS = append(standardCSS, selectionDialogCSS)
+	standardCSS = append(standardCSS, selectionDialogCSS, detailDrawerCSS)
 	return ProductAssets{TokensCSS: tokens, LabsCSS: labs, ProductCSS: productCSS, HostJS: host, StandardHostJS: standardHost, StandardCSS: standardCSS}, nil
 }
 

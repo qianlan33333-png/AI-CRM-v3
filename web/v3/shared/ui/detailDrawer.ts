@@ -1,10 +1,12 @@
 // Shared, presentation-only detail drawer. Domain pages retain ownership of
 // loading their own authorized facts; this helper only guarantees focus return,
 // Escape/close semantics and a consistent accessible shell.
-export function openDetailDrawer(title: string, body: HTMLElement): HTMLDialogElement {
+export type DetailDrawerOptions = { placement?: 'drawer' | 'center' };
+
+export function openDetailDrawer(title: string, body: HTMLElement, options: DetailDrawerOptions = {}): HTMLDialogElement {
   const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const dialog = document.createElement('dialog');
-  dialog.className = 'shared-detail-drawer';
+  dialog.className = `shared-detail-drawer${options.placement === 'center' ? ' shared-detail-drawer--center' : ''}`;
   dialog.setAttribute('aria-label', title);
   const panel = document.createElement('section'); panel.className = 'shared-detail-drawer__panel';
   const head = document.createElement('header'); head.className = 'shared-detail-drawer__head';
