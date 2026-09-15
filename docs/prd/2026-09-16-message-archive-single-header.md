@@ -11,7 +11,7 @@ OneID：不涉及；入口与详情仅使用既有受权客户读取，不解析
 
 Persistence / External Effects：不涉及；本修复不改归档读取、审计、数据库、任务、企微 Provider 或外部效果。
 
-复用 V3 `admin_base` 已有 `PageActions` 顶栏动作槽。仓内 Git 历史的产品、频道页已使用同一 `ShowPageHeader` / `PageActions` 模式维持顶栏唯一标题；不创建新标题壳或平行按钮样式。
+复用 V3 `admin_base` 已有 `PageActions` 顶栏动作槽。[GitHub PR #201](https://github.com/qianlan33333-png/AI-CRM-v3/pull/201) 的产品、频道页已使用同一 `ShowPageHeader` / `PageActions` 模式维持顶栏唯一标题；不创建新标题壳或平行按钮样式。
 
 只改 Webshell 的会话存档模板与路由数据：保留唯一 `admin-topbar` 标题和说明；把“选择客户”移入其既有 primary action 槽；移除 entry/detail 卡片中的重复 `h2`；详情搜索表单仍留在内容区。
 
