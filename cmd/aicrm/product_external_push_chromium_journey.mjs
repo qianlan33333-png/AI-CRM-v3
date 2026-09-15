@@ -272,7 +272,7 @@ try {
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-confirm]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Array.from(document.querySelectorAll('#product-media img')).some((image)=>image.src.includes('/" + materialLaterID + "/variants/thumb_320'))", 'product V3 material confirmation did not update the original product draft');
   await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='从素材库选择').click(); true");
-  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove$=\":' + materialLaterID + '\"]'))", 'product material reopening did not reconstruct the owner draft');
+  await waitFor(cdp, `Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-remove$=":${materialLaterID}"]'))`, 'product material reopening did not reconstruct the owner draft');
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove$=\":" + materialLaterID + "\"]').click(); document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Array.from(document.querySelectorAll('#product-media img')).some((image)=>image.src.includes('/" + materialLaterID + "/variants/thumb_320'))", 'product material cancellation changed the original draft');
   await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='保存当前维度').click(); true");
