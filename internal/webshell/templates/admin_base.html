@@ -51,11 +51,11 @@
   {{end}}
   {{end}}
   {{if .Customers}}
-  <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v2">
+  <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v3">
   <link rel="stylesheet" href="/assets/standard-components/wecom_tag_picker.css">
   {{with presentationAssets}}{{if .SelectionDialogCSS}}<link rel="stylesheet" href="{{.SelectionDialogCSS}}">{{end}}{{end}}
   <script type="module" src="/assets/standard-components/standard_components_host.js"></script>
-  <script defer src="/static/admin_console/admin_customers.js?v=customer-profile-v2"></script>
+  <script defer src="/static/admin_console/admin_customers.js?v=customer-profile-v3"></script>
   {{end}}
   {{if .MessageArchive}}
   <link rel="stylesheet" href="/static/admin_console/message_archive.css?v=message-archive-v1">
@@ -175,6 +175,10 @@
   <link rel="stylesheet" href="{{.DistributionAssets.CSS}}">
 	<link rel="stylesheet" href="{{.DistributionAssets.DetailDrawerCSS}}">
   <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
+  {{end}}
+  {{if .Overview}}
+  <link rel="stylesheet" href="{{.OverviewAssets.CSS}}">
+  <script type="module" src="{{.OverviewAssets.AdminJS}}"></script>
   {{end}}
   {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}
   {{if .ComponentStates}}

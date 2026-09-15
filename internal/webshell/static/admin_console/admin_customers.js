@@ -50,8 +50,6 @@
   let listRetry = { query: "", cursor: "", navigation: "reset" };
   let detailID = "";
   let clearPhoneTimer = 0;
-  // A failed catalog or V3 asset read is retried only from this Host. The
-  // picker never writes a tag command while this local draft is loading.
   let tagSelectorsPending = null;
   const selectedCustomers = new Set();
   const acceptedTagCommands = new Map();
@@ -141,6 +139,18 @@
 
   function customerStatusLabel(value) {
     return ({ active: "正常", merged: "已合并", closed: "已关闭" })[String(value || "")] || "客户状态待确认";
+  }
+
+  function contactTypeLabel(value) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) return "待确认";
+    return ({ 1: "微信用户", 2: "企业微信用户" })[value] || "待确认";
+  }
+
+  function touchpointSourceLabel(value) {
+    const source = typeof value === "string" ? value.trim() : "";
+    const known = { wecom: "企业微信", order: "交易", survey: "问卷", customer: "客户档案" };
+    if (known[source]) return known[source];
+    return source ? `其他（${source}）` : "待确认";
   }
 
   function orderStatusLabel(value) {
@@ -242,21 +252,29 @@
     root.querySelectorAll("[data-customer-tag-loader-error],[data-customer-tag-picker-load-error]").forEach((node) => node.remove());
   }
 
-  function showTagSelectorError(selects) {
+  function showTagSelectorError(selects, error) {
+    const status = Number(error && error.status || 0);
+    const message = status === 403
+      ? "标签目录权限已失效；当前标签草稿仍保留，请重新登录后重试。"
+      : "标签目录暂不可用；当前标签草稿仍保留，请稍后重试。";
     for (const form of new Set(selects.map((select) => select.closest("form")).filter(Boolean))) {
-      if (form.querySelector("[data-customer-tag-loader-error]")) continue;
+      if (form.querySelector("[data-customer-tag-picker-load-error]")) continue;
       const notice = document.createElement("span");
+      notice.dataset.customerTagPickerLoadError = "1";
+      // Keep the on-demand loader's historical hooks while the V3 adapter
+      // owns the actual selection interaction.
       notice.dataset.customerTagLoaderError = "1";
-      notice.className = "admin-alert admin-alert--error";
+      notice.className = "customer-tag-picker-error";
       notice.setAttribute("role", "alert");
-      notice.textContent = "标签选择暂时不可用；当前标签草稿已保留。";
+      notice.append(message, " ");
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "admin-button admin-button--ghost";
+      retry.dataset.customerTagPickerRetry = "1";
       retry.dataset.customerTagLoaderRetry = "1";
       retry.textContent = "重试加载标签";
       retry.addEventListener("click", () => { void loadTagSelectors(); });
-      notice.append(" ", retry);
+      notice.append(retry);
       form.append(notice);
     }
   }
@@ -265,20 +283,22 @@
     if (tagSelectorsPending) return tagSelectorsPending;
     const selects = [...root.querySelectorAll('select[name="add_tag_ids"],select[name="remove_tag_ids"]')];
     if (!selects.length) return Promise.resolve();
-    tagSelectorsPending = (async () => {
-      root.querySelectorAll("[data-customer-tag-loader-retry]").forEach((button) => { button.disabled = true; });
+    tagSelectorsPending = (async function () {
+      root.querySelectorAll("[data-customer-tag-picker-retry]").forEach((button) => { button.disabled = true; });
       for (const select of selects) select.disabled = true;
       clearTagSelectorErrors();
       try {
-      const picker = window.AICRMTagPicker;
-      if (!picker || typeof picker.open !== "function" || typeof picker.createCatalogPageLoader !== "function" || typeof picker.unresolvedRecord !== "function") throw new Error("V3 标签选择器尚未就绪");
+        const standardComponents = window.AICRMStandardComponents;
+        if (!standardComponents || typeof standardComponents.readyFor !== "function") throw new Error("标签选择组件未就绪");
+        await standardComponents.readyFor(["tags"]);
+        const picker = window.AICRMTagPicker;
+      if (!picker || typeof picker.open !== "function" || typeof picker.createCatalogPageLoader !== "function" || typeof picker.unresolvedRecord !== "function") {
+          throw new Error("V3 标签选择器未就绪");
+      }
       const source = "local_tag_catalog";
       const pageLoader = picker.createCatalogPageLoader(source, async ({ signal }) => request(api.tags, { signal }));
       const initialPage = await pageLoader({ query: "", signal: new AbortController().signal });
       const tags = Array.isArray(initialPage.resolved) ? initialPage.resolved : initialPage.items;
-      const standardComponents = window.AICRMStandardComponents;
-      if (!standardComponents || typeof standardComponents.readyFor !== "function") throw new Error("标签选择组件不可用");
-      await standardComponents.readyFor(["tags"]);
       const tagByID = new Map();
       for (const tag of tags) {
         const id = Number(tag.id || tag.tag_id);
@@ -348,10 +368,12 @@
         select.parentElement?.append(button, summary); sync();
       }
     } catch (error) {
-      for (const select of selects) select.disabled = true;
-      showTagSelectorError(selects);
-    }
-    })().finally(() => { tagSelectorsPending = null; });
+        for (const select of selects) select.disabled = true;
+        showTagSelectorError(selects, error);
+      }
+    })().finally(function () {
+      tagSelectorsPending = null;
+    });
     return tagSelectorsPending;
   }
 
@@ -566,7 +588,7 @@
     const strong = document.createElement("strong");
     span.textContent = label;
     if (value instanceof Node) strong.append(value);
-    else strong.textContent = String(value || "—");
+    else strong.textContent = displayValue(value);
     field.append(span, strong);
     return field;
   }
@@ -575,18 +597,18 @@
     const item = document.createElement("span");
     item.append(document.createTextNode(label));
     const strong = document.createElement("strong");
-    strong.textContent = String(value || "—");
+    strong.textContent = displayValue(value);
     item.append(strong);
     return item;
   }
 
-  function phoneField(masked) {
+  function phoneField(masked, known) {
     const line = document.createElement("span");
     line.className = "customer-phone-line";
     const value = document.createElement("span");
-    value.textContent = masked || "未填写";
+    value.textContent = known ? (masked || "未填写") : "待确认";
     line.append(value);
-    if (masked) {
+    if (known && masked) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "admin-button admin-button--secondary";
@@ -597,20 +619,57 @@
     return line;
   }
 
+  function object(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  }
+
+  function displayValue(value, fallback) {
+    const unknown = fallback === undefined ? "待确认" : fallback;
+    if (typeof value === "string") return value.trim() || unknown;
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : unknown;
+    return unknown;
+  }
+
+  function countValue(value) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? String(value) : "待确认";
+  }
+
+  function timeValue(value) {
+    return typeof value === "string" && value.trim() ? date(value) : "待确认";
+  }
+
+  function sectionValue(section) {
+    const candidate = object(section);
+    return candidate && candidate.status === "ready" && object(candidate.data) ? candidate.data : null;
+  }
+
+  function sectionArray(section) {
+    const candidate = object(section);
+    return candidate && candidate.status === "ready" && Array.isArray(candidate.data) ? candidate.data : null;
+  }
+
+  function sectionMessage(section) {
+    const candidate = object(section);
+    if (!candidate) return "该分区数据待确认，其他客户信息不受影响。";
+    if (candidate.status === "not_ready") return "该分区尚未准备好，其他客户信息不受影响。";
+    if (candidate.status === "degraded") return "该分区暂时不可用，其他客户信息不受影响。";
+    return "该分区数据待确认，其他客户信息不受影响。";
+  }
+
   function sectionCard(title, section, render, renderDegraded) {
     const card = document.createElement("section");
-    card.className = "admin-card";
+    card.className = "admin-card customer-record-card";
     const heading = document.createElement("h2");
     heading.textContent = title;
     card.append(heading);
     if (!section || section.status !== "ready") {
       if (renderDegraded) {
-        renderDegraded(card, (section && section.data) || {});
+        renderDegraded(card, object(section) && object(section).data || {});
         return card;
       }
       const state = document.createElement("div");
       state.className = "admin-state admin-state--inline admin-state--error";
-      state.textContent = "该分区暂时不可用，其他客户信息不受影响。";
+      state.textContent = sectionMessage(section);
       card.append(state);
       return card;
     }
@@ -652,37 +711,163 @@
     target.append(node);
   }
 
+  function summaryMetrics(target, entries) {
+    const metrics = document.createElement("dl");
+    metrics.className = "customer-record-metrics";
+    entries.forEach(function (entry) {
+      const item = document.createElement("div");
+      const label = document.createElement("dt");
+      const value = document.createElement("dd");
+      label.textContent = entry.label;
+      value.textContent = entry.value;
+      item.append(label, value);
+      metrics.append(item);
+    });
+    target.append(metrics);
+  }
+
+  function emptyRecords(target, message) {
+    const state = document.createElement("div");
+    state.className = "admin-state admin-state--inline";
+    state.textContent = message;
+    target.append(state);
+  }
+
+  function recordTable(target, labels, rows) {
+    const wrap = document.createElement("div");
+    wrap.className = "admin-table-wrap customer-record-table";
+    const table = document.createElement("table");
+    table.className = "admin-table";
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    labels.forEach(function (label) { const cell = document.createElement("th"); cell.textContent = label; headRow.append(cell); });
+    head.append(headRow);
+    const body = document.createElement("tbody");
+    rows.forEach(function (row) {
+      const item = document.createElement("tr");
+      row.forEach(function (value) { const cell = document.createElement("td"); cell.textContent = displayValue(value); item.append(cell); });
+      body.append(item);
+    });
+    table.append(head, body);
+    wrap.append(table);
+    target.append(wrap);
+  }
+
+  function recentOrderReference(order) {
+    const item = object(order) || {};
+    const fallback = typeof item.id === "number" && Number.isSafeInteger(item.id) && item.id > 0 ? "订单 #" + item.id : "订单号待确认";
+    return displayValue(item.merchant_order_no, fallback);
+  }
+
+  function renderOrderRecords(target, value) {
+    const summary = object(value) || {};
+    summaryMetrics(target, [
+      { label: "订单总数", value: countValue(summary.total) },
+      { label: "已支付", value: countValue(summary.paid) },
+      { label: "退款相关", value: countValue(summary.refunded) },
+      { label: "支付失败", value: countValue(summary.failed) },
+    ]);
+    if (!Array.isArray(summary.recent)) {
+      emptyRecords(target, "近期订单记录待确认。");
+      return;
+    }
+    if (!summary.recent.length) {
+      emptyRecords(target, "暂无近期订单记录。");
+      return;
+    }
+    const note = document.createElement("p");
+    note.className = "customer-section-note";
+    note.textContent = "最多显示最近 10 条订单。";
+    target.append(note);
+    recordTable(target, ["订单号", "状态", "创建时间"], summary.recent.slice(0, 10).map(function (order) {
+      const item = object(order) || {};
+      return [recentOrderReference(item), typeof item.status === "string" && item.status ? orderStatusLabel(item.status) : "订单状态待确认", timeValue(item.created_at)];
+    }));
+  }
+
+  function renderQuestionnaireRecords(target, value) {
+    const summary = object(value) || {};
+    summaryMetrics(target, [{ label: "问卷记录", value: countValue(summary.total) }]);
+    if (!Array.isArray(summary.recent)) {
+      emptyRecords(target, "问卷记录待确认。");
+      return;
+    }
+    if (!summary.recent.length) {
+      emptyRecords(target, "暂无近期问卷记录。");
+      return;
+    }
+    recordTable(target, ["问卷", "评估", "提交时间"], summary.recent.map(function (survey) {
+      const item = object(survey) || {};
+      const assessment = displayValue(item.assessment_label, typeof item.score === "number" && Number.isFinite(item.score) ? "评分 " + item.score : "待确认");
+      return [displayValue(item.title, "问卷名称待确认"), assessment, timeValue(item.submitted_at)];
+    }));
+  }
+
+  function renderTouchpointRecords(target, value) {
+    const events = Array.isArray(value) ? value : null;
+    if (!events) {
+      emptyRecords(target, "最近触点待确认。");
+      return;
+    }
+    if (!events.length) {
+      emptyRecords(target, "暂无近期触点记录。");
+      return;
+    }
+    recordTable(target, ["事件", "来源", "发生时间"], events.map(function (event) {
+      const item = object(event) || {};
+      return [displayValue(item.title, displayValue(item.event_type, "触点事件待确认")), touchpointSourceLabel(item.source_domain), timeValue(item.occurred_at)];
+    }));
+  }
+
   async function loadDetail(id) {
     detailID = String(id);
     try {
-	  const data = await request(api.customers + "/" + id + "/360");
-	  const item = (data.profile && data.profile.data) || {};
-	  const identity = (data.identity_summary && data.identity_summary.data) || {};
-	  const identities = (identity.identities || []).map((value) => value.summary).filter(Boolean);
-      el.profileName.textContent = item.display_name || "未命名客户";
+      const response = await request(api.customers + "/" + id + "/360");
+      const data = object(response) || {};
+      const item = sectionValue(data.profile);
+      const identity = sectionValue(data.identity_summary);
+      const identities = identity && Array.isArray(identity.identities)
+        ? identity.identities.map(function (value) { const record = object(value); return record ? displayValue(record.summary, "") : ""; }).filter(Boolean)
+        : [];
+      const phones = identity && Array.isArray(identity.phones) ? identity.phones : [];
+      const firstPhone = phones.length ? object(phones[0]) : null;
+      const maskedPhone = firstPhone ? displayValue(firstPhone.masked, "") : "";
+      const profileReady = Boolean(item);
+      el.profileName.textContent = profileReady ? displayValue(item.display_name, "客户名称待确认") : "客户根资料待确认";
       el.detailFields.replaceChildren(
-        profileField("姓名", item.display_name || "未命名客户"),
-		profileField("手机号", phoneField((identity.phones || [])[0] ? localPhone(identity.phones[0].masked) : "")),
-        profileField("Customer ID", item.customer_id),
-        profileField("OneID", [item.oneid, ...identities].filter(Boolean).join(" · ")),
+        profileField("姓名", profileReady ? item.display_name : "待确认"),
+        profileField("手机号", phoneField(maskedPhone ? localPhone(maskedPhone) : "", Boolean(identity))),
+        profileField("Customer ID", profileReady ? item.customer_id : "待确认"),
+        profileField("OneID", profileReady ? [displayValue(item.oneid, ""), ...identities].filter(Boolean).join(" · ") || "待确认" : "待确认"),
       );
       el.profileMeta.replaceChildren(
-        metaItem("客户状态", customerStatusLabel(item.status)),
-        metaItem("企业", item.corp_name),
-        metaItem("客户类型", item.contact_type),
-        metaItem("数据来源", item.source),
-        metaItem("最后同步", date(item.last_synced_at)),
+        metaItem("客户状态", profileReady ? customerStatusLabel(item.status) : "待确认"),
+        metaItem("企业", profileReady ? item.corp_name : "待确认"),
+        metaItem("客户类型", profileReady ? contactTypeLabel(item.contact_type) : "待确认"),
+        metaItem("数据来源", profileReady ? item.source : "待确认"),
+        metaItem("最后同步", profileReady ? timeValue(item.last_synced_at) : "待确认"),
       );
-      el.detailState.hidden = true;
+      if (profileReady) {
+        el.detailState.hidden = true;
+      } else {
+        el.detailState.className = "admin-state admin-state--inline admin-state--error";
+        el.detailState.replaceChildren();
+        const strong = document.createElement("strong");
+        const span = document.createElement("span");
+        strong.textContent = "客户根资料暂时不可用";
+        span.textContent = "其他已读取的客户记录仍可单独查看。";
+        el.detailState.append(strong, span);
+        el.detailState.hidden = false;
+      }
       el.detailContent.hidden = false;
-	  el.main360.replaceChildren(
-		sectionCard("订单统计", data.order_summary, function (target, value) { line(target, "订单总数：" + (value.total || 0)); line(target, "已支付：" + (value.paid || 0) + "，退款相关：" + (value.refunded || 0) + "，支付失败：" + (value.failed || 0)); (value.recent || []).slice(0, 10).forEach(function (order) { line(target, (order.merchant_order_no || "订单 #" + order.id) + " · " + orderStatusLabel(order.status)); }); }),
-		sectionCard("问卷统计", data.questionnaire_summary, function (target, value) { line(target, "问卷记录：" + (value.total || 0)); (value.recent || []).forEach(function (survey) { line(target, (survey.title || "问卷") + " · " + date(survey.submitted_at)); }); })
-	  );
-	  el.sidebar360.replaceChildren(
+      el.main360.replaceChildren(
+        sectionCard("订单记录", data.order_summary, renderOrderRecords),
+        sectionCard("问卷记录", data.questionnaire_summary, renderQuestionnaireRecords)
+      );
+      el.sidebar360.replaceChildren(
 		riskCard(data.risk),
-		sectionCard("最近触点", data.recent_touchpoints, function (target, value) { (Array.isArray(value) ? value : []).forEach(function (event) { line(target, (event.title || event.event_type || "客户事件") + " · " + date(event.occurred_at)); }); })
-	  );
+		sectionCard("最近触点", data.recent_touchpoints, renderTouchpointRecords)
+      );
 	  el.sections360.hidden = false;
     } catch (error) {
       el.detailState.className = "admin-state admin-state--inline admin-state--error";
@@ -730,7 +915,22 @@
   if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult, el.singleTagRefresh); });
   if (el.batchTagRefresh) el.batchTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.batchTagResult, el.batchTagRefresh); });
   if (el.singleTagRefresh) el.singleTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.singleTagResult, el.singleTagRefresh); });
-  if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); void loadList("", "reset"); });
+  if (el.filters) {
+    const textSearchInputs = new Set(el.filters.querySelectorAll('input[name="keyword"], input[name="phone"]'));
+    const composingSearchInputs = new WeakSet();
+    el.filters.addEventListener("compositionstart", function (event) {
+      if (textSearchInputs.has(event.target)) composingSearchInputs.add(event.target);
+    });
+    el.filters.addEventListener("compositionend", function (event) {
+      if (textSearchInputs.has(event.target)) composingSearchInputs.delete(event.target);
+    });
+    el.filters.addEventListener("keydown", function (event) {
+      if (!textSearchInputs.has(event.target) || event.key !== "Enter" || event.isComposing || event.keyCode === 229 || composingSearchInputs.has(event.target)) return;
+      event.preventDefault();
+      el.filters.requestSubmit();
+    });
+    el.filters.addEventListener("submit", function (event) { event.preventDefault(); void loadList("", "reset"); });
+  }
   if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); void loadList("", "reset"); });
   if (el.refresh) el.refresh.addEventListener("click", function () { if (!listBusy) void loadList(listRetry.cursor, listRetry.navigation, listRetry.query); });
   if (el.previous) el.previous.addEventListener("click", function () { if (!listBusy && activeQuery === committedQuery && pageIndex > 0) void loadList(pageCursors[pageIndex - 1], "previous"); });
