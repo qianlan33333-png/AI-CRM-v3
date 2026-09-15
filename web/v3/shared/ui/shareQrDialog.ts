@@ -17,6 +17,10 @@ export type ShareQrDialogOptions = {
 // Presentation-only: callers retain URL authorization, transport, feedback,
 // and every domain action. This helper never fetches or writes on its own.
 export function openShareQrDialog(options: ShareQrDialogOptions): HTMLDialogElement {
+  // Retain the former product overlay's single-instance behavior. Closing the
+  // old QR view also runs its existing focus-return cleanup before replacement.
+  const existing = document.querySelector<HTMLDialogElement>('dialog[data-shared-qr-dialog="true"]');
+  if (existing) existing.close();
   const body = document.createElement('section');
   body.className = 'shared-qr-dialog';
   const input = document.createElement('input');
@@ -53,5 +57,7 @@ export function openShareQrDialog(options: ShareQrDialogOptions): HTMLDialogElem
   }
   body.append(input, qr, actions);
   renderQr(qr, options.url, options.qrLabel);
-  return openDetailDrawer(options.title, body, { placement: 'center' });
+  const dialog = openDetailDrawer(options.title, body, { placement: 'center', closeOnBackdrop: true });
+  dialog.dataset.sharedQrDialog = 'true';
+  return dialog;
 }

@@ -335,6 +335,17 @@ function summaryNumber(section: Row, value: unknown): string {
   return numericText(value);
 }
 
+function exceptionOrderNumber(section: Row, value: unknown): string {
+  const status = summaryStatus(section);
+  if (status === 'data_missing') return '待确认';
+  if (status === 'failed') return '读取失败';
+  if (!status) return '—';
+  const count = integer(value);
+  // This is a count, unlike adjustment amounts elsewhere in the Distribution
+  // UI. Negative values are invalid facts and must remain explicitly unknown.
+  return count === undefined || count < 0 ? '待确认' : count.toLocaleString('zh-CN');
+}
+
 function metric(label: string, value: string, status: SummaryStatus | undefined): HTMLElement {
   const card = document.createElement('article');
   card.className = 'distribution-summary-card';
@@ -369,7 +380,7 @@ function summary(): HTMLElement {
     metric('成交额', summaryMoney(section, section.period_paid_sales_minor, section.currency), status),
     metric('待结算佣金', summaryMoney(section, section.current_unsettled_minor, section.currency), status),
     metric('已结算佣金', summaryMoney(section, section.current_settled_minor, section.currency), status),
-    metric('待处理异常订单', summaryNumber(section, section.current_exception_order_count), status),
+    metric('待处理异常订单', exceptionOrderNumber(section, section.current_exception_order_count), status),
   );
   summaryRoot.append(head, cards);
   if (overviewFailure) {

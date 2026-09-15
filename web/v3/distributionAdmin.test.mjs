@@ -29,6 +29,8 @@ const dom = new JSDOM('<!doctype html><header class="admin-topbar"><div class="a
   window.fetch = async (input, init = {}) => { const url = new URL(String(input), window.location.href); calls.push({ path: url.pathname, search: url.search, method: init.method || 'GET', body: init.body || '', idempotencyKey: new Headers(init.headers).get('Idempotency-Key') || '' });
 	if (url.pathname === '/api/admin/overview') {
 		if (holdOverview) return new Promise((resolve) => pendingOverview.push({ url, resolve }));
+		if (overviewMode === 'exception_missing') return json({ distribution: { status: 'ready', currency: 'CNY', period_paid_sales_minor: 1200, current_unsettled_minor: 0, current_settled_minor: 330 }, todos: { status: 'ready', items: [] } });
+		if (overviewMode === 'exception_negative') return json({ distribution: { status: 'ready', currency: 'CNY', period_paid_sales_minor: 1200, current_unsettled_minor: 0, current_settled_minor: 330, current_exception_order_count: -1 }, todos: { status: 'ready', items: [] } });
 		if (overviewMode === 'zero') return json({ distribution: { status: 'zero', currency: 'CNY', period_paid_sales_minor: 0, period_initial_commission_minor: 0, period_commission_count: 0, current_unsettled_minor: 0, current_settled_minor: 0, current_exception_order_count: 0 }, todos: { status: 'zero', items: [{ code: 'distribution_exceptions', count: 0, href: '/admin/distribution' }] } });
 		if (overviewMode === 'missing') return json({ distribution: { status: 'data_missing', reason_code: 'distribution_not_configured', currency: 'CNY', period_paid_sales_minor: 0, period_initial_commission_minor: 0, period_commission_count: 0, current_unsettled_minor: 0, current_settled_minor: 0, current_exception_order_count: 0 }, todos: { status: 'data_missing', reason_code: 'distribution_not_configured', items: [] } });
 		if (overviewMode === 'failed') return json({ distribution: { status: 'failed', reason_code: 'distribution_summary_unavailable' }, todos: { status: 'failed', reason_code: 'distribution_summary_unavailable', items: [] } });
@@ -89,6 +91,12 @@ overviewMode = 'missing';
 dom.window.document.querySelector('[data-distribution-summary-period="30d"]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
 await waitFor(() => [...dom.window.document.querySelectorAll('.distribution-summary-card')].every((card) => card.textContent.includes('待确认')), 'missing overview facts did not remain unknown');
 assert.equal((dom.window.document.querySelector('.distribution-summary')?.textContent || '').includes('¥0.00'), false, 'missing facts must not be rendered as currency zero');
+overviewMode = 'exception_missing';
+dom.window.document.querySelector('[data-distribution-summary-period="today"]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+await waitFor(() => [...dom.window.document.querySelectorAll('.distribution-summary-card')].find((card) => card.textContent.includes('待处理异常订单'))?.textContent.includes('待确认'), 'a missing exception-order count must remain unknown');
+overviewMode = 'exception_negative';
+dom.window.document.querySelector('[data-distribution-summary-period="7d"]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+await waitFor(() => [...dom.window.document.querySelectorAll('.distribution-summary-card')].find((card) => card.textContent.includes('待处理异常订单'))?.textContent.includes('待确认'), 'a negative exception-order count must remain unknown');
 overviewMode = 'failed';
 dom.window.document.querySelector('[data-distribution-summary-period="7d"]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
 await waitFor(() => [...dom.window.document.querySelectorAll('.distribution-summary-card')].every((card) => card.textContent.includes('读取失败')), 'failed overview facts did not expose their failed state');
@@ -219,7 +227,9 @@ assert.equal(calls.filter((call) => call.method !== 'GET').length, writesBeforeA
 holdLists = false;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '分销员').click();
 await waitFor(() => dom.window.document.body.textContent.includes('未设置昵称'), 'authorized reads must recover after the test session state is restored');
-[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '申请二维码').click();
+const applicationTrigger = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '申请二维码');
+applicationTrigger.focus();
+applicationTrigger.click();
 await waitFor(() => dom.window.document.querySelector('dialog')?.textContent.includes('分销申请二维码'), 'application QR dialog did not render');
 const applicationDialog = [...dom.window.document.querySelectorAll('dialog')].find((dialog) => dialog.textContent.includes('分销申请二维码'));
 assert.equal(applicationDialog?.querySelector('input[readonly]')?.value, 'https://crm.example/distribution', 'application QR dialog must show the caller-owned URL');
@@ -227,7 +237,14 @@ assert.equal(applicationDialog?.classList.contains('shared-detail-drawer--center
 assert.ok(applicationDialog?.querySelector('.shared-qr-dialog__code svg'), 'application QR dialog must render the shared QR presentation');
 const copyApplicationAction = [...applicationDialog.querySelectorAll('button')].find((button) => button.textContent === '复制申请链接');
 assert.equal((copyApplicationAction).__dcBound, true, 'the shared QR callback remains an owned real action');
-[...applicationDialog.querySelectorAll('button')].find((button) => button.textContent === '关闭').click();
+applicationDialog.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+assert.equal(applicationDialog.isConnected, false, 'the QR backdrop must close the centered presentation');
+assert.equal(dom.window.document.activeElement, applicationTrigger, 'closing the QR backdrop must restore trigger focus');
+applicationTrigger.click();
+await waitFor(() => dom.window.document.querySelector('dialog')?.textContent.includes('分销申请二维码'), 'application QR dialog did not reopen after a backdrop close');
+applicationTrigger.click();
+assert.equal(dom.window.document.querySelectorAll('dialog[data-shared-qr-dialog="true"]').length, 1, 'reopening the QR presentation must replace its existing dialog');
+[...dom.window.document.querySelector('dialog[data-shared-qr-dialog="true"]').querySelectorAll('button')].find((button) => button.textContent === '关闭').click();
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '查看详情').click();
 await waitFor(() => dom.window.document.body.textContent.includes('关联推广订单'), 'distributor detail did not render');
 assert.equal(dom.window.document.body.textContent.includes('D-9'), true, 'distribution number is an auxiliary detail fact only');

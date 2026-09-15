@@ -1061,6 +1061,28 @@
       ],
       "reason": "Align Product, Survey and Coupon archive API contracts and their canonical-source metadata with retained-history deletion behavior.",
       "review_reference": "2026-09-15 root review of six-module archive API authority diff, base 933a448d9d25312b11429e3fcb57d655dbc4fa5d, candidate ce218b1be5df02bea3558fa9393d86565f8cb2b1"
+    },
+    {
+      "base_commit": "8be30e38355df55e15c565b324dfc0f8119a9524",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "a759668892f9d92ea21c50b4e1b4f3590cd0a53876aa14ecdf673f76c09a7aea",
+          "head_sha256": "5fd591bed324a40668467a03a8d189d9af33e666b75233936bfa9cdf1eabe341"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "b946c5d6d2465933e976f57bb92aa6f0665cd95e475eec4dacf78fa1b98309e2",
+          "head_sha256": "10272ec8a11aed8d94d0f073be5c1d98e268a618db599454bd626ef21ec0e39c"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "250a407959db9d90fa377acb15fe735dcde152a82e8d81099d9669b380fc0c0b",
+          "head_sha256": "02a5cc773d0ee1471b9eb60489c3c1336efc74d7f92e32cb592196320b596fe3"
+        }
+      ],
+      "reason": "Add the Root-reviewed Distribution-owned read-only current distinct open/querying exception-order metric to the admin overview. The existing Distribution exception-record todo count remains unchanged; frozen donors remain unchanged.",
+      "review_reference": "Root code review on 2026-09-15 approved the exact current_exception_order_count OpenAPI, source-index and source-lock authority diff; ordinary PR review and required CI remain pending."
     }
   ]
 }
