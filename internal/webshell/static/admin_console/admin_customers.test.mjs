@@ -332,14 +332,27 @@ tagRetryDom.window.document.head.append = (...nodes) => {
     }, 0);
   }
 };
+const waitForTagRetryState = async (predicate, message) => {
+  const deadline = Date.now() + 1000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+};
 tagRetryDom.window.eval(standardHost);
 tagRetryDom.window.eval(script);
-await new Promise((resolve) => setTimeout(resolve, 20));
+await waitForTagRetryState(
+  () => Boolean(tagRetryDom.window.document.querySelector("[data-customer-tag-loader-retry]")),
+  "tag asset failure did not expose a retry action",
+);
 const retry = tagRetryDom.window.document.querySelector("[data-customer-tag-loader-retry]");
 if (!retry || !tagRetryDom.window.document.querySelector("[role=alert]")?.textContent.includes("标签选择暂时不可用") || !tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled) throw new Error("tag asset failure did not expose a local retry state");
 retry.click();
 retry.click();
-await new Promise((resolve) => setTimeout(resolve, 20));
+await waitForTagRetryState(
+  () => tagAssetAttempts === 2 && tagCatalogReads === 2 && !tagRetryDom.window.document.querySelector("[data-customer-tag-loader-error]") && !tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled,
+  "tag asset retry did not complete the V3 selector recovery",
+);
 if (tagAssetAttempts !== 2 || tagCatalogReads !== 2 || tagCommandCalls !== 0) throw new Error("tag asset retry did not remain a single-flight GET/asset-only recovery");
 if (tagRetryDom.window.document.querySelector("[data-customer-tag-loader-error]") || tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled) throw new Error("successful tag retry did not clear the local error and restore the native control");
 if ([...tagRetryDom.window.document.querySelectorAll("button")].filter((button) => button.textContent === "选择标签").length !== 2) throw new Error("tag retry duplicated picker buttons");

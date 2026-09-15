@@ -31,6 +31,7 @@ const foreignPayload = { items: [{ staff_id: 5, sender_userid: "external-user", 
 let nodes = [];
 let savedOwner = [];
 let operationMemberReads = 0;
+let materialDetailReads = 0;
 let ownerProjection = { staff_id: 7, sender_userid: "real-owner", display_name: "真实昵称 · 完整姓名", name_source: "wecom_profile", profile_read_state: "ready" };
 const detail = () => ({
   plan: { plan_id: 41, name: "浏览器计划", revision: 7, status: "draft", plan_type: "standard", owner: ownerProjection },
@@ -45,6 +46,10 @@ window.fetch = async (input, init = {}) => {
   }
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && (!init.method || init.method === "GET")) {
     return new Response(JSON.stringify(detail()), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (url.pathname === "/api/admin/image-library/99" && (!init.method || init.method === "GET")) {
+    materialDetailReads += 1;
+    return new Response(JSON.stringify({ code: "NOT_FOUND" }), { status: 404, headers: { "content-type": "application/json" } });
   }
   if (url.pathname === "/api/admin/common/operation-members") {
     operationMemberReads += 1;
@@ -112,6 +117,16 @@ await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41/node
 assert.equal(mutations[1].position, 2, "out-of-range donor edit order must retain the persisted V3 position");
 assert.equal(mutations[1].expected_revision, 7);
 assert.equal(mutations[1].action_title, "编辑保留位置");
+nodes = [{ node_id: 99, position: 1, kind: "message", material_plan: { references: [{ kind: "image", id: 99 }] } }];
+const unresolvedNode = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41/nodes");
+assert.deepEqual(Array.from(unresolvedNode.items[0].content_package_json.image_library_ids), [99], "a missing Media detail cannot erase the persisted node reference");
+assert.match(unresolvedNode.items[0].content_material_records[0].disabledReason, /待目录确认/, "a plan list must not fan out Media reads before an operator opens that node");
+assert.equal(materialDetailReads, 0, "the donor projection and revision path do not wait on every historical Media record");
+window.AICRMGroupOpsV3Content.openReadonly({ value: unresolvedNode.items[0].content_package_json, selectedRecords: unresolvedNode.items[0].content_material_records });
+for (let attempt = 0; attempt < 20 && !window.document.querySelector('[data-v3-content-readonly]'); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+assert.match(window.document.querySelector('[data-v3-content-readonly]')?.textContent || '', /素材已删除，保留当前引用；可明确移除。/, "opening one node turns a 404 into an explicit retained state");
+assert.equal(materialDetailReads, 1, "only the opened node resolves its Media details");
+window.document.querySelector('[data-v3-content-readonly-close]').click();
 savedOwner = [{ staff_id: 7 }];
 const ownerReadsBeforeProjection = operationMemberReads;
 let projectedOwner = await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41");
@@ -448,6 +463,8 @@ let wrongPlanIDOnce = false;
 let returnWrongPlanIDAfterWrite = false;
 let delayNextPlanRead = false;
 let releaseDelayedPlanRead = null;
+let delayNodeContentDetail = false;
+const releaseNodeContentDetails = [];
 let saveFailure = "";
 let dropCommittedGroupResponse = "";
 let rejectGroupOnce = "";
@@ -474,11 +491,7 @@ fullWindow.Response = Response;
 Object.defineProperty(fullWindow, "crypto", { configurable: true, value: crypto });
 fullWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
 fullWindow.confirm = () => true;
-fullWindow.AICRMSendContentComposer = {
-  open(options) {
-    options.onConfirm({ content_text: "真实话术", image_library_ids: [23], miniprogram_library_ids: [], attachment_library_ids: [], group_invite_library_ids: [] });
-  },
-};
+fullWindow.AICRMMaterialPicker = { open() { throw new Error("V3 material adapter did not install"); } };
 fullWindow.fetch = async (input, init = {}) => {
   const url = new URL(String(input), fullWindow.location.href);
   const method = String(init.method || "GET").toUpperCase();
@@ -510,6 +523,15 @@ fullWindow.fetch = async (input, init = {}) => {
     if (memberRefreshAttempts === 1) return response({ error: { code: "provider_read_unavailable" } }, 503);
     return response({ items: [], page_size: 100 });
   }
+  if (url.pathname === "/api/admin/image-library" && method === "GET") return response({ items: [{ id: 23, name: "节点封面", variant_url: "/api/admin/image-library/23/variants/thumb_160", enabled: true }], has_more: false });
+  if (url.pathname === "/api/admin/image-library/23" && method === "GET") {
+    if (delayNodeContentDetail) return new Promise((resolve) => { releaseNodeContentDetails.push(() => resolve(response({ item: { id: 23, name: "节点封面", variant_url: "/api/admin/image-library/23/variants/thumb_160", enabled: true } }))); });
+    return response({ item: { id: 23, name: "节点封面", variant_url: "/api/admin/image-library/23/variants/thumb_160", enabled: true } });
+  }
+  if (url.pathname === "/api/admin/attachment-library" && method === "GET") return response({ items: [{ id: 24, name: "节点说明.pdf", mime_type: "application/pdf", enabled: true }], has_more: false });
+  if (url.pathname === "/api/admin/attachment-library/24" && method === "GET") return response({ item: { id: 24, name: "节点说明.pdf", mime_type: "application/pdf", enabled: true } });
+  if (url.pathname === "/api/admin/miniprogram-library" && method === "GET") return response({ items: [], has_more: false });
+  if (url.pathname === "/api/admin/group-invite-library" && method === "GET") return response({ items: [], has_more: false });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/41" && method === "GET") {
     if (failPlanReadback) throw new Error("详情读取中断");
     if (wrongPlanIDOnce) {
@@ -795,16 +817,108 @@ try {
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]').click();
   fullWindow.document.querySelector('[data-action="open-node-modal"]').click();
   await waitFor(() => fullWindow.document.querySelector('[name="node_action_title"]'), "node editor did not open");
+  const callsBeforeContent = calls.length;
   fullWindow.document.querySelector('[data-action="configure-node-content"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-content-composer]'), "V3 node content composer did not open");
+  assert.equal(calls.length, callsBeforeContent, "opening the editor is local and never saves/sends/previews content");
+  const nodeText = fullWindow.document.querySelector('[data-v3-composer-text]');
+  nodeText.value = " 前后空白 ";
+  nodeText.dispatchEvent(new fullWindow.Event("input", { bubbles: true }));
+  assert.equal(fullWindow.document.querySelector('.aicrm-content-presentation__text').textContent, " 前后空白 ", "preview keeps a Group Ops whitespace-invalid draft visible instead of silently trimming a different value");
+  assert.match(fullWindow.document.querySelector('[data-v3-content-composer]').textContent, /首尾不能包含空白字符/, "Group Ops must show its validText whitespace rule before any save");
+  assert.equal(fullWindow.document.querySelector('[data-v3-composer-confirm]').disabled, true, "leading or trailing whitespace cannot be silently trimmed into a saved Group Ops message");
+  nodeText.value = "   ";
+  nodeText.dispatchEvent(new fullWindow.Event("input", { bubbles: true }));
+  assert.match(fullWindow.document.querySelector('[data-v3-content-composer]').textContent, /首尾不能包含空白字符/, "whitespace-only Group Ops text does not masquerade as an empty valid draft");
+  nodeText.value = "\ud800";
+  nodeText.dispatchEvent(new fullWindow.Event("input", { bubbles: true }));
+  assert.match(fullWindow.document.querySelector('[data-v3-content-composer]').textContent, /无效字符/, "Group Ops rejects a non-UTF-8 text value before its owner command");
+  nodeText.value = "😀".repeat(1000);
+  nodeText.dispatchEvent(new fullWindow.Event("input", { bubbles: true }));
+  assert.equal(fullWindow.document.querySelector('[data-v3-composer-confirm]').disabled, false, "exactly 1000 Unicode runes remain valid for Group Ops");
+  nodeText.value = "😀".repeat(1001);
+  nodeText.dispatchEvent(new fullWindow.Event("input", { bubbles: true }));
+  assert.match(fullWindow.document.querySelector('[data-v3-content-composer]').textContent, /不能超过 1000 个字符/, "more than 1000 Unicode runes is rejected before the Group Ops caller receives a draft");
+  nodeText.value = "真实话术 {{历史变量}}";
+  nodeText.dispatchEvent(new fullWindow.Event("input", { bubbles: true }));
+  fullWindow.document.querySelector('[data-v3-composer-add="image"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":23"]'), "scoped image selector did not load");
+  fullWindow.document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":23"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="material"] [data-v3-picker-confirm]').click();
+  await waitFor(() => !fullWindow.document.querySelector('[data-v3-selection-session="material"]') && fullWindow.document.body.textContent.includes("节点封面"), "image selection did not return to the local composer draft");
+  fullWindow.document.querySelector('[data-v3-composer-add="attachment"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":24"]'), "scoped attachment selector did not load");
+  fullWindow.document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":24"]').click();
+  fullWindow.document.querySelector('[data-v3-selection-session="material"] [data-v3-picker-confirm]').click();
+  await waitFor(() => !fullWindow.document.querySelector('[data-v3-selection-session="material"]') && fullWindow.document.body.textContent.includes("节点说明.pdf"), "attachment selection did not return to the local composer draft");
+  // The caller owns the actual persisted ordering contract. This local move is
+  // carried to the Host and becomes the same material_plan.references order.
+  fullWindow.document.querySelector('[data-v3-composer-move="0:1"]').click();
+  fullWindow.document.querySelector('[data-v3-composer-confirm]').click();
+  await waitFor(() => !fullWindow.document.querySelector('[data-v3-content-composer]'), "local composer confirmation did not return to node draft");
+  assert.equal(calls.length, callsBeforeContent + 2, "only the two authorised Media reads occur before node save");
+  assert.match(fullWindow.document.querySelector('[name="node_content_package_json"]').value, /真实话术/, "composer confirmation updates only the node form draft");
+  assert.match(fullWindow.document.querySelector('[name="node_content_material_order_json"]').value, /attachment/, "confirmed local draft retains the user-selected material sequence");
   fullWindow.document.querySelector('[name="node_day_index"]').value = "2";
   fullWindow.document.querySelector('[name="node_scheduled_time"]').value = "09:30";
   fullWindow.document.querySelector('[name="node_action_title"]').value = "节点结果";
   fullWindow.document.querySelector('[data-action="save-node"]').click();
   await waitFor(() => state.nodes.length === 1, "node with selected material was not saved through the Host command");
-  assert.deepEqual(state.nodes[0].material_plan, { references: [{ kind: "image", id: 23 }] }, "material picker result must reach the V3 material-plan DTO");
+  assert.deepEqual(state.nodes[0].material_plan, { references: [{ kind: "attachment", id: 24 }, { kind: "image", id: 23 }] }, "caller-confirmed material order must reach the V3 material-plan DTO exactly");
+  assert.equal(state.nodes[0].message_text, "真实话术 {{历史变量}}", "historical token text is preserved rather than interpreted as a customer variable");
   assert.equal(state.nodes[0].day_index, 2);
   assert.equal(state.nodes[0].scheduled_time, "09:30");
   assert.equal(state.nodes[0].action_title, "节点结果");
+  // A saved node resolves its own Media records on demand. While that bounded
+  // read is pending, a repeated click starts no second session; closing the
+  // node invalidates the old session so its eventual response cannot reopen a
+  // composer detached from the caller's hidden draft fields.
+  delayNodeContentDetail = true;
+  const contentDetailReadsBeforeCancel = calls.filter((item) => item.path === '/api/admin/image-library/23' && item.method === 'GET').length;
+  fullWindow.document.querySelector('[data-action="edit-node"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-action="configure-node-content"]'), "saved node editor did not reopen for slow-detail cancellation");
+  const openingContent = fullWindow.document.querySelector('[data-action="configure-node-content"]');
+  openingContent.click();
+  openingContent.click();
+  await waitFor(() => releaseNodeContentDetails.length === 1 && openingContent.disabled && openingContent.textContent.includes('正在读取素材详情'), "node material detail load did not lock one visible opener");
+  assert.equal(calls.filter((item) => item.path === '/api/admin/image-library/23' && item.method === 'GET').length, contentDetailReadsBeforeCancel + 1, "a repeated content-editor click must not start a second Media detail read");
+  fullWindow.document.querySelector('[data-action="cancel-node"]').click();
+  assert.equal(fullWindow.document.querySelector('[name="node_content_package_json"]'), null, "closing the node removes its local draft fields before an old read can write them");
+  releaseNodeContentDetails.splice(0).forEach((release) => release());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fullWindow.document.querySelector('[data-v3-content-composer]'), null, "a cancelled node never opens an old content dialog after delayed Media details return");
+  delayNodeContentDetail = false;
+  fullWindow.document.querySelector('[data-action="edit-node"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-action="configure-node-content"]'), "node editor did not allow a new content session after cancellation");
+  fullWindow.document.querySelector('[data-action="configure-node-content"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-content-composer]'), "a fresh node session did not open after cancelling the old read");
+  fullWindow.document.querySelector('[data-v3-composer-cancel]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-action="view-node-content"]'), "saved node did not render a readonly content action");
+  // Readonly uses the same bounded metadata resolver. Repeated activation is
+  // single-flight; changing the detail panel detaches the original action, so
+  // a late directory response must not open content for a stale node/plan.
+  delayNodeContentDetail = true;
+  const readonlyOpen = fullWindow.document.querySelector('[data-action="view-node-content"]');
+  const readonlyDetailReads = calls.filter((item) => item.path === '/api/admin/image-library/23' && item.method === 'GET').length;
+  readonlyOpen.click();
+  readonlyOpen.click();
+  await waitFor(() => releaseNodeContentDetails.length === 1 && readonlyOpen.disabled && readonlyOpen.textContent.includes('正在读取素材详情'), "readonly material detail load did not lock the one current row action");
+  assert.equal(calls.filter((item) => item.path === '/api/admin/image-library/23' && item.method === 'GET').length, readonlyDetailReads + 1, "a repeated readonly action must not start a second Media detail read");
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();
+  assert.equal(readonlyOpen.isConnected, false, "switching the plan detail detaches the stale readonly opener");
+  releaseNodeContentDetails.splice(0).forEach((release) => release());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fullWindow.document.querySelector('[data-v3-content-readonly]'), null, "a late readonly metadata response cannot open a stale node dialog");
+  delayNodeContentDetail = false;
+  fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="nodes"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-action="view-node-content"]'), "nodes panel did not recover after cancelling a stale readonly load");
+  fullWindow.document.querySelector('[data-action="view-node-content"]').click();
+  await waitFor(() => fullWindow.document.querySelector('[data-v3-content-readonly]'), "saved node content did not use the shared readonly presenter");
+  const readonlyText = fullWindow.document.querySelector('[data-v3-content-readonly]').textContent;
+  assert(readonlyText.indexOf("节点说明.pdf") < readonlyText.indexOf("节点封面"), "readonly presentation preserves the owner material sequence after reload");
+  fullWindow.document.querySelector('[data-v3-content-readonly-close]').click();
   assert(calls.some((item) => item.path.endsWith("/enable") && item.method === "POST"), "standard enable action did not call the V3 command");
   assert(fullWindow.document.body.textContent.includes("wecom-replacement"), "selected owner must show the trusted WeCom user ID");
   fullWindow.document.querySelector('[data-action="switch-detail-panel"][data-panel="basic"]').click();

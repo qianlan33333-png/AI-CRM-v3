@@ -100,11 +100,13 @@
   <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.LabsCSS}}">
   {{if .GroupOpsStandard}}
-  <link rel="stylesheet" href="{{.GroupOpsAssets.StandardCSS}}">
-  <link rel="stylesheet" href="{{.GroupOpsAssets.SelectionDialogCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.GroupPickerCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.MaterialPickerCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.ComposerCSS}}">
+  {{/* V3 presentation CSS follows frozen component CSS so the mounted V3
+       composer keeps its scoped layout without altering the donor files. */}}
+  <link rel="stylesheet" href="{{.GroupOpsAssets.StandardCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.SelectionDialogCSS}}">
   <script defer src="{{.GroupOpsAssets.OperationPickerJS}}"></script>
   <script defer src="{{.GroupOpsAssets.GroupPickerJS}}"></script>
   <script defer src="{{.GroupOpsAssets.MaterialPickerJS}}"></script>

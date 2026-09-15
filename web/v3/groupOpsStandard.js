@@ -207,14 +207,19 @@
 
   function nodeToContentPackage(node) {
     const current = node || {};
+    // The Group Ops owner DTO calls this message_text; the frozen form calls
+    // it text_content. Preserve either server-owned projection when reopening
+    // a saved node, rather than treating a legitimate historical script as an
+    // empty editor merely because its material package has no text member.
+    const persistedText = current.text_content || current.message_text || "";
     if (current.content_package_json && typeof current.content_package_json === "object") {
       const normalized = normalizeContentPackage(current.content_package_json);
-      if (contentPackageIsEmpty(normalized) && current.text_content) {
-        normalized.content_text = String(current.text_content || "").trim();
+      if (!normalized.content_text && persistedText) {
+        normalized.content_text = String(persistedText).trim();
       }
       return mergeRecognizedLegacyAttachmentIds(normalized, current.attachments);
     }
-    return mergeRecognizedLegacyAttachmentIds({ content_text: current.text_content || "" }, current.attachments);
+    return mergeRecognizedLegacyAttachmentIds({ content_text: persistedText }, current.attachments);
   }
 
   function contentPackageToNodePayload(contentPackage) {
@@ -232,6 +237,43 @@
       return normalizeContentPackage(JSON.parse(raw));
     } catch (error) {
       return normalizeContentPackage({});
+    }
+  }
+
+  function normalizeContentMaterialRecords(value) {
+    const records = Array.isArray(value) ? value : [];
+    const allowedKinds = new Set(["image", "miniprogram", "attachment", "group_invite"]);
+    const seen = new Set();
+    return records.flatMap((record) => {
+      if (!record || typeof record !== "object" || record.source !== "media-library") return [];
+      const kind = String(record.kind || "");
+      const id = parseInt(String(record.id || ""), 10);
+      const key = `${kind}:${id}`;
+      if (!allowedKinds.has(kind) || id < 1 || seen.has(key)) return [];
+      seen.add(key);
+      return [{
+        source: "media-library",
+        kind,
+        id,
+        label: String(record.label || `${kind} #${id}`),
+        subtitle: record.subtitle ? String(record.subtitle) : undefined,
+        thumbnailURL: record.thumbnailURL ? String(record.thumbnailURL) : undefined,
+        disabledReason: record.disabledReason ? String(record.disabledReason) : undefined,
+      }];
+    });
+  }
+
+  function contentMaterialRecordsForNode(node) {
+    return normalizeContentMaterialRecords((node || {}).content_material_records || (node || {}).content_material_order_json);
+  }
+
+  function contentMaterialRecordsFromForm() {
+    const raw = currentFormValue("node_content_material_order_json");
+    if (!raw) return [];
+    try {
+      return normalizeContentMaterialRecords(JSON.parse(raw));
+    } catch (error) {
+      return [];
     }
   }
 
@@ -523,6 +565,7 @@
     if (action === "open-node-modal") return openNodeModal();
     if (action === "edit-node") return openNodeModal(event.currentTarget.dataset.nodeId);
     if (action === "configure-node-content") return openNodeContentComposer();
+    if (action === "view-node-content") return openNodeContentReadonly(event.currentTarget.dataset.nodeId, event.currentTarget);
     if (action === "save-node") return saveNode();
     if (action === "cancel-node") return closeNodeModal();
     if (action === "delete-node") return deleteNode(event.currentTarget.dataset.nodeId);
@@ -886,12 +929,18 @@
   }
 
   function openNodeModal(nodeId) {
+    if (window.AICRMGroupOpsV3Content && typeof window.AICRMGroupOpsV3Content.cancelPending === "function") {
+      window.AICRMGroupOpsV3Content.cancelPending();
+    }
     state.editingNodeId = Number(nodeId || 0);
     state.showNodeModal = true;
     renderDetail();
   }
 
   function closeNodeModal() {
+    if (window.AICRMGroupOpsV3Content && typeof window.AICRMGroupOpsV3Content.cancelPending === "function") {
+      window.AICRMGroupOpsV3Content.cancelPending();
+    }
     state.editingNodeId = 0;
     state.showNodeModal = false;
     renderDetail();
@@ -910,12 +959,17 @@
     const nodeId = Number(state.editingNodeId || 0);
     const existing = editingNode() || {};
     const contentPayload = contentPackageToNodePayload(contentPackageFromForm());
+    const contentMaterialRecords = contentMaterialRecordsFromForm();
     const payload = {
       day_index: Number(currentFormValue("node_day_index") || 1),
       scheduled_time: currentFormValue("node_scheduled_time") || "20:00",
       action_title: currentFormValue("node_action_title"),
       text_content: contentPayload.text_content,
       content_package_json: contentPayload.content_package_json,
+      // This only carries the existing owner sequence to the V3 Host. The
+      // Host verifies exact IDs/types against content_package_json and writes
+      // the real material_plan.references; UI labels never persist.
+      content_material_order_json: contentMaterialRecords,
       attachments: legacyAttachmentsForNode(existing.attachments),
       sort_order: Number(currentFormValue("node_sort_order") || 0),
       status: currentFormValue("node_status") || "active",
@@ -1226,7 +1280,7 @@
     const summary = contentPackageSummary(contentPackage);
     target.innerHTML =
       `<strong>话术：</strong><span>${escapeHtml(summary.text)}</span>` +
-      `<strong>内容：</strong><span>图片 ${summary.imageCount} / 小程序 ${summary.miniprogramCount} / 附件 ${summary.attachmentCount} / 客户群 ${summary.groupInviteCount}</span>`;
+      `<strong>内容：</strong><span>图片 ${summary.imageCount} / 小程序 ${summary.miniprogramCount} / 附件 ${summary.attachmentCount} / 群邀请素材 ${summary.groupInviteCount}</span>`;
   }
 
   function renderLegacyAttachmentNotice(node) {
@@ -1240,26 +1294,54 @@
 
   function openNodeContentComposer() {
     const hidden = app.querySelector('[name="node_content_package_json"]');
-    if (!hidden) return;
-    if (!window.AICRMSendContentComposer || typeof window.AICRMSendContentComposer.open !== "function") {
-      state.notice = "标准发送内容组件加载失败，请刷新页面后重试";
+    const orderHidden = app.querySelector('[name="node_content_material_order_json"]');
+    if (!hidden || !orderHidden) return;
+    if (!window.AICRMGroupOpsV3Content || typeof window.AICRMGroupOpsV3Content.open !== "function") {
+      state.notice = "内容编辑器加载失败，请刷新页面后重试";
       renderDetail();
       return;
     }
-    window.AICRMSendContentComposer.open({
+    const openingButton = app.querySelector('[data-action="configure-node-content"]');
+    window.AICRMGroupOpsV3Content.open({
       title: "配置群运营动作内容",
-      textEnabled: true,
       value: contentPackageFromForm(),
-      limits: {
-        image: 3,
-        miniprogram: 1,
-        attachment: 9,
-        group_invite: 1,
+      selectedRecords: contentMaterialRecordsFromForm(),
+      loadingTarget: openingButton,
+      isCurrent() {
+        return Boolean(hidden.isConnected && orderHidden.isConnected && app.querySelector('[data-action="save-node"]'));
       },
-      onConfirm(contentPackage) {
-        const normalized = normalizeContentPackage(contentPackage);
+      onConfirm(result) {
+        if (!hidden.isConnected || !orderHidden.isConnected) throw new Error("当前动作已关闭或切换，未更新草稿。");
+        const normalized = normalizeContentPackage(result.package);
+        const records = normalizeContentMaterialRecords(result.selectedRecords);
         hidden.value = JSON.stringify(normalized);
+        orderHidden.value = JSON.stringify(records);
         refreshNodeContentSummary(normalized);
+      },
+    });
+  }
+
+  function openNodeContentReadonly(nodeId, openingButton) {
+    const node = state.nodes.find((item) => Number(item.id) === Number(nodeId)) || null;
+    if (!node) return;
+    if (!window.AICRMGroupOpsV3Content || typeof window.AICRMGroupOpsV3Content.openReadonly !== "function") {
+      state.notice = "内容详情加载失败，请刷新页面后重试";
+      renderDetail();
+      return;
+    }
+    window.AICRMGroupOpsV3Content.openReadonly({
+      title: "已保存群运营内容",
+      value: nodeToContentPackage(node),
+      selectedRecords: contentMaterialRecordsForNode(node),
+      loadingTarget: openingButton,
+      isCurrent() {
+        return Boolean(
+          app.isConnected &&
+          openingButton && openingButton.isConnected &&
+          state.nodes.includes(node) &&
+          state.plan &&
+          Number(state.plan.id) > 0,
+        );
       },
     });
   }
@@ -1289,10 +1371,13 @@
       text_content: "",
       attachments: [],
       content_package_json: {},
+      content_material_records: [],
+      content_material_order_json: [],
       sort_order: 10,
       status: "active",
     };
     const currentContentPackage = nodeToContentPackage(current);
+    const currentContentRecords = contentMaterialRecordsForNode(current);
     const currentContentSummary = contentPackageSummary(currentContentPackage);
     const modal = state.showNodeModal && !archived
       ? `
@@ -1313,11 +1398,12 @@
               <aside class="group-ops__content-box">
                 <div class="group-ops__content-summary" data-node-content-summary>
                   <strong>话术摘要</strong><span>${escapeHtml(currentContentSummary.text)}</span>
-                  <strong>内容数量</strong><span>图片 ${currentContentSummary.imageCount} / 小程序 ${currentContentSummary.miniprogramCount} / 附件 ${currentContentSummary.attachmentCount} / 客户群 ${currentContentSummary.groupInviteCount}</span>
+                  <strong>内容数量</strong><span>图片 ${currentContentSummary.imageCount} / 小程序 ${currentContentSummary.miniprogramCount} / 附件 ${currentContentSummary.attachmentCount} / 群邀请 ${currentContentSummary.groupInviteCount}</span>
                 </div>
                 <button class="group-ops__button" type="button" data-action="configure-node-content">配置话术和素材</button>
                 ${renderLegacyAttachmentNotice(current)}
                 <input type="hidden" name="node_content_package_json" value="${escapeHtml(JSON.stringify(currentContentPackage))}">
+                <input type="hidden" name="node_content_material_order_json" value="${escapeHtml(JSON.stringify(currentContentRecords))}">
               </aside>
             </div>
             <div class="group-ops__modal-footer">
@@ -1337,7 +1423,7 @@
           <td><span class="group-ops__summary">${escapeHtml(textSummary(nodeToContentPackage(node).content_text || node.text_content))}</span></td>
           <td><div class="group-ops__chip-row">${materialChips(node)}</div></td>
           <td><div class="group-ops__row-actions">
-            ${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : `${actionButton("编辑", "edit-node", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${actionButton("删除", "delete-node", "group-ops__button--danger").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}`}
+            ${actionButton("查看内容", "view-node-content", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : `${actionButton("编辑", "edit-node", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${actionButton("删除", "delete-node", "group-ops__button--danger").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}`}
           </div></td>
         </tr>`,
       )

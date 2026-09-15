@@ -33,7 +33,6 @@ const components: ReadonlyArray<{ capability: StandardComponentCapability; sourc
 const componentByCapability = new Map(components.map((component) => [component.capability, component]));
 const componentLoads = new Map<StandardComponentCapability, Promise<void>>();
 const readyComponents = new Set<StandardComponentCapability>();
-const failedComponents = new Set<StandardComponentCapability>();
 let tagPickerLocked = false;
 
 function lockOriginalTagPicker(): void {
@@ -56,10 +55,6 @@ function matchingScript(source: string): HTMLScriptElement | undefined {
 
 function load(component: { capability: StandardComponentCapability; source: string; ready: () => boolean }): Promise<void> {
   if (readyComponents.has(component.capability)) return Promise.resolve();
-  // A cached browser error can surface while a previous promise is being
-  // registered. Keep the rejection state explicit so the next user-initiated
-  // retry always creates a fresh asset request.
-  if (failedComponents.delete(component.capability)) componentLoads.delete(component.capability);
   const pending = componentLoads.get(component.capability);
   if (pending) return pending;
   let startRequest: (() => void) | undefined;
@@ -80,14 +75,12 @@ function load(component: { capability: StandardComponentCapability; source: stri
       if (settled) return;
       settled = true;
       if (appendScript) script?.remove();
-      failedComponents.add(component.capability);
       reject(new Error('标准选择组件加载失败，请刷新页面后重试'));
     };
     const succeed = () => {
       if (settled) return;
       if (!component.ready()) { fail(); return; }
       settled = true;
-      failedComponents.delete(component.capability);
       readyComponents.add(component.capability);
       if (component.capability === 'tags') lockOriginalTagPicker();
       resolve();
