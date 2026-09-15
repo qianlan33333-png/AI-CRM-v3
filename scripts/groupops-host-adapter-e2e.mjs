@@ -1449,7 +1449,7 @@ async function assertGroupsReadFailureJourney({ hasPreviousRows }) {
         has_more: false,
       });
     }
-    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return response({ items: [] });
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return response({ items: [], total: 0, limit: 50, offset: 0, has_more: false, queue_count: 0 });
     if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [] });
     throw new Error(`unexpected group read request ${method} ${url.pathname}${url.search}`);
   };

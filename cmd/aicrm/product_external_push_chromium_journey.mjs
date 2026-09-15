@@ -254,7 +254,10 @@ try {
   }
   // Field-variable filtering belongs to the mounted V3 mapping editor. It
   // filters locally only after explicit Enter; preview/save remain unchanged.
-  const conversionOpened = await evaluate(cdp, "(()=>{const button=[...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='转换为字段映射');if(!button)return false;button.click();return true})()");
+  const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');const panel=document.querySelector('#product-push');if(!(tab instanceof HTMLAnchorElement)||!(panel instanceof HTMLElement))return false;tab.click();return true})()");
+  if (!productPushTabOpened) throw new Error('product external-push tab was unavailable');
+  await waitFor(cdp, "(()=>{const panel=document.querySelector('#product-push');const conversion=[...(panel?.querySelectorAll('button')||[])].find(item=>item.textContent?.trim()==='转换为字段映射');return Boolean(panel&&conversion&&panel.getClientRects().length&&getComputedStyle(panel).visibility!=='hidden')})()", "product external-push tab did not become visible before field-mapping conversion");
+  const conversionOpened = await evaluate(cdp, "(()=>{const panel=document.querySelector('#product-push');const button=[...(panel?.querySelectorAll('button')||[])].find(item=>item.textContent?.trim()==='转换为字段映射');if(!button)return false;button.click();return true})()");
   if (!conversionOpened) throw new Error('product field-mapping conversion entry was unavailable');
   await waitFor(cdp, "Boolean(document.querySelector('[data-mapping-conversion]'))", "product field-mapping conversion preview did not open");
   await evaluate(cdp, "[...document.querySelectorAll('[data-mapping-conversion] button')].find(item=>item.textContent?.trim()==='确认转换').click(); true");
@@ -268,16 +271,16 @@ try {
     const input=row.querySelector('[data-field-mapping-variable-search]');
     if (!(input instanceof HTMLInputElement)) return null;
     const choices=()=>row.querySelectorAll('.fm-choice').length;
-    const before=choices(); input.focus(); input.value='付款';
+    const before=choices(); input.focus(); const focused=document.activeElement===input; input.value='付款';
     input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
     input.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
     input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
     input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
     const candidate=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter',isComposing:true});
     Object.defineProperty(candidate,'keyCode',{value:229}); input.dispatchEvent(candidate);
-    return {before,after:choices(),prevented:candidate.defaultPrevented};
+    return {before,after:choices(),focused,prevented:candidate.defaultPrevented};
   })()`);
-  if (!mappingSearchCandidate || mappingSearchCandidate.prevented || mappingSearchCandidate.before !== 3 || mappingSearchCandidate.after !== 3) throw new Error('product field-mapping IME candidate altered variable choices');
+  if (!mappingSearchCandidate || !mappingSearchCandidate.focused || mappingSearchCandidate.prevented || mappingSearchCandidate.before !== 3 || mappingSearchCandidate.after !== 3) throw new Error('product field-mapping IME candidate altered variable choices or did not receive focus');
   await evaluate(cdp, "document.querySelector('[data-field-mapping-variable-search]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); true");
   await waitFor(cdp, "document.querySelectorAll('[data-fm-rows] .fm-choice').length===1 && document.querySelector('[data-fm-rows] .fm-choice')?.textContent.includes('付款人昵称')", "product field-mapping ordinary Enter did not filter variables");
   const mappingSearchFocus = await evaluate(cdp, "(()=>{const input=document.querySelector('[data-field-mapping-variable-search]');return Boolean(input&&document.activeElement===input&&input.value==='付款')})()");

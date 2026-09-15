@@ -24,6 +24,20 @@ const entryKeys = [
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
 ];
 const standardComponentSupport = ['assets/standard-components/operation_member_picker.js', 'assets/standard-components/group_chat_picker.css', 'assets/standard-components/group_chat_picker.js', 'assets/standard-components/material_picker.css', 'assets/standard-components/material_picker.js', 'assets/standard-components/send_content_composer.css', 'assets/standard-components/send_content_composer.js', 'assets/standard-components/wecom_tag_picker.css', 'assets/standard-components/wecom_tag_picker.js', 'assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'];
+const stableStandardHost = sourceManifest.entries?.standardComponentsStableHost;
+const hashedStandardHost = sourceManifest.entries?.standardComponentsHost;
+assert.equal(typeof stableStandardHost, 'string', 'stable standard Components Host entry is absent');
+assert.equal(typeof hashedStandardHost, 'string', 'hashed standard Components Host entry is absent');
+const stableStandardHostMetadata = sourceManifest.files?.[stableStandardHost];
+const hashedStandardHostMetadata = sourceManifest.files?.[hashedStandardHost];
+assert.deepEqual(stableStandardHostMetadata?.imports, hashedStandardHostMetadata?.imports, 'stable standard Components Host must retain its chunk closure');
+const stableStandardHostSource = fs.readFileSync(path.join(source, stableStandardHost), 'utf8');
+for (const dependency of stableStandardHostMetadata?.imports || []) {
+  const relative = path.posix.relative(path.posix.dirname(stableStandardHost), dependency.path);
+  const specifier = relative.startsWith('.') ? relative : `./${relative}`;
+  assert.match(stableStandardHostSource, new RegExp(`["']${specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`), `stable standard Components Host does not resolve ${dependency.path} from its public path`);
+}
+assert.doesNotMatch(stableStandardHostSource, /(?:from|import)\s*["']\.\/chunks\//, 'stable standard Components Host resolves chunks under the wrong public directory');
 const groupOpsSupport = [...standardComponentSupport, 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
 const selected = new Set();
 const includeClosure = (relative) => {
