@@ -40,9 +40,6 @@ const registeredSearches: RegisteredSearch[] = [
   { selector: '.aicrm-tag-picker [data-role="search"]', trigger: 'input' },
   { selector: '[data-operation-member-picker] [data-operation-member-search]', trigger: 'keydown' },
   { selector: '.aicrm-material-picker-mask [data-picker-search]', trigger: 'keydown' },
-  // Distribution is a current-page-only client filter. It shares the same
-  // explicit commit boundary so an IME draft never redraws the admin table.
-  { selector: 'input[aria-label="仅筛选当前已加载页"]', trigger: 'input' },
 ];
 
 type SearchState = {
