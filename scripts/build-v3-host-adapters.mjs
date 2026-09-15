@@ -45,6 +45,8 @@ const entryPoints = {
   groupopsHost: path.join(repository, 'web', 'v3', 'groupOpsHostAdapter.ts'),
   groupopsStyles: path.join(repository, 'web', 'v3', 'groupOpsStandard.css'),
   h5AuthHost: path.join(repository, 'web', 'v3', 'h5AuthAdapter.ts'),
+  surveyPublicHost: path.join(repository, 'web', 'v3', 'surveyPublicHost.ts'),
+  surveyPublicStyles: path.join(repository, 'web', 'v3', 'surveyPublic.css'),
   surveyHost: path.join(repository, 'web', 'v3', 'surveyAdapter.ts'),
   surfaceFeedbackHost: path.join(repository, 'web', 'v3', 'surfaceFeedbackHost.ts'),
   surfaceFeedbackStyles: path.join(repository, 'web', 'v3', 'surfaceFeedback.css'),
@@ -204,7 +206,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost', 'distributionCenter', 'distributionAdmin', 'distributionStyles'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost' || name === 'surveyHost') continue;
+  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost', 'distributionCenter', 'distributionAdmin', 'distributionStyles', 'surveyPublicHost', 'surveyPublicStyles'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost' || name === 'surveyHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -284,21 +286,27 @@ fs.writeFileSync(openPlatformDocument, openPlatformHTML);
 manifest.release_files['admin/apidocs.html'] = metadataFor(Buffer.from(openPlatformHTML));
 
 const h5AuthHost = manifest.entries.h5AuthHost;
+const surveyPublicHost = manifest.entries.surveyPublicHost;
+const surveyPublicStyles = manifest.entries.surveyPublicStyles;
+const sharedVisualTokens = manifest.entries.sharedVisualTokens;
 const frozenH5 = manifest.entries.h5;
-if (typeof h5AuthHost !== 'string' || typeof frozenH5 !== 'string') throw new Error('H5 auth Host or frozen H5 entry is absent from manifest');
+if (typeof h5AuthHost !== 'string' || typeof surveyPublicHost !== 'string' || typeof surveyPublicStyles !== 'string' || typeof sharedVisualTokens !== 'string' || typeof frozenH5 !== 'string') throw new Error('H5 public Survey Host, styles, tokens, or frozen H5 entry is absent from manifest');
 const frozenH5Reference = `<script type="module" src="../${frozenH5}"></script>`;
 const h5AuthReference = `<script type="module" src="../${h5AuthHost}"></script>`;
+const surveyPublicReference = `<script type="module" src="../${surveyPublicHost}"></script>`;
+const surveyPublicStylesheet = `<link rel="stylesheet" href="../${surveyPublicStyles}">`;
+const sharedVisualTokensStylesheet = `<link rel="stylesheet" href="../${sharedVisualTokens}">`;
 for (const page of ['auth', 'all', 'one', 'result']) {
   const documentPath = path.join(dist, 'h5', `${page}.html`);
   let html = fs.readFileSync(documentPath, 'utf8');
   if (!html.includes(frozenH5Reference)) throw new Error(`${page}.html does not reference the declared frozen H5 entry`);
-  if (html.includes(h5AuthReference)) throw new Error(`${page}.html already contains the H5 mobile Host`);
+  if (html.includes(h5AuthReference) || html.includes(surveyPublicReference) || html.includes(surveyPublicStylesheet) || html.includes(sharedVisualTokensStylesheet)) throw new Error(`${page}.html already contains the H5 public Survey presentation`);
   // Remove demo chrome in the release HTML before first paint, not after mount.
   const demoShell = /<div class="h5-backdrop"><div><div class="phone"><div id="screen" class="phone-screen"><\/div><\/div><div style="[^"]*"><a href="index.html">← 全部屏幕<\/a><\/div><\/div><\/div>/;
   if (!demoShell.test(html)) throw new Error(`${page}.html H5 shell changed; inspect the mobile adaptation`);
   html = html.replace(demoShell, '<main id="screen" class="v3-survey-screen"></main>');
-  html = html.replace('</head>', '<style>html,body{margin:0;min-height:100%;background:#F5F6F7}*{box-sizing:border-box}.v3-survey-screen{display:flex;flex-direction:column;width:100%;max-width:720px;min-height:100vh;min-height:100dvh;margin:0 auto;overflow-wrap:anywhere;padding-bottom:env(safe-area-inset-bottom)}.v3-survey-screen input,.v3-survey-screen textarea{max-width:100%;font-size:16px}</style></head>');
-  html = html.replace(frozenH5Reference, `${h5AuthReference}\n${frozenH5Reference}`);
+  html = html.replace('</head>', `<style>html,body{margin:0;min-height:100%;background:#F5F6F7}*{box-sizing:border-box}.v3-survey-screen{display:flex;flex-direction:column;width:100%;max-width:720px;min-height:100vh;min-height:100dvh;margin:0 auto;overflow-wrap:anywhere;padding-bottom:env(safe-area-inset-bottom)}.v3-survey-screen input,.v3-survey-screen textarea{max-width:100%;font-size:16px}</style>\n${sharedVisualTokensStylesheet}\n${surveyPublicStylesheet}</head>`);
+  html = html.replace(frozenH5Reference, `${h5AuthReference}\n${surveyPublicReference}\n${frozenH5Reference}`);
   fs.writeFileSync(documentPath, html);
   manifest.release_files[`h5/${page}.html`] = metadataFor(Buffer.from(html));
 }
