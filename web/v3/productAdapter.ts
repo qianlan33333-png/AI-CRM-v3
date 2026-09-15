@@ -2179,9 +2179,8 @@ productController.uploadCommerceImage = function (kind, event) {
 productController.pickCommerceImages = function (kind) {
   const controller = this;
   const context = productPickerContext(controller, kind);
-  const expectedDimension = kind === 'product' ? 'product-media' : 'sp-media';
-  if (!context || context.dimension !== expectedDimension) {
-    showMessage('当前商品页面素材维度已切换，未打开素材选择器。');
+  if (!context) {
+    showMessage('当前商品页面已切换，未打开素材选择器。');
     return;
   }
   // A second click for this exact owner draft joins the same bounded read.
