@@ -1017,6 +1017,28 @@
       ],
       "reason": "Integrate the Root-reviewed provider-scoped Order Distribution read contract with current main Overview canonical-payer, shared-component, GroupOps search, and Radar contract authority. Canonical source metadata is regenerated from the merged V3 OpenAPI payload; frozen donors remain unchanged.",
       "review_reference": "Root instruction to integrate PR #301 with main cbbca8c6 on 2026-09-15; normal PR review and complete CI remain required"
+    },
+    {
+      "base_commit": "2c3a98bfaf66dc8acfe7f1e1f31a5fc4e3cf4760",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "7e1c5bceab7b2712a046bfaf800bbe60fa3435e0ad8c48c481c8a4de046939ef",
+          "head_sha256": "a759668892f9d92ea21c50b4e1b4f3590cd0a53876aa14ecdf673f76c09a7aea"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "08728066d69901700adba3cd840f47c9685519c0965cdada498ea0050f28a445",
+          "head_sha256": "b946c5d6d2465933e976f57bb92aa6f0665cd95e475eec4dacf78fa1b98309e2"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "ecbf82f478da8a808425dd5ac70b983ebaccae8d7be561e46f236083bfa08663",
+          "head_sha256": "250a407959db9d90fa377acb15fe735dcde152a82e8d81099d9669b380fc0c0b"
+        }
+      ],
+      "reason": "Align Product, Survey and Coupon archive API contracts and their canonical-source metadata with retained-history deletion behavior.",
+      "review_reference": "2026-09-15 root review of six-module archive API authority diff, base 2c3a98bfaf66dc8acfe7f1e1f31a5fc4e3cf4760, candidate 1f39a8b64eb6cc89134caa58b51c76c33828ae26"
     }
   ]
 }
