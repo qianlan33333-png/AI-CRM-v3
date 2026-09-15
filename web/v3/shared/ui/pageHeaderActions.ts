@@ -178,13 +178,22 @@ export function mountPageHeaderActions(owner: string, actions: readonly PageHead
  * command ownership remain attached to the original DOM nodes.
  */
 export function mountPageHeaderActionElements(owner: string, elements: readonly HTMLElement[]): () => void {
+  // A page can only relocate controls it owns. Never silently steal a live
+  // command from another page's action group if a caller's selector is broad.
+  const controls = Array.from(new Set(elements)).filter((element) =>
+    element.isConnected && (!element.dataset.pageHeaderActionElement || element.dataset.pageHeaderActionElement === owner),
+  );
+  if (controls.length === 0) return () => {};
+  // Capture focus before any source control leaves its parent. `replaceChildren`
+  // may synchronously blur a first-time move, so reading activeElement later
+  // cannot recover that focus.
+  const sourceFocus = controls.find((element) => document.activeElement === element);
   const mounted = ensureActionHost(owner);
   if (!mounted) return () => {};
   const { meta, host } = mounted;
-  const priorFocus = Array.from(host.querySelectorAll<HTMLElement>(':scope > [data-page-header-action-element]'))
+  const priorFocus = sourceFocus || Array.from(host.querySelectorAll<HTMLElement>(':scope > [data-page-header-action-element]'))
     .find((element) => document.activeElement === element);
   restoreRelocatedActions(host);
-  const controls = Array.from(new Set(elements)).filter((element) => element.isConnected);
   for (const element of controls) {
     let marker = relocatedActionOrigins.get(element);
     if (!marker?.isConnected) {
@@ -197,7 +206,7 @@ export function mountPageHeaderActionElements(owner: string, elements: readonly 
   const revision = crypto.randomUUID();
   host.dataset.pageHeaderActionsRevision = revision;
   host.replaceChildren(...controls);
-  refocus(controls.find((element) => element === priorFocus || document.activeElement === element));
+  refocus(controls.find((element) => element === priorFocus));
   return () => {
     if (host.dataset.pageHeaderActionsRevision !== revision) return;
     const focused = controls.find((element) => document.activeElement === element);
