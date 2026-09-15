@@ -17,7 +17,7 @@ func TestTagsUIBindingExtractsFrozenTemplateAndVerifiedAssets(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"tokens.css", "labs.css", "admin.js"} {
+	for _, name := range []string{"tokens.css", "labs.css", "admin.js", "page-header-action-host.js"} {
 		if err := os.WriteFile(filepath.Join(dist, "assets", name), []byte(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -25,7 +25,7 @@ func TestTagsUIBindingExtractsFrozenTemplateAndVerifiedAssets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dist, "admin", "tags.html"), []byte(`<template id="tpl"><section data-page="tags"><template><span title=">">nested</span></template></section></template>`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(`{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(`{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","pageHeaderActionHost":"assets/page-header-action-host.js"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var gotBody string
@@ -40,7 +40,7 @@ func TestTagsUIBindingExtractsFrozenTemplateAndVerifiedAssets(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(gotBody, `data-page="tags"`) {
 		t.Fatalf("status/body = %d/%q", recorder.Code, gotBody)
 	}
-	if gotAssets != (TagsAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js"}) {
+	if gotAssets != (TagsAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", PageHeaderActionHostJS: "/assets/page-header-action-host.js"}) {
 		t.Fatalf("assets = %#v", gotAssets)
 	}
 }
