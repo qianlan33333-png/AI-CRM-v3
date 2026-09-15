@@ -35,6 +35,7 @@ type adminShellLayoutFixture struct {
 	radarID              int64
 	aiPlanID             int64
 	nativeOrderReference string
+	archiveProductID     int64
 }
 
 // TestPostgreSQLAdminShellLayoutCompositionPreflight keeps the real release
@@ -204,6 +205,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		"AICRM_ADMIN_LAYOUT_TEST_PASSWORD=product-browser-owner-password",
 		"AICRM_ADMIN_LAYOUT_TEST_PRODUCT_ID="+strconv.FormatInt(fixture.productID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(fixture.serviceProductID, 10),
+		"AICRM_ADMIN_LAYOUT_TEST_ARCHIVE_PRODUCT_ID="+strconv.FormatInt(fixture.archiveProductID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
 		"AICRM_ADMIN_LAYOUT_TEST_NATIVE_ORDER="+fixture.nativeOrderReference,
 		"AICRM_ADMIN_LAYOUT_TEST_RADAR_ID="+strconv.FormatInt(fixture.radarID, 10),
@@ -220,7 +222,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png",
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "image-library.png", "miniprogram-library.png", "attachment-library.png",
-		"products-actions-1440.png", "service-period-products-actions-1440.png", "products-actions-1280.png", "service-period-products-actions-1280.png",
+		"products-actions-1440.png", "service-period-products-actions-1440.png", "products-actions-1280.png", "service-period-products-actions-1280.png", "products-delete-confirm.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
@@ -264,7 +266,22 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	fixture.radarID = seedAdminShellLayoutRadar(t, fixture.ctx, fixture.application)
 	fixture.aiPlanID = seedAdminShellLayoutAIAssistantPlan(t, fixture.ctx, fixture.application)
 	fixture.nativeOrderReference = seedAdminShellLayoutNativeOrder(t, fixture.ctx, fixture.application, fixture.productID)
+	fixture.archiveProductID = seedAdminShellLayoutArchiveProduct(t, fixture.ctx, fixture.application)
 	return fixture
+}
+
+// seedAdminShellLayoutArchiveProduct creates a product used only to prove the
+// visible list menu's existing delete confirmation. It is intentionally
+// separate from productID because later geometry checks open that product form.
+func seedAdminShellLayoutArchiveProduct(t *testing.T, ctx context.Context, application *composedApplication) int64 {
+	t.Helper()
+	projection := `{"schema_version":1,"status":"enabled","enabled":true,"buy_button_text":"立即购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"wecom_tagging":{},"slices":[]}`
+	var id int64
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO products(product_code,name,description,price_minor,currency,stock_quantity,created_by,legacy_admin_projection)
+VALUES('admin-layout-delete-menu','菜单删除夹具商品','仅用于后台列表可达性回归',9900,'CNY',10,1,$1::jsonb) RETURNING id`, projection).Scan(&id); err != nil {
+		t.Fatalf("seed admin layout archive product: %v", err)
+	}
+	return id
 }
 
 func authenticatedAdminGet(t *testing.T, handler interface {

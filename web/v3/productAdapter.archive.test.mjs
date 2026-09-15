@@ -40,7 +40,7 @@ const bundle = await build({
   logLevel: 'silent',
 });
 
-const dom = new JSDOM('<!doctype html><body data-page="products"><main id="stage"></main></body>', {
+const dom = new JSDOM('<!doctype html><body data-page="products"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">商品管理</h1></div></header><main id="stage"></main></body>', {
   url: 'https://test.invalid/admin/products.html',
   runScripts: 'outside-only',
   pretendToBeVisual: true,
@@ -80,6 +80,12 @@ try {
   const mount = dom.window.ProductMountFixture;
   const Controller = dom.window.ProductControllerFixture;
   const stage = dom.window.document.getElementById('stage');
+  const actionMenuTrigger = prefix => dom.window.document.querySelector(`[data-table-action-menu-trigger^="${prefix}-"]`);
+  const visibleActionMenuPanel = () => [...dom.window.document.querySelectorAll('[data-table-action-menu-panel]')].find((panel) => !panel.hidden);
+  const visibleAction = label => {
+    const panel = visibleActionMenuPanel();
+    return panel && [...panel.querySelectorAll('button')].find((node) => node.textContent?.trim() === label);
+  };
 
   const ordinary = new Controller({ mode: 'mock' }, 'products');
   ordinary.db.rows.products = [source(101, '已下单商品', 3)];
@@ -89,21 +95,42 @@ try {
     ordinary.__render?.();
   };
   mount(stage, transform(readFileSync(path.join(root, 'web/src/admin/templates/products.html'), 'utf8')), ordinary);
+  const ordinaryHeaderAction = await waitFor(
+    () => dom.window.document.querySelector('[data-page-header-actions="product-list-products"] > button'),
+    'ordinary create action must relocate to the shared page header',
+  );
+  assert.equal(ordinaryHeaderAction.textContent, '创建商品');
+  assert.equal(stage.textContent.includes('商品管理'), false, 'the donor list heading must not duplicate the shell title');
+  const ordinaryMore = await waitFor(
+    () => actionMenuTrigger('product-products'),
+    'ordinary frozen product row must expose the shared overflow action menu',
+  );
+  ordinaryMore.click();
   const ordinaryDelete = await waitFor(
-    () => [...dom.window.document.querySelectorAll('button')].find((node) => node.textContent?.trim() === '删除'),
-    'ordinary frozen product table must bind the delete action',
+    () => visibleAction('删除'),
+    'ordinary delete must be reachable through the visible overflow menu',
   );
   ordinaryDelete.click();
   assert.equal(dom.window.document.getElementById('fb-head')?.textContent, '删除商品');
   dom.window.document.getElementById('fb-cancel').click();
   assert.equal(calls.length, 0, 'cancelled ordinary delete must send zero writes');
 
-  ordinaryDelete.click();
+  ordinaryMore.click();
+  const ordinaryConfirmedDelete = await waitFor(
+    () => visibleAction('删除'),
+    'ordinary delete must remain reachable after cancellation',
+  );
+  ordinaryConfirmedDelete.click();
   dom.window.document.getElementById('fb-ok').click();
   await waitFor(() => calls.length === 1, 'first ordinary delete request was not sent');
+  const retryMenu = await waitFor(
+    () => actionMenuTrigger('product-products'),
+    'failed delete must retain the visible row and its overflow menu',
+  );
+  retryMenu.click();
   const retry = await waitFor(
-    () => [...dom.window.document.querySelectorAll('button')].find((node) => node.textContent?.trim() === '删除'),
-    'failed delete must retain the visible row for the same frozen command',
+    () => visibleAction('删除'),
+    'retry must be reachable through the visible overflow menu',
   );
   retry.click();
   dom.window.document.getElementById('fb-ok').click();
@@ -116,6 +143,7 @@ try {
   await waitFor(() => !stage.textContent.includes('已下单商品'), 'successful owner readback must remove the archived ordinary row');
 
   dom.window.document.body.dataset.page = 'spProducts';
+  dom.window.document.querySelector('.admin-page-title').textContent = '周期商品管理';
   stage.replaceChildren();
   const periodic = new Controller({ mode: 'mock' }, 'spProducts');
   periodic.db.rows.products = [];
@@ -125,9 +153,20 @@ try {
     periodic.__render?.();
   };
   mount(stage, transform(readFileSync(path.join(root, 'web/src/admin/templates/spProducts.html'), 'utf8')), periodic);
+  const periodicHeaderAction = await waitFor(
+    () => dom.window.document.querySelector('[data-page-header-actions="product-list-spProducts"] > button'),
+    'service-period create action must relocate to the shared page header',
+  );
+  assert.equal(periodicHeaderAction.textContent, '创建周期商品');
+  assert.equal(stage.textContent.includes('周期商品管理'), false, 'the periodic donor heading must not duplicate the shell title');
+  const periodicMore = await waitFor(
+    () => actionMenuTrigger('product-spProducts'),
+    'service-period frozen product row must expose the shared overflow action menu',
+  );
+  periodicMore.click();
   const periodicDelete = await waitFor(
-    () => [...dom.window.document.querySelectorAll('button')].find((node) => node.textContent?.trim() === '删除'),
-    'service-period donor archive action must be relabeled and bound as 删除',
+    () => visibleAction('删除'),
+    'service-period delete must be visible in its overflow menu',
   );
   periodicDelete.click();
   assert.equal(dom.window.document.getElementById('fb-head')?.textContent, '删除周期商品');

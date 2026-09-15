@@ -13,7 +13,7 @@ import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 import { mountTableActionMenu, type TableActionMenu } from './shared/ui/tableActionMenu';
-import { mountPageHeaderActionElements } from './shared/ui/pageHeaderActions';
+import { mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins } from './shared/ui/pageHeaderActions';
 import { formatShanghaiDateTime } from './adminDateTime';
 
 type RecordValue = Record<string, unknown>;
@@ -1780,6 +1780,7 @@ productController.renderVals = function renderProductListWithArchiveActions() {
 // collapsing overflow actions after the donor has mounted a list row.
 const productListActionMenus = new Map<HTMLElement, TableActionMenu>();
 const productListHeaderCleanups = new Map<'products' | 'spProducts', () => void>();
+const productListHeaderElements = new Map<'products' | 'spProducts', HTMLButtonElement>();
 
 function productListPage(): 'products' | 'spProducts' | undefined {
   const page = document.body?.dataset.page;
@@ -1801,21 +1802,14 @@ function productListStage(): HTMLElement | undefined {
 function removeDonorProductHeading(stage: HTMLElement, title: string): void {
   const heading = Array.from(stage.querySelectorAll<HTMLElement>('div'))
     .find((node) => node.children.length === 0 && node.textContent?.trim() === title);
-  if (!heading) return;
+  // The frozen runtime keeps an otherwise transparent mount container directly
+  // under #stage. Remove the matching header child from that container, never
+  // the container itself or the list that follows it.
+  const contentRoot = stage.firstElementChild instanceof HTMLElement ? stage.firstElementChild : stage;
+  if (!heading || !contentRoot.contains(heading)) return;
   let donorHeading: HTMLElement = heading;
-  while (donorHeading.parentElement && donorHeading.parentElement !== stage) donorHeading = donorHeading.parentElement;
-  if (donorHeading.parentElement === stage) donorHeading.remove();
-}
-
-function hasProductListHeaderOrigin(stage: HTMLElement): boolean {
-  const stack: Node[] = Array.from(stage.childNodes);
-  while (stack.length) {
-    const node = stack.pop();
-    if (!node) continue;
-    if (node.nodeType === Node.COMMENT_NODE && node.nodeValue === 'aicrm-page-header-action-origin') return true;
-    stack.push(...Array.from(node.childNodes));
-  }
-  return false;
+  while (donorHeading.parentElement && donorHeading.parentElement !== contentRoot) donorHeading = donorHeading.parentElement;
+  if (donorHeading.parentElement === contentRoot) donorHeading.remove();
 }
 
 function moveProductListCreateAction(page: 'products' | 'spProducts'): void {
@@ -1827,16 +1821,18 @@ function moveProductListCreateAction(page: 'products' | 'spProducts'): void {
     .find((button) => button.textContent?.trim() === createLabel);
   const prior = productListHeaderCleanups.get(page);
   if (!create) {
-    // A same-document mutation caused by moving the existing control leaves
-    // its shared-action origin marker in the donor content. A fresh donor
-    // render does not; clear the former header action when permission no
-    // longer exposes a replacement source control.
-    if (hasProductListHeaderOrigin(stage)) return;
+    // Moving the existing control triggers this observer too. Its marker still
+    // points at a live donor source, so retain the same header node. A true
+    // donor redraw removes that source; only then can this page clear it.
+    const previous = productListHeaderElements.get(page);
+    if (previous && pageHeaderActionElementsHaveConnectedOrigins(`product-list-${page}`, [previous])) return;
     prior?.();
     productListHeaderCleanups.delete(page);
+    productListHeaderElements.delete(page);
     return;
   }
   prior?.();
+  productListHeaderElements.set(page, create);
   productListHeaderCleanups.set(page, mountPageHeaderActionElements(`product-list-${page}`, [create]));
   // The V3 shell now owns this page's one title. Remove only the donor's
   // matching direct stage child after its original create control is retained.
@@ -1849,10 +1845,10 @@ function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
     menu.dispose();
     productListActionMenus.delete(container);
   }
-  for (const row of document.querySelectorAll<HTMLTableRowElement>('tbody tr')) {
+  for (const [index, row] of Array.from(document.querySelectorAll<HTMLTableRowElement>('tbody tr')).entries()) {
     const container = row.lastElementChild?.querySelector<HTMLElement>(':scope > div');
     if (!container || productListActionMenus.has(container)) continue;
-    const menu = mountTableActionMenu(container, { owner: `product-${page}`, primaryCount: 2 });
+    const menu = mountTableActionMenu(container, { owner: `product-${page}-${index}`, primaryCount: 2 });
     if (menu) productListActionMenus.set(container, menu);
   }
 }
@@ -1862,6 +1858,12 @@ function presentProductLists(): void {
   productListPresentationQueued = false;
   const page = productListPage();
   if (!page) return;
+  for (const [mountedPage, cleanup] of productListHeaderCleanups) {
+    if (mountedPage === page) continue;
+    cleanup();
+    productListHeaderCleanups.delete(mountedPage);
+    productListHeaderElements.delete(mountedPage);
+  }
   relabelServiceProductDeleteAction();
   moveProductListCreateAction(page);
   mountProductListActionMenus(page);
@@ -1881,5 +1883,6 @@ window.addEventListener('pagehide', () => {
   productListActionMenus.clear();
   for (const cleanup of productListHeaderCleanups.values()) cleanup();
   productListHeaderCleanups.clear();
+  productListHeaderElements.clear();
 }, { once: true });
 scheduleProductListPresentation();

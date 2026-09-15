@@ -37,7 +37,7 @@ External Effects: not involved；不触发 Provider、支付、归档写入或�
 - 1280 与 1440 下不裁切、不强制所有按钮同一行；内容超过可用宽度时保持可访问菜单或表格横向滚动。
 - `#334` 删除命令和其确认/幂等/readback 合同不改。
 - 仅 `products` 与 `spProducts` 由 `RenderProducts` 启用既有 shell `.admin-topbar`，分别以“商品管理”“周期商品管理”作为唯一标题；`productForm`、`spProductForm` 与 `spProductData` 继续保持原嵌入式布局和顶部保存操作。
-- `mountPageHeaderActionElements` 将各列表已有的“创建”按钮节点（不克隆）移入 `.admin-topbar > .admin-topbar-meta`；原监听、href、禁用状态和权限可见性保持。Adapter 随后只删除同一列表 donor 的直接标题子树，避免双标题或空白占位；无授权创建节点时清除旧页头动作。
+- `mountPageHeaderActionElements` 将各列表已有的“创建”按钮节点（不克隆）移入 `.admin-topbar > .admin-topbar-meta`；原监听、href、禁用状态和权限可见性保持。Adapter 使用该共享组件公开的 `pageHeaderActionElementsHaveConnectedOrigins` 判断 donor 重绘期间是否仍有真实源位置，避免同文档重绘误清空或复活脱离 document 的旧按钮；无授权创建节点时才清除旧页头动作。随后只删除同一列表 donor 的直接标题子树，避免双标题或空白占位。
 - frozen runtime 在 `web/src/shared/ui/runtime.ts:134-137` 将 `onClick` 直接绑定到各按钮；行操作菜单仅搬移该原节点。每次 frozen controller 重绘后，Adapter 清理脱离 document 的旧浮层与监听，再挂载新行；不得依赖 stage/document 事件委托。
 - 周期商品只将已读取的生命周期显示值 `enabled` / `disabled` / `draft` 转为现有中文状态文案，并通过既有 `formatShanghaiDateTime` 以北京时间显示更新时间；未知值和非法时间不编造新值。
 
@@ -53,7 +53,7 @@ External Effects: not involved；不触发 Provider、支付、归档写入或�
 ## 验收
 
 1. 在已登录、真实 Postgres + Chromium 页面复测 1280 / 1440：仅普通与周期商品列表各有一个 shell 标题和位于顶栏右侧的创建操作；三个表单/数据入口没有新 shell 标题。周期商品的所有可见和已授权动作可达、无裁切；长名称、减少权限动作和窄可用区域仍可操作。
-2. 通过真实“更多操作”菜单点击删除：取消为零写；确认仅发送一次原 Product owner DELETE，保持原目标、版本、幂等键并经既有读回移除行。重绘后旧浮层不可见、旧动作不可再次触发。
+2. 通过真实“更多操作”菜单点击删除：Chromium 夹具使用独立的 `admin-layout-delete-menu` 商品，保证后续商品表单仍验证原商品。取消为零写；确认仅发送一次原 Product owner DELETE，保持原目标、版本、幂等键并经既有读回移除行。重绘后旧浮层不可见、旧动作不可再次触发。
 3. 问卷在成功 0、搜索无匹配、加载、5xx、401、403 时各自呈现正确表格状态；合法 0 不再空白，失败/无权不泄漏或伪装旧数据。
 4. 覆盖受影响 Node/typecheck、实际页面 Chromium 截图、构建/舞台/P5（以最终 main 和 head 绑定）。
 

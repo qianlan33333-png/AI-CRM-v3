@@ -9,12 +9,13 @@ const username = process.env.AICRM_ADMIN_LAYOUT_TEST_USERNAME;
 const password = process.env.AICRM_ADMIN_LAYOUT_TEST_PASSWORD;
 const productID = process.env.AICRM_ADMIN_LAYOUT_TEST_PRODUCT_ID;
 const serviceProductID = process.env.AICRM_ADMIN_LAYOUT_TEST_SERVICE_PRODUCT_ID;
+const archiveProductID = process.env.AICRM_ADMIN_LAYOUT_TEST_ARCHIVE_PRODUCT_ID;
 const historicalOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_ORDER;
 const nativeOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_NATIVE_ORDER;
 const radarID = process.env.AICRM_ADMIN_LAYOUT_TEST_RADAR_ID;
 const aiPlanID = process.env.AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID;
 const screenshotDirectory = process.env.AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(nativeOrderReference || "") || !screenshotDirectory) {
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(archiveProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(nativeOrderReference || "") || !screenshotDirectory) {
   throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, order fixtures, native AI plan id, and screenshot directory");
 }
 
@@ -430,6 +431,19 @@ try {
     if (!found) throw new Error(label + " menu link is absent or points to a fallback route");
     await evaluate(cdp, `(() => { const node=[...document.querySelectorAll('.admin-nav-link[href]')].find(value => { const target=new URL(value.href, location.href); return target.pathname === ${JSON.stringify(destination.pathname)} && target.search === ${JSON.stringify(destination.search)}; }); node.click(); return true; })()`);
   };
+  const pointerClick = async (selector, label) => {
+    const point = await evaluate(cdp, `(() => {
+      const node = document.querySelector(${JSON.stringify(selector)});
+      if (!(node instanceof HTMLElement)) return null;
+      node.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = node.getBoundingClientRect();
+      const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, visible: rect.width > 1 && rect.height > 1, receivesPointer: target === node || node.contains(target) };
+    })()`);
+    if (!point?.visible || !point.receivesPointer) throw new Error(label + ' is obscured or unavailable ' + JSON.stringify(point));
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+  };
   const navigate = async (pathname, ready, label, kind, titleSelector, screenshot = false, fromMenu = false, finalPath = pathname) => {
     currentStep = label;
     try {
@@ -668,30 +682,34 @@ try {
   await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);
-  await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "products", "embedded", frozenListToolbarTitle, true, true);
-  await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "service-period-products", "embedded", frozenListToolbarTitle, true, true);
+  await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table'))", "products", "standard", "table", true, true);
+  await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table'))", "service-period-products", "standard", "table", true, true);
   const assertProductListPresentation = async (page, label) => {
     const presentation = await evaluate(cdp, `(() => {
       const title = ${JSON.stringify(page === 'products' ? '商品管理' : '周期商品管理')};
       const create = ${JSON.stringify(page === 'products' ? '创建商品' : '创建周期商品')};
-      const leaf = [...document.querySelectorAll('div')].find(node => node.children.length === 0 && String(node.textContent || '').trim() === title);
-      const header = leaf?.closest('div[style*="height:52px"]');
-      const button = [...document.querySelectorAll('button')].find(node => String(node.textContent || '').trim() === create);
-      const menu = document.querySelector('[data-table-action-menu-owner="product-' + ${JSON.stringify(page)} + '"]');
-      const trigger = document.querySelector('[data-table-action-menu-trigger="product-' + ${JSON.stringify(page)} + '"]');
+      const topbar = document.querySelector('.admin-topbar');
+      const shellTitle = topbar?.querySelector('.admin-page-title');
+      const actionHost = topbar?.querySelector('[data-page-header-actions="product-list-' + ${JSON.stringify(page)} + '"]');
+      const button = actionHost ? [...actionHost.querySelectorAll('button')].find(node => String(node.textContent || '').trim() === create) : undefined;
+      const donorTitles = [...document.querySelectorAll('#stage div')].filter(node => node.children.length === 0 && String(node.textContent || '').trim() === title);
+      const menu = document.querySelector('[data-table-action-menu-owner^="product-' + ${JSON.stringify(page)} + '-"]');
+      const trigger = document.querySelector('[data-table-action-menu-trigger^="product-' + ${JSON.stringify(page)} + '-"]');
       const row = document.querySelector('tbody tr');
       const status = row?.children[3]?.textContent?.trim() || '';
       const updated = row?.children[5]?.textContent?.trim() || '';
-      return { titleCount:[...document.querySelectorAll('div')].filter(node => node.children.length === 0 && String(node.textContent || '').trim() === title).length, createInHeader:Boolean(header && button && button.parentElement === header), menu:menu instanceof HTMLElement, triggerVisible:trigger instanceof HTMLElement && trigger.getBoundingClientRect().width > 1, bodyOverflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1, status, updated };
+      const topbarBox = topbar?.getBoundingClientRect();
+      const createBox = button?.getBoundingClientRect();
+      return { shellTitle:String(shellTitle?.textContent || '').trim(), shellTitleCount:document.querySelectorAll('.admin-topbar .admin-page-title').length, donorTitleCount:donorTitles.length, createInTopbar:Boolean(topbarBox && createBox && createBox.top >= topbarBox.top - 1 && createBox.bottom <= topbarBox.bottom + 1), menu:menu instanceof HTMLElement, triggerVisible:trigger instanceof HTMLElement && trigger.getBoundingClientRect().width > 1, bodyOverflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1, status, updated };
     })()`);
-    const invalid = presentation.titleCount !== 1 || !presentation.createInHeader || !presentation.menu || !presentation.triggerVisible || presentation.bodyOverflow || (page === 'spProducts' && (presentation.status !== '已启用' || /T\d{2}:\d{2}/.test(presentation.updated)));
+    const invalid = presentation.shellTitle !== (page === 'products' ? '商品管理' : '周期商品管理') || presentation.shellTitleCount !== 1 || presentation.donorTitleCount !== 0 || !presentation.createInTopbar || !presentation.menu || !presentation.triggerVisible || presentation.bodyOverflow || (page === 'spProducts' && (presentation.status !== '已启用' || /T\d{2}:\d{2}/.test(presentation.updated)));
     if (invalid) throw new Error(label + ' product list presentation invalid ' + JSON.stringify(presentation));
   };
   for (const width of [1440, 1280]) {
     await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
-    await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", `products-actions-${width}`, "embedded", frozenListToolbarTitle, true);
+    await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table'))", `products-actions-${width}`, "standard", "table", true);
     await assertProductListPresentation('products', `products-actions-${width}`);
-    await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", `service-period-products-actions-${width}`, "embedded", frozenListToolbarTitle, true);
+    await navigate("/admin/service-period-products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table'))", `service-period-products-actions-${width}`, "standard", "table", true);
     await assertProductListPresentation('spProducts', `service-period-products-actions-${width}`);
   }
   await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
@@ -715,6 +733,54 @@ try {
   await assertProductDimensions('product');
   await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#sp-sale\"][aria-current=\"step\"]'))", "service-period-product", "embedded", embeddedTitle, true);
   await assertProductDimensions('sp');
+  currentStep = 'products-delete-menu';
+  await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table'))", "products-delete-menu", "standard", "table", false);
+  const deleteTarget = await evaluate(cdp, `(() => {
+    const row = [...document.querySelectorAll('#stage tbody tr')].find(node => node.textContent?.includes('admin-layout-delete-menu'));
+    const trigger = row?.querySelector('[data-table-action-menu-trigger^="product-products-"]');
+    return trigger instanceof HTMLElement ? 'admin-layout-delete-menu' : '';
+  })()`);
+  if (!deleteTarget) throw new Error('product delete fixture or overflow trigger is unavailable');
+  const productDeleteRequest = 'DELETE /api/admin/wechat-pay/products/' + archiveProductID;
+  requestEvents.length = 0;
+  responses.length = 0;
+  const markDeleteTrigger = async () => evaluate(cdp, `(() => {
+    document.querySelectorAll('[data-aicrm-product-menu-trigger]').forEach(node => node.removeAttribute('data-aicrm-product-menu-trigger'));
+    const row = [...document.querySelectorAll('#stage tbody tr')].find(node => node.textContent?.includes('admin-layout-delete-menu'));
+    const trigger = row?.querySelector('[data-table-action-menu-trigger^="product-products-"]');
+    if (!(trigger instanceof HTMLButtonElement)) return false;
+    trigger.setAttribute('data-aicrm-product-menu-trigger', 'true');
+    return true;
+  })()`);
+  const markDelete = async () => evaluate(cdp, `(() => {
+    document.querySelectorAll('[data-aicrm-product-delete]').forEach(node => node.removeAttribute('data-aicrm-product-delete'));
+    const trigger = document.querySelector('[data-aicrm-product-menu-trigger="true"]');
+    const panel = trigger instanceof HTMLButtonElement ? document.getElementById(trigger.getAttribute('aria-controls') || '') : null;
+    const target = [...(panel?.querySelectorAll('button') || [])].find(node => node.textContent?.trim() === '删除');
+    if (!(target instanceof HTMLButtonElement)) return false;
+    target.setAttribute('data-aicrm-product-delete', 'true');
+    return true;
+  })()`);
+  if (!await markDeleteTrigger()) throw new Error('product delete fixture trigger is unavailable');
+  await pointerClick('[data-aicrm-product-menu-trigger="true"]', 'product overflow trigger');
+  await waitFor(cdp, "Boolean(document.querySelector('[data-aicrm-product-menu-trigger=\"true\"]')?.getAttribute('aria-expanded') === 'true')", 'product overflow menu did not open');
+  if (!await markDelete()) throw new Error('product delete action is absent from the visible overflow menu');
+  await pointerClick('[data-aicrm-product-delete="true"]', 'product delete action');
+  await waitFor(cdp, "Boolean(document.querySelector('#fb-cancel'))", 'product delete confirmation did not open');
+  await capture('products-delete-confirm');
+  await pointerClick('#fb-cancel', 'product delete cancellation');
+  if (requestEvents.some(value => value === productDeleteRequest)) throw new Error('cancelled product deletion issued a write');
+  if (!await markDeleteTrigger()) throw new Error('product delete fixture trigger disappeared after cancellation');
+  await pointerClick('[data-aicrm-product-menu-trigger="true"]', 'product overflow trigger after cancellation');
+  await waitFor(cdp, "Boolean(document.querySelector('[data-aicrm-product-menu-trigger=\"true\"]')?.getAttribute('aria-expanded') === 'true')", 'product overflow menu did not reopen');
+  if (!await markDelete()) throw new Error('product delete action disappeared after cancellation');
+  await pointerClick('[data-aicrm-product-delete="true"]', 'product delete confirmation action');
+  await waitFor(cdp, "Boolean(document.querySelector('#fb-ok'))", 'product delete confirmation could not reopen');
+  await pointerClick('#fb-ok', 'product delete confirmation submit');
+  await waitForRecorded(requestEvents, value => value === productDeleteRequest, 'confirmed product deletion did not issue the owner DELETE');
+  await waitForRecorded(responses, value => value.startsWith(productDeleteRequest + ':'), 'confirmed product deletion did not settle');
+  await waitFor(cdp, `(() => ![...document.querySelectorAll('#stage tbody tr')].some(row => row.textContent?.includes(${JSON.stringify(deleteTarget)})))()`, 'product owner readback still shows the deleted row');
+  if (requestEvents.filter(value => value === productDeleteRequest).length !== 1) throw new Error('product deletion issued more than one owner write');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
   await navigate("/admin/image-library", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-title] h1'))", "image-library", "embedded", imageLibraryHostTitle, true, true);
