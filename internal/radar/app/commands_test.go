@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,20 @@ func TestUpdateAndStatusUseExpectedVersion(t *testing.T) {
 	}
 }
 
+func TestListTrimsSearchAndRejectsOver200UTF8Bytes(t *testing.T) {
+	memory := newMemoryPersistence()
+	service := newTestService(t, memory)
+	if _, err := service.List(context.Background(), radarport.ListQuery{Search: "  name needle  ", Limit: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if memory.listQuery.Search != "name needle" || memory.listQuery.Limit != 20 {
+		t.Fatalf("trimmed query=%+v", memory.listQuery)
+	}
+	if _, err := service.List(context.Background(), radarport.ListQuery{Search: strings.Repeat("界", 67), Limit: 20}); !errors.Is(err, radar.ErrInvalidArgument) {
+		t.Fatalf("over-200-byte UTF-8 query error=%v", err)
+	}
+}
+
 func newTestService(t *testing.T, memory *memoryPersistence) *Service {
 	t.Helper()
 	service, err := NewService(memory, memory, memory)
@@ -96,6 +111,7 @@ type memoryPersistence struct {
 	externalPage  radarport.ExternalLinkMappingPage
 	externalQuery radarport.ExternalLinkMappingQuery
 	externalErr   error
+	listQuery     radarport.ListQuery
 }
 
 func newMemoryPersistence() *memoryPersistence {
@@ -129,6 +145,7 @@ func (memory *memoryPersistence) GetByPublicCode(_ context.Context, code radar.P
 }
 
 func (memory *memoryPersistence) List(_ context.Context, query radarport.ListQuery) (radarport.LinkPage, error) {
+	memory.listQuery = query
 	items := make([]radarport.LinkSummary, 0, len(memory.links))
 	for _, link := range memory.links {
 		items = append(items, radarport.LinkSummary{Link: link})

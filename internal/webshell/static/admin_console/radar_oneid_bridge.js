@@ -6,13 +6,15 @@
   const listSummaries = new Map();
   let listSummaryReady = Promise.resolve();
   let listSummaryRevision = 0;
+  let listGeneration = 0;
   const hydratedRows = new WeakMap();
 
   function listSummaryStatus(value) {
     return value && value.statistics_status === 'ready' ? 'ready' : 'unavailable';
   }
-  function rememberListSummaries(response) {
-    listSummaryReady = response.clone().json().then(function (payload) {
+  function rememberListSummaries(response, generation) {
+    const read = response.clone().json().then(function (payload) {
+      if (generation !== listGeneration) return;
       listSummaries.clear();
       listSummaryRevision += 1;
       const items = payload && Array.isArray(payload.items) ? payload.items : [];
@@ -21,11 +23,22 @@
         if (Number.isSafeInteger(id) && id > 0) listSummaries.set(id, item);
       });
     }).catch(function () {
+      if (generation !== listGeneration) return;
       listSummaries.clear();
       listSummaryRevision += 1;
     });
+    if (generation === listGeneration) listSummaryReady = read;
     return response;
   }
+
+  window.addEventListener('aicrm:radar-list-generation', function (event) {
+    const generation = event && event.detail && event.detail.generation;
+    if (!Number.isSafeInteger(generation) || generation <= listGeneration) return;
+    listGeneration = generation;
+    listSummaries.clear();
+    listSummaryRevision += 1;
+    listSummaryReady = Promise.resolve();
+  });
 
   window.fetch = function (input, init) {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.pathname + input.search : input.url;
@@ -65,7 +78,8 @@
       });
     }
     if (url.origin === location.origin && radarList.test(url.pathname) && method === 'GET') {
-      return nativeFetch(input, init).then(rememberListSummaries);
+      const generation = listGeneration;
+      return nativeFetch(input, init).then(function (response) { return rememberListSummaries(response, generation); });
     }
     return nativeFetch(input, init);
   };
@@ -126,6 +140,8 @@
     await listSummaryReady;
     const rows = document.querySelectorAll('#listRows tr');
     for (const row of rows) {
+      const rowGeneration = row.getAttribute('data-v3-radar-list-generation');
+      if (rowGeneration !== null && Number(rowGeneration) !== listGeneration) continue;
       const action = row.querySelector('[data-detail]');
       const id = action && Number(action.getAttribute('data-detail'));
       if (!id || hydratedRows.get(row) === listSummaryRevision) continue;

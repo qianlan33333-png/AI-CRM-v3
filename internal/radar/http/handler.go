@@ -353,7 +353,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("status"); raw != "" && raw != "all" {
 		status = radar.Status(raw)
 	}
-	page, e := h.manager.List(r.Context(), radarport.ListQuery{Status: status, Limit: int32(limit), Offset: int32(offset)})
+	page, e := h.manager.List(r.Context(), radarport.ListQuery{
+		Search:      r.URL.Query().Get("search"),
+		ContentType: radar.ContentType(r.URL.Query().Get("content_type")),
+		Status:      status,
+		Limit:       int32(limit),
+		Offset:      int32(offset),
+	})
 	if e != nil {
 		h.err(w, e)
 		return
