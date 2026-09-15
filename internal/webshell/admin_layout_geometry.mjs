@@ -811,9 +811,9 @@ try {
     }.toString()})(${JSON.stringify(prefix)})`);
     if (result.failures.length || !result.action || !result.tags) throw new Error(`product dimension switching: ${JSON.stringify(result)}`);
   };
-  await navigate("/admin/productForm.html?id=" + productID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#pfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#product-sale\"][aria-current=\"step\"]'))", "product", "embedded", embeddedTitle, true);
+  await navigate("/admin/productForm.html?id=" + productID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#pfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#product-sale\"][aria-current=\"step\"]'))", "product", "standard", embeddedTitle, true);
   await assertProductDimensions('product');
-  await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#sp-sale\"][aria-current=\"step\"]'))", "service-period-product", "embedded", embeddedTitle, true);
+  await navigate("/admin/spProductForm.html?id=" + serviceProductID, "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('#spfExternalPushEnabled')) && Boolean(document.querySelector('a[href=\"#sp-sale\"][aria-current=\"step\"]'))", "service-period-product", "standard", embeddedTitle, true);
   await assertProductDimensions('sp');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
