@@ -15,6 +15,7 @@ import (
 	"time"
 
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	overviewapp "github.com/qianlan33333-png/AI-CRM-v3/internal/overview/app"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 )
 
@@ -54,6 +55,83 @@ func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
 	if err != nil || !strings.Contains(string(output), "admin_overview_chromium: PASS") {
 		t.Fatalf("admin overview Chromium journey err=%v output=%s", err, strings.TrimSpace(string(output)))
 	}
+}
+
+func TestPostgreSQLAdminOverviewCanonicalPayersFollowCurrentMerge(t *testing.T) {
+	fixture := newAdminOverviewFixture(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	payerA := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	payerB := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	payerC := insertAdminOverviewCustomer(t, fixture.ctx, fixture.application, now)
+	for _, item := range []struct {
+		key   string
+		payer *int64
+		minor int64
+	}{
+		{key: "canonical-a", payer: &payerA, minor: 100},
+		{key: "canonical-b", payer: &payerB, minor: 200},
+		{key: "canonical-c", payer: &payerC, minor: 300},
+		{key: "canonical-missing", payer: nil, minor: 400},
+	} {
+		insertAdminOverviewPayment(t, fixture.ctx, fixture.application, now, item.key, item.payer, item.minor)
+	}
+	if _, err := fixture.application.pool.Native().Exec(fixture.ctx, `UPDATE customers
+		SET status='merged',merged_into_customer_id=$2,merged_at=$3,updated_at=$3
+		WHERE id=$1`, payerA, payerB, now); err != nil {
+		t.Fatal(err)
+	}
+	response := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/overview?period=7d")
+	var body struct {
+		Paid struct {
+			Status                  string `json:"status"`
+			ReasonCode              string `json:"reason_code"`
+			OrderCount              int64  `json:"order_count"`
+			DistinctCanonicalPayers *int64 `json:"distinct_canonical_payers"`
+			MissingPayerCount       int64  `json:"missing_payer_count"`
+		} `json:"paid"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || body.Paid.Status != "data_missing" || body.Paid.ReasonCode != "payer_customer_missing" || body.Paid.OrderCount != 5 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != 3 || body.Paid.MissingPayerCount != 1 {
+		t.Fatalf("canonical payer overview status=%d body=%s", response.Code, response.Body.String())
+	}
+	var persistedA, persistedB int64
+	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-canonical-a'`).Scan(&persistedA); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT payer_customer_id FROM payments WHERE merchant_order_no='M-OVERVIEW-canonical-b'`).Scan(&persistedB); err != nil {
+		t.Fatal(err)
+	}
+	if persistedA != payerA || persistedB != payerB {
+		t.Fatalf("historical payment payer IDs were rewritten: a=%d b=%d want a=%d b=%d", persistedA, persistedB, payerA, payerB)
+	}
+}
+
+func TestPostgreSQLAdminOverviewCanonicalPayersScaleWithinSectionBudget(t *testing.T) {
+	fixture := newAdminOverviewFixture(t)
+	const payerCount = 10001
+	seedAdminOverviewPayerScale(t, fixture.ctx, fixture.application, time.Now().UTC().Truncate(time.Microsecond), payerCount)
+	started := time.Now()
+	response := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/overview?period=7d")
+	elapsed := time.Since(started)
+	var body struct {
+		Paid struct {
+			Status                  string `json:"status"`
+			OrderCount              int64  `json:"order_count"`
+			DistinctCanonicalPayers *int64 `json:"distinct_canonical_payers"`
+		} `json:"paid"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || body.Paid.Status != "ready" || body.Paid.OrderCount != payerCount+1 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != payerCount+1 {
+		t.Fatalf("scaled canonical payer overview status=%d body=%s", response.Code, response.Body.String())
+	}
+	if elapsed > overviewapp.DefaultSectionReadTimeout {
+		t.Fatalf("%d canonical payers took %s, exceeding overview section budget %s", payerCount, elapsed, overviewapp.DefaultSectionReadTimeout)
+	}
+	t.Logf("%d canonical payers read exactly in %s within %s section budget", payerCount, elapsed, overviewapp.DefaultSectionReadTimeout)
 }
 
 type adminOverviewFixture struct {
@@ -145,6 +223,52 @@ func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *comp
 	}
 }
 
+func insertAdminOverviewCustomer(t *testing.T, ctx context.Context, application *composedApplication, now time.Time) int64 {
+	t.Helper()
+	var customerID int64
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO customers(created_at,updated_at) VALUES($1,$1) RETURNING id`, now).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	return customerID
+}
+
+func insertAdminOverviewPayment(t *testing.T, ctx context.Context, application *composedApplication, now time.Time, key string, payerCustomerID *int64, amountMinor int64) {
+	t.Helper()
+	var orderID int64
+	merchantOrderNo := "M-OVERVIEW-" + key
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
+		VALUES('wechat_pay','overview-canonical',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, key, merchantOrderNo, payerCustomerID, amountMinor, now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
+		VALUES($1,'wechat_pay','mini_program',$2,NULL,$3,$3,$4,'CNY','paid',1,$5,$5,$5,false)`, orderID, merchantOrderNo, payerCustomerID, amountMinor, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedAdminOverviewPayerScale(t *testing.T, ctx context.Context, application *composedApplication, now time.Time, count int) {
+	t.Helper()
+	if count < 1 {
+		t.Fatal("canonical payer scale count must be positive")
+	}
+	_, err := application.pool.Native().Exec(ctx, `WITH inserted_customers AS (
+		INSERT INTO customers(created_at,updated_at)
+		SELECT $1,$1 FROM generate_series(1,$2)
+		RETURNING id
+	), inserted_orders AS (
+		INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
+		SELECT 'wechat_pay','overview-canonical-scale','payer-'||id,'M-OVERVIEW-SCALE-'||id,id,id,1,'CNY','paid','native',true,1,$1,$1
+		FROM inserted_customers
+		RETURNING id,payer_customer_id,merchant_order_no
+	)
+	INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
+	SELECT id,'wechat_pay','mini_program',merchant_order_no,NULL,payer_customer_id,payer_customer_id,1,'CNY','paid',1,$1,$1,$1,false
+	FROM inserted_orders`, now, count)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func overviewAuthenticatedGET(t *testing.T, handler http.Handler, session, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -161,9 +285,10 @@ func assertAdminOverviewResponse(t *testing.T, response *httptest.ResponseRecord
 			Timezone string `json:"timezone"`
 		} `json:"range"`
 		Paid struct {
-			Status     string `json:"status"`
-			OrderCount int64  `json:"order_count"`
-			Gross      []struct {
+			Status                  string `json:"status"`
+			OrderCount              int64  `json:"order_count"`
+			DistinctCanonicalPayers *int64 `json:"distinct_canonical_payers"`
+			Gross                   []struct {
 				AmountMinor int64  `json:"amount_minor"`
 				Currency    string `json:"currency"`
 			} `json:"gross"`
@@ -192,7 +317,7 @@ func assertAdminOverviewResponse(t *testing.T, response *httptest.ResponseRecord
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || body.Paid.Status != "ready" || body.Paid.OrderCount != 1 || len(body.Paid.Gross) != 1 || body.Paid.Gross[0].AmountMinor != 1200 || body.Paid.Gross[0].Currency != "CNY" || body.Customers.Status != "ready" || body.Customers.Count != 1 || body.Refunds.Status != "ready" || body.Refunds.Completed != 1 || body.Distribution.Status != "ready" || body.Distribution.Unsettled != 120 || body.Todos.Status != "ready" || len(body.Todos.Items) != 1 || body.Todos.Items[0].Code != "distribution_exceptions" || body.Todos.Items[0].Count != 1 || body.Todos.Items[0].Href != "/admin/distribution" {
+	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || body.Paid.Status != "ready" || body.Paid.OrderCount != 1 || body.Paid.DistinctCanonicalPayers == nil || *body.Paid.DistinctCanonicalPayers != 1 || len(body.Paid.Gross) != 1 || body.Paid.Gross[0].AmountMinor != 1200 || body.Paid.Gross[0].Currency != "CNY" || body.Customers.Status != "ready" || body.Customers.Count != 1 || body.Refunds.Status != "ready" || body.Refunds.Completed != 1 || body.Distribution.Status != "ready" || body.Distribution.Unsettled != 120 || body.Todos.Status != "ready" || len(body.Todos.Items) != 1 || body.Todos.Items[0].Code != "distribution_exceptions" || body.Todos.Items[0].Count != 1 || body.Todos.Items[0].Href != "/admin/distribution" {
 		t.Fatalf("overview response status=%d body=%s", response.Code, response.Body.String())
 	}
 }

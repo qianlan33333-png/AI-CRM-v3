@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -22,9 +23,10 @@ func (stub overviewSecurityStub) Authenticate(context.Context, *http.Request) (a
 }
 
 type overviewReaderStub struct {
-	calls int
-	query overviewapp.Query
-	err   error
+	calls    int
+	query    overviewapp.Query
+	response overviewapp.Response
+	err      error
 }
 
 func (stub *overviewReaderStub) Read(_ context.Context, query overviewapp.Query) (overviewapp.Response, error) {
@@ -33,7 +35,41 @@ func (stub *overviewReaderStub) Read(_ context.Context, query overviewapp.Query)
 	if stub.err != nil {
 		return overviewapp.Response{}, stub.err
 	}
-	return overviewapp.Response{Range: query.Range}, nil
+	response := stub.response
+	if response.Range.Period == "" {
+		response.Range = query.Range
+	}
+	return response, nil
+}
+
+func TestHandlerOmitsUnknownCanonicalPayerCountFromJSON(t *testing.T) {
+	asOf := time.Date(2026, 9, 15, 1, 0, 0, 0, time.UTC)
+	reader := &overviewReaderStub{response: overviewapp.Response{Paid: overviewapp.Paid{
+		Section:    overviewapp.Section{Status: overviewapp.StatusDataMissing, AsOf: asOf, Scope: "admin_authorized_global", ReasonCode: "canonical_payer_unavailable"},
+		Gross:      []overviewapp.Money{{AmountMinor: 120, Currency: "CNY"}},
+		OrderCount: 1,
+	}}}
+	handler, err := NewHandler(Config{
+		Reader:   reader,
+		Security: overviewSecurityStub{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 1, Roles: []accessdomain.Role{accessdomain.RoleViewer}}},
+		Now:      func() time.Time { return asOf },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, overviewPath+"?period=today", nil))
+	var body map[string]any
+	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	paid, ok := body["paid"].(map[string]any)
+	if response.Code != http.StatusOK || !ok || paid["order_count"] != float64(1) || paid["reason_code"] != "canonical_payer_unavailable" {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, exists := paid["distinct_canonical_payers"]; exists {
+		t.Fatalf("unknown canonical payer count must be omitted: %s", response.Body.String())
+	}
 }
 
 func TestHandlerStopsBeforeAnyAggregateForUnauthenticatedOrUnauthorizedCaller(t *testing.T) {

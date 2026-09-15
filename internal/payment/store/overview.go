@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 )
 
@@ -31,7 +32,6 @@ func (r *Repository) ReadPaidOverview(ctx context.Context, window paymentport.Ov
 			AND paid_confirmed_at >= $1 AND paid_confirmed_at < $2
 	), summary AS (
 		SELECT COALESCE(COUNT(DISTINCT order_id),0) AS order_count,
-			COALESCE(COUNT(DISTINCT payer_customer_id) FILTER (WHERE payer_customer_id IS NOT NULL),0) AS payer_count,
 			COALESCE(COUNT(DISTINCT order_id) FILTER (WHERE payer_customer_id IS NULL),0) AS missing_payer_count
 		FROM paid_in_range
 	), gross_rows AS (
@@ -59,10 +59,10 @@ func (r *Repository) ReadPaidOverview(ctx context.Context, window paymentport.Ov
 			COALESCE(jsonb_agg(jsonb_build_object('amount_minor',amount_minor,'currency',currency) ORDER BY currency),'[]'::jsonb) AS value
 		FROM missing_rows
 	)
-	SELECT summary.order_count,summary.payer_count,summary.missing_payer_count,
+	SELECT summary.order_count,summary.missing_payer_count,
 		gross.value,trend.value,missing.order_count,missing.value
 	FROM summary CROSS JOIN gross CROSS JOIN trend CROSS JOIN missing`, window.Start.UTC(), window.End.UTC()).Scan(
-		&result.OrderCount, &result.DistinctCanonicalPayers, &result.MissingPayerCount,
+		&result.OrderCount, &result.MissingPayerCount,
 		&grossJSON, &trendJSON, &result.MissingConfirmationEvidenceCount, &missingJSON,
 	)
 	if err != nil {
@@ -76,6 +76,45 @@ func (r *Repository) ReadPaidOverview(ctx context.Context, window paymentport.Ov
 	}
 	if result.MissingConfirmationEvidenceAmount, err = decodeOverviewMoney(missingJSON); err != nil {
 		return paymentport.PaidOverview{}, err
+	}
+	return result, nil
+}
+
+// ReadPaidOverviewPayerPage exposes a bounded, stable keyset of Payment's
+// immutable historical payer facts. Canonicalization belongs to Identity and
+// is composed by Payment's application reader in the same read transaction.
+func (r *Repository) ReadPaidOverviewPayerPage(ctx context.Context, window paymentport.OverviewWindow, afterCustomerID customerdomain.CustomerID, limit int) (paymentport.PaidOverviewPayerPage, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return paymentport.PaidOverviewPayerPage{}, err
+	}
+	if !window.Valid() || afterCustomerID < 0 || limit < 1 || limit > 500 {
+		return paymentport.PaidOverviewPayerPage{}, paymentport.ErrInvalid
+	}
+	rows, err := t.Query(ctx, `SELECT DISTINCT payer_customer_id
+		FROM payments
+		WHERE status='paid' AND paid_confirmed_at IS NOT NULL
+			AND paid_confirmed_at >= $1 AND paid_confirmed_at < $2
+			AND payer_customer_id IS NOT NULL AND payer_customer_id > $3
+		ORDER BY payer_customer_id
+		LIMIT $4`, window.Start.UTC(), window.End.UTC(), int64(afterCustomerID), limit)
+	if err != nil {
+		return paymentport.PaidOverviewPayerPage{}, mapError(err)
+	}
+	defer rows.Close()
+	result := paymentport.PaidOverviewPayerPage{CustomerIDs: []customerdomain.CustomerID{}}
+	for rows.Next() {
+		var customerID customerdomain.CustomerID
+		if err = rows.Scan(&customerID); err != nil {
+			return paymentport.PaidOverviewPayerPage{}, mapError(err)
+		}
+		if customerID < 1 {
+			return paymentport.PaidOverviewPayerPage{}, paymentport.ErrInvalid
+		}
+		result.CustomerIDs = append(result.CustomerIDs, customerID)
+	}
+	if err = rows.Err(); err != nil {
+		return paymentport.PaidOverviewPayerPage{}, mapError(err)
 	}
 	return result, nil
 }
