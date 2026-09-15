@@ -42,6 +42,9 @@
   let employeeRequest = 0;
   let employeeAbort = null;
   let employeeDirectoryError = false;
+  let employeeDisplayedQuery = "";
+  let employeeSelectionUnavailable = "";
+  let usersRequest = 0;
   // Only explicit Enter updates these read concerns. The inputs keep their
   // drafts so an unrelated refresh never turns uncommitted text into a query.
   let usersCommittedQuery = "";
@@ -101,10 +104,14 @@
     employeeRequest += 1;
     if (employeeAbort) employeeAbort.abort();
     employeeAbort = null;
-    employeeItems = []; employeeCursor = ""; employeeHasMore = false; selectedEmployee = null; employeeDirectoryError = false; employeeCommittedQuery = "";
+    employeeItems = []; employeeCursor = ""; employeeHasMore = false; selectedEmployee = null; employeeDirectoryError = false; employeeCommittedQuery = ""; employeeDisplayedQuery = ""; employeeSelectionUnavailable = "";
   }
   function clearSensitiveView() {
-    accessRevoked = true; users = []; actor = {}; capabilities = {}; selectedUserID = ""; usersCommittedQuery = ""; clearEmployeeDirectory(); closeDrawer();
+    // Invalidate user reads before clearing the page. An older successful GET
+    // must not republish sensitive rows after a newer 401/403 has revoked it.
+    usersRequest += 1;
+    accessRevoked = true; users = []; actor = {}; capabilities = {}; selectedUserID = ""; usersCommittedQuery = ""; clearEmployeeDirectory(); closeDrawer(); closeTransfer();
+    setLoading(false);
     elements.search.disabled = true; elements.refresh.disabled = true; elements.provisionDialog.hidden = true;
     elements.usersBody.replaceChildren(); elements.tableWrap.hidden = true; elements.superCard.hidden = true; elements.provision.hidden = true; elements.transfer.hidden = true; elements.noPermission.hidden = true;
     elements.empty.hidden = true; elements.filterEmpty.hidden = true; elements.searchStatus.textContent = ""; elements.listStatus.textContent = "请重新登录后继续查看员工权限。";
@@ -152,9 +159,11 @@
   }
   function setLoading(loading) { elements.loading.hidden = !loading; elements.refresh.disabled = loading || accessRevoked; if (loading) elements.listError.hidden = true; }
   async function loadUsers() {
+    const request = ++usersRequest;
     setLoading(true); elements.listStatus.textContent = "正在加载员工列表…";
     try {
       const payload = await requestJSON(api.users, { method: "GET" });
+      if (request !== usersRequest) return false;
       accessRevoked = false; elements.search.disabled = false;
       users = Array.isArray(payload.users) ? payload.users : [];
       actor = payload.actor && typeof payload.actor === "object" ? payload.actor : {};
@@ -163,6 +172,7 @@
       renderUsers(); elements.listError.hidden = true; elements.listStatus.textContent = `${users.length} 名员工`;
       return true;
     } catch (error) {
+      if (request !== usersRequest) return false;
       if (error.status === 401 || error.status === 403) clearSensitiveView();
       else {
         // A transient read error is not proof that previously authorized rows
@@ -171,7 +181,7 @@
       }
       elements.empty.hidden = true; elements.filterEmpty.hidden = true; elements.listError.hidden = false; elements.listErrorMessage.textContent = errorMessage(error, "员工列表暂时不可用，请稍后重试。"); elements.listStatus.textContent = (error.status === 401 || error.status === 403) ? "员工列表不可用" : (users.length ? `员工列表暂时不可用，仍显示上次读取的 ${users.length} 名员工。` : "员工列表暂时不可用。");
       return false;
-    } finally { setLoading(false); }
+    } finally { if (request === usersRequest) setLoading(false); }
   }
   async function mutate(url, method, body, successMessage) {
     try {
@@ -196,7 +206,7 @@
   function setProvisionStep(step) {
     provisionStep = step; elements.provisionStep.textContent = `第 ${step} 步，共 3 步`; elements.employeeStep.hidden = step !== 1; elements.provisionRoleStep.hidden = step !== 2; elements.provisionConfirm.hidden = step !== 3;
     elements.provisionBack.hidden = step === 1; elements.provisionNext.hidden = step === 3; elements.provisionSubmit.hidden = step !== 3;
-    if (step === 1) { elements.provisionHint.textContent = "从企业员工目录中选择账号。"; elements.provisionNext.disabled = !selectedEmployee; }
+    if (step === 1) { elements.provisionHint.textContent = employeeSelectionUnavailable || "从企业员工目录中选择账号。"; elements.provisionNext.disabled = !selectedEmployee; }
     if (step === 2) { elements.provisionHint.textContent = "只能选择当前账号获授权开通的权限。"; elements.provisionNext.disabled = !selectedProvisionRole(); }
     if (step === 3) { const role = selectedProvisionRole(); elements.provisionHint.textContent = "确认后立即开通，无需设置初始密码。"; elements.provisionConfirm.replaceChildren(); const name = document.createElement("p"); name.textContent = `员工：${selectedEmployee.display_name}`; const account = document.createElement("p"); account.textContent = `企微账号：${selectedEmployee.wecom_userid}`; const access = document.createElement("p"); access.textContent = `权限：${roleLabels[role] || ""}`; elements.provisionConfirm.append(name, account, access); const sameName = users.some((user) => user.display_name === selectedEmployee.display_name && user.wecom_userid !== selectedEmployee.wecom_userid); if (sameName) { const warning = document.createElement("p"); warning.textContent = `提示：存在同名员工。请核对企微账号“${selectedEmployee.wecom_userid}”；本次会单独开通，不会合并账号或权限。`; elements.provisionConfirm.appendChild(warning); } }
   }
@@ -205,12 +215,16 @@
     elements.employeeResults.replaceChildren();
     if (employeeDirectoryError && !employeeItems.length) { const message = document.createElement("p"); message.className = "admin-muted"; message.textContent = "企业员工目录暂时不可用。"; elements.employeeResults.appendChild(message); return; }
     if (!employeeItems.length) { const message = document.createElement("p"); message.className = "admin-muted"; message.textContent = "未找到企业员工。"; elements.employeeResults.appendChild(message); return; }
-    employeeItems.forEach((employee) => { const authorized = employee.authorized_account === true; const button = document.createElement("button"); button.type = "button"; button.className = "admin-access-employee-choice"; button.dataset.wecomUserid = String(employee.wecom_userid || ""); button.disabled = authorized; button.setAttribute("aria-pressed", String(selectedEmployee && selectedEmployee.wecom_userid === employee.wecom_userid)); const name = document.createElement("strong"); name.textContent = String(employee.display_name || "未命名员工"); const account = document.createElement("small"); account.textContent = String(employee.wecom_userid || ""); button.append(name, account); if (authorized) { const state = document.createElement("small"); state.textContent = `已开通 · ${roleLabels[employee.role] || "后台权限"}。请在员工列表中管理。`; button.appendChild(state); } elements.employeeResults.appendChild(button); });
-    if (employeeHasMore) { const more = document.createElement("button"); more.type = "button"; more.className = "admin-button admin-button--ghost"; more.dataset.accessAction = "more-employees"; more.textContent = "加载更多"; elements.employeeResults.appendChild(more); }
+    employeeItems.forEach((employee) => { const authorized = employee.authorized_account === true; const button = document.createElement("button"); button.type = "button"; button.className = "admin-access-employee-choice"; button.dataset.wecomUserid = String(employee.wecom_userid || ""); button.disabled = authorized; button.setAttribute("aria-pressed", String(!authorized && selectedEmployee && selectedEmployee.wecom_userid === employee.wecom_userid)); const name = document.createElement("strong"); name.textContent = String(employee.display_name || "未命名员工"); const account = document.createElement("small"); account.textContent = String(employee.wecom_userid || ""); button.append(name, account); if (authorized) { const state = document.createElement("small"); state.textContent = `已开通 · ${roleLabels[employee.role] || "后台权限"}。请在员工列表中管理。`; button.appendChild(state); } elements.employeeResults.appendChild(button); });
+    if (employeeSelectionUnavailable) { const state = document.createElement("p"); state.className = "admin-muted"; state.textContent = employeeSelectionUnavailable; elements.employeeResults.appendChild(state); }
+    // A failed replacement deliberately retains the last authorized rows, but
+    // their cursor belongs to the displayed query, never the pending one.
+    if (employeeHasMore && !employeeDirectoryError && employeeDisplayedQuery === employeeCommittedQuery) { const more = document.createElement("button"); more.type = "button"; more.className = "admin-button admin-button--ghost"; more.dataset.accessAction = "more-employees"; more.textContent = "加载更多"; elements.employeeResults.appendChild(more); }
   }
   function employeeReadIsCurrent(request) { return request === employeeRequest && !elements.provisionDialog.hidden && !accessRevoked; }
   async function loadEmployees(reset) {
     const query = employeeCommittedQuery;
+    if (!reset && (employeeDirectoryError || employeeDisplayedQuery !== query)) return;
     const currentRequest = ++employeeRequest;
     if (employeeAbort) employeeAbort.abort();
     employeeAbort = new AbortController();
@@ -224,7 +238,20 @@
       employeeDirectoryError = false;
       employeeItems = reset ? items : employeeItems.concat(items);
       employeeCursor = String(payload.next_cursor || ""); employeeHasMore = payload.has_more === true;
-      if (reset && selectedEmployee && !employeeItems.some((item) => String(item.wecom_userid) === String(selectedEmployee.wecom_userid))) selectedEmployee = null;
+      if (reset) {
+        employeeDisplayedQuery = query;
+        const current = selectedEmployee && employeeItems.find((item) => String(item.wecom_userid) === String(selectedEmployee.wecom_userid));
+        if (current && current.authorized_account === true) {
+          selectedEmployee = null;
+          employeeSelectionUnavailable = `企微账号“${current.wecom_userid || current.display_name || "该员工"}”已开通后台权限，不能重复开通。请改选其他员工。`;
+        } else if (current) {
+          selectedEmployee = current;
+          employeeSelectionUnavailable = "";
+        } else if (selectedEmployee) {
+          selectedEmployee = null;
+          employeeSelectionUnavailable = "";
+        }
+      }
       elements.employeeStatus.textContent = employeeItems.length ? `已显示 ${employeeItems.length} 名员工` : "未找到企业员工";
       setAlert("", ""); renderEmployeeResults(); setProvisionStep(1);
     } catch (error) {
@@ -234,7 +261,9 @@
       // successful replacement arrives. A failed read never silently removes them.
       employeeDirectoryError = true;
       renderEmployeeResults();
-      elements.employeeStatus.textContent = employeeItems.length ? `企业员工目录暂时不可用，仍显示上次读取的 ${employeeItems.length} 名员工。` : errorMessage(error, "企业员工目录暂时不可用。");
+      const displayed = employeeDisplayedQuery ? `“${employeeDisplayedQuery}”` : "全部员工";
+      const failed = query ? `；未执行“${query}”的新查询。` : "；未重新读取全部员工。";
+      elements.employeeStatus.textContent = employeeItems.length ? `企业员工目录暂时不可用，仍显示上次查询${displayed}的 ${employeeItems.length} 名员工${failed}` : errorMessage(error, "企业员工目录暂时不可用。");
       setAlert(errorMessage(error, "企业员工目录暂时不可用。"), "error"); setProvisionStep(1);
     }
   }
@@ -251,7 +280,7 @@
     if (!elements.transferTarget.options.length) { setAlert("当前没有可接任的有效管理员。", "error"); return; }
     elements.transferDialog.hidden = false; elements.transferTarget.focus();
   }
-  function closeTransfer() { elements.transferDialog.hidden = true; }
+  function closeTransfer() { elements.transferDialog.hidden = true; elements.transferTarget.replaceChildren(); }
 
   elements.refresh.addEventListener("click", () => { setAlert("", ""); void loadUsers(); });
   elements.search.addEventListener("input", () => { usersCommittedQuery = String(elements.search.value || "").trim(); renderUsers(); });
@@ -263,7 +292,17 @@
   elements.bindingForm.addEventListener("submit", (event) => { event.preventDefault(); const user = selectedUser(); const value = String(elements.wecomInput.value || "").trim(); if (!user || !value || user.actions.bind_wecom_userid !== true) { setAlert("请输入企微账号。", "error"); return; } if (typeof window.confirm === "function" && !window.confirm(`确定将企微账号绑定为“${value}”吗？`)) return; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled = true; void mutate(api.wecom(user.admin_user_id), "PUT", { wecom_userid: value }, "企微账号已更新。").then((ok) => { if (ok) openDrawer(selectedUser()); }).finally(() => { submit.disabled = false; }); });
   elements.unbind.addEventListener("click", () => { const user = selectedUser(); if (!user || user.actions.bind_wecom_userid !== true) return; if (typeof window.confirm === "function" && !window.confirm("确定解除该员工的企微账号绑定吗？")) return; elements.unbind.disabled = true; void mutate(api.wecom(user.admin_user_id), "PUT", { wecom_userid: "" }, "企微账号绑定已解除。").then((ok) => { if (ok) openDrawer(selectedUser()); }).finally(() => { elements.unbind.disabled = false; }); });
   elements.passwordForm.addEventListener("submit", (event) => { event.preventDefault(); const user = selectedUser(); const password = String(elements.passwordInput.value || ""); if (!user || !password || user.actions.reset_password !== true) { setAlert("请输入新密码。", "error"); return; } const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled = true; void mutate(api.password(user.admin_user_id), "PUT", { password }, "密码已重置。").then((ok) => { if (ok) openDrawer(selectedUser()); }).finally(() => { submit.disabled = false; }); });
-  elements.employeeSearch.addEventListener("input", () => { employeeCommittedQuery = String(elements.employeeSearch.value || "").trim(); window.clearTimeout(employeeQueryTimer); employeeQueryTimer = window.setTimeout(() => { void loadEmployees(true); }, 250); });
+  elements.employeeSearch.addEventListener("input", () => {
+    employeeCommittedQuery = String(elements.employeeSearch.value || "").trim();
+    // This input listener receives only the shared explicit commit event.
+    // Abort now, rather than after a debounce, so its older result cannot
+    // replace the newly requested directory while the request is in flight.
+    window.clearTimeout(employeeQueryTimer); employeeQueryTimer = 0;
+    employeeRequest += 1;
+    if (employeeAbort) employeeAbort.abort();
+    employeeAbort = null;
+    void loadEmployees(true);
+  });
   elements.employeeResults.addEventListener("click", (event) => { const more = event.target.closest('button[data-access-action="more-employees"]'); if (more) { void loadEmployees(false); return; } const button = event.target.closest("button[data-wecom-userid]"); if (!button || button.disabled) return; selectedEmployee = employeeItems.find((item) => String(item.wecom_userid) === String(button.dataset.wecomUserid) && item.authorized_account !== true) || null; renderEmployeeResults(); setProvisionStep(1); });
   elements.provisionNext.addEventListener("click", () => { if (provisionStep === 1 && selectedEmployee) setProvisionStep(2); else if (provisionStep === 2 && selectedProvisionRole()) setProvisionStep(3); });
   elements.provisionBack.addEventListener("click", () => { if (provisionStep > 1) setProvisionStep(provisionStep - 1); });
