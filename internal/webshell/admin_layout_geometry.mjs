@@ -553,12 +553,47 @@ try {
       const approve=root?.querySelector('[data-plan-approve]');
       const reject=root?.querySelector('[data-plan-reject]');
       const back=root?.querySelector('a[href="/admin/cloud-orchestrator/plans"]');
-      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),refreshVisible:visible(refresh),detailHead:box(detailHead),detailStateVisible:visible(detailState),approveVisible:visible(approve),rejectVisible:visible(reject),backVisible:visible(back),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+      const planActions=topbar?.querySelector('[data-page-header-actions="ai-plan-detail"]');
+      const approveInHeader=planActions?.querySelector('[data-plan-approve]');
+      const rejectInHeader=planActions?.querySelector('[data-plan-reject]');
+      const backInHeader=planActions?.querySelector('a[href="/admin/cloud-orchestrator/plans"]');
+      const sourceActions=approve?.closest('.cloud-plan-actions');
+      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),refreshVisible:visible(refresh),detailHead:box(detailHead),detailStateVisible:visible(detailState),planActions:box(planActions),approveVisible:visible(approveInHeader),rejectVisible:visible(rejectInHeader),backVisible:visible(backInHeader),sourceActionsHidden:!visible(sourceActions),stageDuplicateActions:Boolean(root?.querySelector('[data-plan-approve],[data-plan-reject]')),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
     })()`);
     const commonInvalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "AI 助手" || !layout.root || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom;
     if (commonInvalid) throw new Error(label + " native cloud-plan topbar/content geometry invalid");
     if (!detail && (!layout.toolbar || !layout.refreshVisible || Math.abs(layout.toolbar.left-layout.root.left) > 1 || Math.abs(layout.toolbar.top-layout.root.top) > 1)) throw new Error(label + " native cloud-plan toolbar is absent or misaligned");
-    if (detail && (!layout.detailHead || !layout.detailStateVisible || !layout.approveVisible || !layout.rejectVisible || !layout.backVisible || Math.abs(layout.detailHead.left-layout.root.left) > 1 || Math.abs(layout.detailHead.top-layout.root.top) > 1)) throw new Error(label + " native cloud-plan detail actions/status are absent or misaligned");
+    if (detail && (!layout.detailHead || !layout.detailStateVisible || !layout.planActions || !layout.approveVisible || !layout.rejectVisible || !layout.backVisible || !layout.sourceActionsHidden || layout.stageDuplicateActions || Math.abs(layout.detailHead.left-layout.root.left) > 1 || Math.abs(layout.detailHead.top-layout.root.top) > 1 || layout.planActions.top + 1 < layout.topbar.top || layout.planActions.bottom > layout.topbar.bottom + 1)) throw new Error(label + " native cloud-plan detail actions/status are absent or misaligned");
+  };
+  const assertHeaderActionWidths = async (label, owner, labels) => {
+    try {
+      for (const width of [1280, 1440]) {
+        await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+        const layout = await evaluate(cdp, `(() => {
+          const topbar=document.querySelector('.admin-topbar');
+          const actions=topbar?.querySelector('[data-page-header-actions=${owner}]');
+          const visible=node => { const rect=node?.getBoundingClientRect(); const style=node && getComputedStyle(node); return Boolean(node && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1); };
+          const top=topbar?.getBoundingClientRect();
+          const controls=actions ? Array.from(actions.children) : [];
+          return {titleCount:Array.from(document.querySelectorAll('.admin-topbar h1')).filter(visible).length,labels:controls.map(node => String(node.textContent || '').trim()),visible:controls.every(visible),inside:controls.every(node => { const box=node.getBoundingClientRect(); return top && box.left >= top.left - 1 && box.right <= top.right + 1 && box.top >= top.top - 1 && box.bottom <= top.bottom + 1; }),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+        })()`);
+        if (layout.titleCount !== 1 || layout.labels.join('|') !== labels.join('|') || !layout.visible || !layout.inside || layout.overflow) throw new Error(label + ' ' + width + 'px topbar action geometry invalid: ' + JSON.stringify(layout));
+        await capture(`${label}-${width}`);
+      }
+    } finally {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+    }
+  };
+  const assertTagsLayout = async label => {
+    await assertLayout("standard", label, "#stage h2");
+    const layout = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage'); const topbar=document.querySelector('.admin-topbar');
+      const visible=node => { const rect=node?.getBoundingClientRect(); const style=node && getComputedStyle(node); return Boolean(node && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1); };
+      const actions=topbar?.querySelector('[data-page-header-actions="wecom-tags"]');
+      const localTitle=Array.from(stage?.children || []).find(node => String(node.textContent || '').includes('企微标签管理'));
+      return {title:String(topbar?.querySelector('.admin-page-title')?.textContent || '').trim(),titleCount:Array.from(document.querySelectorAll('.admin-topbar h1')).filter(visible).length,labels:Array.from(actions?.children || []).map(node => String(node.textContent || '').trim()),actionsVisible:Array.from(actions?.children || []).every(visible),sourceVisible:['同步企微标签','新增标签组','新增标签'].some(label => Array.from(stage?.querySelectorAll('button') || []).some(button => String(button.textContent || '').trim() === label && visible(button))),localTitleHidden:!visible(localTitle),overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+    })()`);
+    if (layout.title !== '企微标签管理' || layout.titleCount !== 1 || layout.labels.join('|') !== '同步企微标签|新增标签组|新增标签' || !layout.actionsVisible || layout.sourceVisible || !layout.localTitleHidden || layout.overflow) throw new Error(label + ' V3 tag topbar action layout invalid: ' + JSON.stringify(layout));
   };
   const navigateAIAssistant = async (pathname, label, ready, detail, fromMenu = false) => {
     currentStep = label;
@@ -574,6 +609,32 @@ try {
       await recordRouteFailure(label, error);
       return false;
     }
+  };
+  const navigateTags = async () => {
+    const mounted = await navigate(
+      "/admin/wecom-tags",
+      "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"wecom-tags\"]'))",
+      "tags",
+      "standard",
+      "#stage h2",
+      true,
+      true,
+    );
+    if (!mounted) return false;
+    await recordGeometry("tags-actions", () => assertTagsLayout("tags"), false);
+    await assertHeaderActionWidths("tags", "wecom-tags", ["同步企微标签", "新增标签组", "新增标签"]);
+    // This confirms that moving the original donor node preserves the donor's
+    // existing form-opening listener. It is local UI only: it does not submit,
+    // synchronize, or contact the Provider.
+    const opened = await evaluate(cdp, `(() => {
+      const button=document.querySelector('.admin-topbar [data-page-header-actions="wecom-tags"] button:last-child');
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+      button.click(); return true;
+    })()`);
+    if (!opened) throw new Error("tags relocated create action is unavailable");
+    await waitFor(cdp, "Boolean(document.querySelector('#fTagName'))", "tags relocated create action did not retain its donor listener");
+    await recordGeometry("tags-action-redraw", () => assertTagsLayout("tags"), false);
+    return true;
   };
   const assertStaticOpenLayout = async label => {
     const layout = await evaluate(cdp, `(() => {
@@ -682,7 +743,8 @@ try {
   }, true);
   if (channelsMounted) await captureHeaderWidths("channel-center", "channels-header");
   await navigateAIAssistant("/admin/cloud-orchestrator/plans", "ai", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] .cloud-plan-toolbar [data-plan-refresh]')) && document.querySelector('[data-plan-list]')?.textContent?.includes('AI layout detail fixture')", false, true);
-  await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] [data-plan-approve]')) && Boolean(document.querySelector('[data-plan-reject]')) && Boolean(document.querySelector('a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);
+  const aiDetailMounted = await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] [data-plan-approve]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] [data-plan-reject]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);
+  if (aiDetailMounted) await assertHeaderActionWidths("ai-detail", "ai-plan-detail", ["返回一级页", "拒绝计划", "确认并发送"]);
   await navigateStandard("/admin/customers", "Boolean(document.querySelector('[data-customer-directory-root]'))", "customers", true, true);
   const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel')) && document.querySelectorAll('#hxcBody tr').length > 1", "hxc", "standard", "#hxcStats", false, true);
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
@@ -699,7 +761,7 @@ try {
   }
   const radarFormMounted = await navigate("/admin/radarForm.html", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#fSave'))", "radar-form", "standard", "#fSave", false);
   if (radarFormMounted) await recordGeometry("radar-form", () => assertRadarLayout("radar-form", "#fSave", "#fSave"), true);
-  await navigate("/admin/wecom-tags", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "tags", "embedded", embeddedTitle, true, true);
+  await navigateTags();
 
   await navigate("/admin/orders", "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "orders", "embedded", embeddedTitle, true, true);
   await navigate("/admin/wechat-pay/products", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "products", "embedded", frozenListToolbarTitle, true, true);
