@@ -229,6 +229,7 @@ try {
   const pageText = await evaluate(cdp, "document.body.textContent || ''");
   if (!display.includes('浏览器确认的中文固定话术') || !display.includes('自动化浏览器封面') || pageText.includes('后端能力未就绪')) throw new Error(`saved fixed-content presentation is incomplete or exposed engineering copy: ${display}`);
   await resize(cdp, 420, 860);
+  await evaluate(cdp, "document.querySelector('[data-v3-automation-fixed-content]')?.scrollIntoView({ block: 'start', inline: 'nearest' }); Promise.race([new Promise((resolve) => requestAnimationFrame(resolve)), new Promise((resolve) => setTimeout(resolve, 250))])");
   await assertLayout(cdp, 420, "readonly");
   await capture(cdp, "automation-fixed-content-420.png");
   await resize(cdp, 1440);
