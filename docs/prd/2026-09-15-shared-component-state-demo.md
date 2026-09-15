@@ -33,12 +33,12 @@ Provider／外部效果：不涉及。示例不读取或写入 Provider，不上
 1. 临时选择只在 dialog 内存在；取消恢复最近一次已确认的演示摘要，重开由该摘要构造 `selectedRecords`。
 2. Tag／Staff 的普通 Enter 或搜索按钮才提交 query；`compositionstart` 到 `compositionend` 期间的 Enter 留给输入法。分页／分组筛选使用当前已提交查询，不把输入中的 draft 偷偷应用。
 3. 本地 loader 分别可表现 loading、empty、首次 error／refresh、403、readonly 与 invalid selected；失权、失效项不静默移除。
-4. Composer 确认只更新同页的 local package 摘要。变量解析先采集全部 `{{token}}` 再由白名单校验，未知变量显式阻止确认；素材选择器的失败保留 Composer 草稿；取消不改变摘要；排序和 preview 随暂选实时更新。
+4. Composer 确认只更新同页的 local package 摘要。变量解析先采集全部 `{{token}}` 再由白名单校验，未知变量显式阻止确认；素材选择器的失败保留 Composer 草稿；取消不改变摘要；排序和 preview 随暂选实时更新。无受控缩略图的素材或补充卡片不保留空的 48px 视觉栏；有受控缩略图及其明确的加载失败占位仍保留该栏，避免详情错列或伪造缩略图。
 5. Dialog 关闭会把焦点回到打开按钮；确认／取消都不能抢走仍连接的其他控件焦点。
 
 ## 验收与发布闭包
 
-- 更新 `web/v3/componentStatesHost.test.mjs`：三个 adapter 的状态、确认／取消／重开、IME、失效／只读与 Composer package 排序／只读渲染。
-- 扩展实际认证 `TestPostgreSQLComponentStatesChromiumJourney`：Tag、Staff、Composer 分别打开并完成关键状态，页面不发 `/api/` 请求；1280、1440、360、420 截图覆盖页面和至少一个新 dialog 的布局与焦点。
+- 更新 `web/v3/componentStatesHost.test.mjs`：三个 adapter 的状态、确认／取消／重开、IME、失效／只读与 Composer package 排序／只读渲染；`contentPresentation` 覆盖无缩略图的单列详情，以及真实缩略图加载失败后保留明确占位的双列布局，素材与补充卡片同样适用。
+- 扩展实际认证 `TestPostgreSQLComponentStatesChromiumJourney`：Tag、Staff、Composer 分别打开并完成关键状态，页面不发 `/api/` 请求；1280、1440、360、420 截图覆盖页面和至少一个新 dialog 的布局与焦点。Composer 在 1440／360 验证无缩略图的详情占满可用宽度、窄屏预览可滚到完整内容且固定确认可达。
 - `npx tsc -p web/v3/tsconfig.json --noEmit`、状态 Host 定向测试、共享 Tag／Staff／Composer 合同测试、构建与 `stage-new-shell-ui`/install closure 通过。P5 绑定本 PR 的准确 main base 与 head。
 - 组件目录只更新 `/admin/component-states` 的 Tag／Staff／Composer “状态示例”事实；不提升任何真实业务页面的 C3 结论。
