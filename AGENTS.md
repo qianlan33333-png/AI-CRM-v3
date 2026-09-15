@@ -19,6 +19,13 @@
 - 业务状态、幂等收据、审计、Outbox 与外部效果接受需要原子提交时，必须验证它们参与同一个 PostgreSQL Unit of Work；不得假设两个独立事务等价于原子提交。
 - 任何新模块只允许通过稳定 Port 或版本化事件协调 OneID 与 External Effects，禁止跨领域访问它们的表，或 import 其 `app`、`store`、`http`、`worker`、`provider`。
 
+### 前端一致性入口
+
+- 凡涉及管理端、企微侧边栏、H5 或公共页面的页面、交互、选择器、素材、样式或前端资产的设计、开发、修改或审查，开始工作前必须阅读并应用 `skills/aicrm-v3-frontend-consistency/SKILL.md`，且必须从会话 Skills catalog 走 Product Design 路由；纯后端且无前端可观察影响的工作不触发。
+- Product Design 先通过 catalog 发现并读取 `product-design:index`，再按任务选择 `product-design:audit`、`product-design:image-to-code`、`product-design:ideate` 或 `product-design:url-to-code`；普通开发仍遵守本仓架构和共享组件约束，Product Design 不替代业务、OneID、持久化或外部效果判断。
+- 开始前按前端 Skill 的真实组件索引确认复用、组合、扩展公共组件或新增公共组件的路径，追踪 canonical 路由、handler／adapter、`Render*` 或挂载入口、manifest assets 和实际页面调用；禁止页面私造与现有页面平行的组件、壳、数据契约或交互。
+- 管理端继续使用唯一的 v3 `admin_base` 单壳，企微侧边栏、H5 和公共页保持各自壳与授权边界；冻结 donor 只作为行为和视觉证据，禁止修改，所有 adapter、兼容和共享组件改动放在 v3-owned 路径并在组件索引登记。
+
 ## 3. 固定架构
 
 - Go 模块化单体、PostgreSQL 16、单企业、单数据库。

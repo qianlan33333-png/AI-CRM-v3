@@ -18,6 +18,14 @@ Persistence: stateless | local transaction | internal durable job | Provider rea
 
 If an axis is not involved, state why and continue without adding a dependency. Revisit the classification when scope changes.
 
+## Frontend Consistency Entry
+
+For any admin, WeCom sidebar, H5, or public page, interaction, selector, media, style, or frontend asset design, implementation, change, or review, read and apply `skills/aicrm-v3-frontend-consistency/SKILL.md` before work starts. Pure backend work with no observable frontend impact is exempt.
+
+Route Product Design work through the session Skills catalog: discover and read `product-design:index`, then select the focused route (`product-design:audit`, `product-design:image-to-code`, `product-design:ideate`, or `product-design:url-to-code`) that matches the request. Product Design routing does not replace this repository's business, OneID, persistence, or External Effects decisions.
+
+Read the real component index before choosing a frontend path. Reuse or compose an existing verified component first, then extend or add a v3-owned shared component only when the capability is reusable; trace the canonical route, handler or UI adapter, `Render*` or mount entry, manifest assets, and actual page callers. Keep the single v3 `admin_base` shell and each WeCom sidebar, H5, and public-page authorization boundary. Frozen donors are behavior and visual evidence only and must not be modified; do not create a parallel page shell, component, data contract, or interaction.
+
 ## OneID Decision
 
 OneID is involved when a capability reads or assigns a customer, accepts an external identity, correlates channels, or changes identity ownership.
