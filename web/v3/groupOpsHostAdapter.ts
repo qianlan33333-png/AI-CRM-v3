@@ -6,6 +6,20 @@ const base = "/api/admin/automation-conversion/group-ops";
 const revisions = new Map<number, number>();
 const planGroupViews = new Map<number, Json[]>();
 const planSummaryViews = new Map<number, Json>();
+type InitialDetailReadKind = "plan" | "groups";
+type InitialDetailReadEpoch = {
+  id: number;
+  generation: number;
+  planClaimed: boolean;
+  groupsClaimed: boolean;
+  pairable: boolean;
+  claims: number;
+  detail: Promise<Json>;
+  directory: Promise<Json[]>;
+  groups: Promise<Json[]> | null;
+};
+const initialDetailReadEpochs = new Map<number, InitialDetailReadEpoch>();
+const detailReadGenerations = new Map<number, number>();
 let refreshedGroupTotal: number | null = null;
 const operationMembersPath = "/api/admin/common/operation-members";
 const nativeFetch = window.fetch.bind(window);
@@ -146,7 +160,7 @@ function planIDFromAPIURL(value: string): number | null {
   const id = Number(match[1]);
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
-async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
+async function nativeRequest(url: string, options: Json = {}, onOperationsConflict?: (planID: number) => void): Promise<Json> {
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
   if (options.body !== undefined)
@@ -161,6 +175,7 @@ async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
     headers,
     credentials: "same-origin",
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    signal: options.signal,
   });
   const raw = await response.text();
   let data: Json = {};
@@ -174,9 +189,14 @@ async function nativeRequest(url: string, options: Json = {}): Promise<Json> {
     // revision. The UI re-reads before an operator can choose another write.
     if (response.status === 409 && isOperationsConflict(data)) {
       const planID = planIDFromAPIURL(url);
-      if (planID !== null) revisions.delete(planID);
+      if (planID !== null) {
+        if (onOperationsConflict) onOperationsConflict(planID);
+        else revisions.delete(planID);
+      }
     }
-    throw new Error(responseMessage(data, `HTTP ${response.status}`));
+    const error = new Error(responseMessage(data, `HTTP ${response.status}`));
+    Object.assign(error, { status: response.status, payload: data });
+    throw error;
   }
   return data;
 }
@@ -192,19 +212,65 @@ function planOwner(value: Json): Json {
     return { owner_userid: String(staffID), owner_name: "负责人目录不可用", owner_state: "directory_unavailable" };
   return { owner_userid: String(staffID), owner_name: "负责人目录未同步", owner_state: "directory_pending" };
 }
-function plan(value: Json): Json {
-  const id = Number(value.plan_id);
-  revisions.set(id, Number(value.revision || 0));
+function boundGroupCount(value: Json): number | null {
+  // Servers that predate this list projection remain readable. The caller
+  // renders the missing fact as unknown; it must never turn into a false zero
+  // or trigger the former per-plan detail and directory waterfall.
+  if (!Object.prototype.hasOwnProperty.call(value, "bound_group_count")) return null;
+  const count = value.bound_group_count;
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0)
+    throw new Error("计划绑定群数数据无效");
+  return count;
+}
+function requiredIdentifier(value: unknown, message: string): number {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value))) throw new Error(message);
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(message);
+  return number;
+}
+function requiredNumericPositiveInteger(value: unknown, message: string): number {
+  if (typeof value !== "number") throw new Error(message);
+  const number = value;
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(message);
+  return number;
+}
+function requiredNumericNonNegativeInteger(value: unknown, message: string): number {
+  if (typeof value !== "number") throw new Error(message);
+  const number = value;
+  if (!Number.isSafeInteger(number) || number < 0) throw new Error(message);
+  return number;
+}
+function requestedPlanPage(url: URL): { limit: number; offset: number } {
+  const hasLimit = url.searchParams.has("limit");
+  const hasOffset = url.searchParams.has("offset");
+  if (!hasLimit && !hasOffset) return { limit: 50, offset: 0 };
+  if (!hasLimit || !hasOffset) throw new Error("计划列表页码请求无效");
+  const limit = requiredIdentifier(url.searchParams.get("limit"), "计划列表页码请求无效");
+  const offsetValue = url.searchParams.get("offset");
+  if (offsetValue === null || !/^(?:0|[1-9][0-9]*)$/.test(offsetValue)) throw new Error("计划列表页码请求无效");
+  const offset = Number(offsetValue);
+  if (!Number.isSafeInteger(offset)) throw new Error("计划列表页码请求无效");
+  if (limit !== 50 || offset > 1000000) throw new Error("计划列表页码请求无效");
+  return { limit, offset };
+}
+function plan(value: Json, publishRevision = true): Json {
+  const id = requiredIdentifier(value.plan_id, "计划列表 ID 数据无效");
+  const revision = requiredNumericPositiveInteger(value.revision, "计划列表版本数据无效");
+  const count = boundGroupCount(value);
+  const queueCount = Object.prototype.hasOwnProperty.call(value, "queue_count")
+    ? requiredNumericNonNegativeInteger(value.queue_count, "计划通知排队数据无效")
+    : 0;
+  if (publishRevision) revisions.set(id, revision);
   return {
     id,
     plan_name: value.name,
     plan_code: `v3-${id}`,
     plan_type: value.plan_type || "standard",
     status: value.status === "paused" ? "disabled" : value.status,
-    revision: Number(value.revision || 0),
+    revision,
     ...planOwner(value),
-    queue_count: Number(value.queue_count || 0),
-    bound_group_count: null,
+    queue_count: queueCount,
+    bound_group_count: count,
     today_estimated_reach: null,
     updated_at: value.updated_at,
   };
@@ -259,12 +325,17 @@ function materialPlan(input: Json): Json {
       if (Number(id) > 0) refs.push({ kind, id: Number(id) });
   return { references: refs };
 }
-async function detail(id: number): Promise<Json> {
-  return nativeRequest(`${base}/plans/${id}`);
+async function detail(id: number, onOperationsConflict?: (planID: number) => void): Promise<Json> {
+  return nativeRequest(`${base}/plans/${id}`, {}, onOperationsConflict);
 }
 async function revision(id: number): Promise<number> {
   if (!revisions.has(id)) plan(await detail(id).then((v) => v.plan || v));
   return revisions.get(id) || 0;
+}
+async function expectedRevision(body: Json, id: number): Promise<number> {
+  if (Object.prototype.hasOwnProperty.call(body, "expected_revision"))
+    return requiredNumericPositiveInteger(body.expected_revision, "计划版本数据无效");
+  return revision(id);
 }
 async function directory(): Promise<Json[]> {
   const items: Json[] = [];
@@ -282,8 +353,68 @@ async function directory(): Promise<Json[]> {
     throw new Error("群目录读取失败，请重试");
   }
 }
-async function groupsForPlan(id: number): Promise<Json[]> {
-  const [value, directoryItems] = await Promise.all([detail(id), directory()]);
+function newInitialDetailReadEpoch(id: number): InitialDetailReadEpoch {
+  const generation = (detailReadGenerations.get(id) || 0) + 1;
+  detailReadGenerations.set(id, generation);
+  let epoch: InitialDetailReadEpoch;
+  const clearCurrentRevisionOnConflict = () => {
+    if (initialDetailReadEpochs.get(id) === epoch && detailReadGenerations.get(id) === generation)
+      revisions.delete(id);
+  };
+  epoch = {
+    id,
+    generation,
+    planClaimed: false,
+    groupsClaimed: false,
+    pairable: true,
+    claims: 0,
+    detail: detail(id, clearCurrentRevisionOnConflict),
+    directory: directory(),
+    groups: null,
+  };
+  // Both reads begin together. Keep a handled branch even if the other read
+  // rejects first, so a failed detail never leaves the directory rejection
+  // unobserved while the caller takes its existing error path.
+  void epoch.detail.catch(() => undefined);
+  void epoch.directory.catch(() => undefined);
+  queueMicrotask(() => { epoch.pairable = false; });
+  return epoch;
+}
+function claimInitialDetailRead(id: number, kind: InitialDetailReadKind): { epoch: InitialDetailReadEpoch; release: () => void } {
+  let epoch = initialDetailReadEpochs.get(id);
+  const alreadyClaimed = epoch && (kind === "plan" ? epoch.planClaimed : epoch.groupsClaimed);
+  if (!epoch || !epoch.pairable || alreadyClaimed) {
+    epoch = newInitialDetailReadEpoch(id);
+    initialDetailReadEpochs.set(id, epoch);
+  }
+  if (kind === "plan") epoch.planClaimed = true;
+  else epoch.groupsClaimed = true;
+  epoch.claims += 1;
+  let released = false;
+  return {
+    epoch,
+    release: () => {
+      if (released) return;
+      released = true;
+      epoch.claims -= 1;
+      if (epoch.claims === 0 && initialDetailReadEpochs.get(id) === epoch)
+        initialDetailReadEpochs.delete(id);
+    },
+  };
+}
+function currentInitialDetailRead(epoch: InitialDetailReadEpoch): boolean {
+  return initialDetailReadEpochs.get(epoch.id) === epoch && detailReadGenerations.get(epoch.id) === epoch.generation;
+}
+function invalidateInitialDetailRead(id: number): void {
+  detailReadGenerations.set(id, (detailReadGenerations.get(id) || 0) + 1);
+  initialDetailReadEpochs.delete(id);
+}
+function groupsForInitialDetailRead(epoch: InitialDetailReadEpoch): Promise<Json[]> {
+  if (!epoch.groups) epoch.groups = groupsForPlan(epoch.id, epoch);
+  return epoch.groups;
+}
+async function groupsForPlan(id: number, source?: Pick<InitialDetailReadEpoch, "detail" | "directory">): Promise<Json[]> {
+  const [value, directoryItems] = await Promise.all([source?.detail || detail(id), source?.directory || directory()]);
   return (value.group_assets || []).map((asset: Json) => {
     const found =
       directoryItems.find(
@@ -307,6 +438,15 @@ async function groupsForPlan(id: number): Promise<Json[]> {
 async function summary(id: number): Promise<Json> {
   return summarizeGroups(await groupsForPlan(id));
 }
+function publishGroupViews(id: number, items: Json[], publish: boolean): Json {
+  const values = summarizeGroups(items);
+  if (!publish) return values;
+  planGroupViews.set(id, items);
+  const view = planSummaryViews.get(id) || {};
+  Object.assign(view, values);
+  planSummaryViews.set(id, view);
+  return view;
+}
 function summarizeGroups(rows: Json[]): Json {
   const known =
     rows.length > 0 &&
@@ -329,19 +469,39 @@ function summarizeGroups(rows: Json[]): Json {
 async function requestJson(url: string, options: Json = {}): Promise<Json> {
   const method = String(options.method || "GET").toUpperCase();
   const body = options.body || {};
-  const match = url.match(/\/plans\/(\d+)/);
+  const parsedURL = new URL(url, window.location.origin);
+  const match = parsedURL.pathname.match(/\/plans\/(\d+)/);
   const id = match ? Number(match[1]) : 0;
-  if (url === `${base}/plans` && method === "GET") {
-    const data = await nativeRequest(url);
-    const items = await Promise.all(
-      (data.items || []).map(async (item: Json) => ({
-        ...plan(item),
-        ...(await summary(Number(item.plan_id))),
-      })),
-    );
+  if (id && method !== "GET") invalidateInitialDetailRead(id);
+  if (parsedURL.pathname === `${base}/plans` && method === "GET") {
+    const requested = requestedPlanPage(parsedURL);
+    const data = await nativeRequest(url, { signal: options.signal });
+    if (!Array.isArray(data.items)) throw new Error("计划列表数据无效");
+    const total = requiredNumericNonNegativeInteger(data.total, "计划列表总数数据无效");
+    const limit = requiredNumericPositiveInteger(data.limit, "计划列表页码数据无效");
+    const offset = requiredNumericNonNegativeInteger(data.offset, "计划列表页码数据无效");
+    if (limit !== requested.limit || offset !== requested.offset || typeof data.has_more !== "boolean" || data.items.length > limit)
+      throw new Error("计划列表页码数据无效");
+    // Parse the complete page before publishing any row revision. A malformed
+    // later row must not advance CAS for an earlier row that remains visible
+    // after the list read fails.
+    data.items.forEach((item: Json) => {
+      boundGroupCount(item);
+      requiredIdentifier(item.plan_id, "计划列表 ID 数据无效");
+      requiredNumericPositiveInteger(item.revision, "计划列表版本数据无效");
+      requiredNumericNonNegativeInteger(item.queue_count, "计划通知排队数据无效");
+    });
+    // A page only publishes into the Standard controller's local snapshot.
+    // Detail reads retain the existing revision cache; a list response must
+    // not advance CAS for a row whose page was never rendered.
+    const items = data.items.map((item: Json) => plan(item, false));
     return {
       ...data,
       items,
+      total,
+      limit,
+      offset,
+      has_more: data.has_more,
       queue_count: items.reduce(
         (sum, item) => sum + Number(item.queue_count || 0),
         0,
@@ -375,20 +535,21 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   if (id && /\/enable$/.test(url))
     return nativeRequest(`${base}/plans/${id}/enable`, {
       method: "POST",
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (id && /\/disable$/.test(url))
     return nativeRequest(`${base}/plans/${id}/disable`, {
       method: "POST",
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (id && /\/groups$/.test(url) && method === "GET") {
-    const items = await groupsForPlan(id);
-    planGroupViews.set(id, items);
-    const view = planSummaryViews.get(id) || {};
-    Object.assign(view, summarizeGroups(items));
-    planSummaryViews.set(id, view);
-    return { items, summary: view };
+    const claimed = claimInitialDetailRead(id, "groups");
+    try {
+      const items = await groupsForInitialDetailRead(claimed.epoch);
+      return { items, summary: publishGroupViews(id, items, currentInitialDetailRead(claimed.epoch)) };
+    } finally {
+      claimed.release();
+    }
   }
   if (id && /\/groups$/.test(url) && method === "POST")
     return nativeRequest(`${base}/plans/${id}/groups`, {
@@ -473,25 +634,27 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     return value;
   }
   if (id && url === `${base}/plans/${id}` && method === "GET") {
-    const value = await detail(id);
-    const rawPlan = value.plan || {};
-    // A short-lived compatibility fallback preserves the local staff key when
-    // a browser reads a server that predates the owner projection. It never
-    // makes a second directory request or invents a profile name.
-    const legacyOwner = (value.members || [])[0];
-    const projected = plan(rawPlan.owner || !legacyOwner?.staff_id
-      ? rawPlan
-      : { ...rawPlan, owner: { staff_id: legacyOwner.staff_id } });
-    const values = await summary(id);
-    const view = planSummaryViews.get(id) || {};
-    Object.assign(view, values);
-    planSummaryViews.set(id, view);
-    return { ...projected, groups_summary: view };
+    const claimed = claimInitialDetailRead(id, "plan");
+    try {
+      const [value, items] = await Promise.all([claimed.epoch.detail, groupsForInitialDetailRead(claimed.epoch)]);
+      const rawPlan = value.plan || {};
+      // A short-lived compatibility fallback preserves the local staff key when
+      // a browser reads a server that predates the owner projection. It never
+      // makes a second directory request or invents a profile name.
+      const legacyOwner = (value.members || [])[0];
+      const publish = currentInitialDetailRead(claimed.epoch);
+      const projected = plan(rawPlan.owner || !legacyOwner?.staff_id
+        ? rawPlan
+        : { ...rawPlan, owner: { staff_id: legacyOwner.staff_id } }, publish);
+      return { ...projected, groups_summary: publishGroupViews(id, items, publish) };
+    } finally {
+      claimed.release();
+    }
   }
   if (id && url === `${base}/plans/${id}` && method === "DELETE")
     return nativeRequest(url, {
       method,
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (
     id &&
@@ -553,6 +716,8 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   }
   if (url === `${base}/groups/sync`) {
     refreshedGroupTotal = null;
+    const planID = Number(document.getElementById("group-ops-app")?.dataset.planId);
+    if (planID > 0) invalidateInitialDetailRead(planID);
     const result = await nativeRequest(url, {
       method,
       body: {
@@ -560,7 +725,6 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
         limit: Number(body.limit || 100),
       },
     });
-    const planID = Number(document.getElementById("group-ops-app")?.dataset.planId);
     if (planID > 0) {
       try {
         // Update only read projections held by the donor. Do not reload its

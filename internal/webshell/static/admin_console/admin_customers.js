@@ -50,6 +50,7 @@
   let listRetry = { query: "", cursor: "", navigation: "reset" };
   let detailID = "";
   let clearPhoneTimer = 0;
+  let tagSelectorsPending = null;
   const selectedCustomers = new Set();
   const acceptedTagCommands = new Map();
 
@@ -235,42 +236,78 @@
     return unique.length === parsed.length && unique.length <= 100 ? unique : null;
   }
 
-  async function loadTagSelectors() {
-    const selects = [...root.querySelectorAll('select[name="add_tag_ids"],select[name="remove_tag_ids"]')];
-    if (!selects.length) return;
-    try {
-      const catalog = await request(api.tags);
-      const tags = Array.isArray(catalog.items) ? catalog.items : [];
-      await window.AICRMStandardComponents?.ready?.();
-      for (const select of selects) {
-        select.replaceChildren();
-        select.disabled = false;
-        for (const tag of tags) {
-          const id = Number(tag.id || tag.tag_id);
-          if (!Number.isSafeInteger(id) || id < 1) continue;
-          const option = document.createElement("option");
-          option.value = String(id);
-          option.textContent = (tag.group_name ? tag.group_name + " / " : "") + (tag.tag_name || tag.name || ("标签 " + id));
-          select.append(option);
-        }
-        if (!window.AICRMWeComTagPicker || select.dataset.standardTagPicker) continue;
-        select.dataset.standardTagPicker = "1";
-        select.hidden = true;
-        const button = document.createElement("button");
-        button.type = "button"; button.className = "admin-button admin-button--ghost"; button.textContent = "选择标签";
-        const summary = document.createElement("span"); summary.style.cssText = "font-size:12px;color:#646A73";
-        const sync = () => { const selected = [...select.selectedOptions].map((option) => option.textContent || option.value); summary.textContent = selected.length ? `已选：${selected.join("、")}` : "暂未选择标签"; };
-        button.addEventListener("click", () => {
-          const selected = [...select.selectedOptions].map((option) => ({ tag_id: option.value, tag_name: option.textContent || option.value }));
-          window.AICRMWeComTagPicker.open({ title: select.name === "add_tag_ids" ? "选择新增标签" : "选择移除标签", mode: "multiple", catalog: { groups: catalog.groups || [], items: tags }, value: selected, allowManual: false,
-            onConfirm: (picked) => { const ids = new Set(picked.map((tag) => String(tag.tag_id))); [...select.options].forEach((option) => { option.selected = ids.has(option.value); }); sync(); },
-            onClear: () => { [...select.options].forEach((option) => { option.selected = false; }); sync(); } });
-        });
-        select.parentElement?.append(button, summary); sync();
-      }
-    } catch (_error) {
-      for (const select of selects) select.disabled = true;
+  function clearTagSelectorErrors() {
+    root.querySelectorAll("[data-customer-tag-loader-error]").forEach((node) => node.remove());
+  }
+
+  function showTagSelectorError(selects) {
+    for (const form of new Set(selects.map((select) => select.closest("form")).filter(Boolean))) {
+      if (form.querySelector("[data-customer-tag-loader-error]")) continue;
+      const notice = document.createElement("span");
+      notice.dataset.customerTagLoaderError = "1";
+      notice.className = "admin-alert admin-alert--error";
+      notice.setAttribute("role", "alert");
+      notice.textContent = "标签选择暂时不可用。";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "admin-button admin-button--ghost";
+      retry.dataset.customerTagLoaderRetry = "1";
+      retry.textContent = "重试加载标签";
+      retry.addEventListener("click", () => { void loadTagSelectors(); });
+      notice.append(" ", retry);
+      form.append(notice);
     }
+  }
+
+  function loadTagSelectors() {
+    if (tagSelectorsPending) return tagSelectorsPending;
+    const selects = [...root.querySelectorAll('select[name="add_tag_ids"],select[name="remove_tag_ids"]')];
+    if (!selects.length) return Promise.resolve();
+    tagSelectorsPending = (async () => {
+      root.querySelectorAll("[data-customer-tag-loader-retry]").forEach((button) => { button.disabled = true; });
+      for (const select of selects) select.disabled = true;
+      clearTagSelectorErrors();
+      try {
+        const catalog = await request(api.tags);
+        const tags = Array.isArray(catalog.items) ? catalog.items : [];
+        const standardComponents = window.AICRMStandardComponents;
+        if (!standardComponents || typeof standardComponents.readyFor !== "function") throw new Error("标签选择组件不可用");
+        await standardComponents.readyFor(["tags"]);
+        if (!window.AICRMWeComTagPicker || typeof window.AICRMWeComTagPicker.open !== "function") throw new Error("标签选择组件未初始化");
+        for (const select of selects) {
+          const selectedValues = new Set([...select.selectedOptions].map((option) => option.value));
+          select.replaceChildren();
+          select.disabled = false;
+          for (const tag of tags) {
+            const id = Number(tag.id || tag.tag_id);
+            if (!Number.isSafeInteger(id) || id < 1) continue;
+            const option = document.createElement("option");
+            option.value = String(id);
+            option.textContent = (tag.group_name ? tag.group_name + " / " : "") + (tag.tag_name || tag.name || ("标签 " + id));
+            option.selected = selectedValues.has(option.value);
+            select.append(option);
+          }
+          if (!window.AICRMWeComTagPicker || select.dataset.standardTagPicker) continue;
+          select.dataset.standardTagPicker = "1";
+          select.hidden = true;
+          const button = document.createElement("button");
+          button.type = "button"; button.className = "admin-button admin-button--ghost"; button.textContent = "选择标签";
+          const summary = document.createElement("span"); summary.style.cssText = "font-size:12px;color:#646A73";
+          const sync = () => { const selected = [...select.selectedOptions].map((option) => option.textContent || option.value); summary.textContent = selected.length ? `已选：${selected.join("、")}` : "暂未选择标签"; };
+          button.addEventListener("click", () => {
+            const selected = [...select.selectedOptions].map((option) => ({ tag_id: option.value, tag_name: option.textContent || option.value }));
+            window.AICRMWeComTagPicker.open({ title: select.name === "add_tag_ids" ? "选择新增标签" : "选择移除标签", mode: "multiple", catalog: { groups: catalog.groups || [], items: tags }, value: selected, allowManual: false,
+              onConfirm: (picked) => { const ids = new Set(picked.map((tag) => String(tag.tag_id))); [...select.options].forEach((option) => { option.selected = ids.has(option.value); }); sync(); },
+              onClear: () => { [...select.options].forEach((option) => { option.selected = false; }); sync(); } });
+          });
+          select.parentElement?.append(button, summary); sync();
+        }
+      } catch (_error) {
+        for (const select of selects) select.disabled = true;
+        showTagSelectorError(selects);
+      }
+    })().finally(() => { tagSelectorsPending = null; });
+    return tagSelectorsPending;
   }
 
   function commandKey() {
