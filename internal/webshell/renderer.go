@@ -427,12 +427,7 @@ func materialTemplateIdentitySeams(page, donorTemplate string) (string, error) {
 	default:
 		return donorTemplate, nil
 	}
-	if !strings.Contains(donorTemplate, expected.loop) {
-		// Small renderer contract tests use a minimal donor fragment. Only a
-		// template that declares the relevant real loop needs the seam.
-		return donorTemplate, nil
-	}
-	if strings.Count(donorTemplate, expected.needle) != 1 {
+	if strings.Count(donorTemplate, expected.loop) != 1 || strings.Count(donorTemplate, expected.needle) != 1 {
 		return "", errors.New("media donor identity seam is missing or ambiguous")
 	}
 	return strings.Replace(donorTemplate, expected.needle, expected.withID, 1), nil

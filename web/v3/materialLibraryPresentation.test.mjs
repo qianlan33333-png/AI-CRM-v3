@@ -73,7 +73,7 @@ async function settle() { await sleep(); await sleep(); }
     const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected miniprogram request ${url.pathname}`);
     reads += 1;
-    return response({ ok: true, items: [{ id: 9, name: '报名卡片', appid: 'wx-test', pagepath: 'pages/signup', page_path: 'pages/signup', title: '立即报名', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: false, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 2 }], miniprograms: [], total: 1, limit: 100, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+    return response({ ok: true, items: [{ id: 9, name: '报名卡片', appid: 'wx-test', pagepath: 'pages/signup', page_path: 'pages/signup', title: '立即报名', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: false, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 2 }], miniprograms: [], total: 1, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   });
   try {
     dom.window.document.querySelector('#create').addEventListener('click', () => { searches += 10; });
@@ -108,7 +108,7 @@ console.log('material library presentation: PASS');
     return response({ ok: true, items: [
       { id: 10, name: '同名卡片', appid: 'wx-second', pagepath: 'pages/second', page_path: 'pages/second', title: '第二条', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: false, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 4 },
       { id: 9, name: '同名卡片', appid: 'wx-first', pagepath: 'pages/first', page_path: 'pages/first', title: '第一条', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 2 },
-    ], miniprograms: [], total: 2, limit: 100, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+    ], miniprograms: [], total: 2, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   });
   try {
     const calls = [];
@@ -160,7 +160,7 @@ console.log('material library presentation: PASS');
     const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected authorization mini request ${url.pathname}`);
     if (!authorized) return response({ code: 'FORBIDDEN' }, 403);
-    return response({ ok: true, items: [{ id: 12, name: '授权卡片', appid: 'wx-authorized', pagepath: 'pages/ok', page_path: 'pages/ok', title: '已授权', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 }], miniprograms: [], total: 1, limit: 100, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+    return response({ ok: true, items: [{ id: 12, name: '授权卡片', appid: 'wx-authorized', pagepath: 'pages/ok', page_path: 'pages/ok', title: '已授权', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 }], miniprograms: [], total: 1, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   });
   try {
     dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
@@ -204,7 +204,7 @@ console.log('material library presentation: PASS');
 {
   let mode = 'ok';
   const item = (appid, title) => ({ id: 22, name: '授权状态卡片', appid, pagepath: 'pages/status', page_path: 'pages/status', title, thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 });
-  const complete = (value) => ({ ok: true, items: [value], miniprograms: [], total: 1, limit: 100, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+  const complete = (value) => ({ ok: true, items: [value], miniprograms: [], total: 1, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   const dom = domFor('mpLib', `
     <div style="height:52px"><button id="create">新建小程序卡片</button></div>
     <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="22"><div><div style="height:112px"></div><div><div>授权状态卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
@@ -223,8 +223,10 @@ console.log('material library presentation: PASS');
     assert.equal(dom.window.document.querySelector('#stage').dataset.materialLibraryReadonly, 'true', 'a 401 keeps the material workspace read-only');
     assert.equal(dom.window.document.querySelector('#create').disabled, true, 'a 401 disables the moved mutation action');
     assert.match(dom.window.document.body.textContent, /登录状态已失效/, 'a 401 has a recovery-specific presentation');
-    const lateAction = dom.window.document.createElement('button'); lateAction.id = 'late-create'; lateAction.textContent = '新建小程序卡片';
-    dom.window.document.querySelector('#stage').append(lateAction);
+    const oldDonorHeader = dom.window.document.querySelector('#stage > div[style*="height"]');
+    const lateDonorHeader = dom.window.document.createElement('div'); lateDonorHeader.style.height = '52px';
+    const lateAction = dom.window.document.createElement('button'); lateAction.id = 'late-create'; lateAction.textContent = '新建小程序卡片'; lateDonorHeader.append(lateAction);
+    oldDonorHeader.replaceWith(lateDonorHeader);
     await settle();
     assert.equal(dom.window.document.querySelector('#late-create').disabled, true, 'a donor action rendered after a 401 remains disabled');
     mode = 'malformed'; input.value = '异常响应'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
@@ -241,7 +243,7 @@ console.log('material library presentation: PASS');
 {
   let resolveOld;
   const item = (appid, title) => ({ id: 23, name: '乱序授权卡片', appid, pagepath: 'pages/order', page_path: 'pages/order', title, thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 });
-  const complete = (value) => ({ ok: true, items: [value], miniprograms: [], total: 1, limit: 100, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+  const complete = (value) => ({ ok: true, items: [value], miniprograms: [], total: 1, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   const dom = domFor('mpLib', `
     <div style="height:52px"><button id="create">新建小程序卡片</button></div>
     <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="23"><div><div style="height:112px"></div><div><div>乱序授权卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
@@ -262,5 +264,49 @@ console.log('material library presentation: PASS');
     assert.equal(dom.window.document.querySelector('#stage').dataset.materialLibraryReadonly, undefined, 'a late 401 from an aborted older search cannot lock the current page');
     assert.ok(dom.window.document.body.textContent.includes('wx-current'), 'a late 401 cannot replace the current typed metadata');
     assert.equal(dom.window.document.querySelector('#create').disabled, false, 'a late 401 cannot disable the current action');
+  } finally { dom.window.close(); }
+}
+
+{
+  let phase = 1; let editCount = 0;
+  const complete = (items) => ({ ok: true, items, miniprograms: [], total: items.length, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+  const item = (version, appid, title, enabled) => ({ id: 31, name: '更新中的卡片', appid, pagepath: 'pages/revision', page_path: 'pages/revision', title, thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled, created_at: '2026-09-15T00:00:00Z', updated_at: `2026-09-15T00:0${version}:00Z`, created_by: 1, updated_by: 1, version });
+  const dom = domFor('mpLib', `
+    <div style="height:52px"><button>新建小程序卡片</button></div>
+    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="31"><div><div style="height:112px"></div><div><div>更新中的卡片</div><div>● 可用</div><div>已启用</div><div><button id="revision-edit">编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected revision request ${url.pathname}`);
+    return response(phase === 1 ? complete([item(1, 'wx-v1', '第一标题', true)]) : phase === 2 ? complete([item(2, 'wx-v2', '第二标题', false)]) : complete([]));
+  });
+  try {
+    dom.window.document.querySelector('#revision-edit').addEventListener('click', () => { editCount += 1; });
+    dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle();
+    const input = dom.window.document.querySelector('#fMpQuery');
+    phase = 2; input.value = '第二版'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    await settle(); await settle();
+    const row = dom.window.document.querySelector('[data-material-library-mini-directory] [data-material-library-id="31"]');
+    assert.ok(row.textContent.includes('wx-v2') && row.textContent.includes('第二标题') && row.textContent.includes('已停用') && row.textContent.includes('v2'), 'a newer response updates the same mini-program row instead of retaining v1 metadata');
+    row.querySelector('#revision-edit').click(); assert.equal(editCount, 1, 'the physical edit callback remains single and attached after a metadata update');
+    phase = 3; input.value = '空结果'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    await settle(); await settle();
+    assert.ok(!row.textContent.includes('wx-v2') && row.textContent.includes('信息待确认'), 'a complete empty current page cannot keep stale enriched mini-program metadata');
+  } finally { dom.window.close(); }
+}
+
+{
+  let requestURL;
+  const dom = domFor('mpLib', `
+    <div style="height:52px"><button>新建小程序卡片</button></div>
+    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="51"><div><div style="height:112px"></div><div><div>第二页同名卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div><div><span>51–51 / 共 51 条</span><button id="mpPrevious">上一页</button><button id="mpNext">下一页</button></div></section>`, async (input) => {
+    requestURL = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    return response({ ok: true, items: [{ id: 51, name: '第二页同名卡片', appid: 'wx-page-51', pagepath: 'pages/page-51', page_path: 'pages/page-51', title: '第二页', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 }], miniprograms: [], total: 51, limit: 50, offset: 50, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+  });
+  try {
+    dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle();
+    assert.equal(requestURL.searchParams.get('offset'), '50', 'mini-program metadata reads the visible donor page offset instead of assuming page zero');
+    assert.equal(requestURL.searchParams.get('limit'), '50', 'mini-program metadata keeps the frozen controller page size');
+    assert.match(dom.window.document.body.textContent, /wx-page-51/, 'the second page row joins its own stable resource ID');
   } finally { dom.window.close(); }
 }

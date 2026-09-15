@@ -64,9 +64,9 @@ function isCompleteAttachmentList(value: unknown): value is LegacyAttachmentList
     response.items.every((item) => Number.isSafeInteger(item.id) && item.id > 0 && typeof item.name === 'string' && typeof item.file_size === 'number' && Number.isFinite(item.file_size) && typeof item.enabled === 'boolean' && Number.isSafeInteger(item.version) && item.version > 0 && typeof item.created_at === 'string');
 }
 
-function isCompleteMiniProgramList(value: unknown): value is LegacyMiniProgramListResponse {
+function isCompleteMiniProgramList(value: unknown, page: { offset: number; limit: number }): value is LegacyMiniProgramListResponse {
   const response = value as Partial<LegacyMiniProgramListResponse>;
-  return response.ok === true && Array.isArray(response.items) && Array.isArray(response.miniprograms) && isNonnegativeInteger(response.total) && isNonnegativeInteger(response.offset) && typeof response.limit === 'number' && Number.isSafeInteger(response.limit) && response.limit >= 1 && response.local_only === true && response.provider_call_executed === false && response.real_external_call_executed === false &&
+  return response.ok === true && Array.isArray(response.items) && Array.isArray(response.miniprograms) && isNonnegativeInteger(response.total) && response.offset === page.offset && response.limit === page.limit && response.local_only === true && response.provider_call_executed === false && response.real_external_call_executed === false &&
     response.items.every((item) => Number.isSafeInteger(item.id) && item.id > 0 && typeof item.name === 'string' && typeof item.appid === 'string' && typeof item.pagepath === 'string' && typeof item.page_path === 'string' && typeof item.title === 'string' && typeof item.enabled === 'boolean' && Number.isSafeInteger(item.version) && item.version > 0 && typeof item.updated_at === 'string');
 }
 
@@ -151,6 +151,7 @@ class FrozenMaterialPresentation {
   private sync(): void {
     this.ensureTabs();
     this.installCommittedSearch();
+    this.readVisibleMiniProgramPage();
     this.applyCachedMetadata();
     const action = Array.from(this.stage.querySelectorAll<HTMLButtonElement>('button'))
       .find((candidate) => candidate.textContent?.trim() === this.config.actionLabel);
@@ -191,10 +192,15 @@ class FrozenMaterialPresentation {
       input.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
         event.preventDefault();
+        this.listSignature = '';
         this.stage.querySelector<HTMLButtonElement>('#mpSearch')?.click();
-        void this.readMetadata(input.value);
+        this.readVisibleMiniProgramPage();
       });
-      void this.readMetadata(input.value);
+      for (const control of this.stage.querySelectorAll<HTMLButtonElement>('#mpPrevious, #mpNext')) {
+        if (control.dataset.materialLibraryPagination === 'true') continue;
+        control.dataset.materialLibraryPagination = 'true';
+        control.addEventListener('click', () => { this.listSignature = ''; });
+      }
       return;
     }
     this.attachmentQuery = input;
@@ -203,6 +209,27 @@ class FrozenMaterialPresentation {
       void this.readMetadata(input.value);
     });
     void this.readMetadata(input.value);
+  }
+
+  private visibleMiniProgramPage(): { offset: number; limit: number } {
+    // The frozen controller's bounded Media list uses a fixed 50-item page.
+    // Its visible `start–end / total` range is the current page context; read
+    // the same offset instead of assuming the first page after navigation.
+    const range = this.stage.querySelector('#mpPrevious, #mpNext')?.parentElement?.querySelector('span')?.textContent || '';
+    const match = range.match(/(\d+)\s*[-–—]\s*(\d+)/);
+    const start = match ? Number(match[1]) : 1;
+    return { offset: Number.isSafeInteger(start) && start > 0 ? start - 1 : 0, limit: 50 };
+  }
+
+  private readVisibleMiniProgramPage(): void {
+    if (this.page !== 'mpLib') return;
+    const input = this.stage.querySelector<HTMLInputElement>(this.config.querySelector);
+    if (!input) return;
+    const page = this.visibleMiniProgramPage();
+    const signature = `${input.value.trim()}\u0000${page.offset}:${page.limit}`;
+    if (signature === this.listSignature) return;
+    this.listSignature = signature;
+    void this.readMetadata(input.value, page);
   }
 
   private filterVisibleAttachments(): void {
@@ -221,10 +248,11 @@ class FrozenMaterialPresentation {
     }
   }
 
-  private async readMetadata(value: string): Promise<void> {
+  private async readMetadata(value: string, miniPage = this.visibleMiniProgramPage()): Promise<void> {
     const query = value.trim();
-    if (query === this.metadataQuery && this.hasUsableMetadata()) return;
-    this.metadataQuery = query;
+    const requestSignature = this.page === 'mpLib' ? `${query}\u0000${miniPage.offset}:${miniPage.limit}` : query;
+    if (requestSignature === this.metadataQuery && this.hasUsableMetadata()) return;
+    this.metadataQuery = requestSignature;
     this.readAbort?.abort();
     const abort = new AbortController();
     this.readAbort = abort;
@@ -239,10 +267,10 @@ class FrozenMaterialPresentation {
         this.attachments = response.items;
       } else {
         const response = unwrapGenerated(await listLegacyMiniPrograms({
-          limit: 100, offset: 0, enabled_only: false, ...(query ? { q: query } : {}),
+          limit: miniPage.limit, offset: miniPage.offset, enabled_only: false, ...(query ? { q: query } : {}),
         }, apiRequestOptions({ signal: abort.signal })));
         if (generation !== this.readGeneration) return;
-        if (!isCompleteMiniProgramList(response)) throw new Error('小程序素材列表响应不完整');
+        if (!isCompleteMiniProgramList(response, miniPage)) throw new Error('小程序素材列表响应不完整');
         this.miniPrograms = response.items;
       }
       this.metadataReadFailed = false;
@@ -345,7 +373,7 @@ class FrozenMaterialPresentation {
 
   private annotateAttachments(): void {
     const table = this.attachmentTable();
-    if (!table || !this.attachments.length) return;
+    if (!table) return;
     const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tbody tr'));
     const byID = new Map(this.attachments.map((item) => [String(item.id), item]));
     const matched = rows.map((row) => byID.get(row.dataset.materialLibraryId || ''));
@@ -354,6 +382,9 @@ class FrozenMaterialPresentation {
     // from a display name, list position, search result, or page offset.
     if (!rows.length) return;
     if (matched.some((item) => !item)) {
+      // A complete current read that no longer contains this visible ID must
+      // never leave fields from an earlier typed record on the donor row.
+      this.clearEnrichedMetadata();
       table.dataset.materialLibraryAttachmentTable = 'unresolved';
       let notice = table.parentElement?.querySelector<HTMLElement>('[data-material-library-identity-notice="attachment"]');
       if (!notice) {
@@ -362,7 +393,7 @@ class FrozenMaterialPresentation {
         notice.style.cssText = 'margin:8px 12px;color:#646A73;font-size:12px;line-height:18px';
         table.before(notice);
       }
-      notice.textContent = '存在同名附件，补充信息待确认；原有记录和操作保持不变。';
+      notice.textContent = '当前可见附件未返回稳定素材标识；保留原有记录和操作。';
       return;
     }
     table.parentElement?.querySelector('[data-material-library-identity-notice="attachment"]')?.remove();
@@ -406,7 +437,6 @@ class FrozenMaterialPresentation {
   }
 
   private annotateMiniPrograms(): void {
-    if (!this.miniPrograms.length) return;
     const grid = Array.from(this.stage.querySelectorAll<HTMLElement>('div'))
       .find((candidate) => candidate.dataset.materialLibraryMiniDirectory === 'true' || (candidate.style.display === 'grid' && candidate.style.gridTemplateColumns.includes('repeat(4')));
     if (!grid) return;
@@ -434,16 +464,33 @@ class FrozenMaterialPresentation {
       const item = byID.get(card.dataset.materialLibraryId || '');
       const metadataVersion = item ? `${item.id}:${item.version}` : `unresolved:${card.dataset.materialLibraryId || index + 1}`;
       if (card.dataset.materialLibraryMetadataVersion === metadataVersion) return;
-      const inner = card.firstElementChild as HTMLElement | null;
-      const cover = inner?.firstElementChild as HTMLElement | null;
-      const body = inner?.lastElementChild as HTMLElement | null;
-      if (!inner || !cover || !body) return;
-      const [nameNode, thumbnailStatus, enabledNode, actions] = Array.from(body.children) as HTMLElement[];
-      if (!nameNode || !thumbnailStatus || !enabledNode || !actions) return;
-      if (!this.miniCards.has(card)) this.miniCards.set(card, {
-        card: snapshotNode(card), cover: snapshotNode(cover), name: snapshotNode(nameNode), thumbnail: snapshotNode(thumbnailStatus), enabled: snapshotNode(enabledNode), actions: snapshotNode(actions),
-        inner, body, coverNode: cover, nameNode, thumbnailNode: thumbnailStatus, enabledNode, actionsNode: actions,
-      });
+      let source = this.miniCards.get(card);
+      if (!source) {
+        const inner = card.firstElementChild as HTMLElement | null;
+        const cover = inner?.firstElementChild as HTMLElement | null;
+        const body = inner?.lastElementChild as HTMLElement | null;
+        if (!inner || !cover || !body) return;
+        const [nameNode, thumbnailStatus, enabledNode, actions] = Array.from(body.children) as HTMLElement[];
+        if (!nameNode || !thumbnailStatus || !enabledNode || !actions) return;
+        source = {
+          card: snapshotNode(card), cover: snapshotNode(cover), name: snapshotNode(nameNode), thumbnail: snapshotNode(thumbnailStatus), enabled: snapshotNode(enabledNode), actions: snapshotNode(actions),
+          inner, body, coverNode: cover, nameNode, thumbnailNode: thumbnailStatus, enabledNode, actionsNode: actions,
+        };
+        this.miniCards.set(card, source);
+      } else {
+        // A prior compact directory render moved these nodes directly under
+        // `card`. Restore the captured donor structure before recomputing so
+        // version changes update the same physical callback nodes instead of
+        // reading a previous visual column as the donor body.
+        restoreNode(source.coverNode, source.cover);
+        restoreNode(source.nameNode, source.name);
+        restoreNode(source.thumbnailNode, source.thumbnail);
+        restoreNode(source.enabledNode, source.enabled);
+        restoreNode(source.actionsNode, source.actions);
+        source.body.replaceChildren(source.nameNode, source.thumbnailNode, source.enabledNode, source.actionsNode);
+        source.inner.replaceChildren(source.coverNode, source.body);
+      }
+      const { coverNode: cover, nameNode, thumbnailNode: thumbnailStatus, enabledNode, actionsNode: actions } = source;
       card.setAttribute('role', 'row');
       card.style.cssText = 'display:grid;grid-template-columns:72px minmax(150px,1.2fr) minmax(112px,1fr) minmax(128px,1.2fr) minmax(122px,1fr) minmax(110px,1fr) 88px;gap:10px;align-items:center;min-width:0;padding:9px 12px;border:0;border-bottom:1px solid #F2F3F5;border-radius:0;overflow:visible;background:#fff';
       cover.setAttribute('role', 'cell');

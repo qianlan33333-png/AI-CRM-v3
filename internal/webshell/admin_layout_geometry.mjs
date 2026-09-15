@@ -512,11 +512,12 @@ try {
       const action=Array.from(topbar?.querySelectorAll('button') || []).find(node => String(node.textContent || '').trim() === ${JSON.stringify(actionLabel)});
       const visible=node => { const rect=node?.getBoundingClientRect(), style=node ? getComputedStyle(node) : null; return Boolean(node && rect && rect.width > 1 && rect.height > 1 && style?.display !== 'none' && style.visibility !== 'hidden'); };
       const donorHeaders=Array.from(stage?.querySelectorAll('div[style*="height: 52px"],div[style*="height:52px"]') || []).filter(visible);
-      return {title:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,tabs:tabs.map(node => ({tab:node.dataset.materialLibraryTab,current:node.getAttribute('aria-current'),href:node.getAttribute('href')})),action:visible(action),overflow:document.documentElement.scrollWidth > innerWidth + 1,donorHeaders:donorHeaders.length};
+      const identityRows=Array.from(stage?.querySelectorAll('[data-material-library-id]') || []).filter(node => /^\d+$/.test(String(node.dataset.materialLibraryId || '')));
+      return {title:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,tabs:tabs.map(node => ({tab:node.dataset.materialLibraryTab,current:node.getAttribute('aria-current'),href:node.getAttribute('href')})),action:visible(action),overflow:document.documentElement.scrollWidth > innerWidth + 1,donorHeaders:donorHeaders.length,identityRows:identityRows.length};
     })()`);
     const expectedTabs = ['images', 'attachments', 'miniprograms'];
     const validTabs = material?.tabs?.length === expectedTabs.length && material.tabs.every((item, index) => item.tab === expectedTabs[index] && item.href === `/admin/materials?tab=${expectedTabs[index]}` && (item.tab === tab ? item.current === 'page' : item.current === null));
-    if (!material || material.title !== '素材库' || material.headers !== 1 || !validTabs || !material.action || material.overflow || material.donorHeaders !== 0) throw new Error(`${label} unified material topbar/tabs/action layout invalid: ${JSON.stringify(material)}`);
+    if (!material || material.title !== '素材库' || material.headers !== 1 || !validTabs || !material.action || material.overflow || material.donorHeaders !== 0 || (tab !== 'images' && material.identityRows < 1)) throw new Error(`${label} unified material topbar/tabs/action layout invalid: ${JSON.stringify(material)}`);
   };
   const navigateMaterialWorkspace = async (tab, label, actionLabel, ready, ownerPath, requiredText) => {
     const pathname = `/admin/materials?tab=${tab}`;

@@ -577,11 +577,12 @@ func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing
 		t.Fatal("image library shell accepted a missing filter Host asset")
 	}
 	attachmentResponse := httptest.NewRecorder()
-	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", `<section data-page="attach"></section>`, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, MaterialLibraryHostJS: assets.MaterialLibraryHostJS}); err != nil {
+	attachmentTemplate := `<template data-sc-for="{{ rows.attachItems }}" data-as="a"><tr style="{{ a.rowStyle }}"><td>{{ a.name }}</td></tr></template>`
+	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", attachmentTemplate, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, MaterialLibraryHostJS: assets.MaterialLibraryHostJS}); err != nil {
 		t.Fatal(err)
 	}
 	attachmentBody := attachmentResponse.Body.String()
-	if strings.Contains(attachmentBody, "image-library-filter-host.js") || !strings.Contains(attachmentBody, `src="/media-assets/admin.js"`) || !strings.Contains(attachmentBody, `src="/media-assets/material-save-host.js"`) {
+	if strings.Contains(attachmentBody, "image-library-filter-host.js") || !strings.Contains(attachmentBody, `src="/media-assets/admin.js"`) || !strings.Contains(attachmentBody, `src="/media-assets/material-save-host.js"`) || !strings.Contains(attachmentBody, `data-material-library-id="{{ a.resourceId }}"`) {
 		t.Fatal("source-owned image Host leaked or frozen attachment runtime was removed")
 	}
 }
