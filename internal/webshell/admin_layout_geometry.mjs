@@ -110,6 +110,7 @@ let child;
 let cdp;
 let failed = false;
 let currentStep = "bootstrap";
+const journeyStartedAt = Date.now();
 const requests = new Map();
 // Keep only same-origin admin requests and responses. Static assets can be
 // numerous across the route matrix and must not evict a later business action
@@ -182,7 +183,9 @@ try {
     }
     await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   };
-  const captureFailureEvidence = async label => {
+  const diagnosticMessage = error => String(error instanceof Error ? error.message : error || "browser assertion failed")
+    .replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 240);
+  const captureFailureEvidence = async (label, failureReason = "") => {
     const safeLabel = label.replace(/[^A-Za-z0-9_.-]/g, "_");
     let screenshotCaptured = false;
     try {
@@ -193,7 +196,15 @@ try {
     // Geometry and safe route/status diagnostics remain available even if a
     // browser screenshot command itself fails while handling an earlier page
     // error. No response body, credential, or customer data is persisted.
-    let geometry = { path: "unavailable", screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
+    let geometry = {
+      path: "unavailable",
+      current_step: currentStep,
+      elapsed_ms: Date.now() - journeyStartedAt,
+      failure_reason: diagnosticMessage(failureReason),
+      screenshot_captured: screenshotCaptured,
+      responses: responses.slice(-12),
+      runtime_exceptions: runtimeExceptions.slice(-8),
+    };
     try {
       const measured = await evaluate(cdp, `(() => {
         const box = selector => { const node=document.querySelector(selector); if (!node) return null; const rect=node.getBoundingClientRect(); const style=getComputedStyle(node); return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,paddingLeft:style.paddingLeft,paddingTop:style.paddingTop,display:style.display}; };
@@ -202,7 +213,15 @@ try {
         const dom = [document.body, ...document.querySelectorAll('.admin-main-wrap,.admin-sidebar,.admin-topbar,.side,#stage,.order-host-layout,[data-runtime-release-host],[data-open-platform-host],.open-platform-header,.sec-funnel')].filter((node, index, all) => node instanceof Element && all.indexOf(node) === index).slice(0, 20).map(node => ({tag:node.tagName.toLowerCase(),id:token(node.id),classes:Array.from(node.classList).map(token).filter(Boolean).slice(0, 12),visible:visible(node)}));
         return {path:location.pathname,ready:document.readyState,sidebar:box('.admin-sidebar'),static_sidebar:box('.side'),main:box('.admin-main-wrap'),topbar:box('.admin-topbar'),static_header:box('.open-platform-header'),content:box('#stage') || box('.admin-main-wrap > .admin-page'),stage:box('#stage'),viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,dom};
       })()`);
-      geometry = { ...measured, screenshot_captured: screenshotCaptured, responses: responses.slice(-12), runtime_exceptions: runtimeExceptions.slice(-8) };
+      geometry = {
+        ...measured,
+        current_step: currentStep,
+        elapsed_ms: Date.now() - journeyStartedAt,
+        failure_reason: diagnosticMessage(failureReason),
+        screenshot_captured: screenshotCaptured,
+        responses: responses.slice(-12),
+        runtime_exceptions: runtimeExceptions.slice(-8),
+      };
     } catch (_) {}
     await fs.writeFile(path.join(screenshotDirectory, "failure-" + safeLabel + "-geometry.json"), JSON.stringify(geometry), { mode: 0o600 });
   };
@@ -217,8 +236,8 @@ try {
       await assertion();
       if (screenshot) await capture(label);
     } catch (error) {
-      try { await captureFailureEvidence(label); } catch (_) {}
       const message = String(error instanceof Error ? error.message : "geometry assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160);
+      try { await captureFailureEvidence(label, message); } catch (_) {}
       geometryFailures.push(label + ":" + message);
     }
   };
@@ -447,8 +466,8 @@ try {
     await assertLayout("embedded", label, titleSelector);
   };
   const recordRouteFailure = async (label, error) => {
-    try { await captureFailureEvidence(label); } catch (_) {}
     const message = String(error instanceof Error ? error.message : "route assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160);
+    try { await captureFailureEvidence(label, message); } catch (_) {}
     geometryFailures.push(label + ":" + message);
   };
   const clickNavigation = async (pathname, label) => {
@@ -1146,7 +1165,7 @@ try {
 } catch (error) {
   failed = true;
   if (cdp) {
-    try { await captureFailureEvidence(currentStep); } catch (_) {}
+    try { await captureFailureEvidence(currentStep, error); } catch (_) {}
   }
   throw error;
 } finally {
