@@ -48,7 +48,7 @@ const evidence = dialog.querySelector('input[name="evidence_reference"]');
 assert.equal(document.activeElement, amount, 'the first structured field receives initial focus');
 amount.value = '0';
 dialog.querySelector('[data-v3-confirmation-confirm]').click();
-assert.match(dialog.querySelector('[data-v3-confirmation-status]').textContent, /正整数金额/);
+assert.match(dialog.querySelector('[data-v3-confirmation-status]').textContent, /正整数后再继续/);
 amount.value = '1200'; evidence.value = 'receipt-1200';
 dialog.querySelector('[data-v3-confirmation-confirm]').click();
 assert.deepEqual(await structured, { confirmed: true, values: { amount_minor: '1200', evidence_reference: 'receipt-1200' } }, 'structured fields return caller-owned temporary values');

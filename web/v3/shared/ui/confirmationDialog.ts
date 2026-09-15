@@ -104,8 +104,9 @@ export function openConfirmationDialog(options: ConfirmationDialogOptions): Prom
         }
       }
       control.name = field.name;
-      control.placeholder = text(field.placeholder, kind === 'positive-integer' ? '请输入正整数（分）' : '请输入内容');
+      control.placeholder = text(field.placeholder, kind === 'positive-integer' ? '请输入正整数' : '请输入内容');
       control.maxLength = field.maxLength ?? (kind === 'positive-integer' ? 15 : 280);
+      control.required = field.required === true;
       control.readOnly = readonly;
       control.disabled = initiallyBusy;
       label.append(caption, control);
@@ -134,7 +135,7 @@ export function openConfirmationDialog(options: ConfirmationDialogOptions): Prom
     const validate = (): boolean => {
       const invalid = controls.find(({ field, control, kind }) => (field.required && !control.value.trim()) || (kind === 'positive-integer' && control.value.trim() && !/^[1-9][0-9]*$/.test(control.value.trim())));
       if (!invalid) return true;
-      status.textContent = invalid.kind === 'positive-integer' ? '请输入正整数金额（分）后再继续。' : options.reason && invalid.field.name === 'reason' ? '请填写确认原因后再继续。' : `请填写${invalid.field.label}后再继续。`;
+      status.textContent = invalid.kind === 'positive-integer' ? '请输入正整数后再继续。' : options.reason && invalid.field.name === 'reason' ? '请填写确认原因后再继续。' : `请填写${invalid.field.label}后再继续。`;
       status.hidden = false;
       invalid.control.setAttribute('aria-invalid', 'true');
       invalid.control.focus({ preventScroll: true });
