@@ -579,6 +579,17 @@ func TestComponentStatesScreenshotDirectoryUsesConfigurationBoundary(t *testing.
 	}
 }
 
+func TestPublicCommerceScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR", "")
+	if value := PublicCommerceScreenshotDirectory(); value != "" {
+		t.Fatalf("missing public commerce screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR", "/tmp/aicrm-public-commerce-evidence")
+	if value := PublicCommerceScreenshotDirectory(); value != "/tmp/aicrm-public-commerce-evidence" {
+		t.Fatalf("public commerce screenshot directory=%q", value)
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	allowed := map[string]string{
 		"AICRM_DATABASE_URL":                 "postgres://target@localhost/aicrm",

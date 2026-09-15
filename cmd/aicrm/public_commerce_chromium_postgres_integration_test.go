@@ -26,7 +26,7 @@ func TestPostgreSQLPublicCommerceChromiumJourney(t *testing.T) {
 	unavailableCode := seedPublicCommerceUnavailableServicePeriod(t, fixture.ctx, fixture.application)
 
 	screenshots := t.TempDir()
-	if configured := os.Getenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR"); configured != "" {
+	if configured := platformconfig.PublicCommerceScreenshotDirectory(); configured != "" {
 		if !filepath.IsAbs(configured) {
 			t.Fatal("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR must be absolute")
 		}
