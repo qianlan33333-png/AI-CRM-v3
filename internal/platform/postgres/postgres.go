@@ -139,7 +139,8 @@ func RequireTransaction(ctx context.Context) (pgx.Tx, error) {
 }
 
 type UnitOfWork struct {
-	pool *Pool
+	pool    *Pool
+	options pgx.TxOptions
 }
 
 var _ platformport.UnitOfWork = (*UnitOfWork)(nil)
@@ -151,6 +152,17 @@ func NewUnitOfWork(pool *Pool) (*UnitOfWork, error) {
 	return &UnitOfWork{pool: pool}, nil
 }
 
+// NewReadOnlyRepeatableReadUnitOfWork creates the narrow snapshot boundary
+// used by composed, cross-owner reporting reads. It is deliberately separate
+// from the default UoW so command paths retain their existing transaction
+// semantics.
+func NewReadOnlyRepeatableReadUnitOfWork(pool *Pool) (*UnitOfWork, error) {
+	if pool == nil || pool.pool == nil {
+		return nil, ErrInvalidConfig
+	}
+	return &UnitOfWork{pool: pool, options: pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}}, nil
+}
+
 func (unit *UnitOfWork) Within(ctx context.Context, callback func(context.Context) error) (err error) {
 	if callback == nil {
 		return errors.New("unit of work callback is required")
@@ -158,7 +170,7 @@ func (unit *UnitOfWork) Within(ctx context.Context, callback func(context.Contex
 	if _, nested := transactionFromContext(ctx); nested {
 		return ErrNestedTransaction
 	}
-	tx, err := unit.pool.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := unit.pool.pool.BeginTx(ctx, unit.options)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}

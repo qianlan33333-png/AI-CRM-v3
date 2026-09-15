@@ -819,6 +819,72 @@
       ],
       "reason": "Record the Root-reviewed Radar server filtering and visible pagination OpenAPI contract after integrating the shared selection and content components. Frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
       "review_reference": "Root review of Radar list pagination authority hashes rebased to main 84c34e5a on 2026-09-15"
+    },
+    {
+      "base_commit": "a53d60d280ec6284f6d1f1b1b48bff4390bcaaa1",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b9214cb231f65a7b6cb67286631f1fd379827ad46750a7f98ede4bd3cd7e666e",
+          "head_sha256": "a208401173e3da65f88bca4549bc17f3ce85bec7efdfc088d4cc374f30122523"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "ae4a00225aeb39f5ec6cb06df38ac1f3b12c987132f7b78f6decf86c1ac93c7a",
+          "head_sha256": "c8de024f06ff5a795b59bb03745895ad89f7b4cfa5a9fb112cc9a7ac0ea63292"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "64caee6a45cd6ba5350c43aea7b98aa6061bfbb660673f5599c4df6210ff0a65",
+          "head_sha256": "5328e3a5c0b16e5f5f60d0bd2c11fb17c8a7961c39e6c641e7d442cc93808590"
+        }
+      ],
+      "reason": "Integrate the Root-reviewed overview canonical-payer contract with the current main GroupOps OpenAPI authority. The count is omitted when canonical-root resolution is unavailable; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of #320 canonical-payer integration against main a53d60d2 on 2026-09-15"
+    },
+    {
+      "base_commit": "84c34e5ad784d3f4cf20082b6a83d39919bff7e5",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "c16b2a83d75c922ae8ce4befe7a507d9da17d3f8b365c8ba382e906b414943e5",
+          "head_sha256": "608610bfc1893eaeda0f1d04d23ca71367a240394d5c7e5f7fb319255b745a0c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "15736e427756d8eb434bf5248077e6b1cad31d47b1b869961565a618fe988db0",
+          "head_sha256": "18f30c68f5a9e69359d2ac562006aade4f46ca1cfc15058f6c0136c69053f50e"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "f87bd7f91619c883671197ee46abe7e4c007e67a9dd2ea538c52013e44c506f1",
+          "head_sha256": "adf53b0ee40013653c9b2b3a07df6a2737242bd2d8e65757e103d72257bb3ba7"
+        }
+      ],
+      "reason": "Integrate the Root-reviewed admin overview API canonical-payer contract with current main shared-component, GroupOps search, and Radar contract authority. Canonical source metadata is regenerated from the merged V3 OpenAPI payload; frozen donors remain unchanged.",
+      "review_reference": "Root instruction to integrate PR #293 with main 84c34e5a on 2026-09-15; normal PR review and complete CI remain required"
+    },
+    {
+      "base_commit": "0e73d42c433892a1f5088eea08d3a079c1c98455",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "1554aac9c7debc7febd892d587d004861cde55ad169cd2ad91871664b1edc46c",
+          "head_sha256": "4ac96d0938989e65f49485e1c46b9634c4b94918ae82b15c9e6c9b14fa615d53"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "e099d5889c890e3f432f23066ce06fd82ccf0053001e01d118863d902e664530",
+          "head_sha256": "7e14ad4394f7d2221b7bf70389bfb0bde3ff15d9f66a929efc6cfdf96e56f405"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "a96cff49116907c17d3697fd73d4ad0e9975c0e48b35143792b27f14f349aa1c",
+          "head_sha256": "ed4ae5d827614fc75fa0297a0ca20bbee9102a3fb31c5cadc072b78b2e7fb381"
+        }
+      ],
+      "reason": "Integrate the Root-reviewed admin overview API canonical-payer contract with current main shared-component, GroupOps search, and Radar contract authority. Canonical source metadata is regenerated from the merged V3 OpenAPI payload; frozen donors remain unchanged.",
+      "review_reference": "Root instruction to integrate PR #293 with main 0e73d42c on 2026-09-15; normal PR review and complete CI remain required"
     }
   ]
 }
