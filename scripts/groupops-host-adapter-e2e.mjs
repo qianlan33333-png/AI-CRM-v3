@@ -1158,7 +1158,9 @@ try {
   await chooseCollisionStaffTwo(collisionCreate.view, "collision create picker did not render local staff #2");
   await waitFor(() => collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value === "2", "create selection did not retain local staff #2");
   assert.match(collisionCreate.view.document.querySelector('[data-member-current="create_owner_userid"]')?.textContent || "", /本地二号员工/, "create selection must render the local staff #2 label");
-  collisionCreate.view.document.querySelector('[data-action="cancel-create-plan"]').click();
+  // Re-render the open draft without cancelling it. Cancelling a plan creation
+  // intentionally discards the whole draft; a normal re-render must retain
+  // the selected local staff ID and never substitute external UserID "2".
   collisionCreate.view.document.querySelector('[data-action="show-create-plan"]').click();
   assert.equal(collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value, "2", "create rerender must retain the local staff ID rather than external UserID");
   assert.match(collisionCreate.view.document.querySelector('[data-member-current="create_owner_userid"]')?.textContent || "", /本地二号员工/);
@@ -1758,6 +1760,814 @@ try {
 } finally {
   initialFailureJourney.window.close();
 }
+
+// Creation uses the same frozen picker + V3 Host bridge as the production
+// list. These requests are synthetic and assert client recovery semantics,
+// not a PostgreSQL receipt or a deployed browser result.
+function createDetail({
+  id = 501,
+  revision = 1,
+  name = "保留的创建草稿",
+  status = "draft",
+  planType = "standard",
+  members = [],
+} = {}) {
+  return {
+    plan: {
+      plan_id: id,
+      name,
+      revision,
+      status,
+      plan_type: planType,
+      queue_count: 0,
+      bound_group_count: 0,
+    },
+    members,
+    group_assets: [],
+    nodes: [],
+  };
+}
+
+async function startCreateJourney(label, handlers = {}) {
+  const errors = [];
+  const navigations = [];
+  const createConsole = new VirtualConsole();
+  createConsole.on("jsdomError", (error) => {
+    const message = String(error?.message || error);
+    if (message.includes("Not implemented: navigation")) navigations.push(message);
+    else errors.push(message);
+  });
+  const journey = new JSDOM(
+    `<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`,
+    {
+      url: `https://groupops.test/admin/automation-conversion/group-ops/ui?fixture=${encodeURIComponent(label)}`,
+      runScripts: "outside-only",
+      pretendToBeVisual: true,
+      virtualConsole: createConsole,
+    },
+  );
+  const fixtureWindow = journey.window;
+  fixtureWindow.Headers = Headers;
+  fixtureWindow.Response = Response;
+  Object.defineProperty(fixtureWindow, "crypto", {
+    configurable: true,
+    value: crypto,
+  });
+  fixtureWindow.document.cookie = "aicrm_admin_csrf=create-session-a";
+  const requests = [];
+  fixtureWindow.fetch = async (input, init = {}) => {
+    const url = new URL(String(input), fixtureWindow.location.href);
+    const method = String(init.method || "GET").toUpperCase();
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    const request = {
+      path: url.pathname + url.search,
+      pathname: url.pathname,
+      method,
+      body,
+      key: new Headers(init.headers).get("Idempotency-Key") || "",
+    };
+    requests.push(request);
+    if (
+      url.pathname === "/api/admin/common/operation-members" &&
+      method === "GET"
+    )
+      return response({
+        items: [
+          {
+            staff_id: 7,
+            sender_userid: "fixture-owner",
+            display_name: "合成员",
+          },
+        ],
+      });
+    if (
+      url.pathname === "/api/admin/automation-conversion/group-ops/plans" &&
+      method === "GET"
+    )
+      return handlers.list
+        ? handlers.list(request)
+        : response(planPage([], 0, 0, false));
+    if (
+      url.pathname === "/api/admin/automation-conversion/group-ops/plans" &&
+      method === "POST"
+    )
+      return handlers.post
+        ? handlers.post(request)
+        : response(createDetail({ name: request.body.name }));
+    if (
+      url.pathname === "/api/admin/automation-conversion/group-ops/plans/501" &&
+      method === "PUT"
+    )
+      return handlers.configuration
+        ? handlers.configuration(request)
+        : response(
+            createDetail({
+              revision: 2,
+              name: request.body.name,
+              planType: "webhook",
+              members: [{ staff_id: 7 }],
+            }),
+          );
+    throw new Error(`unexpected ${label} request ${method} ${url.pathname}`);
+  };
+  fixtureWindow.eval(pickerSource);
+  fixtureWindow.eval(bundle.outputFiles[0].text);
+  await waitFor(
+    () =>
+      fixtureWindow.document.querySelector('[data-action="show-create-plan"]'),
+    `${label} list did not render`,
+  );
+  return { journey, fixtureWindow, requests, errors, navigations };
+}
+
+async function openCreate(
+  fixture,
+  { name = "保留的创建草稿", planType = "webhook", owner = true } = {},
+) {
+  const { fixtureWindow } = fixture;
+  fixtureWindow.document
+    .querySelector('[data-action="show-create-plan"]')
+    .click();
+  await waitFor(
+    () => fixtureWindow.document.querySelector('[name="create_plan_name"]'),
+    "create panel did not render",
+  );
+  fixtureWindow.document.querySelector('[name="create_plan_name"]').value =
+    name;
+  fixtureWindow.document.querySelector('[name="create_plan_type"]').value =
+    planType;
+  if (!owner) return;
+  fixtureWindow.document
+    .querySelector('[data-action="pick-create-owner"]')
+    .click();
+  // The live GroupOps Host owns this field through the shared V3 staff
+  // picker; exercise the same local staff-id selection path as the page.
+  await waitFor(
+    () => fixtureWindow.document.querySelector(
+      '[data-v3-selection-session="staff"] [data-v3-staff-key$=":7"]',
+    ),
+    "create owner picker did not render",
+  );
+  fixtureWindow.document
+    .querySelector('[data-v3-selection-session="staff"] [data-v3-staff-key$=":7"]')
+    .click();
+  fixtureWindow.document
+    .querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]')
+    .click();
+  await waitFor(
+    () =>
+      fixtureWindow.document.querySelector('[name="create_owner_userid"]')
+        ?.value === "7",
+    "create owner was not selected",
+  );
+}
+
+function creationPosts(requests) {
+  return requests.filter(
+    (request) =>
+      request.path === "/api/admin/automation-conversion/group-ops/plans" &&
+      request.method === "POST",
+  );
+}
+function configurationPuts(requests) {
+  return requests.filter(
+    (request) =>
+      request.path === "/api/admin/automation-conversion/group-ops/plans/501" &&
+      request.method === "PUT",
+  );
+}
+function closeCreateJourney(fixture, expectedNavigations = 0) {
+  assert.deepEqual(
+    fixture.errors,
+    [],
+    "create fixture emitted an unexpected browser error",
+  );
+  assert.equal(
+    fixture.navigations.length,
+    expectedNavigations,
+    "create fixture navigation count did not match the confirmed outcome",
+  );
+  fixture.journey.window.close();
+}
+
+function pagedCreateList(request) {
+  const page = new URL(request.path, "https://groupops.test");
+  const offset = Number(page.searchParams.get("offset") || 0);
+  return response(planPage([], 51, offset, offset === 0));
+}
+
+// List pagination redraws the production creation panel. Editable values must
+// survive the redraw; only a submitted pending intent is frozen.
+{
+  let listReads = 0;
+  const fixture = await startCreateJourney("create-draft-pagination", {
+    list: (request) => {
+      listReads += 1;
+      return pagedCreateList(request);
+    },
+  });
+  try {
+    await openCreate(fixture, { name: "翻页保留草稿", planType: "webhook" });
+    const next = fixture.fixtureWindow.document.querySelector(
+      '[data-action="next-list-page"]',
+    );
+    assert.equal(next.disabled, false, "the fixture must expose a next list page");
+    next.click();
+    await waitFor(
+      () =>
+        listReads === 2 &&
+        fixture.fixtureWindow.document.querySelector('[name="create_plan_name"]')
+          ?.value === "翻页保留草稿",
+      "list pagination did not preserve the editable creation draft",
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[name="create_plan_type"]')
+        ?.value,
+      "webhook",
+      "list pagination must retain the editable plan type",
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[name="create_owner_userid"]')
+        ?.value,
+      "7",
+      "list pagination must retain the editable selected owner",
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+
+// An explicit rejection returns the panel to editable mode. An operator can
+// change the draft and paginate without reverting to the rejected snapshot.
+{
+  let listReads = 0;
+  const fixture = await startCreateJourney("create-rejected-draft-pagination", {
+    list: (request) => {
+      listReads += 1;
+      return pagedCreateList(request);
+    },
+    post: () => response({ code: "validation_failed" }, 400),
+  });
+  try {
+    await openCreate(fixture, { name: "被拒绝的初稿", planType: "webhook" });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document
+          .querySelector('.group-ops__modal-notice[role="alert"]')
+          ?.textContent.includes("创建被拒绝"),
+      "explicit rejection did not return the draft to editable mode",
+    );
+    fixture.fixtureWindow.document.querySelector('[name="create_plan_name"]').value =
+      "被拒后修改的草稿";
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="next-list-page"]')
+      .click();
+    await waitFor(
+      () =>
+        listReads === 2 &&
+        fixture.fixtureWindow.document.querySelector('[name="create_plan_name"]')
+          ?.value === "被拒后修改的草稿",
+      "pagination after a rejected create reverted the operator's edited draft",
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+
+// Client validation has no mutation and retains typed values through its render.
+{
+  const fixture = await startCreateJourney("create-client-validation");
+  try {
+    await openCreate(fixture, {
+      name: "未选负责人草稿",
+      planType: "webhook",
+      owner: false,
+    });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document
+          .querySelector('.group-ops__modal-notice[role="alert"]')
+          ?.textContent.includes("请选择运营成员"),
+      "missing owner did not produce a persistent alert",
+    );
+    assert.equal(
+      creationPosts(fixture.requests).length,
+      0,
+      "missing owner must issue zero POSTs",
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[name="create_plan_name"]')
+        ?.value,
+      "未选负责人草稿",
+      "missing owner must retain the typed name",
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[name="create_plan_type"]')
+        ?.value,
+      "webhook",
+      "missing owner must retain the typed type",
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+
+// Explicit rejects are distinct from an ambiguous transport outcome. 401/403
+// stop the flow; validation and 409 retain an editable draft for a new intent.
+for (const [status, code, locked] of [
+  [400, "validation_failed", false],
+  [401, "unauthorized", true],
+  [403, "forbidden", true],
+  [409, "operations_conflict", false],
+]) {
+  const fixture = await startCreateJourney(`create-reject-${status}`, {
+    post: () => response({ code }, status),
+  });
+  try {
+    await openCreate(fixture, { name: `明确拒绝-${status}` });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document
+          .querySelector('.group-ops__modal-notice[role="alert"]')
+          ?.textContent.includes(
+            status === 401 || status === 403 ? "当前账号无权" : "创建被拒绝",
+          ),
+      `HTTP ${status} outcome was not visible`,
+    );
+    assert.equal(
+      creationPosts(fixture.requests).length,
+      1,
+      `HTTP ${status} must issue one initial POST`,
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[name="create_plan_name"]')
+        ?.disabled,
+      locked,
+      `HTTP ${status} must ${locked ? "freeze" : "allow editing"} the draft`,
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelectorAll(
+        '.group-ops__modal-notice[role="alert"]',
+      ).length,
+      1,
+      `HTTP ${status} must not duplicate alerts`,
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+
+// A 5xx is not evidence that creation failed. A manual same-key replay is the
+// only next POST and preserves the frozen name; it is not an automatic retry.
+{
+  let postCalls = 0;
+  const fixture = await startCreateJourney("create-5xx-retry", {
+    post: (request) => {
+      postCalls += 1;
+      if (postCalls === 1)
+        return response({ code: "service_unavailable" }, 503);
+      return response(createDetail({ name: request.body.name }));
+    },
+  });
+  try {
+    await openCreate(fixture, { name: "五百重试草稿" });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document.querySelector(
+          '[data-action="retry-create-plan"]',
+        ),
+      "5xx did not freeze an explicit same-key retry",
+    );
+    const first = creationPosts(fixture.requests)[0];
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[name="create_plan_name"]')
+        ?.disabled,
+      true,
+      "unknown create must freeze its draft",
+    );
+    const ownerReadsBefore = fixture.requests.filter(
+      (request) => request.pathname === "/api/admin/common/operation-members",
+    ).length;
+    const ownerButton = fixture.fixtureWindow.document.querySelector(
+      '[data-action="pick-create-owner"]',
+    );
+    assert.equal(ownerButton.disabled, true, "unknown create must disable the frozen picker trigger");
+    ownerButton.dispatchEvent(new fixture.fixtureWindow.Event("click"));
+    assert.equal(
+      fixture.requests.filter(
+        (request) => request.pathname === "/api/admin/common/operation-members",
+      ).length,
+      ownerReadsBefore,
+      "an unknown create must not reopen the frozen owner picker",
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[data-v3-selection-session="staff"]'),
+      null,
+      "an unknown create must not reopen the shared owner picker",
+    );
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="retry-create-plan"]')
+      .click();
+    await waitFor(
+      () => configurationPuts(fixture.requests).length === 1,
+      "same-key create replay did not continue to configuration",
+    );
+    const replay = creationPosts(fixture.requests)[1];
+    assert.equal(
+      replay.key,
+      first.key,
+      "a 5xx replay must reuse the original POST key",
+    );
+    assert.deepEqual(
+      replay.body,
+      first.body,
+      "a 5xx replay must reuse the original POST payload",
+    );
+    assert.notEqual(
+      configurationPuts(fixture.requests)[0].key,
+      first.key,
+      "configuration must use its own receipt key",
+    );
+    await waitFor(
+      () => fixture.navigations.length === 1,
+      "confirmed create did not complete with one navigation",
+    );
+  } finally {
+    closeCreateJourney(fixture, 1);
+  }
+}
+
+// A genuinely pending POST keeps the create action and picker frozen before
+// any result exists; a second click must not create a second in-flight request.
+{
+  let releasePost;
+  let pendingRequest;
+  const fixture = await startCreateJourney("create-pending-single-flight", {
+    post: (request) => {
+      pendingRequest = request;
+      return new Promise((resolve) => {
+        releasePost = resolve;
+      });
+    },
+  });
+  try {
+    await openCreate(fixture, { name: "等待中的创建" });
+    const save = fixture.fixtureWindow.document.querySelector(
+      '[data-action="create-plan"]',
+    );
+    save.click();
+    save.click();
+    await waitFor(
+      () => typeof releasePost === "function",
+      "pending create did not start its first POST",
+    );
+    assert.equal(creationPosts(fixture.requests).length, 1, "a pending create must be single-flight");
+    const ownerReadsBefore = fixture.requests.filter(
+      (request) => request.pathname === "/api/admin/common/operation-members",
+    ).length;
+    const ownerButton = fixture.fixtureWindow.document.querySelector(
+      '[data-action="pick-create-owner"]',
+    );
+    assert.equal(ownerButton.disabled, true, "a pending create must disable the picker trigger");
+    ownerButton.dispatchEvent(new fixture.fixtureWindow.Event("click"));
+    assert.equal(
+      fixture.requests.filter(
+        (request) => request.pathname === "/api/admin/common/operation-members",
+      ).length,
+      ownerReadsBefore,
+      "a pending create must reject an owner-picker action dispatch",
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[data-v3-selection-session="staff"]'),
+      null,
+      "a pending create must not open the shared owner picker",
+    );
+    releasePost(response(createDetail({ name: pendingRequest.body.name })));
+    await waitFor(
+      () => fixture.navigations.length === 1,
+      "a resolved pending create did not complete with one navigation",
+    );
+  } finally {
+    closeCreateJourney(fixture, 1);
+  }
+}
+
+// The accepted create snapshot is exactly revision 1, draft, and the frozen
+// name. A success-shaped mismatch is unknown and cannot start owner PUT.
+for (const [label, malformed] of [
+  (request) => createDetail({ id: true, name: request.body.name }),
+  (request) => createDetail({ revision: 2, name: request.body.name }),
+  (request) => createDetail({ status: "active", name: request.body.name }),
+  (request) => createDetail({ name: `${request.body.name}-错误` }),
+].entries()) {
+  const fixture = await startCreateJourney(`create-invalid-post-response-${label}`, {
+    post: (request) => response(malformed(request)),
+  });
+  try {
+    await openCreate(fixture, { name: `非法创建回包-${label}` });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document.querySelector(
+          '[data-action="retry-create-plan"]',
+        ),
+      `invalid create response ${label} was accepted as success`,
+    );
+    assert.equal(
+      configurationPuts(fixture.requests).length,
+      0,
+      `an invalid create response ${label} must not begin owner configuration`,
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.body.textContent.includes("创建成功"),
+      false,
+      `an invalid create response ${label} must not claim success`,
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.body.textContent.includes("response.text"),
+      false,
+      `invalid create response ${label} must reach contract validation, not fail as a transport TypeError`,
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+
+// The first POST and then the configuration PUT can each be accepted by the
+// server while their client response is lost. Both recover by their own key;
+// neither path sends another POST.
+{
+  let postCalls = 0;
+  let configurationCalls = 0;
+  const fixture = await startCreateJourney("create-lost-response", {
+    post: (request) => {
+      postCalls += 1;
+      if (postCalls === 1)
+        throw new Error("connection dropped after create acceptance");
+      return response(createDetail({ name: request.body.name }));
+    },
+    configuration: (request) => {
+      configurationCalls += 1;
+      if (configurationCalls === 1)
+        throw new Error("connection dropped after configuration acceptance");
+      return response(
+        createDetail({
+          revision: 2,
+          name: request.body.name,
+          planType: "webhook",
+          members: [{ staff_id: 7 }],
+        }),
+      );
+    },
+  });
+  try {
+    await openCreate(fixture, { name: "丢响应草稿" });
+    const firstSave = fixture.fixtureWindow.document.querySelector(
+      '[data-action="create-plan"]',
+    );
+    firstSave.click();
+    firstSave.click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document.querySelector(
+          '[data-action="retry-create-plan"]',
+        ),
+      "lost POST response did not expose explicit recovery",
+    );
+    assert.equal(
+      creationPosts(fixture.requests).length,
+      1,
+      "double-click must start only one create POST",
+    );
+    const postKey = creationPosts(fixture.requests)[0].key;
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="retry-create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document.querySelector(
+          '[data-action="retry-create-configuration"]',
+        ),
+      "lost PUT response did not expose configuration recovery",
+    );
+    const postReplay = creationPosts(fixture.requests)[1];
+    const firstConfiguration = configurationPuts(fixture.requests)[0];
+    assert.equal(
+      postReplay.key,
+      postKey,
+      "lost POST response must replay the same POST key",
+    );
+    assert.equal(
+      firstConfiguration.body.expected_revision,
+      1,
+      "configuration must retain the creation response revision",
+    );
+    assert.equal(firstConfiguration.body.plan_type, "webhook");
+    assert.equal(firstConfiguration.body.owner_staff_id, 7);
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="retry-create-configuration"]')
+      .click();
+    await waitFor(
+      () => configurationPuts(fixture.requests).length === 2,
+      "explicit configuration recovery did not issue its PUT replay",
+    );
+    const configurationReplay = configurationPuts(fixture.requests)[1];
+    assert.equal(
+      creationPosts(fixture.requests).length,
+      2,
+      "configuration recovery must not create another plan",
+    );
+    assert.equal(
+      configurationReplay.key,
+      firstConfiguration.key,
+      "lost PUT response must replay the same configuration key",
+    );
+    assert.deepEqual(
+      configurationReplay.body,
+      firstConfiguration.body,
+      "lost PUT response must retain the original configuration snapshot",
+    );
+    await waitFor(
+      () => fixture.navigations.length === 1,
+      "confirmed configuration recovery did not complete with one navigation",
+    );
+  } finally {
+    closeCreateJourney(fixture, 1);
+  }
+}
+
+// The configuration receipt must advance exactly one revision and echo the
+// original draft state, name, type and owner.
+for (const [label, malformed] of [
+  [
+    "wrong-id",
+    (request) => createDetail({
+      id: 502,
+      revision: 2,
+      name: request.body.name,
+      planType: "webhook",
+      members: [{ staff_id: 7 }],
+    }),
+  ],
+  [
+    "invalid-revision",
+    (request) => createDetail({
+      revision: "2",
+      name: request.body.name,
+      planType: "webhook",
+      members: [{ staff_id: 7 }],
+    }),
+  ],
+  [
+    "wrong-name",
+    (request) => createDetail({
+      revision: 2,
+      name: `${request.body.name}-错误`,
+      planType: "webhook",
+      members: [{ staff_id: 7 }],
+    }),
+  ],
+  [
+    "wrong-status",
+    (request) => createDetail({
+      revision: 2,
+      name: request.body.name,
+      status: "active",
+      planType: "webhook",
+      members: [{ staff_id: 7 }],
+    }),
+  ],
+  [
+    "jumped-revision",
+    (request) => createDetail({
+      revision: 3,
+      name: request.body.name,
+      planType: "webhook",
+      members: [{ staff_id: 7 }],
+    }),
+  ],
+]) {
+  const fixture = await startCreateJourney(`create-${label}`, {
+    post: (request) => response(createDetail({ name: request.body.name })),
+    configuration: (request) => response(malformed(request)),
+  });
+  try {
+    await openCreate(fixture, { name: `错误回包-${label}` });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document.querySelector(
+          '[data-action="retry-create-configuration"]',
+        ),
+      `${label} configuration response was accepted as success`,
+    );
+    assert.equal(
+      creationPosts(fixture.requests).length,
+      1,
+      `${label} must not create a second plan`,
+    );
+    assert.equal(
+      fixture.fixtureWindow.document.body.textContent.includes("创建成功"),
+      false,
+      `${label} must not claim success`,
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+
+// A changed CSRF session is not evidence of the same admin principal. The
+// in-memory marker blocks replay before the Host receives another POST.
+{
+  const fixture = await startCreateJourney("create-session-change", {
+    post: () => {
+      throw new Error("connection dropped after create acceptance");
+    },
+  });
+  try {
+    await openCreate(fixture, { name: "会话变化草稿" });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document.querySelector(
+          '[data-action="retry-create-plan"]',
+        ),
+      "session fixture did not reach unknown create state",
+    );
+    fixture.fixtureWindow.document.cookie = "aicrm_admin_csrf=create-session-b";
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="retry-create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document
+          .querySelector('.group-ops__modal-notice[role="alert"]')
+          ?.textContent.includes("登录状态已变化"),
+      "changed CSRF session did not block recovery",
+    );
+    assert.equal(
+      creationPosts(fixture.requests).length,
+      1,
+      "a changed CSRF session must issue zero replay POSTs",
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+
+// The initial POST can complete while the CSRF session changes before the
+// Host starts the dependent PUT. The Host rechecks the private marker, keeps
+// the known plan ID visible, and issues no configuration request.
+{
+  let fixture;
+  fixture = await startCreateJourney("create-session-change-after-post", {
+    post: (request) => {
+      fixture.fixtureWindow.document.cookie = "aicrm_admin_csrf=create-session-b";
+      return response(createDetail({ name: request.body.name }));
+    },
+  });
+  try {
+    await openCreate(fixture, { name: "配置前会话变化" });
+    fixture.fixtureWindow.document
+      .querySelector('[data-action="create-plan"]')
+      .click();
+    await waitFor(
+      () =>
+        fixture.fixtureWindow.document
+          .querySelector('.group-ops__modal-notice[role="alert"]')
+          ?.textContent.includes("登录状态已变化"),
+      "a CSRF change after POST did not stop dependent configuration",
+    );
+    assert.equal(creationPosts(fixture.requests).length, 1, "the accepted create must retain its one POST");
+    assert.equal(configurationPuts(fixture.requests).length, 0, "a changed session must prevent the dependent PUT");
+    assert.equal(
+      fixture.fixtureWindow.document.querySelector('[href="/admin/automation-conversion/group-ops/plans/501"]') !== null,
+      true,
+      "a known created plan must remain reachable after the session changes",
+    );
+  } finally {
+    closeCreateJourney(fixture);
+  }
+}
+console.log("groupops-create-recovery-dom: PASS");
 
 // Archived plans are terminal in both projected list and detail views. The
 // browser must not render an enable/delete path or a writable detail control.

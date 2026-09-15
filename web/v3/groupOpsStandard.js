@@ -25,6 +25,8 @@
     noticeIsError: false,
     showCreate: false,
     createNotice: "",
+    createDraft: null,
+    createInFlight: false,
     showGroupPicker: false,
     groupPickerSearch: "",
     groupPickerNotice: "",
@@ -173,8 +175,30 @@
     return state.listBusy || state.listUnauthorized || Boolean(state.listRetrySnapshot);
   }
 
+  function createFlowLocked() {
+    if (state.createInFlight) return true;
+    const phase = state.createDraft && state.createDraft.phase;
+    return (
+      phase === "post_unknown" ||
+      phase === "post_authorization" ||
+      phase === "configuration_unknown" ||
+      phase === "configuration_rejected" ||
+      phase === "configuration_authorization" ||
+      phase === "session_changed"
+    );
+  }
+
+  function listWriteReadbackLocked() {
+    return (
+      state.listBusy ||
+      state.listUnauthorized ||
+      Boolean(state.changingPlanId) ||
+      Boolean(state.writeReadbackPlanId)
+    );
+  }
+
   function listWritesDisabled() {
-    return state.listBusy || state.listUnauthorized || Boolean(state.changingPlanId) || Boolean(state.writeReadbackPlanId);
+    return listWriteReadbackLocked() || createFlowLocked();
   }
 
   function statusText(status) {
@@ -613,6 +637,8 @@
       return renderDetail();
     }
     if (action === "create-plan") return createPlan();
+    if (action === "retry-create-plan") return retryCreatePlan();
+    if (action === "retry-create-configuration") return retryCreateConfiguration();
     if (action === "show-create-plan") return showCreatePlan();
     if (action === "cancel-create-plan") return cancelCreatePlan();
     if (action === "save-plan") return savePlan();
@@ -643,14 +669,17 @@
     if (action === "delete-node") return deleteNode(event.currentTarget.dataset.nodeId);
     if (action === "copy-webhook") return copyWebhook();
     if (action === "save-webhook") return saveWebhook();
-    if (action === "pick-create-owner") return openMemberPicker({
+    if (action === "pick-create-owner") {
+      if (createControlsDisabled()) return;
+      return openMemberPicker({
       fieldName: "create_owner_userid",
       title: "选择负责人",
       value: currentFormValue("create_owner_userid"),
       onPicked: (member) => {
         state.createOwner = member;
       },
-    });
+      });
+    }
     if (action === "pick-plan-owner") return openMemberPicker({
       fieldName: "owner_userid",
       title: "选择负责人",
@@ -689,40 +718,253 @@
   }
 
   function cancelCreatePlan() {
+    if (createFlowLocked()) return;
     state.showCreate = false;
     state.createNotice = "";
+    state.createDraft = null;
+    state.createOwner = null;
     renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
   }
 
+  function createIdempotencyKey(stage) {
+    return `groupops-create-${stage}-${crypto.randomUUID()}`.toLowerCase();
+  }
+
+  function createSessionMarker() {
+    const entries = String(document.cookie || "")
+      .split(";")
+      .map((value) => value.trim().split("="));
+    const entry = entries.find(
+      ([name]) => name === "aicrm_csrf" || name === "aicrm_admin_csrf",
+    );
+    return entry ? entry.slice(1).join("=") : "";
+  }
+
+  function editableCreateDraftFromForm() {
+    const owner = currentFormValue("create_owner_userid") || memberStaffId(state.createOwner);
+    return Object.freeze({
+      plan_name:
+        String(
+          currentFormValue("create_plan_name") || "新建群运营计划",
+        ).trim() || "新建群运营计划",
+      plan_type: currentFormValue("create_plan_type") || "standard",
+      owner_userid: owner,
+      status: "draft",
+      phase: "editing",
+    });
+  }
+
+  function retainEditableCreateDraft() {
+    if (!state.showCreate || createFlowLocked()) return;
+    // A loading shell has already replaced the form during page navigation.
+    // Keep the snapshot captured immediately before that replacement instead
+    // of treating absent controls as a fresh default draft.
+    if (!document.querySelector('[name="create_plan_name"]')) return;
+    state.createDraft = editableCreateDraftFromForm();
+  }
+
+  function createDraftFromForm() {
+    const draft = editableCreateDraftFromForm();
+    return Object.freeze({
+      ...draft,
+      create_key: createIdempotencyKey("post"),
+      configuration_key: createIdempotencyKey("configuration"),
+      plan_id: 0,
+      expected_revision: 0,
+      session_marker: createSessionMarker(),
+      phase: "post",
+    });
+  }
+
+  function createControlsDisabled() {
+    return listWriteReadbackLocked() || createFlowLocked();
+  }
+
+  function createErrorStatus(error) {
+    return error && typeof error.status === "number" ? error.status : 0;
+  }
+
+  function createErrorKind(error) {
+    const status = createErrorStatus(error);
+    if (status === 401 || status === 403) return "authorization";
+    if (status === 400 || status === 409) return "rejected";
+    return "unknown";
+  }
+
+  function createErrorRecovery(error) {
+    const value = error && error.groupOpsCreateRecovery;
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function stopCreateRecoveryForSession(draft) {
+    state.createDraft = Object.freeze({ ...draft, phase: "session_changed" });
+    state.createInFlight = false;
+    state.showCreate = true;
+    state.createNotice =
+      "登录状态已变化，不能恢复这次创建。请重新核对已有计划；系统不会以新身份重放请求。";
+    state.notice = "";
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+  }
+
+  function createItem(payload) {
+    const item = payload && (payload.item || payload);
+    const id = positiveSafeInteger(item && item.id);
+    const revision = numericPositiveSafeInteger(item && item.revision);
+    if (!id || !revision) throw new Error("创建结果未确认，请重新确认创建");
+    return Object.freeze({ id, revision });
+  }
+
+  function createRecoveryOptions(draft, phase) {
+    const options = {
+      stage: phase,
+      create_key: draft.create_key,
+      configuration_key: draft.configuration_key,
+      session_marker: draft.session_marker,
+      plan_name: draft.plan_name,
+      plan_type: draft.plan_type,
+      owner_userid: draft.owner_userid,
+    };
+    if (phase === "configuration") {
+      options.plan_id = draft.plan_id;
+      options.expected_revision = draft.expected_revision;
+    }
+    return Object.freeze(options);
+  }
+
+  function setCreateFailure(draft, error) {
+    const recovery = createErrorRecovery(error);
+    const stage =
+      recovery && recovery.stage === "configuration" ? "configuration" : "post";
+    const kind = createErrorKind(error);
+    let next = { ...draft };
+    if (stage === "configuration" && recovery) {
+      next = {
+        ...next,
+        plan_id: positiveSafeInteger(recovery.plan_id) || 0,
+        expected_revision:
+          numericPositiveSafeInteger(recovery.expected_revision) || 0,
+      };
+    }
+    if (recovery && recovery.session_changed) {
+      stopCreateRecoveryForSession(next);
+      return;
+    }
+    if (stage === "post") {
+      next.phase =
+        kind === "authorization"
+          ? "post_authorization"
+          : kind === "rejected"
+            ? "rejected"
+            : "post_unknown";
+      state.createNotice =
+        kind === "authorization"
+          ? "当前账号无权创建计划。请重新登录后重新读取页面；系统未自动重放创建请求。"
+          : kind === "rejected"
+            ? `创建被拒绝：${requestErrorMessage(error, "请修改草稿后重新创建")}`
+            : `创建结果尚未确认：${requestErrorMessage(error, "请重新确认创建")}。请勿新建或修改当前草稿。`;
+    } else {
+      if (!next.plan_id || !next.expected_revision) {
+        next.phase = "post_unknown";
+        state.createNotice =
+          "创建结果尚未确认，请重新确认创建；系统不会自动重试。";
+      } else {
+        next.phase =
+          kind === "authorization"
+            ? "configuration_authorization"
+            : kind === "rejected"
+              ? "configuration_rejected"
+              : "configuration_unknown";
+        state.createNotice =
+          kind === "authorization"
+            ? "计划已创建，但当前账号无权继续配置负责人。请重新登录后打开该计划；系统未自动重放配置请求。"
+            : kind === "rejected"
+              ? `计划已创建，但基础配置被拒绝：${requestErrorMessage(error, "请打开计划后核对")}`
+              : `计划已创建，但基础配置结果尚未确认：${requestErrorMessage(error, "请重新确认配置")}。请勿新建或修改当前草稿。`;
+      }
+    }
+    state.createDraft = Object.freeze(next);
+    state.createInFlight = false;
+    state.showCreate = true;
+    state.notice = "";
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+  }
+
+  async function submitCreate(draft, phase) {
+    if (
+      !draft.session_marker ||
+      createSessionMarker() !== draft.session_marker
+    ) {
+      stopCreateRecoveryForSession(draft);
+      return;
+    }
+    state.createDraft = Object.freeze({
+      ...draft,
+      phase: phase === "configuration" ? "configuration" : "post",
+    });
+    state.createInFlight = true;
+    state.createNotice =
+      phase === "configuration" ? "正在确认基础配置" : "正在创建计划";
+    state.notice = "";
+    renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
+    try {
+      const created = await requestJson(routes.apiPlans, {
+        method: "POST",
+        body: {
+          plan_name: draft.plan_name,
+          plan_type: draft.plan_type,
+          owner_userid: draft.owner_userid,
+          status: draft.status,
+        },
+        createRecovery: createRecoveryOptions(draft, phase),
+      });
+      const item = createItem(created);
+      state.createInFlight = false;
+      state.createDraft = null;
+      state.createNotice = "";
+      window.location.assign(routes.plan(item.id));
+    } catch (error) {
+      setCreateFailure(draft, error);
+    }
+  }
+
   async function createPlan() {
-    if (listWritesDisabled()) return;
-    const owner = currentFormValue("create_owner_userid");
-    if (!owner) {
+    if (listWriteReadbackLocked() || createFlowLocked()) return;
+    const draft = createDraftFromForm();
+    if (!draft.owner_userid) {
       state.showCreate = true;
+      state.createDraft = Object.freeze({ ...draft, phase: "rejected" });
       state.createNotice = "请选择运营成员";
       state.notice = "";
       renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
       return;
     }
-    try {
-      const created = await requestJson(routes.apiPlans, {
-        method: "POST",
-        body: {
-          plan_name: currentFormValue("create_plan_name") || "新建群运营计划",
-          plan_type: currentFormValue("create_plan_type") || "standard",
-          owner_userid: owner,
-          status: "draft",
-        },
-      });
-      const item = created.item || created;
-      if (item.id) window.location.assign(routes.plan(item.id));
-    } catch (error) {
-      const message = requestErrorMessage(error, "创建失败");
-      state.showCreate = true;
-      state.createNotice = message.includes("创建失败") ? message : `创建失败：${message}`;
-      state.notice = "";
-      renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
-    }
+    return submitCreate(draft, "post");
+  }
+
+  function retryCreatePlan() {
+    const draft = state.createDraft;
+    if (
+      !draft ||
+      draft.phase !== "post_unknown" ||
+      state.createInFlight ||
+      listWriteReadbackLocked()
+    )
+      return;
+    return submitCreate(draft, "post");
+  }
+
+  function retryCreateConfiguration() {
+    const draft = state.createDraft;
+    if (
+      !draft ||
+      draft.phase !== "configuration_unknown" ||
+      !draft.plan_id ||
+      !draft.expected_revision ||
+      state.createInFlight ||
+      listWriteReadbackLocked()
+    )
+      return;
+    return submitCreate(draft, "configuration");
   }
 
   async function disablePlan(action) {
@@ -1164,6 +1406,10 @@
     state.listBusy = true;
     state.listError = "";
     state.listRetrySnapshot = null;
+    // A new page can replace the list shell with a loading view before the
+    // next render. Preserve an editable creation form first; pending recovery
+    // phases remain immutable through createFlowLocked().
+    retainEditableCreateDraft();
     if (!preserveView) renderLoading();
     else renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
     const current = () => state.listGeneration === generation && state.listController === controller;
@@ -1216,21 +1462,58 @@
 
   function renderCreatePanel() {
     if (!state.showCreate) return "";
-    const ownerField = renderMemberField("create_owner_userid", (state.createOwner || {}).staff_id, "pick-create-owner", state.createOwner ? "更换运营成员" : "选择运营成员");
+    const draft = state.createDraft || {};
+    const locked = createControlsDisabled();
+    // GroupOps stores local staff_id in this compatibility owner field. Never
+    // substitute the external UserID: numeric values can collide across staff.
+    const ownerID = draft.owner_userid || (state.createOwner || {}).staff_id;
+    const ownerField = renderMemberField(
+      "create_owner_userid",
+      ownerID,
+      "pick-create-owner",
+      state.createOwner ? "更换运营成员" : "选择运营成员",
+      locked,
+    );
+    const phase = draft.phase || "";
+    const retryPost = phase === "post_unknown";
+    const retryConfiguration = phase === "configuration_unknown";
+    const openCreated = positiveSafeInteger(draft.plan_id);
     return `
       <section class="group-ops__card">
         <div class="group-ops__filters">
-          <label class="group-ops__field group-ops__field--wide"><span>计划名称</span><input name="create_plan_name" value="新建群运营计划"></label>
-          <label class="group-ops__field"><span>计划类型</span><select name="create_plan_type"><option value="standard">标准编排计划</option><option value="webhook">Webhook 接收计划</option></select></label>
+          <label class="group-ops__field group-ops__field--wide"><span>计划名称</span><input name="create_plan_name" value="${escapeHtml(draft.plan_name || "新建群运营计划")}"${locked ? " disabled" : ""}></label>
+          <label class="group-ops__field"><span>计划类型</span><select name="create_plan_type"${locked ? " disabled" : ""}><option value="standard"${(draft.plan_type || "standard") === "standard" ? " selected" : ""}>标准编排计划</option><option value="webhook"${draft.plan_type === "webhook" ? " selected" : ""}>Webhook 接收计划</option></select></label>
           <label class="group-ops__field"><span>运营成员</span>${ownerField}</label>
-          <div class="group-ops__modal-notice" ${state.createNotice ? "" : "hidden"}>${escapeHtml(state.createNotice)}</div>
-          <div class="group-ops__row-actions">${actionButton("保存计划", "create-plan", "group-ops__button--primary", listWritesDisabled())}${actionButton("取消", "cancel-create-plan")}</div>
+          <div class="group-ops__modal-notice" role="alert" ${state.createNotice ? "" : "hidden"}>${escapeHtml(state.createNotice)}</div>
+          <div class="group-ops__row-actions">${
+            retryPost
+              ? actionButton(
+                  "重新确认创建",
+                  "retry-create-plan",
+                  "group-ops__button--primary",
+                  state.createInFlight || listWriteReadbackLocked(),
+                )
+              : retryConfiguration
+                ? actionButton(
+                    "重新确认基础配置",
+                    "retry-create-configuration",
+                    "group-ops__button--primary",
+                    state.createInFlight || listWriteReadbackLocked(),
+                  )
+                : actionButton(
+                    state.createInFlight ? "创建中" : "保存计划",
+                    "create-plan",
+                    "group-ops__button--primary",
+                    locked,
+                  )
+          }${openCreated ? pageButton("打开已创建计划", routes.plan(openCreated), "primary") : ""}${actionButton("取消", "cancel-create-plan", "", locked)}</div>
         </div>
       </section>
     `;
   }
 
   function renderList(total, queueCount) {
+    retainEditableCreateDraft();
     const totalKnown = state.listHasSuccessfulPage && Number.isSafeInteger(total) && total >= 0;
     const boundCountKnown = state.listHasSuccessfulPage && state.plans.every((plan) => Number.isSafeInteger(plan.bound_group_count) && plan.bound_group_count >= 0);
     const boundCount = boundCountKnown ? state.plans.reduce((sum, plan) => sum + plan.bound_group_count, 0) : null;
@@ -1304,7 +1587,6 @@
     `);
     state.notice = "";
     state.noticeIsError = false;
-    state.createNotice = "";
   }
 
   async function readDetailPage(planId) {
