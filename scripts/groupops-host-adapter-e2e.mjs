@@ -1050,3 +1050,72 @@ try {
 } finally {
   archivedDetailJourney.window.close();
 }
+
+// The groups page must distinguish an unavailable directory from a confirmed
+// empty result. A failed follow-up read keeps the last rows visible, while an
+// initial failure has no rows to retain.
+async function assertGroupsReadFailureJourney({ hasPreviousRows }) {
+  let groupReads = 0;
+  const journey = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="groups"></main></body></html>`, {
+    url: "https://groupops.test/admin/automation-conversion/group-ops/groups/ui",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  const page = journey.window;
+  page.Headers = Headers;
+  page.Response = Response;
+  Object.defineProperty(page, "crypto", { configurable: true, value: crypto });
+  page.fetch = async (input, init = {}) => {
+    const url = new URL(String(input), page.location.href);
+    const method = String(init.method || "GET").toUpperCase();
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/groups" && method === "GET") {
+      groupReads += 1;
+      if (!hasPreviousRows || groupReads > 1)
+        return response({ code: "directory_unavailable" }, 503);
+      return response({
+        items: [{ chat_reference: "known-group", display_name: "已读取群", owner_staff_id: 7 }],
+        total: 1,
+        limit: 200,
+        offset: 0,
+        has_more: false,
+      });
+    }
+    if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return response({ items: [] });
+    if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return response({ items: [] });
+    throw new Error(`unexpected group read request ${method} ${url.pathname}${url.search}`);
+  };
+  try {
+    page.eval(pickerSource);
+    page.eval(bundle.outputFiles[0].text);
+    if (!hasPreviousRows) {
+      await waitFor(
+        () => page.document.body.textContent.includes("群聊列表暂不可读取"),
+        "initial groups read failure did not identify an unavailable directory",
+      );
+      assert.equal(
+        page.document.body.textContent.includes("暂无数据"),
+        false,
+        "an initial group read failure must not look like a confirmed empty directory",
+      );
+      return;
+    }
+    await waitFor(() => page.document.body.textContent.includes("已读取群"), "initial group rows did not render");
+    const bindStatus = page.document.querySelector('select[name="bind_status"]');
+    bindStatus.value = "bound";
+    bindStatus.dispatchEvent(new page.Event("change", { bubbles: true }));
+    await waitFor(
+      () => page.document.body.textContent.includes("当前显示上次读取结果"),
+      "failed follow-up groups read did not identify retained rows",
+    );
+    assert(
+      page.document.body.textContent.includes("已读取群"),
+      "failed follow-up read must retain the previous rows",
+    );
+  } finally {
+    journey.window.close();
+  }
+}
+
+await assertGroupsReadFailureJourney({ hasPreviousRows: false });
+await assertGroupsReadFailureJourney({ hasPreviousRows: true });
+console.log("groupops-groups-read-failure-dom: PASS");

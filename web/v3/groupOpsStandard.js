@@ -1544,6 +1544,12 @@
         </tr>`,
       )
       .join("");
+    const groupsReadNotice = state.groupsReadError
+      ? state.groups.length
+        ? `${state.groupsReadError}；当前显示上次读取结果`
+        : `群聊列表暂不可读取：${state.groupsReadError}`
+      : "";
+    const emptyRows = state.groupsReadError ? "群聊列表暂不可读取" : "暂无数据";
     renderShell(`
       <div class="group-ops__bar">${pageButton("返回列表", routes.list)}</div>
       <section class="group-ops__card">
@@ -1554,13 +1560,13 @@
           <label class="group-ops__field"><span>所属计划</span><select name="plan_id" data-filter><option value="">全部</option>${renderPlanFilter()}</select></label>
           <label class="group-ops__field"><span>已绑定 / 未绑定</span><select name="bind_status" data-filter><option value=""${state.groupBindStatus === "" ? " selected" : ""}>全部</option><option value="bound"${state.groupBindStatus === "bound" ? " selected" : ""}>已绑定</option><option value="unbound"${state.groupBindStatus === "unbound" ? " selected" : ""}>未绑定</option></select></label>
         </div>
-        ${state.groupsReadError ? `<p class="group-ops__notice group-ops__notice--error" role="alert">${escapeHtml(state.groupsReadError)}</p>` : ""}
+        ${groupsReadNotice ? `<p class="group-ops__notice group-ops__notice--error" role="alert">${escapeHtml(groupsReadNotice)}</p>` : ""}
       </section>
       <section class="group-ops__card">
         <div class="group-ops__table-wrap">
           <table class="group-ops__table">
             <thead><tr><th>群名</th><th>群 ID</th><th>群主</th><th>所属计划</th><th>状态</th></tr></thead>
-            <tbody>${rows || '<tr><td colspan="5" class="group-ops__empty">暂无数据</td></tr>'}</tbody>
+            <tbody>${rows || `<tr><td colspan="5" class="group-ops__empty">${emptyRows}</td></tr>`}</tbody>
           </table>
         </div>
       </section>
