@@ -42,7 +42,7 @@ const waitFor = async (cdp, expression, label) => {
     if (await evaluate(cdp, expression, `${label} probe`)) return;
     await delay(50);
   }
-  const evidence = await evaluate(cdp, `(() => ({path: location.pathname, state: document.body.dataset.v3PublicSurvey || '', text: document.querySelector('#screen')?.textContent?.trim().slice(0, 500) || ''}))()`, `${label} evidence`);
+  const evidence = await evaluate(cdp, `(() => ({path: location.pathname, state: document.body?.dataset.v3PublicSurvey || '', text: document.querySelector('#screen')?.textContent?.trim().slice(0, 500) || ''}))()`, `${label} evidence`);
   throw new Error(`${label}: ${JSON.stringify(evidence)}`);
 };
 const portURL = async (profile) => {
@@ -83,7 +83,7 @@ try {
   await cdp.call('Network.setCookie', { name: '__Host-aicrm_survey_identity', value: session, url: base, path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
 
   await cdp.call('Page.navigate', { url: `${base}/q/${successSlug}` });
-  await waitFor(cdp, `location.pathname === '/h5/all.html' && document.body.dataset.v3PublicSurvey === 'all'`, 'authorized public all-in-one route did not mount');
+  await waitFor(cdp, `location.pathname === '/h5/all.html' && document.body?.dataset.v3PublicSurvey === 'all'`, 'authorized public all-in-one route did not mount');
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-question-id] label[data-option-id]')) && Boolean(document.querySelector('#screen [data-h5-submit]'))`, 'actual public answer form did not render');
   await screenshot(cdp, 375, 'public-survey-answer-375.png');
   await evaluate(cdp, `document.querySelector('#screen [data-h5-submit]').click(); true`, 'submit incomplete required answer');
@@ -101,7 +101,7 @@ try {
   await screenshot(cdp, 390, 'public-survey-result-390.png');
 
   await cdp.call('Page.navigate', { url: `${base}/q/${failureSlug}` });
-  await waitFor(cdp, `location.pathname === '/h5/one.html' && document.body.dataset.v3PublicSurvey === 'one' && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('1 / 2')`, 'authorized one-by-one route or progress did not mount');
+  await waitFor(cdp, `location.pathname === '/h5/one.html' && document.body?.dataset.v3PublicSurvey === 'one' && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('1 / 2')`, 'authorized one-by-one route or progress did not mount');
   await evaluate(cdp, `document.querySelector('#screen label[data-option-id]').click(); true`, 'select retry answer');
   await evaluate(cdp, `document.querySelector('#screen [data-h5-next]').click(); true`, 'advance to final question');
   await waitFor(cdp, `document.querySelector('#screen [data-h5-submit]') && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('2 / 2')`, 'final one-by-one submit step did not render');
