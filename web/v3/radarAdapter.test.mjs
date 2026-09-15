@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
@@ -7,6 +8,15 @@ import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const host = await buildTestBrowserBundle(path.join(root, 'web/v3/radarAdapter.ts'));
+const exposedHostDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'aicrm-radar-adapter-test-'));
+const exposedHostEntry = path.join(exposedHostDirectory, 'entry.ts');
+let exposedHost;
+try {
+  fs.writeFileSync(exposedHostEntry, `import ${JSON.stringify(path.join(root, 'web/v3/radarAdapter.ts'))};\nimport { api } from ${JSON.stringify(path.join(root, 'web/src/shared/api/client.ts'))};\n(globalThis as typeof globalThis & { __aicrmRadarTestApi?: unknown }).__aicrmRadarTestApi = api;\n`);
+  exposedHost = await buildTestBrowserBundle(exposedHostEntry);
+} finally {
+  fs.rmSync(exposedHostDirectory, { recursive: true, force: true });
+}
 const picker = fs.readFileSync(path.join(root, 'web/donors/ai-assistant-production/static/material_picker.js'), 'utf8');
 const wait = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 async function waitFor(check, label) {
@@ -233,5 +243,62 @@ assert.equal(applyRaceDocument.querySelector('.pk-mask'), null, 'a stale frozen 
 assert.ok(applyRaceDocument.querySelector('[data-v3-selection-session="material"]'), 'the V3 dialog retains its temporary draft after the stale owner callback is rejected');
 applyRaceDocument.querySelector('[data-v3-picker-cancel]').click();
 applyRaceDom.window.close();
+
+// The frozen callback sometimes asks for its retired broad directory. A scoped
+// 404 may use the already-authorised V3 record, but an auth failure must keep
+// the dialog and original form draft intact. The test exposes only the test
+// bundle's `api` instance; production code keeps it module-private.
+async function assertScopedCallbackFallback(status, applies) {
+  const fallbackDom = new JSDOM(`<!doctype html><body data-page="radarForm"><main id="stage"></main></body>`, {
+    url: 'https://test.invalid/admin/radarForm.html', runScripts: 'dangerously', pretendToBeVisual: true,
+    beforeParse(window) {
+      window.Response = Response; window.Headers = Headers;
+      window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+      window.__AICRM_TEST_MOCK__ = true;
+      window.fetch = async (input) => {
+        const url = new URL(String(input), window.location.href);
+        const reply = (body, responseStatus = 200) => new Response(JSON.stringify(body), { status: responseStatus, headers: { 'Content-Type': 'application/json' } });
+        if (url.pathname === '/api/admin/image-library') return reply({ items: [{ id: 1, name: '精确授权图片', enabled: true, mime_type: 'image/png' }], has_more: false });
+        return reply({ code: 'unexpected_scoped_callback_request' }, 500);
+      };
+    },
+  });
+  fallbackDom.window.eval(picker);
+  fallbackDom.window.eval(exposedHost);
+  const fallbackDocument = fallbackDom.window.document;
+  await waitFor(() => fallbackDocument.querySelector('#btnPick'), `the ${status} fixture must mount the frozen Radar form`);
+  const testApi = fallbackDom.window.__aicrmRadarTestApi;
+  assert.ok(testApi && typeof testApi.loadDb === 'function', 'the scoped fallback fixture exposes its bundled AdminApi only for this test');
+  const priorLoadDb = testApi.loadDb.bind(testApi);
+  testApi.loadDb = async (context) => {
+    if (context?.page === 'radarForm') {
+      const error = new Error(`HTTP ${status}`);
+      error.status = status;
+      throw error;
+    }
+    return priorLoadDb(context);
+  };
+  fallbackDocument.querySelector('[data-t="image"]').click();
+  fallbackDocument.querySelector('#btnPick').click();
+  await waitFor(() => fallbackDocument.querySelector('[data-v3-material-key$=":1"]'), `the ${status} fixture must load its V3-authorised record`);
+  fallbackDocument.querySelector('[data-v3-material-key$=":1"]').click();
+  fallbackDocument.querySelector('[data-v3-picker-confirm]').click();
+  if (applies) {
+    await waitFor(() => fallbackDocument.querySelector('#mediaName')?.textContent === '精确授权图片', 'a scoped 404 must apply only the already-authorised selected record');
+    await waitFor(() => fallbackDocument.querySelector('[data-v3-selection-session="material"]') === null, 'a scoped 404 completes the exact authorised callback without a broad picker');
+  } else {
+    await waitFor(() => fallbackDocument.querySelector('[data-v3-selection-session="material"]'), `the ${status} callback failure keeps the V3 dialog open`);
+    await wait(120);
+    const failureText = fallbackDocument.querySelector('[data-v3-selection-session="material"]')?.textContent || '';
+    assert.match(failureText, /应用素材失败/, `the ${status} callback failure stays visible in the V3 dialog`);
+    assert.equal(fallbackDocument.querySelector('#mediaPicked').hidden, true, `HTTP ${status} must not apply an unverified fallback to the original form`);
+    fallbackDocument.querySelector('[data-v3-picker-cancel]').click();
+  }
+  assert.equal(fallbackDocument.querySelector('.pk-mask'), null, `the ${status} callback must not leave a frozen popup`);
+  fallbackDom.window.close();
+}
+
+await assertScopedCallbackFallback(404, true);
+await assertScopedCallbackFallback(403, false);
 console.log('radar edit existing image direct PDF switch: PASS');
 
