@@ -8,13 +8,19 @@ const username = process.env.AICRM_PRODUCT_PUSH_TEST_USERNAME;
 const password = process.env.AICRM_PRODUCT_PUSH_TEST_PASSWORD;
 const productID = process.env.AICRM_PRODUCT_PUSH_TEST_PRODUCT_ID;
 const serviceProductID = process.env.AICRM_PRODUCT_PUSH_TEST_SERVICE_PRODUCT_ID;
+const materialFirstID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID;
+const materialLaterID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID;
 const historicalOrderReference = process.env.AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER;
 const exactParams = process.env.AICRM_PRODUCT_PUSH_TEST_PARAMS;
+// The Product owner derives a stable per-product endpoint reference from the
+// target submitted to its admin command. Browser checks must use the owner's
+// readback value, rather than compare that derived reference to the target.
+const productConfigurationReference = `product-endpoint:wechat_pay:${productID}`;
 // The fixture input intentionally has a different key order. Go persists an
 // object and returns its canonical map text. Keep this as literal JSON rather
 // than parsing it in JavaScript: JSON.parse would round the 64-bit integer.
 const canonicalParams = '{"count":9007199254740993,"flag":false,"nested":[{"inner":9007199254740993}]}';
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !exactParams) {
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(materialFirstID || "") || !/^[1-9][0-9]*$/.test(materialLaterID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !exactParams) {
   throw new Error("product external push Chromium journey requires HTTPS URL, credentials, ordinary and service-period product ids, historical order, and JSON");
 }
 
@@ -188,8 +194,9 @@ try {
       const toast = document.querySelector('#product-v3-toast');
       const status = panel?.querySelector('[data-external-push-configuration-status]')?.textContent || '';
       const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '='));
+      const version = status.match(/^配置版本 (\\d+)$/);
       const knownStatus = status === '正在读取配置…' ? 'configuration_loading'
-        : /^配置版本 \d+$/.test(status) ? 'configuration_loaded'
+        : version ? 'configuration_version_' + version[1]
         : status === '外推配置响应不完整' ? 'configuration_response_invalid'
         : /^外推请求失败（HTTP \d+）$/.test(status) ? 'configuration_http_error'
         : status ? 'configuration_status_other' : 'configuration_status_empty';
@@ -292,6 +299,46 @@ try {
   } catch (_) {
     throw new Error("product configuration did not load " + await browserSaveDiagnostic());
   }
+  const configurationBeforeMaterial = await evaluate(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>({enabled:body?.enabled===true,reference:body?.configuration_reference===" + JSON.stringify(productConfigurationReference) + "?'expected':body?.configuration_reference===''?'empty':'other'}))");
+  if (!configurationBeforeMaterial?.enabled || configurationBeforeMaterial?.reference !== 'expected') {
+    throw new Error('product lifecycle changed the seeded external-push configuration ' + JSON.stringify(configurationBeforeMaterial || {}));
+  }
+  const productFrozenBinding = await evaluate(cdp, "(()=>{const enabled=document.querySelector('#pfExternalPushEnabled');const references=[...document.querySelectorAll('#pfExternalPushReference')].filter((node)=>node instanceof HTMLInputElement);return {enabled:enabled instanceof HTMLSelectElement&&enabled.value==='true',references:{expected:references.filter((node)=>node.value===" + JSON.stringify(productConfigurationReference) + ").length,empty:references.filter((node)=>node.value==='').length,other:references.filter((node)=>node.value!==''&&node.value!==" + JSON.stringify(productConfigurationReference) + ").length}}})()");
+  if (!productFrozenBinding?.enabled || productFrozenBinding?.references?.expected !== 1 || productFrozenBinding.references.empty !== 0 || productFrozenBinding.references.other !== 0) {
+    throw new Error('product configuration did not synchronize the frozen product draft ' + JSON.stringify(productFrozenBinding || {}));
+  }
+  // The V3 caller reads its own paged, authorised Media catalogue. Pick an
+  // item from the first page, remove it in the temporary dialog, then confirm
+  // an item outside that legacy page. The frozen product controller remains
+  // the only owner of the browser draft and later Product save/readback.
+  const productMediaTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-media\"]');if(!(tab instanceof HTMLAnchorElement))return false;tab.click();return true})()");
+  if (!productMediaTabOpened) throw new Error('product media tab was unavailable');
+  await waitFor(cdp, "Boolean(Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='从素材库选择'))", 'product material caller did not mount');
+  await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='从素材库选择').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-key$=\":" + materialFirstID + "\"]'))", 'product V3 material first page did not render');
+  if (!await evaluate(cdp, "(()=>{const row=document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-key$=\":" + materialFirstID + "\"]');if(!row)return false;row.click();return true})()")) throw new Error('product V3 material first-page row was unavailable');
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-more]').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-key$=\":" + materialLaterID + "\"]'))", 'product V3 material later page did not render');
+  if (!await evaluate(cdp, "(()=>{const row=document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-key$=\":" + materialLaterID + "\"]');if(!row)return false;row.click();const remove=document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove$=\":" + materialFirstID + "\"]');if(!remove)return false;remove.click();return true})()")) throw new Error('product V3 material temporary multi-select/remove did not retain both pages');
+  const selectedLaterOnly = await evaluate(cdp, "(()=>{const selected=document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-selected]')?.textContent||'';return selected.includes('Chromium 商品后续页素材')&&!selected.includes('Chromium 商品首页素材')})()");
+  if (!selectedLaterOnly) throw new Error('product V3 material removal did not remain a local draft');
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-confirm]').click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Array.from(document.querySelectorAll('#product-media img')).some((image)=>image.src.includes('/" + materialLaterID + "/variants/thumb_320'))", 'product V3 material confirmation did not update the original product draft');
+  await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='从素材库选择').click(); true");
+  await waitFor(cdp, `Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-remove$=":${materialLaterID}"]'))`, 'product material reopening did not reconstruct the owner draft');
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove$=\":" + materialLaterID + "\"]').click(); document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Array.from(document.querySelectorAll('#product-media img')).some((image)=>image.src.includes('/" + materialLaterID + "/variants/thumb_320'))", 'product material cancellation changed the original draft');
+  await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='保存当前维度').click(); true");
+  await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')", 'product material owner save did not complete');
+  await waitFor(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Number(body?.revision)===2)", 'product material owner save did not advance the original external-push CAS revision');
+  const preservedAfterMaterialSave = await evaluate(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>({enabled:body?.enabled===true,reference:body?.configuration_reference===" + JSON.stringify(productConfigurationReference) + "?'expected':body?.configuration_reference===''?'empty':'other',url:body?.url==='https://commerce-browser.invalid',type:body?.type==='paid_notify',params:body?.custom_params_json==='{}'}))");
+  if (preservedAfterMaterialSave?.reference !== 'expected') {
+    throw new Error('product material owner save changed the external-push reference ' + JSON.stringify(preservedAfterMaterialSave || {}));
+  }
+  if (!preservedAfterMaterialSave?.enabled || !preservedAfterMaterialSave?.url || !preservedAfterMaterialSave?.type || !preservedAfterMaterialSave?.params) {
+    throw new Error('product material owner save changed an external-push field ' + JSON.stringify(preservedAfterMaterialSave || {}));
+  }
+  await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Array.isArray(body?.images)&&body.images.length===1&&body.images[0]==='/api/admin/image-library/" + materialLaterID + "/variants/original')", 'product material owner save/readback did not preserve the later-page URL');
   // Field-variable filtering belongs to the mounted V3 mapping editor. It
   // filters locally only after explicit Enter; preview/save remain unchanged.
   const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');const panel=document.querySelector('#product-push');if(!(tab instanceof HTMLAnchorElement)||!(panel instanceof HTMLElement))return false;tab.click();return true})()");
@@ -326,10 +373,14 @@ try {
   const mappingSearchFocus = await evaluate(cdp, "(()=>{const input=document.querySelector('[data-field-mapping-variable-search]');return Boolean(input&&document.activeElement===input&&input.value==='付款')})()");
   if (!mappingSearchFocus) throw new Error('product field-mapping Enter did not retain query focus');
   await cdp.call("Page.navigate", { url: baseURL + productPath });
-  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "product form did not reset after local mapping search proof");
+  try {
+    await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 2'", "product form did not reset after local mapping search proof");
+  } catch (_) {
+    throw new Error("product form did not reset after local mapping search proof " + await browserSaveDiagnostic());
+  }
   await evaluate(cdp, "(() => { document.querySelector('a[href=\"#product-push\"]')?.click(); const enabled=document.querySelector('#pfExternalPushEnabled'); const reference=document.querySelector('#pfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-url').value='https://commerce-browser.invalid'; document.querySelector('#product-v3-external-push-type').value='member_open'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; (Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')) || document.querySelector('[data-external-push-configuration-save]')).click(); return true; })()");
   try {
-    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '2' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "browser configuration save did not finish");
+    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '3' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "browser configuration save did not finish");
   } catch (_) {
     throw new Error("browser configuration save did not finish " + await browserSaveDiagnostic());
   }

@@ -902,6 +902,15 @@ func ChromiumJourneyRequired() bool {
 	return ok && value == "1"
 }
 
+// ProductExternalPushDarwinChromiumDiagnosticAllowed permits an explicitly
+// requested developer diagnostic run of the Product external-push Chromium
+// journey on Darwin. Linux CI remains the required release browser gate.
+// This is test-only configuration; application runtime behavior never reads it.
+func ProductExternalPushDarwinChromiumDiagnosticAllowed() bool {
+	value, ok := os.LookupEnv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM")
+	return ok && value == "1"
+}
+
 // AdminLayoutScreenshotDirectory returns an explicitly configured CI or local
 // evidence directory for the admin-shell Chromium layout journey. It is not a
 // runtime setting and the caller still validates that any supplied path is

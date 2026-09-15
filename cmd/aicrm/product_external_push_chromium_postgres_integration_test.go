@@ -50,6 +50,8 @@ type productExternalPushChromiumFixture struct {
 	script                   string
 	productID                int64
 	serviceProductID         int64
+	materialFirstID          int64
+	materialLaterID          int64
 	historicalOrderReference string
 	dataKey                  []byte
 }
@@ -73,7 +75,7 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	// The independently named preflight above always covers the release artifact
 	// and real Composition Root. Chromium is an explicit Linux CI gate, rather
 	// than a developer-machine substitute for that contract.
-	if goruntime.GOOS == "darwin" {
+	if goruntime.GOOS == "darwin" && !platformconfig.ProductExternalPushDarwinChromiumDiagnosticAllowed() {
 		t.Skip("Chromium CDP journey requires Linux CI; the PostgreSQL Composition preflight runs separately")
 	}
 	if !platformconfig.ChromiumJourneyRequired() {
@@ -101,6 +103,8 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		"AICRM_PRODUCT_PUSH_TEST_PASSWORD=product-browser-owner-password",
 		"AICRM_PRODUCT_PUSH_TEST_PRODUCT_ID="+strconv.FormatInt(fixture.productID, 10),
 		"AICRM_PRODUCT_PUSH_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(fixture.serviceProductID, 10),
+		"AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID="+strconv.FormatInt(fixture.materialFirstID, 10),
+		"AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID="+strconv.FormatInt(fixture.materialLaterID, 10),
 		"AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
 		"AICRM_PRODUCT_PUSH_TEST_PARAMS="+exactParams,
 	)
@@ -115,7 +119,7 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		t.Fatalf("product external push Chromium journey did not report success: %q", output)
 	}
 
-	assertProductExternalPushSyntheticDurableFacts(t, fixture.ctx, fixture.application, fixture.productID, fixture.dataKey, 2)
+	assertProductExternalPushSyntheticDurableFacts(t, fixture.ctx, fixture.application, fixture.productID, fixture.dataKey, 3)
 	var serviceRevision, serviceStoredExpiry int64
 	var serviceStored json.RawMessage
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", fixture.serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
@@ -221,6 +225,10 @@ func newProductExternalPushChromiumFixtureWithOptions(t *testing.T, timeout time
 	if options.enablePublicH5 {
 		seedPublicCommerceDetailImage(t, ctx, application, productID)
 	}
+	materialFirstID, materialLaterID, err := seedProductMaterialChromiumImages(ctx, application)
+	if err != nil {
+		t.Fatal(err)
+	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan error, 1)
 	go func() { workerDone <- application.effectsRuntime.Run(workerCtx) }()
@@ -256,6 +264,13 @@ func newProductExternalPushChromiumFixtureWithOptions(t *testing.T, timeout time
 	application.handler.ServeHTTP(outerServiceProduct, outerServiceProductRequest)
 	if outerServiceProduct.Code != http.StatusOK || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`<header class="admin-topbar">`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`<h1 class="admin-page-title">编辑周期商品</h1>`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/static/admin_console/admin_console.css`)) {
 		t.Fatalf("outer composed service-period product Host status=%d product_assets=%t service_form=%t service_anchor=%t topbar=%t title=%t console_css=%t", outerServiceProduct.Code, bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`<header class="admin-topbar">`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`<h1 class="admin-page-title">编辑周期商品</h1>`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/static/admin_console/admin_console.css`)))
+	}
+	outerMaterials := httptest.NewRecorder()
+	outerMaterialsRequest := httptest.NewRequest(http.MethodGet, "/api/admin/image-library?limit=50&offset=50&enabled_only=true", nil)
+	outerMaterialsRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
+	application.handler.ServeHTTP(outerMaterials, outerMaterialsRequest)
+	if outerMaterials.Code != http.StatusOK || !bytes.Contains(outerMaterials.Body.Bytes(), []byte(`Chromium 商品后续页素材`)) || !bytes.Contains(outerMaterials.Body.Bytes(), []byte(`"has_more":false`)) {
+		t.Fatalf("outer composed product material later page status=%d later=%t terminal_page=%t", outerMaterials.Code, bytes.Contains(outerMaterials.Body.Bytes(), []byte(`Chromium 商品后续页素材`)), bytes.Contains(outerMaterials.Body.Bytes(), []byte(`"has_more":false`)))
 	}
 	for _, read := range []struct {
 		path   string
@@ -299,6 +314,7 @@ func newProductExternalPushChromiumFixtureWithOptions(t *testing.T, timeout time
 		ctx: ctx, application: application, server: server,
 		script:    filepath.Join(filepath.Dir(source), "product_external_push_chromium_journey.mjs"),
 		productID: productID, serviceProductID: serviceProductID,
+		materialFirstID: materialFirstID, materialLaterID: materialLaterID,
 		historicalOrderReference: historicalOrderReference, dataKey: dataKey,
 	}
 }
@@ -608,4 +624,35 @@ VALUES('browser-commerce-history',$1,$2,$3,'applied',1,1,0,0,$3) RETURNING id`, 
 		return 0, 0, "", err
 	}
 	return productID, serviceProductID, orderReference, nil
+}
+func seedProductMaterialChromiumImages(ctx context.Context, application *composedApplication) (int64, int64, error) {
+	content, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+	if err != nil {
+		return 0, 0, err
+	}
+	digestValue := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(digestValue[:])
+	pool := application.pool.Native()
+	if _, err = pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
+		return 0, 0, err
+	}
+	var laterID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,'browser-product-later.png','Chromium 商品后续页素材','真实商品素材分页验收','chromium,product','chromium-product','image/png',$2,1,1,true,1,1) RETURNING id`, digest, len(content)).Scan(&laterID); err != nil {
+		return 0, 0, err
+	}
+	var firstID int64
+	for index := 1; index <= 50; index++ {
+		name := "Chromium 商品目录填充 " + strconv.Itoa(index)
+		if index == 50 {
+			name = "Chromium 商品首页素材"
+		}
+		var imageID int64
+		if err = pool.QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'真实商品素材分页验收','chromium,product','chromium-product','image/png',$4,1,1,true,1,1) RETURNING id`, digest, "browser-product-page-"+strconv.Itoa(index)+".png", name, len(content)).Scan(&imageID); err != nil {
+			return 0, 0, err
+		}
+		if index == 50 {
+			firstID = imageID
+		}
+	}
+	return firstID, laterID, nil
 }
