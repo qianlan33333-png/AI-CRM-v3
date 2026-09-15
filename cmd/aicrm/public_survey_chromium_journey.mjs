@@ -96,8 +96,8 @@ try {
   if (cdp.successSubmissions !== 1) throw new Error(`success submission requests=${cdp.successSubmissions}`);
   await evaluate(cdp, `document.querySelector('#screen [data-h5-result-link]').click(); true`, 'open actual submission result');
   await waitFor(cdp, `location.pathname === '/h5/result.html' && Boolean(document.querySelector('#screen [data-h5-result]')) && document.querySelector('#screen')?.textContent?.includes('提交已确认')`, 'actual result GET did not render');
-  const successfulResult = await evaluate(cdp, `(() => { const text=document.querySelector('#screen')?.textContent || ''; const id=text.match(/提交编号\\s*(\\d+)/)?.[1] || ''; return { submissionID: Number(id), version: text.includes('问卷版本') }; })()`, 'read rendered result receipt');
-  if (!successfulResult?.submissionID || !successfulResult.version) throw new Error(`public result receipt is incomplete: ${JSON.stringify(successfulResult)}`);
+  const successfulResult = await evaluate(cdp, `(() => { const text=document.querySelector('#screen')?.textContent || ''; const id=text.match(/提交编号\\s*(\\d+)/)?.[1] || ''; return { submissionID: Number(id), time: text.includes('提交时间'), version: text.includes('问卷版本'), internalScope: /处理范围|仅本地处理|外部效果/.test(text) }; })()`, 'read rendered result receipt');
+  if (!successfulResult?.submissionID || !successfulResult.time || !successfulResult.version || successfulResult.internalScope) throw new Error(`public result receipt presentation is incomplete: ${JSON.stringify(successfulResult)}`);
   await screenshot(cdp, 390, 'public-survey-result-390.png');
 
   await cdp.call('Page.navigate', { url: `${base}/q/${failureSlug}` });
@@ -107,7 +107,7 @@ try {
   await waitFor(cdp, `document.querySelector('#screen [data-h5-submit]') && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('2 / 2')`, 'final one-by-one submit step did not render');
   await evaluate(cdp, `document.querySelector('#screen [data-h5-submit]').click(); true`, 'submit controlled failure');
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-v3-survey-submitting]')) && !document.querySelector('#screen [data-h5-submit]')`, 'one-by-one submission did not expose its stable pending feedback');
-  await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-error]')) && document.querySelector('#screen [data-h5-submit]')?.disabled === false`, 'failure did not restore an explicit retry action');
+  await waitFor(cdp, `document.querySelector('#screen [data-v3-survey-recovery]')?.textContent?.includes('已填写的答案仍会保留') && document.querySelector('#screen [data-v3-survey-error-detail]')?.textContent === '问题详情：HTTP 503' && document.querySelector('#screen [data-h5-submit]')?.disabled === false`, 'failure did not expose a recoverable transport explanation and retry action');
   if (cdp.failureSubmissions !== 1) throw new Error(`first failure submission requests=${cdp.failureSubmissions}`);
   await screenshot(cdp, 430, 'public-survey-failure-430.png');
   await evaluate(cdp, `(() => { document.querySelector('#screen [data-h5-previous]')?.click(); return true; })()`, 'return to preserved answer');

@@ -124,9 +124,48 @@ if (supportedPages.has(page)) {
     )) {
       receipt.dataset.v3SurveyReceipt = "";
     }
+    // result.html's receipt contains a fixed diagnostic-only processing row.
+    // This is a template-carrier marker, never a deduction about the current
+    // submission state: the Owner still validates `local_only` and
+    // `external_executed` before it renders the result at all.
+    if (page === "result") {
+      for (const label of templateDescendants<HTMLElement>(content, "span")) {
+        if (label.textContent?.trim() !== "处理范围") continue;
+        label.dataset.v3SurveyInternalReceiptDetail = "";
+        const value = label.nextElementSibling;
+        if (value instanceof HTMLElement)
+          value.dataset.v3SurveyInternalReceiptDetail = "";
+      }
+    }
   };
 
   const rendered = (): HTMLElement | null => document.getElementById("screen");
+
+  const improveTransportError = (error: HTMLElement): void => {
+    if (error.querySelector("[data-v3-survey-recovery]")) return;
+    const rawNodes = Array.from(error.childNodes).filter(
+      (node): node is Text =>
+        node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
+    );
+    const raw = rawNodes.map((node) => node.textContent?.trim() || "").join(" ");
+    const status = /(?:^|[（(\s])HTTP ([45][0-9]{2})(?:$|[）)\s])/.exec(raw)?.[1];
+    // The frozen controller surfaces transport failures as an exact HTTP
+    // status. Translate that known transport fact only; validation and Owner
+    // domain errors retain their existing wording and behavior.
+    if (!status) return;
+    for (const node of rawNodes) node.remove();
+    const recovery = document.createElement("p");
+    recovery.dataset.v3SurveyRecovery = "";
+    recovery.textContent =
+      page === "result"
+        ? "暂时无法查询提交结果，请稍后重试。"
+        : "暂时无法完成本次提交。已填写的答案仍会保留，请稍后重试。";
+    const detail = document.createElement("small");
+    detail.dataset.v3SurveyErrorDetail = "";
+    detail.textContent = `问题详情：HTTP ${status}`;
+    error.prepend(recovery);
+    error.append(detail);
+  };
 
   const decorate = (): void => {
     const screen = rendered();
@@ -161,6 +200,7 @@ if (supportedPages.has(page)) {
     )) {
       error.setAttribute("aria-live", "assertive");
       error.dataset.v3SurveyError = "";
+      improveTransportError(error);
     }
     for (const receipt of Array.from(
       screen.querySelectorAll<HTMLElement>(
@@ -168,6 +208,12 @@ if (supportedPages.has(page)) {
       ),
     ))
       receipt.dataset.v3SurveyReceipt = "";
+    for (const detail of Array.from(
+      screen.querySelectorAll<HTMLElement>(
+        "[data-v3-survey-internal-receipt-detail]",
+      ),
+    ))
+      detail.remove();
   };
 
   markTemplate();
