@@ -2,6 +2,8 @@
 
 ## 决策
 
+本次会话的 Product Design catalog 未提供可读取路由，因此未执行该插件步骤；沿用已批准的浅灰、白卡与蓝色主操作视觉基线，并以实际 H5 页面和移动 Chromium 截图验证。
+
 `/q/{slug}` 是已发布问卷的公开 H5 入口。它先由 `internal/survey/http.Handler.publicEntry` 验证 slug、读取已发布定义和既有 Survey OAuth 会话，再跳转到 `/h5/all.html` 或 `/h5/one.html`；答卷读取、提交和结果回读仍分别走既有 `PublicApplication` 的公开 API。
 
 本次只让受访者在 375、390、430 宽度下清楚完成答题、提交和结果查看。冻结 H5 模板和 Owner 不改；在 `web/v3` 新增公开问卷 Host 与样式，并由 release HTML 在冻结 H5 runtime 之前装配。它只标注、辅助可访问性和样式既有状态，不发起业务请求、不替换提交逻辑。
