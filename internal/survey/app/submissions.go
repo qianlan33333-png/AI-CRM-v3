@@ -31,6 +31,7 @@ type PersistSubmission struct {
 
 type SubmissionStore interface {
 	Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error)
+	LockQuestionnaireStatus(context.Context, surveyport.ID) (surveyport.QuestionnaireStatus, error)
 	GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error)
 	CreateSubmission(context.Context, PersistSubmission) (surveyport.Submission, bool, error)
 	GetSubmissionByTokenDigest(context.Context, [32]byte) (surveyport.Submission, error)
@@ -554,15 +555,14 @@ func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, valu
 	now := s.now().UTC()
 	var stored surveyport.OperationConfiguration
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		// Take the same questionnaire row lock used by lifecycle transitions.
-		// This makes archive and a new operation-configuration write serialize:
-		// after archive commits, retained configuration can still be read but no
-		// completion/external-push entry may be created or changed.
-		questionnaire, e := s.store.Get(tx, value.QuestionnaireID, true)
+		// Lock only the owner lifecycle row. Archive and a new operation-
+		// configuration write therefore serialize without requiring a full
+		// definition read; retained configuration remains readable afterwards.
+		status, e := s.store.LockQuestionnaireStatus(tx, value.QuestionnaireID)
 		if e != nil {
 			return e
 		}
-		if questionnaire.Status == surveyport.StatusArchived {
+		if status == surveyport.StatusArchived {
 			return surveyport.ErrNotFound
 		}
 		stored, e = s.store.SaveOperationConfiguration(tx, value, actor, now)

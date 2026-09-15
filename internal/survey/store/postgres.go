@@ -117,6 +117,16 @@ func (r *Repository) List(ctx context.Context, limit, offset int32, search strin
 	return items, total, nil
 }
 
+func (r *Repository) LockQuestionnaireStatus(ctx context.Context, id surveyport.ID) (surveyport.QuestionnaireStatus, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return "", err
+	}
+	var status surveyport.QuestionnaireStatus
+	err = t.QueryRow(ctx, `SELECT status FROM survey_questionnaires WHERE id=$1 FOR UPDATE`, id).Scan(&status)
+	return status, mapError(err)
+}
+
 func (r *Repository) Get(ctx context.Context, id surveyport.ID, lock bool) (surveyport.Questionnaire, error) {
 	t, err := tx(ctx)
 	if err != nil {

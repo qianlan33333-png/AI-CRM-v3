@@ -26,12 +26,18 @@ type completionStore struct {
 	accepted      int
 	bound         int
 	saveCalls     int
+	statusLocks   int
 	testSnapshot  CompletionTestSnapshot
 	testCreated   bool
 }
 
 func (s *completionStore) Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error) {
 	return s.questionnaire, nil
+}
+
+func (s *completionStore) LockQuestionnaireStatus(context.Context, surveyport.ID) (surveyport.QuestionnaireStatus, error) {
+	s.statusLocks++
+	return s.questionnaire.Status, nil
 }
 
 func completionIntPointer(value int) *int { return &value }
@@ -179,8 +185,8 @@ func TestOperationConfigurationRejectsArchivedQuestionnaireWithoutChangingRetain
 	if !errors.Is(err, surveyport.ErrNotFound) {
 		t.Fatalf("archived configuration write error=%v", err)
 	}
-	if store.saveCalls != 0 || !reflect.DeepEqual(store.configuration, existing) {
-		t.Fatalf("archived configuration mutated retained history saves=%d configuration=%+v", store.saveCalls, store.configuration)
+	if store.statusLocks != 1 || store.saveCalls != 0 || !reflect.DeepEqual(store.configuration, existing) {
+		t.Fatalf("archived configuration mutated retained history locks=%d saves=%d configuration=%+v", store.statusLocks, store.saveCalls, store.configuration)
 	}
 	readback, err := service.GetOperationConfiguration(context.Background(), 7)
 	if err != nil || !reflect.DeepEqual(readback, existing) {
