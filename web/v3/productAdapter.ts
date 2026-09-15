@@ -777,7 +777,10 @@ document.addEventListener('click', (event) => {
   const button = target.closest('button');
   if (!button || (button.textContent?.trim() !== '启用' && button.textContent?.trim() !== '停用')) return;
   const row = button.closest('tbody tr');
-  const index = Array.from(row?.parentElement?.querySelectorAll(':scope > tr') || []).indexOf(row as HTMLTableRowElement);
+  const retainedIndex = Number(button.dataset.productListRowIndex);
+  const index = Number.isSafeInteger(retainedIndex) && retainedIndex >= 0
+    ? retainedIndex
+    : Array.from(row?.parentElement?.querySelectorAll(':scope > tr') || []).indexOf(row as HTMLTableRowElement);
   const product = loadedProducts[index];
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -2010,6 +2013,11 @@ function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
   for (const [index, row] of Array.from(document.querySelectorAll<HTMLTableRowElement>('tbody tr')).entries()) {
     const container = row.lastElementChild?.querySelector<HTMLElement>(':scope > div');
     if (!container || productListActionMenus.has(container)) continue;
+    // Overflow actions are rehomed into a document-level panel. Preserve the
+    // original list projection index on each real control so its existing
+    // delegated lifecycle command keeps its product/CAS binding after that
+    // presentation-only move.
+    for (const action of container.querySelectorAll<HTMLButtonElement>('button')) action.dataset.productListRowIndex = String(index);
     const menu = mountTableActionMenu(container, { owner: `product-${page}-${index}`, primaryCount: 2 });
     if (menu) productListActionMenus.set(container, menu);
   }
