@@ -61,6 +61,7 @@ let surveyAuthorizationRevoked = false;
 let surveyReadFailure: SurveyReadFailure | null = null;
 let surveyReadRetryPending = false;
 let lastSurveyListController: SurveyListController | null = null;
+let lastSuccessfulSurveyDb: ReturnType<typeof emptyAdminDb> | null = null;
 let lastVisibleSurveyRows: QuestionnaireListRow[] = [];
 let lastSurveyQuery = '';
 let lastSurveyStatus = '';
@@ -175,11 +176,18 @@ api.loadDb = async context => {
     // normalize a malformed 2xx list into an indistinguishable empty array.
     const db = await readQuestionnaireDirectory();
     if (generation !== activeSurveyReadGeneration) throw new SurveyReadSupersededError();
+    lastSuccessfulSurveyDb = db;
     recordSurveyReadSuccess();
     return db;
   } catch (error) {
-    if (generation === activeSurveyReadGeneration && !(error instanceof SurveyReadSupersededError)) recordSurveyReadFailure(error);
-    throw error;
+    if (generation !== activeSurveyReadGeneration || error instanceof SurveyReadSupersededError) throw error;
+    recordSurveyReadFailure(error);
+    // Frozen legacy starts its initial mount only after init resolves. Keep the
+    // failure at this V3 read seam and return the last authorized snapshot (or
+    // an explicit empty projection) so the shared retry state can render even
+    // on a cold first navigation. This does not change the request, retry, or
+    // owner write contracts.
+    return surveyAuthorizationRevoked ? emptyAdminDb() : lastSuccessfulSurveyDb || emptyAdminDb();
   }
 };
 
@@ -228,6 +236,10 @@ async function archiveQuestionnaire(controller: SurveyListController, id: number
       body: intent.body,
     });
     await controller.init();
+    if (surveyReadFailure) {
+      toast('问卷归档已受理，但列表回读失败；请恢复读取后核对结果。', true);
+      return;
+    }
     if (controller.db.rows.questionnaires.some((row) => idOf(row) === id)) {
       toast('归档已受理，但列表回读仍显示该问卷；请刷新后核对。', true);
       return;
