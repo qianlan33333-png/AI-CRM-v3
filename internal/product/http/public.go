@@ -18,8 +18,9 @@ import (
 // PublicHandler exposes only enabled Product facts. Draft, disabled and missing
 // products intentionally share the same 404 response.
 type PublicHandler struct {
-	catalog PublicCatalogApplication
-	media   publicProductMediaReader
+	catalog      PublicCatalogApplication
+	media        publicProductMediaReader
+	presentation PublicPresentationAssets
 }
 
 type publicProductMediaReader interface {
@@ -71,12 +72,25 @@ func (h *PublicHandler) SetPublicMediaReader(media publicProductMediaReader) err
 	return nil
 }
 
+// SetPublicPresentationAssets injects the already-verified, anonymous-safe
+// V3 presentation closure. Product's public routes remain unavailable to a
+// production composition that cannot bind this exact manifest closure.
+func (h *PublicHandler) SetPublicPresentationAssets(assets PublicPresentationAssets) error {
+	if h == nil || !assets.configured() {
+		return errors.New("public product presentation assets are required")
+	}
+	h.presentation = assets
+	return nil
+}
+
 func (h *PublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.catalog == nil {
 		http.NotFound(w, r)
 		return
 	}
 	switch {
+	case strings.HasPrefix(r.URL.Path, publicCommerceAssetPrefix):
+		h.presentation.serveHTTP(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/h5/product-images/"):
 		h.detailMedia(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/public/products/"):
@@ -141,12 +155,8 @@ func (h *PublicHandler) publicPage(w http.ResponseWriter, r *http.Request, payme
 	product.PaymentPath = publicPaymentPath(product.PaymentPath, promotionContext)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-	data := struct {
-		Product publicProduct
-		Payment bool
-		Detail  bool
-	}{Product: product, Payment: true, Detail: !payment}
+	w.Header().Set("Content-Security-Policy", publicCommerceContentSecurityPolicy())
+	data := publicProductPageView{Product: product, Payment: true, Detail: !payment, Presentation: publicPresentationTemplateFor(h.presentation)}
 	if err := publicProductPage.Execute(w, data); err != nil {
 		return
 	}
@@ -280,12 +290,29 @@ func publicProductCode(r *http.Request, prefix string) (string, bool) {
 	return code, true
 }
 
+type publicProductPageView struct {
+	Product      publicProduct
+	Payment      bool
+	Detail       bool
+	Presentation publicPresentationTemplate
+}
+
+type publicPresentationTemplate struct {
+	Enabled       bool
+	StylesheetURL string
+	HostURL       string
+}
+
+func publicPresentationTemplateFor(assets PublicPresentationAssets) publicPresentationTemplate {
+	return publicPresentationTemplate{Enabled: assets.configured(), StylesheetURL: assets.StylesheetURL, HostURL: assets.HostURL}
+}
+
 var publicProductPage = template.Must(template.New("public-product").Parse(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{{.Product.Name}}</title>
 <style>
 .detail-image{display:block;width:100%;height:auto}.checkout-footer a.buy{text-align:center;text-decoration:none}*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#20242b;font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}.card{max-width:560px;margin:auto;padding:20px 16px calc(118px + env(safe-area-inset-bottom));min-height:100dvh}.panel{background:#fff;border-radius:18px;padding:20px;margin-bottom:14px}.auth-gate{min-height:calc(100dvh - 40px);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:34px 24px}.auth-badge{display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:999px;background:#eff4ff;color:#3268ff;font-size:13px;font-weight:600}.auth-gate h1{margin:18px 0 0;font-size:26px;line-height:1.3}.auth-message{max-width:22em;margin:12px auto 0;color:#858b95;font-size:14px;line-height:1.65}.auth-button{width:100%;min-height:48px;margin-top:26px;border:0;border-radius:12px;background:#3268ff;color:#fff;display:grid;place-items:center;font-size:16px;font-weight:600;text-decoration:none}.auth-button[aria-disabled="true"]{background:#a9bfff;pointer-events:none}.auth-note{margin-top:14px;color:#a1a6ae;font-size:12px}.auth-chevron{margin-top:16px;color:#3268ff;animation:auth-dip 1.6s ease-in-out infinite}@keyframes auth-dip{0%,100%{transform:translateY(0)}50%{transform:translateY(6px)}}.product-info{min-width:0}h1{font-size:19px;line-height:1.4;margin:0 0 5px;font-weight:650;overflow-wrap:anywhere}.desc{color:#9298a2;font-size:13px;white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.price{font-size:22px;font-weight:650;margin-top:8px}.period{font-size:13px;color:#7b8390;margin-top:6px}.row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:17px 0;border-bottom:1px solid #f0f1f4}.row:first-child{padding-top:0}.row:last-child{padding-bottom:0;border:0}.label{color:#858b95;flex-shrink:0}.amount{font-variant-numeric:tabular-nums;white-space:nowrap}.total{font-size:21px;font-weight:600}.coupon-choice{min-width:0;text-align:right}.coupon{max-width:220px;width:100%;border:0;background:#fff;color:#56606e;font:inherit;text-align:right;outline-offset:4px}.discount{color:#df5b45;font-size:12px;margin-top:4px}.mobile{width:100%;height:46px;border:1px solid #e6e8ec;border-radius:10px;padding:0 12px;margin-top:12px;font:inherit;background:#fff}.mobile:focus{outline:2px solid #b4c8ff;border-color:#3268ff}.method{display:flex;align-items:center;gap:12px;margin-top:20px}.wechat-icon{width:34px;height:34px;background:#09b761;color:#fff;display:grid;place-items:center;border-radius:10px;font-size:21px}.selected{margin-left:auto;border-radius:50%;width:20px;height:20px;display:grid;place-items:center;background:#3268ff;color:#fff;font-size:13px}.notice{padding:12px;background:#fff5e7;color:#946728;border-radius:12px;margin-bottom:14px;font-size:13px}.checkout-footer{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:560px;background:#fff;border-top:1px solid #ebedf0;padding:14px 18px calc(14px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:18px;z-index:2}.footer-price{min-width:100px;flex:1}.footer-price .label{font-size:12px}.footer-price strong{display:block;font-size:24px;line-height:1.35;font-variant-numeric:tabular-nums}.buy{flex:1.1;min-height:48px;border:0;border-radius:13px;background:#3268ff;color:#fff;font-family:inherit;font-size:17px;font-weight:600;line-height:1.4;padding:12px 18px;cursor:pointer}.buy:disabled{background:#a9bfff;cursor:default}.restart{width:100%;margin-top:12px;background:#fff;color:#3268ff;border:1px solid #d8e2ff}.status{color:#7d8591;font-size:13px;text-align:center;overflow-wrap:anywhere;margin:14px 4px}.completion-qr{display:block;max-width:220px;width:100%;height:auto;margin:14px auto}.completion-result{background:#fff;border-radius:18px;margin:0;padding:30px 20px;color:#747d89}.completion-check{width:56px;height:56px;border-radius:50%;background:#e8f8ef;color:#08ad60;font-size:32px;margin:0 auto 14px}.completion-result h2{font-size:24px;color:#20242b;margin:0}.completion-product{color:#747d89;font-size:14px;margin:10px 0 26px}.completion-title{font-size:18px;font-weight:600;color:#20242b;margin:0}.completion-subtitle{margin-top:4px}button:focus-visible,select:focus-visible,.auth-button:focus-visible{outline:3px solid #a6bfff;outline-offset:3px}[hidden]{display:none!important}@media(prefers-reduced-motion:reduce){.auth-chevron{animation:none}}@media(max-width:360px){.card{padding-left:12px;padding-right:12px}.panel{padding:16px}.coupon{max-width:180px}h1{font-size:17px}}
-</style></head>
-<body><main class="card" data-promotion-context="{{.Product.PromotionContext}}"><section id="identityGate" class="panel auth-gate"><span class="auth-badge">微信身份验证</span><h1>正在核验微信身份</h1><p id="identityMessage" class="auth-message">正在核验当前微信授权状态…</p><a id="authContinue" class="auth-button" href="#" hidden>重新尝试微信授权</a><svg class="auth-chevron" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg><p class="auth-note">授权成功后会自动返回当前页面</p></section>{{if .Detail}}<section id="detailContent" hidden><div class="panel"><h1>{{.Product.Name}}</h1>{{with .Product.Description}}<p class="desc">{{.}}</p>{{end}}</div>{{range .Product.Images}}<img class="detail-image" data-src="{{.}}" alt="商品详情" loading="lazy">{{end}}<footer class="checkout-footer"><div class="footer-price"><span class="label">价格</span><strong>¥<span id="detailPrice"></span></strong></div><a class="buy" href="{{.Product.PaymentPath}}">{{.Product.BuyButtonText}}</a></footer></section>{{end}}<div id="checkoutContent" hidden><section class="panel product"><div class="product-info"><h1>{{.Product.Name}}</h1>{{with .Product.Description}}<div class="desc">{{.}}</div>{{end}}{{if gt .Product.ServicePeriodDurationDays 0}}<div class="period">服务周期 {{.Product.ServicePeriodDurationDays}} 天</div>{{end}}<div class="price amount">¥<span id="price"></span></div></div></section>
+</style>{{if .Presentation.Enabled}}<link rel="stylesheet" href="{{.Presentation.StylesheetURL}}"><script type="module" src="{{.Presentation.HostURL}}"></script>{{end}}</head>
+<body><main class="card" data-v3-public-commerce data-public-commerce-route="{{if .Detail}}detail{{else}}payment{{end}}" data-product-kind="{{.Product.ProductKind}}" data-promotion-context="{{.Product.PromotionContext}}"><section id="identityGate" class="panel auth-gate"><span class="auth-badge">微信身份验证</span><h1>正在核验微信身份</h1><p id="identityMessage" class="auth-message">正在核验当前微信授权状态…</p><a id="authContinue" class="auth-button" href="#" hidden>重新尝试微信授权</a><svg class="auth-chevron" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg><p class="auth-note">授权成功后会自动返回当前页面</p></section>{{if .Detail}}<section id="detailContent" hidden><div class="panel"><h1>{{.Product.Name}}</h1>{{with .Product.Description}}<p class="desc">{{.}}</p>{{end}}</div>{{range .Product.Images}}<img class="detail-image" data-src="{{.}}" alt="商品详情" loading="lazy">{{end}}<footer class="checkout-footer"><div class="footer-price"><span class="label">价格</span><strong>¥<span id="detailPrice"></span></strong></div><a class="buy" href="{{.Product.PaymentPath}}">{{.Product.BuyButtonText}}</a></footer></section>{{end}}<div id="checkoutContent" hidden><section class="panel product"><div class="product-info"><h1>{{.Product.Name}}</h1>{{with .Product.Description}}<div class="desc">{{.}}</div>{{end}}{{if gt .Product.ServicePeriodDurationDays 0}}<div class="period">服务周期 {{.Product.ServicePeriodDurationDays}} 天</div>{{end}}<div class="price amount">¥<span id="price"></span></div></div></section>
 {{if .Payment}}<div id="wechatNotice" class="notice" hidden>请在微信内打开此页面完成支付。</div><section id="paymentDetails" class="panel" aria-label="支付明细"><div class="row"><label class="label" for="coupon">优惠券</label><div class="coupon-choice"><select id="coupon" class="coupon"><option value="0">自动选择最优优惠券</option></select><div id="discountAmount" class="discount" hidden></div></div></div><div class="row"><span class="label">实付金额</span><strong class="amount total" id="payableAmount"></strong></div></section>
 {{if .Product.RequireMobile}}<section id="mobilePanel" class="panel"><label class="label" for="mobile">手机号</label><input id="mobile" class="mobile" type="tel" autocomplete="tel-national" inputmode="numeric" maxlength="11" placeholder="请输入手机号"></section>{{end}}
 <section id="paymentMethod" class="panel"><div class="label">支付方式</div><div class="method"><span class="wechat-icon" aria-hidden="true">✓</span><span>微信支付</span><span class="selected" aria-label="已选择微信支付">✓</span></div></section><div id="status" class="status" role="status" aria-live="polite"></div>{{if eq .Product.ProductKind "service_period"}}<button id="renew" class="buy restart" hidden>续费</button>{{end}}<footer class="checkout-footer"><div class="footer-price"><span class="label">实付</span><strong id="footerAmount"></strong></div><button id="buy" class="buy">立即支付</button></footer>{{end}}</div>

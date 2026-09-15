@@ -26,14 +26,15 @@ type publicServicePeriodMediaReader interface {
 }
 
 type ServicePeriodPublicHandler struct {
-	products     productport.ServicePeriodPublicReader
-	presentation productport.ServicePeriodPublicPresentationReader
-	media        publicServicePeriodMediaReader
-	leadQR       channelport.PublicLeadQRCodeReader
-	uow          platformport.UnitOfWork
-	sessions     paymentport.SessionReader
-	entitlements orderport.EntitlementService
-	now          func() time.Time
+	products           productport.ServicePeriodPublicReader
+	presentation       productport.ServicePeriodPublicPresentationReader
+	media              publicServicePeriodMediaReader
+	leadQR             channelport.PublicLeadQRCodeReader
+	uow                platformport.UnitOfWork
+	sessions           paymentport.SessionReader
+	entitlements       orderport.EntitlementService
+	now                func() time.Time
+	presentationAssets PublicPresentationAssets
 }
 
 func NewServicePeriodPublicHandler(products productport.ServicePeriodPublicReader) (*ServicePeriodPublicHandler, error) {
@@ -74,6 +75,17 @@ func (h *ServicePeriodPublicHandler) SetPublicMediaReader(media publicServicePer
 	return nil
 }
 
+// SetPublicPresentationAssets injects the same manifest-verified public
+// presentation closure used by ordinary Product routes. The service-period
+// frozen body stays immutable; only its final emitted document is decorated.
+func (h *ServicePeriodPublicHandler) SetPublicPresentationAssets(assets PublicPresentationAssets) error {
+	if h == nil || !assets.configured() {
+		return errors.New("service-period public presentation assets are required")
+	}
+	h.presentationAssets = assets
+	return nil
+}
+
 func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.products == nil || r.Method != http.MethodGet {
 		http.NotFound(w, r)
@@ -109,13 +121,9 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	public := publicProduct{ID: product.ID, Name: product.Name, PriceMinor: product.PriceMinor, Currency: product.Currency, PaymentPath: publicPaymentPath("/s/"+url.PathEscape(product.Code)+"/pay", promotionContext), PromotionContext: promotionContext, BuyButtonText: "立即报名", ProductKind: "service_period", CouponTargetRef: "service_period:" + strconv.FormatInt(int64(product.ID), 10), ServicePeriodDurationDays: product.ServicePeriodDurationDays, Images: publicDetailMedia(product.Code, product.DetailMedia)}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	w.Header().Set("Content-Security-Policy", publicCommerceContentSecurityPolicy())
 	if available {
-		if err = publicProductPage.Execute(w, struct {
-			Product publicProduct
-			Payment bool
-			Detail  bool
-		}{Product: public, Payment: true, Detail: !payment && len(public.Images) > 0}); err != nil {
+		if err = publicProductPage.Execute(w, publicProductPageView{Product: public, Payment: true, Detail: !payment && len(public.Images) > 0, Presentation: publicPresentationTemplateFor(h.presentationAssets)}); err != nil {
 			return
 		}
 		return
@@ -128,7 +136,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	if !available {
 		state.Available, state.Status, state.CTA, state.LeadQRURL = false, "unavailable", "暂未开放", ""
 	}
-	_ = renderServicePeriodPublicPage(w, state)
+	_ = renderServicePeriodPublicPageWithPresentation(w, state, h.presentationAssets)
 }
 
 func (h *ServicePeriodPublicHandler) publicState(ctx context.Context, r *http.Request, product productport.CheckoutProduct, public publicProduct) (servicePeriodPublicState, error) {

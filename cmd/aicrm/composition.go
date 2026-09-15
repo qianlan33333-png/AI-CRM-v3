@@ -862,11 +862,21 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	publicCommerceAssets, err := producthttp.NewPublicPresentationAssets("web/dist")
+	if err != nil {
+		return fail(err)
+	}
+	if err = publicProductHandler.SetPublicPresentationAssets(publicCommerceAssets); err != nil {
+		return fail(err)
+	}
 	if err = publicProductHandler.SetPublicMediaReader(mediaService); err != nil {
 		return fail(err)
 	}
 	publicServicePeriodHandler, err := producthttp.NewServicePeriodPublicHandler(productServicePeriod)
 	if err != nil {
+		return fail(err)
+	}
+	if err = publicServicePeriodHandler.SetPublicPresentationAssets(publicCommerceAssets); err != nil {
 		return fail(err)
 	}
 	productTargets, err := productapp.NewTargetReader(productCatalog, productServicePeriod)
@@ -2117,7 +2127,7 @@ func mountOrderUI(next, adminUI http.Handler, authentication accessAuthenticatio
 
 func mountPublicProduct(next, products http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/api/h5/product-images/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
+		if strings.HasPrefix(r.URL.Path, "/product-public-assets/") || strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/api/h5/product-images/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
 			products.ServeHTTP(w, r)
 			return
 		}
