@@ -431,11 +431,22 @@ try {
     if (!found) throw new Error(label + " menu link is absent or points to a fallback route");
     await evaluate(cdp, `(() => { const node=[...document.querySelectorAll('.admin-nav-link[href]')].find(value => { const target=new URL(value.href, location.href); return target.pathname === ${JSON.stringify(destination.pathname)} && target.search === ${JSON.stringify(destination.search)}; }); node.click(); return true; })()`);
   };
-  const pointerClick = async (selector, label) => {
+  const twoAnimationFrames = () => evaluate(cdp, 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const pointerClick = async (selector, label, options = {}) => {
+    const preservePosition = options.preservePosition === true;
+    const prepared = await evaluate(cdp, `(() => {
+      const node = document.querySelector(${JSON.stringify(selector)});
+      if (!(node instanceof HTMLElement)) return false;
+      if (!${preservePosition ? 'true' : 'false'}) node.scrollIntoView({ block: 'center', inline: 'center' });
+      return true;
+    })()`);
+    if (!prepared) throw new Error(label + ' is unavailable before pointer interaction');
+    // A fixed menu repositions on scroll. Wait for layout to settle, then take
+    // the hit point immediately before dispatching real CDP mouse input.
+    await twoAnimationFrames();
     const point = await evaluate(cdp, `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!(node instanceof HTMLElement)) return null;
-      node.scrollIntoView({ block: 'center', inline: 'center' });
       const rect = node.getBoundingClientRect();
       const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, visible: rect.width > 1 && rect.height > 1, receivesPointer: target === node || node.contains(target) };
@@ -723,7 +734,10 @@ try {
       return true;
     })()`);
     if (!marked) throw new Error(`product lower-edge overflow trigger is unavailable at ${width}`);
-    await pointerClick('[data-aicrm-product-edge-menu=true]', `product lower-edge overflow trigger at ${width}`);
+    // The mark above deliberately scrolls this real table-row trigger to the
+    // lower viewport edge. Do not let the generic click helper re-center it:
+    // that would test a middle-of-viewport menu instead of the upward branch.
+    await pointerClick('[data-aicrm-product-edge-menu=true]', `product lower-edge overflow trigger at ${width}`, { preservePosition: true });
     await waitFor(cdp, "document.querySelector('[data-aicrm-product-edge-menu=true]')?.getAttribute('aria-expanded') === 'true'", `product lower-edge overflow did not open at ${width}`);
     const edge = await evaluate(cdp, `(() => {
       const trigger = document.querySelector('[data-aicrm-product-edge-menu=true]');
@@ -746,8 +760,30 @@ try {
       throw new Error(`product lower-edge overflow presentation invalid at ${width}: ${JSON.stringify(edge)}`);
     }
     await capture(`products-actions-edge-${width}`);
+    await waitFor(cdp, `(() => {
+      const trigger=document.querySelector('[data-aicrm-product-edge-menu=true]');
+      const panel=trigger instanceof HTMLButtonElement ? document.getElementById(trigger.getAttribute('aria-controls') || '') : null;
+      return panel instanceof HTMLElement && panel.contains(document.activeElement);
+    })()`, `product lower-edge overflow did not move keyboard focus into its menu at ${width}`);
+    let tabLeftMenu = false;
+    for (let attempt = 0; attempt < 5 && !tabLeftMenu; attempt += 1) {
+      // Exercise the normal forward Tab path: it moves across the remaining
+      // overflow controls and then leaves the detached panel.
+      await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab" });
+      await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab" });
+      await twoAnimationFrames();
+      tabLeftMenu = await evaluate(cdp, `(() => {
+        const trigger=document.querySelector('[data-aicrm-product-edge-menu=true]');
+        const panel=trigger instanceof HTMLButtonElement ? document.getElementById(trigger.getAttribute('aria-controls') || '') : null;
+        return trigger instanceof HTMLElement && panel instanceof HTMLElement && !trigger.contains(document.activeElement) && !panel.contains(document.activeElement);
+      })()`);
+    }
+    if (!tabLeftMenu) throw new Error(`product lower-edge overflow keyboard Tab did not leave its action cluster at ${width}`);
+    await waitFor(cdp, "document.querySelector('[data-aicrm-product-edge-menu=true]')?.getAttribute('aria-expanded') === 'false'", `product lower-edge overflow did not close after keyboard Tab exit at ${width}`);
+    await pointerClick('[data-aicrm-product-edge-menu=true]', `product lower-edge overflow trigger reopen at ${width}`, { preservePosition: true });
+    await waitFor(cdp, "document.querySelector('[data-aicrm-product-edge-menu=true]')?.getAttribute('aria-expanded') === 'true'", `product lower-edge overflow did not reopen for Escape at ${width}`);
     await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
-    await waitFor(cdp, "document.querySelector('[data-aicrm-product-edge-menu=true]')?.getAttribute('aria-expanded') === 'false'", `product lower-edge overflow did not close on Escape at ${width}`);
+    await waitFor(cdp, `(() => { const trigger=document.querySelector('[data-aicrm-product-edge-menu=true]'); return trigger instanceof HTMLButtonElement && trigger.getAttribute('aria-expanded') === 'false' && document.activeElement === trigger; })()`, `product lower-edge overflow did not close on Escape and restore trigger focus at ${width}`);
     await evaluate(cdp, 'window.scrollTo(0, 0)');
   };
   for (const width of [1440, 1280]) await assertProductMenuAtViewportEdge(width);
@@ -798,13 +834,18 @@ try {
     const target = [...(panel?.querySelectorAll('button') || [])].find(node => node.textContent?.trim() === '删除');
     if (!(target instanceof HTMLButtonElement)) return false;
     target.setAttribute('data-aicrm-product-delete', 'true');
-    return true;
+    target.addEventListener('click', () => { document.documentElement.dataset.aicrmProductDeletePointer = String(Number(document.documentElement.dataset.aicrmProductDeletePointer || '0') + 1); }, { once: true });
+    return !target.disabled;
   })()`);
   if (!await markDeleteTrigger()) throw new Error('product delete fixture trigger is unavailable');
   await pointerClick('[data-aicrm-product-menu-trigger="true"]', 'product overflow trigger');
   await waitFor(cdp, "Boolean(document.querySelector('[data-aicrm-product-menu-trigger=\"true\"]')?.getAttribute('aria-expanded') === 'true')", 'product overflow menu did not open');
   if (!await markDelete()) throw new Error('product delete action is absent from the visible overflow menu');
-  await pointerClick('[data-aicrm-product-delete="true"]', 'product delete action');
+  // The menu action is already visible in the fixed panel. Scrolling it can
+  // trigger the panel's viewport-position listener between hit testing and the
+  // CDP event, so retain its verified in-panel position.
+  await pointerClick('[data-aicrm-product-delete="true"]', 'product delete action', { preservePosition: true });
+  await waitFor(cdp, "document.documentElement.dataset.aicrmProductDeletePointer === '1'", 'product delete action did not receive the real pointer click');
   await waitFor(cdp, "document.querySelector('#fb-mask')?.hidden === false && Boolean(document.querySelector('#fb-cancel'))", 'product delete confirmation did not open');
   await capture('products-delete-confirm');
   await pointerClick('#fb-cancel', 'product delete cancellation');
@@ -813,7 +854,8 @@ try {
   await pointerClick('[data-aicrm-product-menu-trigger="true"]', 'product overflow trigger after cancellation');
   await waitFor(cdp, "Boolean(document.querySelector('[data-aicrm-product-menu-trigger=\"true\"]')?.getAttribute('aria-expanded') === 'true')", 'product overflow menu did not reopen');
   if (!await markDelete()) throw new Error('product delete action disappeared after cancellation');
-  await pointerClick('[data-aicrm-product-delete="true"]', 'product delete confirmation action');
+  await pointerClick('[data-aicrm-product-delete="true"]', 'product delete confirmation action', { preservePosition: true });
+  await waitFor(cdp, "document.documentElement.dataset.aicrmProductDeletePointer === '2'", 'product delete action did not receive the second real pointer click');
   await waitFor(cdp, "document.querySelector('#fb-mask')?.hidden === false && Boolean(document.querySelector('#fb-ok'))", 'product delete confirmation could not reopen');
   await pointerClick('#fb-ok', 'product delete confirmation submit');
   await waitForRecorded(requestEvents, value => value === productDeleteRequest, 'confirmed product deletion did not issue the owner DELETE');

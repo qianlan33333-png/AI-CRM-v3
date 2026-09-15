@@ -132,21 +132,34 @@ export function mountTableActionMenu(container: HTMLElement, options: TableActio
     const target = event.target;
     if (panelIsVisible() && target instanceof Node && !root.contains(target) && !panel.contains(target)) close(false);
   };
-  const onFocusOut = () => {
+  const onFocusOut = (event: FocusEvent) => {
     if (!panelIsVisible()) return;
-    queueMicrotask(() => {
+    // Moving between two menu actions is an internal focus transition. Browser
+    // pointer input can report a transient body focus before the next action
+    // becomes active, so settle after a frame before deciding it left.
+    const next = event.relatedTarget;
+    if (next instanceof Node && (root.contains(next) || panel.contains(next))) return;
+    const settle = () => {
       const active = ownerDocument.activeElement;
       if (panelIsVisible() && active instanceof Node && !root.contains(active) && !panel.contains(active)) close(false);
-    });
+    };
+    const frame = ownerDocument.defaultView?.requestAnimationFrame;
+    if (frame) frame(settle);
+    else queueMicrotask(settle);
   };
   const onResize = () => { if (panelIsVisible()) position(); };
-  // Frozen runtime may register an element's owner callback as an `onclick`
-  // property. Let that callback run before hiding its rehomed menu.
-  const onAction = () => queueMicrotask(() => close(false));
+  // Source action listeners are attached before this presentation listener.
+  // Close after their handler returns, without leaving a queued open panel that
+  // can turn an immediate cancel-and-reopen into a toggle back to closed.
+  const onAction = () => close(false);
 
   trigger.addEventListener('click', onTrigger);
   ownerDocument.addEventListener('keydown', onKeyDown);
   ownerDocument.addEventListener('pointerdown', onPointerDown, true);
+  // Focus can leave an overflow action through a direct action in `root`.
+  // Observe both surfaces so the menu remains open for that internal move but
+  // closes once keyboard navigation leaves the whole action cluster.
+  root.addEventListener('focusout', onFocusOut);
   panel.addEventListener('focusout', onFocusOut);
   ownerDocument.defaultView?.addEventListener('resize', onResize);
   ownerDocument.defaultView?.addEventListener('scroll', onResize, true);
@@ -157,6 +170,7 @@ export function mountTableActionMenu(container: HTMLElement, options: TableActio
       trigger.removeEventListener('click', onTrigger);
       ownerDocument.removeEventListener('keydown', onKeyDown);
       ownerDocument.removeEventListener('pointerdown', onPointerDown, true);
+      root.removeEventListener('focusout', onFocusOut);
       panel.removeEventListener('focusout', onFocusOut);
       ownerDocument.defaultView?.removeEventListener('resize', onResize);
       ownerDocument.defaultView?.removeEventListener('scroll', onResize, true);

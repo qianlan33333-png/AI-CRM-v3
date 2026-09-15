@@ -61,10 +61,12 @@ afterMenu.textContent = '菜单后的焦点';
 document.body.append(afterMenu);
 trigger.click();
 copy.focus();
+await new Promise((resolve) => dom.window.setTimeout(resolve, 20));
+assert.equal(panel.hidden, false, 'moving focus between overflow actions keeps the floating panel open');
 copy.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Tab' }));
 afterMenu.focus();
-await Promise.resolve();
-assert.equal(panel.hidden, true, 'Tab leaving the menu closes the detached floating panel');
+await new Promise((resolve) => dom.window.setTimeout(resolve, 20));
+assert.equal(panel.hidden, true, 'Tab leaving the menu closes the detached floating panel after focus settles');
 assert.equal(visiblyOpen(), false, 'Tab leave cannot retain a computed-visible panel without menu focus');
 trigger.click();
 copy.click();
@@ -81,6 +83,20 @@ const short = document.createElement('div');
 short.append(document.createElement('button'), document.createElement('button'));
 document.body.append(short);
 assert.equal(mod.mountTableActionMenu(short, { owner: 'short-row', primaryCount: 2 }), undefined, 'permission-reduced rows keep their available actions directly visible');
+
+const disabledOnly = document.createElement('div');
+for (const label of ['编辑', '不可用复制', '不可用删除']) {
+  const action = document.createElement('button'); action.textContent = label; action.disabled = label !== '编辑'; disabledOnly.append(action);
+}
+document.body.append(disabledOnly);
+const disabledMenu = mod.mountTableActionMenu(disabledOnly, { owner: 'disabled-row', primaryCount: 1 });
+const disabledTrigger = disabledOnly.querySelector('[data-table-action-menu-trigger="disabled-row"]');
+assert.ok(disabledMenu && disabledTrigger, 'a row with disabled secondary actions retains its overflow trigger');
+disabledTrigger.focus(); disabledTrigger.click();
+assert.equal(document.activeElement, disabledTrigger, 'when every overflow action is disabled, opening preserves trigger focus');
+document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }));
+assert.equal(disabledTrigger.getAttribute('aria-expanded'), 'false', 'Escape closes a disabled-only overflow menu through the trigger fallback');
+disabledMenu.dispose();
 
 dom.window.close();
 console.log('table action menu: source actions, keyboard, Escape, outside close, focus restore and reduced-action rows PASS');

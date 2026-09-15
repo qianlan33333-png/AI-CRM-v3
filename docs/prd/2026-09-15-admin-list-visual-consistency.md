@@ -62,6 +62,6 @@ External Effects: not involved；不触发 Provider、支付、归档写入或�
 
 - 不修改冻结 donor、问卷/产品业务规则、身份模型、Provider、支付、归档保存、后台导航或其它列表空态。
 
-## 当前本地验证状态（未作为验收结论）
+## 当前本地验证状态
 
-共享菜单的 Node 键盘、计算可见性和源节点回调合同，以及商品归档 DOM 合同已通过。新增的真实 PostgreSQL/Chromium 下缘菜单旅程仍在排查：在长商品列表中打开“更多操作”后，删除确认未出现，因此下缘 1280 / 1440 截图、取消零写与确认一次 DELETE/readback **尚未完成验收**。保留失败原始日志，后续必须先修复并重跑该真实旅程，不能以已有普通视口截图替代。
+共享菜单的 Node 键盘、计算可见性和源节点回调合同，以及商品归档 DOM 合同已通过。真实 PostgreSQL/Chromium 的长商品列表下缘菜单旅程也已通过：1280／1440 均验证菜单向上展开、取消零写、确认仅一次原 Product owner DELETE，并通过既有 readback 移除行；保留真实截图和原始日志于 `aicrm-artifacts/admin-list-visual-fixes-20260915/25082480-menu-focus-keyboard-forward-tab-final/`。测试点击在滚动后等待两帧并重取命中点，且共享菜单在内部焦点切换时不会提前关闭浮层；实际普通 Tab 离开浮层与 Escape 均关闭菜单，Escape 回收至触发按钮。
