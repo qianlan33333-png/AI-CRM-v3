@@ -236,12 +236,29 @@ func insertAdminOverviewPayment(t *testing.T, ctx context.Context, application *
 	t.Helper()
 	var orderID int64
 	merchantOrderNo := "M-OVERVIEW-" + key
-	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
-		VALUES('wechat_pay','overview-canonical',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, key, merchantOrderNo, payerCustomerID, amountMinor, now).Scan(&orderID); err != nil {
+	if payerCustomerID == nil {
+		if err := application.pool.Native().QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,source_row_digest,version,created_at,updated_at)
+			VALUES('wechat_pay','overview-canonical',$1,$2,NULL,NULL,$3,'CNY','paid','history',false,$4,1,$5,$5) RETURNING id`, key, merchantOrderNo, amountMinor, make([]byte, 32), now).Scan(&orderID); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := application.pool.Native().QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
+		VALUES('wechat_pay','overview-canonical',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, key, merchantOrderNo, *payerCustomerID, amountMinor, now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if payerCustomerID == nil {
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
+			VALUES($1,'wechat_pay','mini_program',$2,NULL,NULL,NULL,$3,'CNY','paid',1,$4,$4,$4,true)`, orderID, merchantOrderNo, amountMinor, now); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	var identityID int64
+	if err := application.pool.Native().QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at,created_at,updated_at)
+		VALUES($1,'mp_openid','wechat-app:overview-canonical',$2,'verified','wechat_miniprogram',1,$3,$3,$3) RETURNING id`, *payerCustomerID, key, now).Scan(&identityID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
-		VALUES($1,'wechat_pay','mini_program',$2,NULL,$3,$3,$4,'CNY','paid',1,$5,$5,$5,false)`, orderID, merchantOrderNo, payerCustomerID, amountMinor, now); err != nil {
+		VALUES($1,'wechat_pay','mini_program',$2,$3,$4,$4,$5,'CNY','paid',1,$6,$6,$6,false)`, orderID, merchantOrderNo, identityID, *payerCustomerID, amountMinor, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -255,15 +272,22 @@ func seedAdminOverviewPayerScale(t *testing.T, ctx context.Context, application 
 		INSERT INTO customers(created_at,updated_at)
 		SELECT $1,$1 FROM generate_series(1,$2)
 		RETURNING id
+	), inserted_identities AS (
+		INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at,created_at,updated_at)
+		SELECT id,'mp_openid','wechat-app:overview-canonical-scale','payer-'||id,'verified','wechat_miniprogram',1,$1,$1,$1
+		FROM inserted_customers
+		RETURNING id,customer_id
 	), inserted_orders AS (
 		INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at)
-		SELECT 'wechat_pay','overview-canonical-scale','payer-'||id,'M-OVERVIEW-SCALE-'||id,id,id,1,'CNY','paid','native',true,1,$1,$1
-		FROM inserted_customers
+		SELECT 'wechat_pay','overview-canonical-scale','payer-'||customers.id,'M-OVERVIEW-SCALE-'||customers.id,customers.id,customers.id,1,'CNY','paid','native',true,1,$1,$1
+		FROM inserted_customers customers
+		JOIN inserted_identities identities ON identities.customer_id=customers.id
 		RETURNING id,payer_customer_id,merchant_order_no
 	)
 	INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical)
-	SELECT id,'wechat_pay','mini_program',merchant_order_no,NULL,payer_customer_id,payer_customer_id,1,'CNY','paid',1,$1,$1,$1,false
-	FROM inserted_orders`, now, count)
+	SELECT orders.id,'wechat_pay','mini_program',orders.merchant_order_no,identities.id,orders.payer_customer_id,orders.payer_customer_id,1,'CNY','paid',1,$1,$1,$1,false
+	FROM inserted_orders orders
+	JOIN inserted_identities identities ON identities.customer_id=orders.payer_customer_id`, now, count)
 	if err != nil {
 		t.Fatal(err)
 	}
