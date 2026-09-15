@@ -775,6 +775,28 @@
       ],
       "reason": "Rebind the Root-reviewed GroupOps owner-scoped directory query and plan-list bound-group projection to the shared-component integration after main 6b82f09d; the active V3 OpenAPI authority and frozen donor identities remain the reviewed values.",
       "review_reference": "Root review of PR #300 owner-scoped directory query and PR #313 bound-group projection during shared-component integration, rebased to main 6b82f09d on 2026-09-15"
+    },
+    {
+      "base_commit": "22e24ddcf646252985257fe55370a8f5fe3890f9",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b9214cb231f65a7b6cb67286631f1fd379827ad46750a7f98ede4bd3cd7e666e",
+          "head_sha256": "c16b2a83d75c922ae8ce4befe7a507d9da17d3f8b365c8ba382e906b414943e5"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "ae4a00225aeb39f5ec6cb06df38ac1f3b12c987132f7b78f6decf86c1ac93c7a",
+          "head_sha256": "15736e427756d8eb434bf5248077e6b1cad31d47b1b869961565a618fe988db0"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "64caee6a45cd6ba5350c43aea7b98aa6061bfbb660673f5599c4df6210ff0a65",
+          "head_sha256": "f87bd7f91619c883671197ee46abe7e4c007e67a9dd2ea538c52013e44c506f1"
+        }
+      ],
+      "reason": "Rebind the Root-reviewed GroupOps owner-scoped directory query and plan-list bound-group projection to shared-component integration after main 22e24ddc. The active V3 OpenAPI authority remains reviewed and frozen donor payloads remain unchanged.",
+      "review_reference": "Root review of PR #300 owner-scoped directory query and PR #313 bound-group projection during shared-component integration, rebased to main 22e24ddc on 2026-09-15"
     }
   ]
 }
