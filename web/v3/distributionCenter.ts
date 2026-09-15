@@ -168,36 +168,243 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string): HTMLE
 function action(label: string, handler: () => void | Promise<void>, className = 'distribution-button'): HTMLButtonElement { const button = el('button', label); button.type = 'button'; button.className = className; button.addEventListener('click', () => void handler()); return button; }
 function status(value: string): HTMLSpanElement { const node = el('span', value); node.className = `distribution-status distribution-status-${value}`; return node; }
 
-let me: Me | undefined; let agreement: Agreement | undefined; let bridgeAttempted = false; let products: PromotionProduct[] = []; let productCursor = ''; let productEmptyReason: PromotionPage['emptyReason'] = ''; let applicationTarget: ApplicationTarget | undefined; let applicationTargetState: ApplicationTargetState = applicationContext ? 'failed' : 'none'; let earnings: Earnings | undefined; let commissions: Commission[] = []; let commissionCursor = ''; let tab: 'products' | 'earnings' = 'products'; let commissionStatus = '';
-function message(text: string, isError = false): void { const node = document.querySelector<HTMLElement>('[data-distribution-message]'); if (node) { node.textContent = text; node.dataset.error = String(isError); } }
-async function loadApplicationTarget(): Promise<void> {
-  applicationTarget = undefined;
-  if (!applicationContext) { applicationTargetState = 'none'; return; }
-  try {
-    applicationTarget = parseApplicationTarget(await request(`/api/v1/distribution/application-context?product_id=${applicationContext.productID}&product_type=${applicationContext.productType}`));
-    applicationTargetState = 'available';
-  } catch (error) {
-    // A link can outlive a policy or product. Keep it unactionable, but retain
-    // the distinct user-facing state instead of inventing product data.
-    applicationTargetState = (error as Error & { status?: number }).status === 404 ? 'unavailable' : 'failed';
+let me: Me | undefined;
+let agreement: Agreement | undefined;
+let bridgeAttempted = false;
+let products: PromotionProduct[] = [];
+let productCursor = "";
+let productEmptyReason: PromotionPage["emptyReason"] = "";
+let applicationTarget: ApplicationTarget | undefined;
+let applicationTargetState: ApplicationTargetState = applicationContext
+  ? "failed"
+  : "none";
+let earnings: Earnings | undefined;
+let commissions: Commission[] = [];
+let commissionCursor = "";
+let commissionFactsStatus: string | undefined;
+let commissionReadState: "ready" | "loading" | "unknown" = "unknown";
+const commissionSnapshots = new Map<
+  string,
+  { items: Commission[]; cursor: string }
+>();
+let tab: "products" | "earnings" = "products";
+let commissionStatus = "";
+let accessEpoch = 0;
+let reloadGeneration = 0;
+let commissionFilterGeneration = 0;
+let productLoadFlight: { cursor: string; epoch: number } | undefined;
+let commissionLoadFlight:
+  { cursor: string; status: string; epoch: number } | undefined;
+
+type ApplicationTargetRead = {
+  target: ApplicationTarget | undefined;
+  state: ApplicationTargetState;
+};
+function message(text: string, isError = false): void {
+  const node = document.querySelector<HTMLElement>(
+    "[data-distribution-message]",
+  );
+  if (node) {
+    node.textContent = text;
+    node.dataset.error = String(isError);
   }
 }
-async function reload(): Promise<void> {
-  message('正在读取服务端分销状态…');
+function isCurrentRead(generation: number, epoch: number): boolean {
+  return generation === reloadGeneration && epoch === accessEpoch;
+}
+function applyApplicationTarget(value: ApplicationTargetRead): void {
+  applicationTarget = value.target;
+  applicationTargetState = value.state;
+}
+function clearAuthorizedFacts(): void {
+  me = undefined;
+  agreement = undefined;
+  products = [];
+  productCursor = "";
+  productEmptyReason = "";
+  earnings = undefined;
+  commissions = [];
+  commissionCursor = "";
+  commissionFactsStatus = undefined;
+  commissionReadState = "unknown";
+  commissionSnapshots.clear();
+  productLoadFlight = undefined;
+  commissionLoadFlight = undefined;
+  commissionFilterGeneration += 1;
+  tab = "products";
+  commissionStatus = "";
+}
+function responseStatus(error: unknown): number | undefined {
+  return (error as Error & { status?: number }).status;
+}
+function renderSessionRecovery(): void {
+  const card = el("section");
+  card.className = "distribution-card distribution-login";
+  card.append(
+    el("h1", "分销中心"),
+    el("p", "正在确认微信登录状态…"),
+  );
+  root.replaceChildren(card);
+}
+function renderAuthorizationDenied(): void {
+  const card = el("section");
+  card.className = "distribution-card distribution-error";
+  card.append(
+    el("h1", "分销中心"),
+    el("p", "当前微信账号无权读取分销信息。请使用有权限的微信账号登录。"),
+  );
+  const link = el("a", "使用微信登录");
+  link.href = wechatLoginURL();
+  link.className = "distribution-button";
+  card.append(link);
+  root.replaceChildren(card);
+}
+async function handleCurrentAuthorizationFailure(
+  statusCode: number,
+  isCurrent: () => boolean,
+  nextApplicationTarget?: ApplicationTargetRead,
+): Promise<void> {
+  if (!isCurrent()) return;
+  accessEpoch += 1;
+  const recoveryEpoch = accessEpoch;
+  const recoveryGeneration = ++reloadGeneration;
+  clearAuthorizedFacts();
+  if (nextApplicationTarget) applyApplicationTarget(nextApplicationTarget);
+  const recoveryIsCurrent = (): boolean =>
+    recoveryEpoch === accessEpoch && recoveryGeneration === reloadGeneration;
+  if (statusCode === 403) {
+    renderAuthorizationDenied();
+    return;
+  }
+  if (bridgeAttempted) {
+    renderLogin();
+    return;
+  }
+  bridgeAttempted = true;
+  renderSessionRecovery();
   try {
-    await loadApplicationTarget();
-    const meRaw = await request('/api/v1/distribution/me'); me = parseMe(meRaw);
-    if (me.registrationRequired) {
-      agreement = parseAgreement(await request('/api/v1/distribution/agreement'));
-    } else {
-      const [productRaw, earningsRaw, commissionRaw] = await Promise.all([request('/api/v1/distribution/products?limit=50'), request('/api/v1/distribution/earnings'), request('/api/v1/distribution/commissions?limit=50')]);
-      const productPage = parseProducts(productRaw); products = productPage.items; productCursor = productPage.nextCursor; productEmptyReason = productPage.emptyReason; earnings = parseEarnings(earningsRaw); commissions = parseCommissions(commissionRaw); commissionCursor = string(obj(commissionRaw).next_cursor, 'next_cursor', true);
-    }
-    render(); message('');
+    await request("/api/v1/distribution/session/bridge", {
+      method: "POST",
+      headers: mutationHeaders("session-bridge"),
+    });
+    if (recoveryIsCurrent()) await reload();
+  } catch {
+    if (recoveryIsCurrent()) renderLogin();
+  }
+}
+async function readApplicationTarget(): Promise<ApplicationTargetRead> {
+  if (!applicationContext) return { target: undefined, state: "none" };
+  try {
+    const target = parseApplicationTarget(
+      await request(
+        `/api/v1/distribution/application-context?product_id=${applicationContext.productID}&product_type=${applicationContext.productType}`,
+      ),
+    );
+    return { target, state: "available" };
   } catch (error) {
-    if ((error as Error & { status?: number }).status === 401 && !bridgeAttempted) { bridgeAttempted = true; try { await request('/api/v1/distribution/session/bridge', { method: 'POST', headers: mutationHeaders('session-bridge') }); await reload(); return; } catch { renderLogin(); return; } }
-    if ((error as Error & { status?: number }).status === 401) { renderLogin(); return; }
-    root.replaceChildren(el('section', error instanceof Error ? error.message : '分销状态读取失败')); root.firstElementChild?.classList.add('distribution-error');
+    if ([401, 403].includes(responseStatus(error) || 0)) throw error;
+    // A link can outlive a policy or product. Keep it unactionable, but retain
+    // the distinct user-facing state instead of inventing product data.
+    return {
+      target: undefined,
+      state:
+        (error as Error & { status?: number }).status === 404
+          ? "unavailable"
+          : "failed",
+    };
+  }
+}
+function renderReadFailure(error: unknown): void {
+  const card = el("section");
+  card.className = "distribution-card distribution-error";
+  card.append(
+    el("p", error instanceof Error ? error.message : "分销状态读取失败"),
+    action("重新读取", reload),
+  );
+  root.replaceChildren(card);
+}
+async function reload(): Promise<void> {
+  const generation = ++reloadGeneration;
+  const epoch = accessEpoch;
+  let nextApplicationTarget: ApplicationTargetRead | undefined;
+  try {
+    nextApplicationTarget = await readApplicationTarget();
+    if (!isCurrentRead(generation, epoch)) return;
+    message("正在读取服务端分销状态…");
+    const nextMe = parseMe(await request("/api/v1/distribution/me"));
+    if (nextMe.registrationRequired) {
+      const nextAgreement = parseAgreement(
+        await request("/api/v1/distribution/agreement"),
+      );
+      if (!isCurrentRead(generation, epoch)) return;
+      me = nextMe;
+      agreement = nextAgreement;
+      applyApplicationTarget(nextApplicationTarget);
+      render();
+      message("");
+      return;
+    }
+    const selectedStatus = commissionStatus;
+    const commissionQuery = selectedStatus
+      ? `?status=${encodeURIComponent(selectedStatus)}&limit=50`
+      : "?limit=50";
+    const [productRaw, earningsRaw, commissionRaw] = await Promise.all([
+      request("/api/v1/distribution/products?limit=50"),
+      request("/api/v1/distribution/earnings"),
+      request(`/api/v1/distribution/commissions${commissionQuery}`),
+    ]);
+    const productPage = parseProducts(productRaw);
+    const nextEarnings = parseEarnings(earningsRaw);
+    const nextCommissions = parseCommissions(commissionRaw);
+    const nextCommissionCursor = string(
+      obj(commissionRaw).next_cursor,
+      "next_cursor",
+      true,
+    );
+    if (
+      !isCurrentRead(generation, epoch) ||
+      selectedStatus !== commissionStatus
+    )
+      return;
+    me = nextMe;
+    agreement = undefined;
+    applyApplicationTarget(nextApplicationTarget);
+    products = productPage.items;
+    productCursor = productPage.nextCursor;
+    productEmptyReason = productPage.emptyReason;
+    productLoadFlight = undefined;
+    earnings = nextEarnings;
+    commissions = nextCommissions;
+    commissionCursor = nextCommissionCursor;
+    commissionFactsStatus = selectedStatus;
+    commissionReadState = "ready";
+    commissionSnapshots.set(selectedStatus, {
+      items: nextCommissions,
+      cursor: nextCommissionCursor,
+    });
+    commissionLoadFlight = undefined;
+    commissionFilterGeneration += 1;
+    render();
+    message("");
+  } catch (error) {
+    if (!isCurrentRead(generation, epoch)) return;
+    if ([401, 403].includes(responseStatus(error) || 0)) {
+      await handleCurrentAuthorizationFailure(
+        responseStatus(error)!,
+        () => isCurrentRead(generation, epoch),
+        nextApplicationTarget,
+      );
+      return;
+    }
+    if (me) {
+      render();
+      message(
+        `分销状态未更新：${error instanceof Error ? error.message : "请稍后重试。"}`,
+        true,
+      );
+      return;
+    }
+    renderReadFailure(error);
   }
 }
 function applicationContextMessage(): string { if (applicationTargetState === 'unavailable') return '该申请链接对应的商品当前不可用，请返回商品页面重新获取申请入口。'; if (applicationTargetState === 'failed') return '暂时无法读取商品，请稍后重试。'; return ''; }
@@ -285,6 +492,37 @@ function emptyProductState(): [string, string] {
   if (productEmptyReason === 'no_saleable_policy_products') return ['暂无可推广商品', '当前没有可售且已开启分销的商品。'];
   return ['暂无可推广商品', '当前没有可推广商品，请稍后刷新或联系商家。'];
 }
+async function loadMoreProducts(): Promise<void> {
+  if (!productCursor || productLoadFlight) return;
+  const flight = { cursor: productCursor, epoch: accessEpoch };
+  productLoadFlight = flight;
+  render();
+  let feedback = '';
+  try {
+    const page = parseProducts(await request(`/api/v1/distribution/products?limit=50&cursor=${encodeURIComponent(flight.cursor)}`));
+    if (flight.epoch !== accessEpoch || productLoadFlight !== flight || productCursor !== flight.cursor) return;
+    products = [...products, ...page.items];
+    productCursor = page.nextCursor;
+    productEmptyReason = page.emptyReason;
+  } catch (error) {
+    if (flight.epoch === accessEpoch && productLoadFlight === flight) {
+      if ([401, 403].includes(responseStatus(error) || 0)) {
+        await handleCurrentAuthorizationFailure(
+          responseStatus(error)!,
+          () => flight.epoch === accessEpoch && productLoadFlight === flight,
+        );
+        return;
+      }
+      feedback = error instanceof Error ? error.message : '推广商品读取失败';
+    }
+  } finally {
+    if (productLoadFlight !== flight) return;
+    productLoadFlight = undefined;
+    if (flight.epoch !== accessEpoch) return;
+    render();
+    if (feedback) message(`推广商品未更新：${feedback}`, true);
+  }
+}
 function productView(): HTMLElement {
   const section = el('section'); section.className = 'distribution-grid';
   if (!products.length) {
@@ -298,7 +536,11 @@ function productView(): HTMLElement {
       card.append(body); section.append(card);
     }
   }
-  if (productCursor) { const more = action('加载更多商品', async () => { try { const page = parseProducts(await request(`/api/v1/distribution/products?limit=50&cursor=${encodeURIComponent(productCursor)}`)); products.push(...page.items); productCursor = page.nextCursor; productEmptyReason = page.emptyReason; render(); } catch (error) { message(error instanceof Error ? error.message : '推广商品读取失败', true); } }); section.append(more); }
+  if (productCursor) {
+    const more = action('加载更多商品', loadMoreProducts);
+    more.disabled = Boolean(productLoadFlight);
+    section.append(more);
+  }
   return section;
 }
 async function prepareReceiver(): Promise<void> {
@@ -317,8 +559,105 @@ async function prepareReceiver(): Promise<void> {
 async function copyPromotionURL(url: string): Promise<boolean> { if (!navigator.clipboard?.writeText) return false; try { await navigator.clipboard.writeText(url); return true; } catch { return false; } }
 async function createCredential(item: PromotionProduct): Promise<void> { try { const result = obj(await request(`/api/v1/distribution/products/${item.id}/promotion-credentials`, { method: 'POST', headers: mutationHeaders(`promotion-credential:${item.id}`) })); const url = string(result.url, 'url'); const parsed = new URL(url, location.origin); if (parsed.origin !== location.origin || !/^\/d\/dpc_[A-Za-z0-9_-]{16,}$/.test(parsed.pathname) || parsed.search || parsed.hash) throw new Error('请从系统正式页面重新打开后生成链接。'); const trustedURL = parsed.toString(); if (await copyPromotionURL(trustedURL)) { message('分销链接已复制。'); return; } await showPromotion(trustedURL, string(result.expires_at, 'expires_at')); } catch (error) { await reload(); message(error instanceof Error ? error.message : '分销链接生成失败', true); } }
 async function showPromotion(url: string, expiresAt: string): Promise<void> { const dialog = document.createElement('dialog'); dialog.className = 'distribution-dialog'; const card = el('section'); card.className = 'distribution-card'; card.append(el('h2', '复制分销链接'), el('p', `有效期至：${time(expiresAt)}`)); const qr = el('div'); qr.className = 'distribution-qr'; const { renderQr } = await import('../src/admin/sections/qr'); renderQr(qr, url, '推广入口'); const link = el('input') as HTMLInputElement; link.value = url; link.readOnly = true; const selectLink = (): void => { link.focus(); link.select(); }; card.append(qr, link, action('复制分销链接', async () => { if (await copyPromotionURL(url)) { message('分销链接已复制。'); dialog.close(); return; } selectLink(); message('未能自动复制，请复制页面中的分销链接。', true); }), action('关闭', () => dialog.close())); dialog.append(card); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal(); selectLink(); message('当前环境无法自动复制，请复制页面中的分销链接。', true); }
-function earningsView(): HTMLElement { const section = el('section'); if (!earnings) { section.append(el('p', '收益汇总读取失败。')); return section; } const cards = el('div'); cards.className = 'distribution-metrics'; const entries: Array<[string, string, string]> = [['累计推广成交额', money(earnings.gross, earnings.currency), `退款另列 ${money(earnings.refunds, earnings.currency)}`], ['累计产生佣金', money(earnings.initial, earnings.currency), `调整另列 ${money(earnings.adjustments, earnings.currency)}`], ['未结算佣金', money(earnings.unsettled, earnings.currency), '含暂缓及异常待付'], ['已分账佣金', money(earnings.paid, earnings.currency), `追回另列 ${money(earnings.recovered, earnings.currency)}`]]; for (const [label, value, note] of entries) { const card = el('article'); card.className = 'distribution-card'; card.append(el('span', label), el('strong', value), el('small', note)); cards.append(card); } section.append(cards);
-  const filters = el('label'); filters.className = 'distribution-filters'; const filterLabel = el('span', '佣金状态'); const filter = document.createElement('select'); filter.name = 'commission-status'; filter.setAttribute('aria-label', '筛选佣金状态'); for (const [value, label] of [['', '全部'], ['pending', '待结算'], ['held', '暂缓'], ['settling', '结算中'], ['paid', '已分账'], ['cancelled', '已取消'], ['exception', '异常']] as const) { const option = document.createElement('option'); option.value = value; option.textContent = label; filter.append(option); } filter.value = commissionStatus; filter.addEventListener('change', () => { void (async () => { try { commissionStatus = filter.value; const query = commissionStatus ? `?status=${encodeURIComponent(commissionStatus)}&limit=50` : '?limit=50'; const raw = await request(`/api/v1/distribution/commissions${query}`); commissions = parseCommissions(raw); commissionCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '佣金明细读取失败', true); } })(); }); filters.append(filterLabel, filter); section.append(filters);
-  const list = el('div'); list.className = 'distribution-list'; for (const row of commissions.filter((item) => !commissionStatus || item.status === commissionStatus)) { const item = el('article'); item.className = 'distribution-card'; item.append(el('h3', row.product), el('p', `订单 ${row.order} · ${distributionCommissionStatusLabel(row.status)}`), el('p', `初始 ${money(row.initial, row.currency)} · 当前应付 ${money(row.payable, row.currency)} · 已分账 ${money(row.paid, row.currency)}`), el('small', `支付确认时间 ${time(row.paidConfirmedAt)} · 预计可结算时间 ${time(row.dueAt)} · 分账成功确认时间 ${row.settlementConfirmedAt ? time(row.settlementConfirmedAt) : '未记录'}`), el('small', row.holdReason || row.cancelReason || row.exceptionReason || '暂无补充说明')); list.append(item); } if (!list.childElementCount) list.append(el('p', '暂无该状态的佣金记录。')); section.append(list); if (commissionCursor) section.append(action('加载更多明细', async () => { try { const params = new URLSearchParams({ limit: '50', cursor: commissionCursor }); if (commissionStatus) params.set('status', commissionStatus); const raw = await request(`/api/v1/distribution/commissions?${params}`); commissions.push(...parseCommissions(raw)); commissionCursor = string(obj(raw).next_cursor, 'next_cursor', true); render(); } catch (error) { message(error instanceof Error ? error.message : '佣金明细读取失败', true); } })); return section; }
+function restoreCommissionSnapshot(statusValue: string): void {
+  const snapshot = commissionSnapshots.get(statusValue);
+  if (!snapshot) { commissionFactsStatus = undefined; commissionCursor = ''; commissionReadState = "loading"; return; }
+  commissions = snapshot.items; commissionCursor = snapshot.cursor; commissionFactsStatus = statusValue; commissionReadState = "ready";
+}
+async function selectCommissionStatus(statusValue: string): Promise<void> {
+  commissionStatus = statusValue;
+  commissionLoadFlight = undefined;
+  restoreCommissionSnapshot(statusValue);
+  const generation = ++commissionFilterGeneration;
+  const epoch = accessEpoch;
+  render(); message('正在读取所选状态的佣金明细…');
+  try {
+    const query = statusValue ? `?status=${encodeURIComponent(statusValue)}&limit=50` : '?limit=50';
+    const raw = await request(`/api/v1/distribution/commissions${query}`);
+    const rows = parseCommissions(raw);
+    const cursor = string(obj(raw).next_cursor, 'next_cursor', true);
+    if (epoch !== accessEpoch || generation !== commissionFilterGeneration || statusValue !== commissionStatus) return;
+    commissions = rows; commissionCursor = cursor; commissionFactsStatus = statusValue; commissionReadState = "ready";
+    commissionSnapshots.set(statusValue, { items: rows, cursor });
+    render(); message('');
+  } catch (error) {
+    if (epoch !== accessEpoch || generation !== commissionFilterGeneration || statusValue !== commissionStatus) return;
+    if ([401, 403].includes(responseStatus(error) || 0)) {
+      await handleCurrentAuthorizationFailure(
+        responseStatus(error)!,
+        () => epoch === accessEpoch && generation === commissionFilterGeneration && statusValue === commissionStatus,
+      );
+      return;
+    }
+    if (commissionFactsStatus !== statusValue) commissionReadState = "unknown";
+    render();
+    message(commissionFactsStatus === statusValue ? `佣金明细未更新：${error instanceof Error ? error.message : '请稍后重试。'}` : `佣金明细未更新：所选状态尚未得到确认。`, true);
+  }
+}
+async function loadMoreCommissions(): Promise<void> {
+  if (!commissionCursor || commissionFactsStatus !== commissionStatus || commissionLoadFlight) return;
+  const flight = { cursor: commissionCursor, status: commissionStatus, epoch: accessEpoch };
+  commissionLoadFlight = flight;
+  render();
+  let feedback = '';
+  try {
+    const params = new URLSearchParams({ limit: '50', cursor: flight.cursor });
+    if (flight.status) params.set('status', flight.status);
+    const raw = await request(`/api/v1/distribution/commissions?${params}`);
+    const rows = parseCommissions(raw);
+    const cursor = string(obj(raw).next_cursor, 'next_cursor', true);
+    if (flight.epoch !== accessEpoch || commissionLoadFlight !== flight || commissionStatus !== flight.status || commissionFactsStatus !== flight.status || commissionCursor !== flight.cursor) return;
+    commissions = [...commissions, ...rows]; commissionCursor = cursor;
+    commissionSnapshots.set(flight.status, { items: commissions, cursor });
+  } catch (error) {
+    if (flight.epoch === accessEpoch && commissionLoadFlight === flight) {
+      if ([401, 403].includes(responseStatus(error) || 0)) {
+        await handleCurrentAuthorizationFailure(
+          responseStatus(error)!,
+          () => flight.epoch === accessEpoch && commissionLoadFlight === flight && commissionStatus === flight.status,
+        );
+        return;
+      }
+      feedback = error instanceof Error ? error.message : '佣金明细读取失败';
+    }
+  } finally {
+    if (commissionLoadFlight !== flight) return;
+    commissionLoadFlight = undefined;
+    if (flight.epoch !== accessEpoch || commissionStatus !== flight.status) return;
+    render();
+    if (feedback) message(`佣金明细未更新：${feedback}`, true);
+  }
+}
+function earningsView(): HTMLElement {
+  const section = el('section');
+  if (!earnings) { section.append(el('p', '收益汇总读取失败。')); return section; }
+  const cards = el('div'); cards.className = 'distribution-metrics';
+  const entries: Array<[string, string, string]> = [['累计推广成交额', money(earnings.gross, earnings.currency), `退款另列 ${money(earnings.refunds, earnings.currency)}`], ['累计产生佣金', money(earnings.initial, earnings.currency), `调整另列 ${money(earnings.adjustments, earnings.currency)}`], ['未结算佣金', money(earnings.unsettled, earnings.currency), '含暂缓及异常待付'], ['已分账佣金', money(earnings.paid, earnings.currency), `追回另列 ${money(earnings.recovered, earnings.currency)}`]];
+  for (const [label, value, note] of entries) { const card = el('article'); card.className = 'distribution-card'; card.append(el('span', label), el('strong', value), el('small', note)); cards.append(card); }
+  section.append(cards);
+  const filters = el('label'); filters.className = 'distribution-filters'; const filterLabel = el('span', '佣金状态'); const filter = document.createElement('select'); filter.name = 'commission-status'; filter.setAttribute('aria-label', '筛选佣金状态');
+  for (const [value, label] of [['', '全部'], ['pending', '待结算'], ['held', '暂缓'], ['settling', '结算中'], ['paid', '已分账'], ['cancelled', '已取消'], ['exception', '异常']] as const) { const option = document.createElement('option'); option.value = value; option.textContent = label; filter.append(option); }
+  filter.value = commissionStatus;
+  filter.addEventListener('change', () => { void selectCommissionStatus(filter.value); });
+  filters.append(filterLabel, filter); section.append(filters);
+  const list = el('div'); list.className = 'distribution-list';
+  if (commissionReadState === "loading") {
+    list.append(el('p', '正在读取所选状态的佣金记录。'));
+  } else if (commissionReadState === "unknown") {
+    list.append(el('p', '所选状态的佣金记录暂未确认，请稍后重试。'));
+  } else {
+    for (const row of commissions) {
+      const item = el('article'); item.className = 'distribution-card'; item.append(el('h3', row.product), el('p', `订单 ${row.order} · ${distributionCommissionStatusLabel(row.status)}`), el('p', `初始 ${money(row.initial, row.currency)} · 当前应付 ${money(row.payable, row.currency)} · 已分账 ${money(row.paid, row.currency)}`), el('small', `支付确认时间 ${time(row.paidConfirmedAt)} · 预计可结算时间 ${time(row.dueAt)} · 分账成功确认时间 ${row.settlementConfirmedAt ? time(row.settlementConfirmedAt) : '未记录'}`), el('small', row.holdReason || row.cancelReason || row.exceptionReason || '暂无补充说明')); list.append(item);
+    }
+    if (!list.childElementCount) list.append(el('p', '暂无该状态的佣金记录。'));
+  }
+  section.append(list);
+  if (commissionFactsStatus === commissionStatus && commissionCursor) {
+    const more = action('加载更多明细', loadMoreCommissions);
+    more.disabled = Boolean(commissionLoadFlight);
+    section.append(more);
+  }
+  return section;
+}
 
 void reload();
