@@ -533,12 +533,12 @@ func TestRenderTagsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	err = renderer.RenderTags(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wecom-tags", nil), "企微标签管理", "", "api.admin_wecom_tags_page"), `<section data-page="tags">frozen donor fragment</section>`, TagsAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js"})
+	err = renderer.RenderTags(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wecom-tags", nil), "企微标签管理", "", "api.admin_wecom_tags_page"), `<section data-page="tags">frozen donor fragment</section>`, TagsAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", PageHeaderActionHostJS: "/assets/page-header-action-host.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="tags">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `/static/admin_console/tag_sync_bridge.js`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Count(body, `<h1 class="admin-page-title">企微标签管理</h1>`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="tags">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `/static/admin_console/tag_sync_bridge.js`) || !strings.Contains(body, `/assets/page-header-action-host.js`) {
 		t.Fatalf("tags shell mismatch status=%d body=%q", response.Code, body)
 	}
 }

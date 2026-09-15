@@ -22,7 +22,7 @@ const sourceManifest = readJSON(sourceManifestPath);
 const stagedManifest = readJSON(stagedManifestPath);
 const entryKeys = [
   'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
-  'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'materialLibraryHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
+  'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'materialLibraryHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'pageHeaderActionHost', 'radarHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'sidebarPresentationStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost',
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
   // These two files are the narrowly mounted anonymous Product-public
