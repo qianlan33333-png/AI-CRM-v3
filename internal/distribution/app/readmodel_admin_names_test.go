@@ -20,10 +20,11 @@ func (u *adminNamesUOW) Within(ctx context.Context, fn func(context.Context) err
 }
 
 type adminNamesStore struct {
-	distributors distributionport.AdminPage[distributionport.AdminDistributor]
-	orders       distributionport.AdminPage[distributionport.AdminOrder]
-	exceptions   distributionport.AdminPage[distributionport.AdminException]
-	detail       distributionport.AdminDistributorDetail
+	distributors      distributionport.AdminPage[distributionport.AdminDistributor]
+	orders            distributionport.AdminPage[distributionport.AdminOrder]
+	exceptions        distributionport.AdminPage[distributionport.AdminException]
+	detail            distributionport.AdminDistributorDetail
+	orderDistribution map[int64][]distributionport.OrderDistributionLine
 }
 
 func (adminNamesStore) Within(ctx context.Context, fn func(context.Context) error) error {
@@ -56,6 +57,9 @@ func (s adminNamesStore) ReadAdminOrderDetail(context.Context, int64) (distribut
 }
 func (s adminNamesStore) ReadAdminExceptionDetail(context.Context, int64) (distributionport.AdminException, error) {
 	return s.exceptions.Items[0], nil
+}
+func (s adminNamesStore) ReadOrderDistribution(context.Context, []int64) (map[int64][]distributionport.OrderDistributionLine, error) {
+	return s.orderDistribution, nil
 }
 
 type adminNamesDirectory struct {
@@ -131,5 +135,22 @@ func TestAdminReadModelFailsClosedWhenDirectoryIsUnavailable(t *testing.T) {
 	}
 	if _, err = service.ListAdminDistributors(context.Background(), "", 50); !errors.Is(err, distributionport.ErrUnavailable) || directory.calls != 1 {
 		t.Fatalf("directory failure err=%v calls=%d", err, directory.calls)
+	}
+}
+
+func TestOrderDistributionReadEnrichesCanonicalDisplayNamesAfterTransaction(t *testing.T) {
+	uow := &adminNamesUOW{}
+	store := adminNamesStore{orderDistribution: map[int64][]distributionport.OrderDistributionLine{7: {{OrderID: 7, DistributorCustomerID: 11}, {OrderID: 7, DistributorCustomerID: 12}}}}
+	directory := &adminNamesDirectory{uow: uow, names: map[customerdomain.CustomerID]string{11: "分销员甲"}}
+	service, err := NewReadModelService(uow, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.SetDirectoryDisplayNameReader(directory); err != nil {
+		t.Fatal(err)
+	}
+	values, err := service.ReadOrderDistribution(context.Background(), []int64{7})
+	if err != nil || directory.calls != 1 || len(directory.ids) != 2 || values[7][0].DistributorDisplayName != "分销员甲" || values[7][1].DistributorDisplayName != "未设置昵称" {
+		t.Fatalf("values=%+v err=%v calls=%d ids=%v", values, err, directory.calls, directory.ids)
 	}
 }

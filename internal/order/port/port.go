@@ -102,6 +102,14 @@ type Query interface {
 	List(context.Context, ListQuery) (Page, error)
 }
 
+// ProviderScopedQuery adds an exact payment-provider constraint to a legacy
+// merchant reference. It is intentionally separate from Query so existing
+// consumers keep the historical ambiguity-safe lookup, while an Order list
+// row can carry its server-owned provider into a detail read.
+type ProviderScopedQuery interface {
+	GetByReferenceForProvider(context.Context, domain.Provider, string) (domain.Snapshot, error)
+}
+
 // ExternalReadQuery is the deliberately narrow, public-read projection.  It
 // accepts only canonical customer constraints supplied by Access; it never
 // resolves identities or accepts an untrusted owner predicate.

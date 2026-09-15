@@ -189,6 +189,9 @@ type storeStub struct {
 	refundReconciliationID  int64
 	paymentReconciliationID int64
 	callbackOutcome         string
+	callbackClaims          int
+	callbackReplay          bool
+	refundSettlementUpdates int
 	handoffCalls            int
 	recoveryRefund          domain.Refund
 	recoveryFound           bool
@@ -270,6 +273,7 @@ func (s *storeStub) UpdatePaymentSettlement(_ context.Context, p domain.Payment,
 	return p, nil
 }
 func (s *storeStub) UpdateRefundSettlement(_ context.Context, r domain.Refund, _, _ string) (domain.Refund, error) {
+	s.refundSettlementUpdates++
 	s.refund = r
 	return r, nil
 }
@@ -315,7 +319,8 @@ func (s *storeStub) GetRefundByNumber(context.Context, string, bool) (domain.Ref
 }
 func (s *storeStub) ClaimCallback(_ context.Context, _ string, _ [32]byte, _ [32]byte, _, outcome string, _ int64) (bool, error) {
 	s.callbackOutcome = outcome
-	return false, nil
+	s.callbackClaims++
+	return s.callbackReplay && s.callbackClaims > 1, nil
 }
 func (s *storeStub) ImportTerminalPayment(_ context.Context, payment domain.Payment, _ [32]byte, _ string) (domain.Payment, error) {
 	payment.ID = 10
@@ -380,6 +385,38 @@ func TestVerifiedCallbackAppIDMustMatchFrozenPaymentChannel(t *testing.T) {
 	callback := paymentprovider.CallbackResult{Kind: "payment", AppID: "wx-mini", MerchantOrderNo: "M-7", ProviderTransactionReference: "tx-payment-callback", ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", "tx-payment-callback")), AmountMinor: 1000, Currency: "CNY", OccurredAt: now.Add(time.Minute)}
 	if err := service.ApplyVerifiedCallback(context.Background(), callback); !errors.Is(err, paymentport.ErrConflict) {
 		t.Fatalf("mismatched callback err=%v", err)
+	}
+}
+
+func TestVerifiedRefundCallbackCompletesUnknownOnceAndReplays(t *testing.T) {
+	now := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
+	store := &storeStub{
+		callbackReplay: true,
+		payment:        domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, Channel: domain.ChannelMiniProgram, MerchantOrderNo: "M-refund-callback", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+		refund:         domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatPay, RefundNo: "R-refund-callback", AmountMinor: 300, Status: domain.RefundOutcomeUnknown, Version: 4, CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+	}
+	service := NewService(uowStub{}, store, &checkoutOrderStub{}, sessionStub{}, &effectStub{})
+	callback := paymentprovider.CallbackResult{
+		Kind:                 "refund",
+		RefundNo:             "R-refund-callback",
+		AmountMinor:          300,
+		Currency:             "CNY",
+		OccurredAt:           now.Add(time.Minute),
+		EventDigest:          [32]byte{1},
+		BodyDigest:           [32]byte{2},
+		ProviderRefundDigest: string(effectport.Hash("wechatpay.refund", "R-refund-callback")),
+	}
+	if err := service.ApplyVerifiedCallback(context.Background(), callback); err != nil {
+		t.Fatal(err)
+	}
+	if store.refund.Status != domain.RefundCompleted || store.refundSettlementUpdates != 1 || store.callbackClaims != 1 {
+		t.Fatalf("first callback refund=%+v updates=%d claims=%d", store.refund, store.refundSettlementUpdates, store.callbackClaims)
+	}
+	if err := service.ApplyVerifiedCallback(context.Background(), callback); err != nil {
+		t.Fatal(err)
+	}
+	if store.refund.Status != domain.RefundCompleted || store.refundSettlementUpdates != 1 || store.callbackClaims != 2 {
+		t.Fatalf("duplicate callback reapplied settlement: refund=%+v updates=%d claims=%d", store.refund, store.refundSettlementUpdates, store.callbackClaims)
 	}
 }
 

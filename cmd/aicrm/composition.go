@@ -286,7 +286,23 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	queries := identityquery.NewPostgreSQL(phoneVault)
 	hxcIdentity := identityapp.HXCSourceService{Inspector: queries, Store: identityRepository, OneID: oneID, VerifiedIdentity: identityadapter.HXCVerifiedUnionIDFactory{Enabled: cfg.HXCDashboard.UnionIDVerified}}
 	paymentRepository := paymentstore.NewPostgreSQL()
+	overviewReadUoW, err := platformpostgres.NewReadOnlyRepeatableReadUnitOfWork(pool)
+	if err != nil {
+		return fail(err)
+	}
 	distributionRepository, err := distributionstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	customerOverview, err := customerapp.NewOverviewReader(uow, identityRepository)
+	if err != nil {
+		return fail(err)
+	}
+	paymentOverview, err := paymentapp.NewOverviewReader(overviewReadUoW, paymentRepository, queries)
+	if err != nil {
+		return fail(err)
+	}
+	distributionOverview, err := distributionapp.NewOverviewReader(uow, distributionRepository)
 	if err != nil {
 		return fail(err)
 	}
@@ -297,6 +313,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	requestSecurity := requestAccessSecurity{authentication: authentication}
+	adminOverviewHandler, err := newAdminOverviewHandler(customerOverview, paymentOverview, distributionOverview, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
 	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
@@ -1393,6 +1413,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if distributionErr = readModelService.SetDirectoryDisplayNameReader(orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); distributionErr != nil {
 			return fail(distributionErr)
 		}
+		if distributionErr = orderHandler.SetDistributionReader(readModelService); distributionErr != nil {
+			return fail(distributionErr)
+		}
 		distributionPublic, distributionErr = distributionhttp.NewHandler(distributionhttp.Config{Registration: registration, Promotion: promotion, Earnings: readModelService, Sessions: browserSessions, Bridge: bridge, CookieSecure: true, AllowedOrigins: []string{cfg.PublicOrigin, h5PublicOrigin(cfg)}})
 		if distributionErr != nil {
 			return fail(distributionErr)
@@ -1749,6 +1772,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/v1/customer-tag-commands/", customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/overview", adminOverviewHandler)
 	adminAPIs.Handle("/api/admin/hxc-dashboard/", hxcHandler.Routes())
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
@@ -2336,6 +2360,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/customers/", identity)
 	mux.Handle("/api/admin/customer-sync-runs", identity)
 	mux.Handle("/api/admin/customer-sync-runs/", identity)
+	mux.Handle("/api/admin/overview", identity)
 	mux.Handle("/api/admin/hxc-dashboard/", identity)
 	mux.Handle("/api/admin/questionnaires", identity)
 	mux.Handle("/api/admin/questionnaires/", identity)

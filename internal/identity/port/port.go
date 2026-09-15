@@ -35,6 +35,15 @@ type CanonicalLineageReader interface {
 	CanonicalLineage(context.Context, customerdomain.CustomerID) ([]customerdomain.CustomerID, error)
 }
 
+// CanonicalCustomerRootsReader resolves a bounded batch of historical
+// Customer IDs to their current canonical roots. It exposes no identity value
+// and must fail closed when a requested root is missing or malformed.
+// Implementations de-duplicate duplicate inputs and return one map entry for
+// every distinct requested ID.
+type CanonicalCustomerRootsReader interface {
+	CanonicalCustomerRoots(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerdomain.CustomerID, error)
+}
+
 // LockedCanonicalLineageReader pins roots against concurrent merge for the caller UoW.
 type LockedCanonicalLineageReader interface {
 	LockedCanonicalLineage(context.Context, customerdomain.CustomerID) ([]customerdomain.CustomerID, error)

@@ -42,8 +42,8 @@ func TestPostgreSQLDistributionProductPolicyChromiumJourney(t *testing.T) {
 		rate     int
 		waitDays int
 	}{
-		{fixture.productID, "standard_product", true, 1234, 8},
-		{fixture.serviceProductID, "service_period", true, 3000, 0},
+		{fixture.productID, "standard_product", false, 2345, 8},
+		{fixture.serviceProductID, "service_period", false, 2345, 0},
 	} {
 		var enabled bool
 		var rate, waitDays int
