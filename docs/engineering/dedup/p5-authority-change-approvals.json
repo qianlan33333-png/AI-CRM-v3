@@ -687,6 +687,28 @@
       ],
       "reason": "Integrate the Root-reviewed overview canonical-payer contract with the current main GroupOps OpenAPI authority. The count is omitted when canonical-root resolution is unavailable; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
       "review_reference": "Root review of #320 canonical-payer integration against main a53d60d2 on 2026-09-15"
+    },
+    {
+      "base_commit": "e1734575a4e5c26cf09475b2a6d9499016bfd1f1",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "7096c41955eee29328fb467018e9279357bbf8386a7c5bd7e9756f30a5529e03",
+          "head_sha256": "a71849b7ea39f71ac4274c44a9ebefb4c0f578464c21874dfa8146158bf6ab40"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "c8de024f06ff5a795b59bb03745895ad89f7b4cfa5a9fb112cc9a7ac0ea63292",
+          "head_sha256": "bb0e4f1376b1fe3662f4ec6f16430d16cc549fb22dcd499b8e2a71a128a733da"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "5328e3a5c0b16e5f5f60d0bd2c11fb17c8a7961c39e6c641e7d442cc93808590",
+          "head_sha256": "477bf78a99b2818e43102ca1a2e976b0d53fe979ec64a2522529693000bbd35c"
+        }
+      ],
+      "reason": "Record the user-authorized read-only confirmed-payment records contract for the operating overview. It preserves Payment's immutable paid-confirmation window and the existing provider-scoped Order detail link while frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review pending for the paid-record drilldown contract and active V3 OpenAPI synchronization on 2026-09-15"
     }
   ]
 }
