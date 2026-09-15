@@ -609,6 +609,13 @@ func (s *SubmissionService) QueueCompletionTest(ctx context.Context, qid surveyp
 		if err != nil {
 			return err
 		}
+		// A previously accepted test is replayed from its frozen snapshot above.
+		// A new test is a new external-effect intent and must stop once the
+		// questionnaire is archived. Draft and disabled configuration tests keep
+		// their established pre-publication behavior.
+		if questionnaire.Status == surveyport.StatusArchived {
+			return surveyport.ErrNotFound
+		}
 		configuration, err := s.store.GetOperationConfiguration(tx, qid)
 		if err != nil {
 			return err

@@ -9,6 +9,7 @@ import { apiRequestOptions } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
 import { productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr, renderQr } from '../src/admin/sections/qr';
+import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 
@@ -64,6 +65,8 @@ let loadedProducts: ProductProjection[] = [];
 const openedProductPayloads = new Map<number, RecordValue>();
 const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
 const productLifecycleKeys = new Map<string, string>();
+type ProductArchiveIntent = { key: string; body: string };
+const productArchiveIntents = new Map<string, ProductArchiveIntent>();
 
 type ProductSaveContext = {
   productID?: number;
@@ -101,6 +104,39 @@ function productLifecycleKey(productID: number, version: number, enabled: boolea
     productLifecycleKeys.set(identity, key);
   }
   return key;
+}
+
+type ProductArchiveRow = { resourceId?: number; version?: number; name?: string };
+type ProductArchiveController = { init(): Promise<void>; db: { rows: { products: ProductArchiveRow[]; spProducts: ProductArchiveRow[] } } };
+
+async function archiveProduct(controller: ProductArchiveController, kind: 'ordinary' | 'service-period', row: ProductArchiveRow): Promise<void> {
+  const id = Number(row.resourceId);
+  const version = Number(row.version);
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(version) || version < 1) {
+    throw new Error('商品缺少打开时版本，请刷新后再归档');
+  }
+  const identity = `${kind}:${id}:${version}`;
+  let intent = productArchiveIntents.get(identity);
+  if (!intent) {
+    intent = { key: newIdempotencyKey(`${kind === 'ordinary' ? 'product' : 'service-product'}-archive`), body: JSON.stringify({ expected_version: version }) };
+    productArchiveIntents.set(identity, intent);
+  }
+  const endpoint = kind === 'ordinary'
+    ? `/api/admin/wechat-pay/products/${id}`
+    : `/api/admin/service-period-products/${id}`;
+  const response = await fetch(endpoint, apiRequestOptions({
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.key },
+    body: intent.body,
+  }));
+  if (!response.ok) throw new Error(`商品归档失败（HTTP ${response.status}）`);
+  await controller.init();
+  const rows = kind === 'ordinary' ? controller.db.rows.products : controller.db.rows.spProducts;
+  if (rows.some((item) => Number(item.resourceId) === id)) {
+    throw new Error('归档已受理，但列表回读仍显示该商品；请刷新后核对');
+  }
+  productArchiveIntents.delete(identity);
+  showMessage(kind === 'ordinary' ? '商品已归档，已停止新的公开购买。' : '周期商品已归档，已停止新的公开购买和成员发放。', true);
 }
 
 function stableProductSaveKeys(input: Parameters<typeof api.saveProduct>[0]): { subjectKey: string; externalPushKey: string } {
@@ -1619,6 +1655,7 @@ type ProductController = {
   db: AdminDb;
   goto(page: string, query?: string): void;
   qs(): URLSearchParams;
+  renderVals(): Record<string, unknown>;
 };
 const productController = AdminController.prototype as unknown as ProductController;
 const donorProductQuery = productController.qs;
@@ -1648,4 +1685,38 @@ productController.goto = function (page, query = '') {
     if (node.children.length === 0 && node.textContent?.startsWith('服务端版本：')) node.textContent = `服务端版本：${saved.version} · 生命周期：${saved.lifecycle || ''}`;
   }
   showMessage(`已保存当前维度，服务端版本 ${saved.version}`, true);
+};
+
+const donorProductRenderVals = productController.renderVals;
+productController.renderVals = function renderProductListWithArchiveActions() {
+  const values = donorProductRenderVals.call(this) as { rows?: { products?: ProductArchiveRow[]; spProducts?: ProductArchiveRow[] } };
+  if (this.page !== 'products' || !values.rows) return values;
+  const ordinaryRows = values.rows.products || [];
+  const serviceRows = values.rows.spProducts || [];
+  return {
+    ...values,
+    rows: {
+      ...values.rows,
+      products: ordinaryRows.map((row) => ({
+        ...row,
+        del: () => confirmBox(
+          '归档商品',
+          `确认归档“${row.name || '未命名商品'}”吗？归档后会从正常列表和新的购买、选择入口移除，停止新的公开购买；已支付订单、权益和审计记录会保留。`,
+          '确认归档',
+          true,
+          () => { void archiveProduct(this, 'ordinary', row).catch((error) => showMessage(error instanceof Error ? error.message : '商品归档失败')); },
+        ),
+      })),
+      spProducts: serviceRows.map((row) => ({
+        ...row,
+        archive: () => confirmBox(
+          '归档周期商品',
+          `确认归档“${row.name || '未命名周期商品'}”吗？归档后会从正常列表和新的购买、选择入口移除，停止新的公开购买和成员发放；既有成员权益、订单和审计记录会保留。`,
+          '确认归档',
+          true,
+          () => { void archiveProduct(this, 'service-period', row).catch((error) => showMessage(error instanceof Error ? error.message : '周期商品归档失败')); },
+        ),
+      })),
+    },
+  };
 };

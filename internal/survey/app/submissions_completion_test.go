@@ -158,7 +158,7 @@ func TestOperationConfigurationRejectsNonObjectMetadata(t *testing.T) {
 }
 
 func TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect(t *testing.T) {
-	q := surveyport.Questionnaire{ID: 4, Title: "增长调研"}
+	q := surveyport.Questionnaire{ID: 4, Title: "增长调研", Status: surveyport.StatusDraft}
 	store := &completionStore{questionnaire: q, configuration: surveyport.OperationConfiguration{QuestionnaireID: q.ID, ExternalPushEnabled: true, ExternalPushConfigurationRef: "local-webhook", ExternalPushMetadata: json.RawMessage(`{"custom_params":{"campaign":"autumn","unionid":"must-not-send"}}`)}}
 	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
@@ -189,8 +189,12 @@ func TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect(t *testi
 		t.Fatalf("synthetic replay=%+v/%+v snapshot=%+v calls=%d", first, second, store.testSnapshot, accepter.calls)
 	}
 	store.configuration.ExternalPushMetadata = json.RawMessage(`{"remark":"changed"}`)
+	store.questionnaire.Status = surveyport.StatusArchived
 	third, err := service.QueueCompletionTest(context.Background(), q.ID, 8, key)
 	if err != nil || third != first || accepter.calls != 3 || store.testSnapshot.Policy.Remark != "" {
 		t.Fatalf("changed configuration retargeted test=%+v err=%v calls=%d snapshot=%+v", third, err, accepter.calls, store.testSnapshot)
+	}
+	if _, err = service.QueueCompletionTest(context.Background(), q.ID, 8, "survey-completion-test-command-0002"); !errors.Is(err, surveyport.ErrNotFound) || accepter.calls != 3 {
+		t.Fatalf("archived questionnaire accepted a new test err=%v calls=%d", err, accepter.calls)
 	}
 }

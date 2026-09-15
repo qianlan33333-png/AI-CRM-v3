@@ -1187,7 +1187,7 @@
     }
     const current = state.plans.find((item) => Number(item.id) === listAction.id && Number(item.revision) === listAction.revision);
     const label = current && current.plan_name ? `「${current.plan_name}」` : "该计划";
-    if (!window.confirm(`确认归档${label}？归档后仍保留在列表中。`)) return;
+    if (!window.confirm(`确认归档${label}？归档后将从正常列表移除，已接受的执行和投递历史会保留。`)) return;
     state.changingPlanId = listAction.id;
     state.notice = "归档中";
     state.noticeIsError = false;

@@ -185,11 +185,17 @@ func (s *Service) Stop(ctx context.Context, id couponport.ID, actor int64, key s
 	return s.mutate(ctx, "stop", couponport.UpsertCommand{Coupon: couponport.Coupon{ID: id}, Actor: actor, IdempotencyKey: key}, "stopped", false)
 }
 
-func (s *Service) Archive(ctx context.Context, id couponport.ID, actor int64, key string) (couponport.Coupon, error) {
-	return s.ruleMutation(ctx, "archive", id, actor, key, func(tx context.Context, now time.Time) (couponport.Coupon, bool, error) {
+func (s *Service) Archive(ctx context.Context, id couponport.ID, expectedVersion, actor int64, key string) (couponport.Coupon, error) {
+	if expectedVersion < 1 {
+		return couponport.Coupon{}, ErrInvalidCoupon
+	}
+	return s.ruleMutation(ctx, "archive", id, actor, key, expectedVersion, func(tx context.Context, now time.Time) (couponport.Coupon, bool, error) {
 		old, e := s.store.Lock(tx, id)
 		if e != nil {
 			return couponport.Coupon{}, false, e
+		}
+		if old.Version != expectedVersion {
+			return couponport.Coupon{}, false, ErrConflict
 		}
 		if old.HistoryOnly {
 			return couponport.Coupon{}, false, ErrConflict
@@ -206,7 +212,7 @@ func (s *Service) Archive(ctx context.Context, id couponport.ID, actor int64, ke
 }
 
 func (s *Service) Delete(ctx context.Context, id couponport.ID, actor int64, key string) (couponport.Coupon, error) {
-	return s.ruleMutation(ctx, "delete", id, actor, key, func(tx context.Context, now time.Time) (couponport.Coupon, bool, error) {
+	return s.ruleMutation(ctx, "delete", id, actor, key, 0, func(tx context.Context, now time.Time) (couponport.Coupon, bool, error) {
 		old, e := s.store.Lock(tx, id)
 		if e != nil {
 			return couponport.Coupon{}, false, e
@@ -225,7 +231,7 @@ func (s *Service) Delete(ctx context.Context, id couponport.ID, actor int64, key
 }
 
 func (s *Service) Copy(ctx context.Context, id couponport.ID, actor int64, key string) (couponport.Coupon, error) {
-	return s.ruleMutation(ctx, "copy", id, actor, key, func(tx context.Context, now time.Time) (couponport.Coupon, bool, error) {
+	return s.ruleMutation(ctx, "copy", id, actor, key, 0, func(tx context.Context, now time.Time) (couponport.Coupon, bool, error) {
 		old, e := s.store.Lock(tx, id)
 		if e != nil {
 			return couponport.Coupon{}, false, e
@@ -242,15 +248,16 @@ func (s *Service) Copy(ctx context.Context, id couponport.ID, actor int64, key s
 	})
 }
 
-func (s *Service) ruleMutation(ctx context.Context, operation string, id couponport.ID, actor int64, key string, apply func(context.Context, time.Time) (couponport.Coupon, bool, error)) (couponport.Coupon, error) {
+func (s *Service) ruleMutation(ctx context.Context, operation string, id couponport.ID, actor int64, key string, expectedVersion int64, apply func(context.Context, time.Time) (couponport.Coupon, bool, error)) (couponport.Coupon, error) {
 	if !ready(s) || id < 1 || actor < 1 || !validRuleMutationKey(key) || apply == nil {
 		return couponport.Coupon{}, ErrInvalidCoupon
 	}
 	now := s.now().UTC()
 	payload, e := json.Marshal(struct {
-		CouponID  couponport.ID `json:"coupon_id"`
-		Operation string        `json:"operation"`
-	}{CouponID: id, Operation: operation})
+		CouponID        couponport.ID `json:"coupon_id"`
+		Operation       string        `json:"operation"`
+		ExpectedVersion int64         `json:"expected_version,omitempty"`
+	}{CouponID: id, Operation: operation, ExpectedVersion: expectedVersion})
 	if e != nil {
 		return couponport.Coupon{}, ErrUnavailable
 	}

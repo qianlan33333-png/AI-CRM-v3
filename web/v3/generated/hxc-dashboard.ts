@@ -523,6 +523,11 @@ export interface OpenPlatformV1Failure {
 export type UnavailableResponse = ErrorResponse;
 
 /**
+ * Group Ops Webhook failure envelope; `error.code` is the stable caller-visible code and the two safety fields never prove a provider write or delivery.
+ */
+export type GroupOpsWebhookFailureResponse = GroupOpsWebhookError;
+
+/**
  * OAuth client-credential failure. `invalid_source_ip` and `https_required` are emitted before OAuth Basic authentication; all other listed OAuth failures use the same JSON shape.
  */
 export type OpenPlatformOAuthFailureResponse = OpenPlatformOAuthError;

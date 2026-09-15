@@ -569,6 +569,7 @@ func TestPostgreSQLSidebarClaimableCatalogPreservesDirectoryAndClaimFacts(t *tes
 	scheduled := createPublished("catalog-scheduled", now.Add(time.Hour), now.Add(2*time.Hour), 2, 1, []string{"standard_product:9"})
 	ended := createPublished("catalog-ended", now.Add(-2*time.Hour), now.Add(-time.Hour), 2, 1, []string{"standard_product:9"})
 	soldOut := createPublished("catalog-soldout", now.Add(-time.Hour), now.Add(time.Hour), 1, 1, []string{"standard_product:9"})
+	archived := createPublished("catalog-archived", now.Add(-time.Hour), now.Add(time.Hour), 2, 1, []string{"standard_product:9"})
 
 	updates := []struct {
 		coupon    couponport.Coupon
@@ -580,6 +581,10 @@ func TestPostgreSQLSidebarClaimableCatalogPreservesDirectoryAndClaimFacts(t *tes
 		{coupon: scheduled, slug: "", issued: 0, updatedAt: now.Add(3 * time.Minute)},
 		{coupon: ended, slug: "cp-ended", issued: 0, updatedAt: now.Add(2 * time.Minute)},
 		{coupon: soldOut, slug: "cp-soldout", issued: 1, updatedAt: now.Add(time.Minute)},
+		{coupon: archived, slug: "cp-archived", issued: 0, updatedAt: now.Add(5 * time.Minute)},
+	}
+	if _, err = native.Exec(ctx, `UPDATE coupon_rules SET status='archived' WHERE id=$1`, archived.ID); err != nil {
+		t.Fatal(err)
 	}
 	for _, update := range updates {
 		if _, err = native.Exec(ctx, `UPDATE coupon_rules SET public_slug=NULLIF($2,''),issued_count=$3,updated_at=$4 WHERE id=$1`, update.coupon.ID, update.slug, update.issued, update.updatedAt); err != nil {
@@ -622,6 +627,9 @@ func TestPostgreSQLSidebarClaimableCatalogPreservesDirectoryAndClaimFacts(t *tes
 	}
 	if second.Total != 4 || second.Limit != 2 || second.Offset != 2 || len(second.Items) != 2 || second.Items[0].CouponID != ended.ID || second.Items[0].AvailabilityStatus != "ended" || second.Items[1].CouponID != soldOut.ID || second.Items[1].AvailabilityStatus != "sold_out" {
 		t.Fatalf("second page=%+v", second)
+	}
+	if _, err = catalog.ReadSidebarClaimable(ctx, customerID, archived.ID); !errors.Is(err, couponapp.ErrNotFound) {
+		t.Fatalf("archived coupon must not be selected by exact sidebar ID err=%v", err)
 	}
 	if countsAfter := couponCatalogCounts(t, ctx, native); countsAfter != countsBefore {
 		t.Fatalf("catalog read mutated coupon state before=%v after=%v", countsBefore, countsAfter)

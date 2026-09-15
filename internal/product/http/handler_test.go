@@ -90,10 +90,10 @@ func (catalog *testCatalog) Update(_ context.Context, command productport.Update
 }
 
 type testLifecycle struct {
-	local      productport.LocalProduct
-	share      productport.LocalProductShare
-	shareErr   error
-	deleteCall *productport.DeleteLocalProductCommand
+	local       productport.LocalProduct
+	share       productport.LocalProductShare
+	shareErr    error
+	archiveCall *productport.ArchiveLocalProductCommand
 }
 
 func (lifecycle *testLifecycle) SetLocalProductEnabled(context.Context, productport.SetLocalProductEnabledCommand) (productport.LocalProduct, error) {
@@ -104,9 +104,13 @@ func (lifecycle *testLifecycle) CopyLocalProduct(context.Context, productport.Co
 	return lifecycle.local, nil
 }
 
-func (lifecycle *testLifecycle) DeleteLocalProduct(_ context.Context, command productport.DeleteLocalProductCommand) (productport.DeleteLocalProductResult, error) {
-	lifecycle.deleteCall = &command
-	return productport.DeleteLocalProductResult{ProductID: command.ID, Deleted: true}, nil
+func (lifecycle *testLifecycle) ArchiveLocalProduct(_ context.Context, command productport.ArchiveLocalProductCommand) (productport.LocalProduct, error) {
+	lifecycle.archiveCall = &command
+	return lifecycle.local, nil
+}
+
+func (lifecycle *testLifecycle) DeleteLocalProduct(context.Context, productport.DeleteLocalProductCommand) (productport.DeleteLocalProductResult, error) {
+	return productport.DeleteLocalProductResult{}, nil
 }
 
 func (lifecycle *testLifecycle) ShareLocalProduct(context.Context, productport.ID) (productport.LocalProductShare, error) {
@@ -715,8 +719,8 @@ func TestHandlerDeleteCompatibilityPathReachesLifecycle(t *testing.T) {
 	request.Header.Set("Idempotency-Key", "product-delete-00000001")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || lifecycle.deleteCall == nil || lifecycle.deleteCall.ID != 7 || lifecycle.deleteCall.ExpectedVersion != 2 || security.csrfCalls != 1 {
-		t.Fatalf("status=%d delete=%+v csrfCalls=%d body=%s", recorder.Code, lifecycle.deleteCall, security.csrfCalls, recorder.Body.String())
+	if recorder.Code != http.StatusOK || lifecycle.archiveCall == nil || lifecycle.archiveCall.ID != 7 || lifecycle.archiveCall.ExpectedVersion != 2 || security.csrfCalls != 1 {
+		t.Fatalf("status=%d archive=%+v csrfCalls=%d body=%s", recorder.Code, lifecycle.archiveCall, security.csrfCalls, recorder.Body.String())
 	}
 }
 

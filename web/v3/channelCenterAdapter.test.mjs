@@ -102,7 +102,7 @@ try {
   assert.equal([...archivedRow.querySelectorAll('a')].some((node) => node.textContent === '下载二维码'), false, 'an archived row must not retain a QR download action');
   assert.match(archivedRow.querySelector('[data-channel-entrant-actions-blocked]')?.textContent || '', /扫码不会发送欢迎语或入渠标签/, 'an archived row explains entrant actions are stopped');
   assert.equal([...list.window.document.querySelectorAll('tr')].some((row) => row.textContent?.includes('同名渠道') && [...row.querySelectorAll('a')].some((node) => node.textContent === '下载二维码')), true, 'an active row keeps its QR download action');
-  assert.equal(list.window.document.querySelector('[title*="永久删除"]')?.textContent, '删除不可用', 'permanent deletion remains visibly unavailable');
+  assert.equal(list.window.document.querySelector('[title*="永久删除"]'), null, 'the unsupported permanent-delete action is removed instead of remaining a dead control');
   archivedAction.click(); await pause();
   assert.equal(state.calls.filter((call) => call.method === 'PATCH').length, 0, 'an already archived resource must send zero PATCH requests');
 

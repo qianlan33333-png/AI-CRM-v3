@@ -261,14 +261,14 @@ func TestCouponRuleMutationsUseReceiptReplayAndConflicts(t *testing.T) {
 	store, events := newCouponTestStore(first, second), &couponTestEvents{}
 	service := couponTestService(now, store, events)
 	key := "archive-key-00001"
-	archived, err := service.Archive(context.Background(), 7, 9, key)
+	archived, err := service.Archive(context.Background(), 7, first.Version, 9, key)
 	if err != nil || archived.Status != "archived" || len(events.rows) != 1 {
 		t.Fatalf("archive=%#v err=%v events=%d", archived, err, len(events.rows))
 	}
-	if replay, replayErr := service.Archive(context.Background(), 7, 9, key); replayErr != nil || replay.ID != archived.ID || replay.Status != archived.Status || len(events.rows) != 1 {
+	if replay, replayErr := service.Archive(context.Background(), 7, first.Version, 9, key); replayErr != nil || replay.ID != archived.ID || replay.Status != archived.Status || len(events.rows) != 1 {
 		t.Fatalf("archive replay=%#v err=%v events=%d", replay, replayErr, len(events.rows))
 	}
-	if _, err = service.Archive(context.Background(), 8, 9, key); !errors.Is(err, ErrConflict) {
+	if _, err = service.Archive(context.Background(), 8, second.Version, 9, key); !errors.Is(err, ErrConflict) {
 		t.Fatalf("cross-coupon same-key error=%v", err)
 	}
 	deleted, err := service.Delete(context.Background(), 8, 9, "delete-key-000001")

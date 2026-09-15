@@ -2304,11 +2304,13 @@ paths:
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CouponRuleUpsert"}}}}
       responses: {"200": {description: Draft coupon rule updated, content: {application/json: {schema: {$ref: "#/components/schemas/CouponRuleEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
     delete:
-      operationId: deleteDraftCouponRule
+      operationId: archiveCouponRule
       tags: [CouponRules]
+      description: Archive the version displayed to the owner. It stops new claims and further coupon use under the existing checkout rule; issued, redeemed, and order history remain retained.
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
-      responses: {"200": {description: Unissued draft deleted, content: {application/json: {schema: {$ref: "#/components/schemas/CouponRuleEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CouponRuleArchive"}}}}
+      responses: {"200": {description: Coupon rule archived, content: {application/json: {schema: {$ref: "#/components/schemas/CouponRuleEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/admin/coupons/{coupon_id}/publish:
     parameters: [{name: coupon_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {$ref: "#/components/parameters/IdempotencyKey"}]
     post:
@@ -2328,10 +2330,10 @@ paths:
   /api/admin/coupons/{coupon_id}/archive:
     parameters: [{name: coupon_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {$ref: "#/components/parameters/IdempotencyKey"}]
     post:
-      operationId: archiveCouponRule
+      operationId: archiveCouponRuleLegacy
       tags: [CouponRules]
       security: [{adminSession: [], csrfHeader: []}]
-      requestBody: {required: false, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CouponRuleArchive"}}}}
       responses: {"200": {description: Local rule transition completed, content: {application/json: {schema: {$ref: "#/components/schemas/CouponRuleEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/admin/coupons/{coupon_id}/copy:
     parameters: [{name: coupon_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {$ref: "#/components/parameters/IdempotencyKey"}]
@@ -2941,7 +2943,22 @@ paths:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: getSurveyQuestionnaire, security: [{adminSession: []}], responses: {"200": {description: Survey definition}}}
     put: {operationId: replaceSurveyQuestionnaire, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: New mutable definition version}}}
-    delete: {operationId: deleteSurveyQuestionnaireDraft, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"200": {description: Unreferenced draft removed}}}
+    delete:
+      operationId: archiveSurveyQuestionnaire
+      description: Retains definition snapshots, submissions, receipts and audit history, but archives the owner-visible questionnaire. The caller must send the version shown before confirmation; an Idempotency-Key replay uses the identical request body.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version]
+              additionalProperties: false
+              properties:
+                expected_version: {type: integer, minimum: 1}
+      responses: {"200": {description: Questionnaire archived; public submissions stop and historical facts remain}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Error"}}
   /api/admin/questionnaires/{questionnaire_id}/duplicate:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     post: {operationId: duplicateSurveyQuestionnaire, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"200": {description: Independent draft copy}}}
@@ -5370,6 +5387,12 @@ components:
         relative_validity_days: {type: [integer, "null"], minimum: 1}
         instructions: {type: string, maxLength: 200}
         target_refs: {type: array, minItems: 1, maxItems: 100, items: {type: string, pattern: "^(standard_product|service_period):[1-9][0-9]*$"}}
+    CouponRuleArchive:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
     CouponRule:
       type: object
       additionalProperties: true
