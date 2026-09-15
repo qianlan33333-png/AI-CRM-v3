@@ -818,6 +818,23 @@ paths:
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/overview/paid-records:
+    get:
+      operationId: listAdminOverviewPaidRecords
+      tags: [Overview]
+      description: "Read-only, fixed-size keyset records behind only the selected operating overview's confirmed-payment gross and order-count metrics. Each row uses Payment's immutable paid_confirmed_at in the same half-open Beijing reporting range. `payer_customer_id`, when present, is the historical payer fact at payment time and is not a current canonical Customer root. The caller follows `next_cursor` alone for later pages; a continuation preserves the first page's range even after midnight. This endpoint has no Provider calls, writes, queues, or persisted aggregate table."
+      security: [{adminSession: []}]
+      parameters:
+        - {name: period, in: query, required: false, description: Required on the first page. Omit it when continuing with cursor., schema: {type: string, enum: [today, 7d, 30d, custom]}}
+        - {name: from, in: query, description: Required only on a first custom-range page. Inclusive Beijing calendar date., schema: {type: string, format: date}}
+        - {name: to, in: query, description: Required only on a first custom-range page and must be on or after from. Inclusive Beijing calendar date., schema: {type: string, format: date}}
+        - {name: cursor, in: query, description: Opaque continuation from this endpoint. It must be the only query parameter on later pages., schema: {type: string, minLength: 1, maxLength: 2048}}
+      responses:
+        "200": {description: Confirmed-payment record page for the selected operating range., content: {application/json: {schema: {$ref: "#/components/schemas/AdminOverviewPaidRecordsPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/customers:
     get:
       operationId: listCustomers
@@ -4306,6 +4323,25 @@ components:
             missing_confirmation_evidence_count: {type: integer, format: int64, minimum: 0}
             missing_confirmation_evidence_amount: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
             trend: {type: array, items: {$ref: "#/components/schemas/AdminOverviewTrendPoint"}}
+    AdminOverviewPaidRecord:
+      type: object
+      additionalProperties: false
+      required: [provider, order_reference, payer_customer_id, amount_minor, currency, paid_confirmed_at]
+      properties:
+        provider: {type: string, enum: [wechat_pay, wechat_shop], description: Payment provider. Together with order_reference it identifies the existing provider-scoped admin Order detail.}
+        order_reference: {type: string, minLength: 1, maxLength: 256}
+        payer_customer_id: {type: [integer, "null"], format: int64, minimum: 1, description: Historical Customer ID at payment time, not a current canonical root.}
+        amount_minor: {type: integer, format: int64, minimum: 1}
+        currency: {type: string, minLength: 1, maxLength: 16}
+        paid_confirmed_at: {type: string, format: date-time, description: Trusted Payment paid-confirmation time in the selected half-open reporting range.}
+    AdminOverviewPaidRecordsPage:
+      type: object
+      additionalProperties: false
+      required: [range, items, next_cursor]
+      properties:
+        range: {$ref: "#/components/schemas/AdminOverviewRange"}
+        items: {type: array, maxItems: 25, items: {$ref: "#/components/schemas/AdminOverviewPaidRecord"}}
+        next_cursor: {type: string, maxLength: 2048, description: Empty when no later page exists; otherwise use alone as cursor query parameter.}
     AdminOverviewCustomers:
       allOf:
         - {$ref: "#/components/schemas/AdminOverviewSection"}

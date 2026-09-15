@@ -1,9 +1,13 @@
+import { openDetailDrawer } from './shared/ui/detailDrawer';
+
 type Period = 'today' | '7d' | '30d' | 'custom';
 type SectionStatus = 'ready' | 'zero' | 'data_missing' | 'failed';
 type Money = { amount_minor: number; currency: string };
 type Section = { status: SectionStatus; as_of: string; scope: string; reason_code?: string };
 type TrendPoint = { date: string; gross: Money[]; order_count: number };
 type Todo = { code: string; count: number; href: string };
+type PaidRecord = { provider: 'wechat_pay' | 'wechat_shop'; order_reference: string; payer_customer_id: number | null; amount_minor: number; currency: string; paid_confirmed_at: string };
+type PaidRecordsPage = { range: Overview['range']; items: PaidRecord[]; next_cursor: string };
 type Overview = {
   range: { period: Period; timezone: string; start: string; end: string };
   paid: Section & { gross: Money[]; order_count: number; distinct_canonical_payers?: number; missing_payer_count?: number; missing_confirmation_evidence_count?: number; missing_confirmation_evidence_amount?: Money[]; trend: TrendPoint[] };
@@ -44,6 +48,11 @@ function isSafeCount(value: unknown): value is number { return isSafeInteger(val
 function isCurrency(value: unknown): value is string { return typeof value === 'string' && /^[A-Z0-9]{1,16}$/.test(value); }
 function isMoney(value: unknown): value is Money { return isRecord(value) && isSafeInteger(value.amount_minor) && isCurrency(value.currency); }
 function isMoneyList(value: unknown): value is Money[] { return Array.isArray(value) && value.every(isMoney); }
+function isOverviewRange(value: unknown): value is Overview['range'] {
+  return isRecord(value) && ['today', '7d', '30d', 'custom'].includes(String(value.period)) && value.timezone === 'Asia/Shanghai'
+    && typeof value.start === 'string' && !Number.isNaN(new Date(value.start).getTime())
+    && typeof value.end === 'string' && !Number.isNaN(new Date(value.end).getTime());
+}
 function isSection(value: unknown): value is Section {
   return isRecord(value) && ['ready', 'zero', 'data_missing', 'failed'].includes(String(value.status)) && typeof value.as_of === 'string' && typeof value.scope === 'string' && (value.reason_code === undefined || typeof value.reason_code === 'string');
 }
@@ -86,8 +95,19 @@ function isTodos(value: unknown): value is Overview['todos'] {
     && record.items.every((item: unknown) => isRecord(item) && typeof item.code === 'string' && isSafeCount(item.count) && typeof item.href === 'string');
 }
 function isOverview(value: unknown): value is Overview {
-  if (!isRecord(value) || !isRecord(value.range) || !['today', '7d', '30d', 'custom'].includes(String(value.range.period)) || value.range.timezone !== 'Asia/Shanghai' || typeof value.range.start !== 'string' || typeof value.range.end !== 'string') return false;
+  if (!isRecord(value) || !isOverviewRange(value.range)) return false;
   return isPaid(value.paid) && isCustomers(value.customers) && isRefunds(value.refunds) && isDistribution(value.distribution) && isTodos(value.todos);
+}
+function isPaidRecord(value: unknown): value is PaidRecord {
+  return isRecord(value) && (value.provider === 'wechat_pay' || value.provider === 'wechat_shop')
+    && typeof value.order_reference === 'string' && value.order_reference.trim().length > 0
+    && (value.payer_customer_id === null || (isSafeInteger(value.payer_customer_id) && value.payer_customer_id > 0))
+    && isSafeInteger(value.amount_minor) && value.amount_minor > 0 && isCurrency(value.currency)
+    && typeof value.paid_confirmed_at === 'string' && !Number.isNaN(new Date(value.paid_confirmed_at).getTime());
+}
+function isPaidRecordsPage(value: unknown): value is PaidRecordsPage {
+  return isRecord(value) && isOverviewRange(value.range) && Array.isArray(value.items) && value.items.length <= 25
+    && value.items.every(isPaidRecord) && typeof value.next_cursor === 'string' && value.next_cursor.length <= 2048;
 }
 function unavailable(section: Section): boolean { return section.status === 'failed'; }
 function amount(money: Money): string {
@@ -122,9 +142,9 @@ function hint(section: Section): string {
   if (section.reason_code && reasonMessages[section.reason_code]) return `${reasonMessages[section.reason_code]} · 最近读取：${timestamp(section.as_of)}`;
   return section.status === 'zero' ? `已确认无记录 · 最近读取：${timestamp(section.as_of)}` : `最近读取：${timestamp(section.as_of)}`;
 }
-function metric(title: string, value: string, section: Section, detail = ''): string {
+function metric(title: string, value: string, section: Section, detail = '', action = ''): string {
   const summary = detail ? `${detail} · ${hint(section)}` : section.status === 'ready' ? '' : hint(section);
-  return `<article class="overview-metric"><div class="overview-metric__head"><span>${escapeHTML(title)}</span>${statusBadge(section)}</div><strong>${escapeHTML(value)}</strong>${summary ? `<p>${escapeHTML(summary)}</p>` : ''}</article>`;
+  return `<article class="overview-metric"><div class="overview-metric__head"><span>${escapeHTML(title)}</span>${statusBadge(section)}</div><strong>${escapeHTML(value)}</strong>${summary ? `<p>${escapeHTML(summary)}</p>` : ''}${action}</article>`;
 }
 function active(period: Period): string { return state.query.period === period ? ' is-active' : ''; }
 function rangeControls(): string {
@@ -155,6 +175,9 @@ function rangeMatches(data: Overview): boolean {
   if (data.range.period !== state.query.period) return false;
   if (state.query.period !== 'custom') return true;
   return beijingDate(data.range.start) === state.query.from && beijingDate(data.range.end, true) === state.query.to;
+}
+function sameReportingRange(left: Overview['range'], right: Overview['range']): boolean {
+  return left.timezone === right.timezone && new Date(left.start).getTime() === new Date(right.start).getTime() && new Date(left.end).getTime() === new Date(right.end).getTime();
 }
 function snapshotLabel(data: Overview): string {
   const range = actualRangeLabel(data);
@@ -223,6 +246,10 @@ function renderTodos(items: Todo[], section: Section): string {
   if (!items.length) return '<p class="overview-empty">暂无需要处理的事项。</p>';
   return `<ul class="overview-todos">${items.map((todo) => { const href = safeTodoHref(todo.href); const label = todo.code === 'distribution_exceptions' ? '分销异常待处理' : '待处理事项'; const contents = `<span>${escapeHTML(label)}</span><strong>${integer(todo.count, section)}</strong>`; return `<li>${href ? `<a href="${escapeHTML(href)}">${contents}<span aria-hidden="true">→</span></a>` : contents}</li>`; }).join('')}</ul>`;
 }
+function paidRecordsAction(data: Overview): string {
+  if (!rangeMatches(data) || state.loading || state.stale || data.paid.status === 'failed') return '';
+  return '<button type="button" class="overview-metric__action admin-button admin-button--secondary" data-overview-paid-records>查看支付记录</button>';
+}
 function renderData(data: Overview): string {
   const { paid, customers, refunds, distribution, todos } = data;
   const paidNote = paid.missing_confirmation_evidence_count ? `另有 ${integer(paid.missing_confirmation_evidence_count, paid)} 笔历史支付待核实` : '';
@@ -230,11 +257,99 @@ function renderData(data: Overview): string {
   const observations = [['支付', paid], ['客户', customers], ['退款', refunds], ['分销', distribution], ['待处理', todos]] as const;
   const trendSubtitle = (rangeDayCount(data.range) || 0) > 31 ? '展示有确认支付的日期' : '按已确认支付时间统计';
   return `<div class="overview-snapshot"><span>${escapeHTML(snapshotLabel(data))}</span><span class="overview-snapshot__times">数据读取：${observations.map(([label, section]) => `${label} ${timestamp(section.as_of)}`).join(' · ')}</span></div><div class="overview-dashboard">
-    <section class="overview-metrics overview-metrics--primary" aria-label="核心经营指标">${metric('已确认支付', amounts(paid.gross, paid), paid, paidNote)}${metric('支付订单', integer(paid.order_count, paid), paid)}${metric('支付客户', integer(paid.distinct_canonical_payers, paid), paid, paid.missing_payer_count ? `${integer(paid.missing_payer_count, paid)} 位付款客户待核实` : '')}${metric('新增客户', integer(customers.new_canonical_customers, customers), customers, customerNote)}</section>
+    <section class="overview-metrics overview-metrics--primary" aria-label="核心经营指标">${metric('已确认支付', amounts(paid.gross, paid), paid, paidNote, paidRecordsAction(data))}${metric('支付订单', integer(paid.order_count, paid), paid)}${metric('支付客户', integer(paid.distinct_canonical_payers, paid), paid, paid.missing_payer_count ? `${integer(paid.missing_payer_count, paid)} 位付款客户待核实` : '')}${metric('新增客户', integer(customers.new_canonical_customers, customers), customers, customerNote)}</section>
     <section class="overview-metrics overview-metrics--secondary" aria-label="补充经营指标">${metric('完成退款', amounts(refunds.completed_amount, refunds, '0（本期无退款）'), refunds, refunds.missing_completion_evidence_count ? `${integer(refunds.missing_completion_evidence_count, refunds)} 笔退款完成时间待核实` : '')}${metric('净收款', amounts(refunds.net_amount, refunds), refunds)}</section>
     <section class="overview-panels"><article class="overview-panel overview-panel--wide"><div class="overview-panel__head"><div><h2>支付趋势</h2><p>${escapeHTML(trendSubtitle)}</p></div>${statusBadge(paid)}</div>${renderTrend(paid.trend, paid, data.range)}<p class="overview-panel__hint">${escapeHTML(hint(paid))}</p></article>
       <article class="overview-panel"><div class="overview-panel__head"><div><h2>分销进度</h2><p>区间业绩与当前结算分开显示</p></div>${statusBadge(distribution)}</div><dl class="overview-facts"><div><dt>区间支付业绩</dt><dd>${escapeHTML(minorAmount(distribution.period_paid_sales_minor, distribution.currency, distribution))}</dd></div><div><dt>区间初始佣金</dt><dd>${escapeHTML(minorAmount(distribution.period_initial_commission_minor, distribution.currency, distribution))}</dd></div><div><dt>当前待结算</dt><dd>${escapeHTML(minorAmount(distribution.current_unsettled_minor, distribution.currency, distribution))}</dd></div><div><dt>当前已结算</dt><dd>${escapeHTML(minorAmount(distribution.current_settled_minor, distribution.currency, distribution))}</dd></div></dl><p class="overview-panel__hint">${escapeHTML(hint(distribution))}</p></article>
       <article class="overview-panel"><div class="overview-panel__head"><div><h2>待处理事项</h2><p>只显示已有处理入口的真实数量</p></div>${statusBadge(todos)}</div>${renderTodos(todos.items, todos)}<p class="overview-panel__hint">${escapeHTML(hint(todos))}</p></article></section></div>`;
+}
+function initialPaidRecordsURL(data: Overview): string | null {
+  const from = beijingDate(data.range.start);
+  const to = beijingDate(data.range.end, true);
+  if (!from || !to) return null;
+  const url = new URL('/api/admin/overview/paid-records', window.location.origin);
+  // The overview itself may remain open across midnight. A custom first page
+  // binds the drawer to its already-rendered half-open range rather than
+  // asking Payment to recalculate a fresh relative "today" range.
+  url.searchParams.set('period', 'custom');
+  url.searchParams.set('from', from);
+  url.searchParams.set('to', to);
+  return url.pathname + url.search;
+}
+function paidRecordDetailHref(item: PaidRecord): string | null {
+  const provider = item.provider === 'wechat_pay' ? 'wechat' : item.provider === 'wechat_shop' ? 'wechat_shop' : '';
+  if (!provider) return null;
+  const url = new URL('/admin/orderDetail.html', window.location.origin);
+  url.searchParams.set('id', item.order_reference);
+  url.searchParams.set('provider', provider);
+  return url.pathname + url.search;
+}
+function renderPaidRecordRows(items: PaidRecord[], loaded: boolean): string {
+  if (!loaded && !items.length) return '';
+  if (!items.length) return '<p class="overview-empty">该统计区间已确认无支付记录。</p>';
+  return `<ol class="overview-paid-records">${items.map((item) => {
+    const href = paidRecordDetailHref(item);
+    const payer = item.payer_customer_id === null ? '付款时客户待确认' : `付款时客户 #${item.payer_customer_id}`;
+    const order = href ? `<a href="${escapeHTML(href)}">查看订单</a>` : '<span>订单详情暂不可定位</span>';
+    return `<li><div class="overview-paid-records__head"><strong>${escapeHTML(amount({ amount_minor: item.amount_minor, currency: item.currency }))}</strong>${order}</div><dl><div><dt>支付确认时间</dt><dd>${escapeHTML(timestamp(item.paid_confirmed_at))}</dd></div><div><dt>付款时客户</dt><dd>${escapeHTML(payer)}</dd></div><div><dt>订单号</dt><dd>${escapeHTML(item.order_reference)}</dd></div></dl></li>`;
+  }).join('')}</ol>`;
+}
+function openPaidRecordsDrawer(data: Overview): void {
+  const initialURL = initialPaidRecordsURL(data);
+  if (!initialURL) return;
+  const body = document.createElement('section');
+  body.className = 'overview-paid-records-drawer';
+  const dialog = openDetailDrawer(`支付记录 · ${actualRangeLabel(data)}`, body);
+  let records: PaidRecord[] = [];
+  let nextCursor = '';
+  let loading = false;
+  let error = '';
+  let accessDenied = false;
+  let loaded = false;
+  let requestID = 0;
+  let closed = false;
+  let lastURL = initialURL;
+  const partialNote = data.paid.status === 'data_missing' && data.paid.missing_confirmation_evidence_count
+    ? '仅展示可定位到当前统计区间的支付记录；缺少确认时间的历史支付未计入本明细。'
+    : '记录按系统确认支付时间排序。付款时客户是历史事实，不代表当前归并客户。';
+  const renderDrawer = (): void => {
+    const feedback = loading ? '<p class="overview-paid-records-drawer__loading" aria-live="polite">正在读取支付记录…</p>' : '';
+    const failure = error ? `<div class="overview-error" role="alert"><span>${escapeHTML(error)}</span>${accessDenied ? '' : '<button type="button" class="admin-button admin-button--secondary" data-overview-paid-records-retry>重试</button>'}</div>` : '';
+    const more = !loading && !accessDenied && nextCursor ? '<button type="button" class="admin-button admin-button--secondary" data-overview-paid-records-more>加载更多</button>' : '';
+    body.innerHTML = `<p class="overview-paid-records-drawer__hint">${escapeHTML(partialNote)}</p>${feedback}${failure}${renderPaidRecordRows(records, loaded)}${more ? `<div class="overview-paid-records-drawer__more">${more}</div>` : ''}`;
+    body.querySelector<HTMLButtonElement>('[data-overview-paid-records-retry]')?.addEventListener('click', () => { void load(lastURL, lastURL !== initialURL); });
+    body.querySelector<HTMLButtonElement>('[data-overview-paid-records-more]')?.addEventListener('click', () => {
+      const url = new URL('/api/admin/overview/paid-records', window.location.origin);
+      url.searchParams.set('cursor', nextCursor);
+      void load(url.pathname + url.search, true);
+    });
+  };
+  const load = async (url: string, append: boolean): Promise<void> => {
+    const currentRequest = ++requestID;
+    loading = true; error = ''; accessDenied = false; lastURL = url; renderDrawer();
+    try {
+      const response = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+      const payload = await response.json().catch(() => null);
+      if (response.status === 401 || response.status === 403) {
+        if (closed || currentRequest !== requestID) return;
+        records = []; nextCursor = ''; loaded = false; accessDenied = true;
+        throw new Error(response.status === 401 ? '登录状态已失效，请重新登录后再查看支付记录。' : '当前账号没有查看支付记录的权限。');
+      }
+      if (!response.ok) throw new Error(`读取支付记录失败（HTTP ${response.status}）`);
+      if (!isPaidRecordsPage(payload) || !sameReportingRange(payload.range, data.range)) throw new Error('支付记录格式或统计区间无效，请稍后重试。');
+      if (closed || currentRequest !== requestID) return;
+      records = append ? [...records, ...payload.items] : payload.items; loaded = true;
+      nextCursor = payload.next_cursor;
+    } catch (readError) {
+      if (closed || currentRequest !== requestID) return;
+      error = errorMessage(readError);
+    } finally {
+      if (!closed && currentRequest === requestID) { loading = false; renderDrawer(); }
+    }
+  };
+  dialog.addEventListener('close', () => { closed = true; requestID += 1; }, { once: true });
+  renderDrawer();
+  void load(initialURL, false);
 }
 function accessPanel(): string {
   if (state.access === 'login') return '<section class="overview-empty-state"><strong>登录状态已失效</strong><p>请重新登录后再查看经营数据。</p><a class="admin-button admin-button--primary" href="/login?next=%2Fadmin">重新登录</a></section>';
@@ -289,7 +404,7 @@ function openCustomDraft(): void {
   render();
 }
 if (root) {
-  root.addEventListener('click', (event) => { const target = (event.target as Element | null)?.closest<HTMLElement>('[data-overview-period], [data-overview-retry]'); if (!target) return; if (target.hasAttribute('data-overview-retry')) { void load(state.query); return; } const period = target.dataset.overviewPeriod as Period | undefined; if (!period) return; if (period === 'custom') { openCustomDraft(); return; } void load({ period }); });
+  root.addEventListener('click', (event) => { const target = (event.target as Element | null)?.closest<HTMLElement>('[data-overview-period], [data-overview-retry], [data-overview-paid-records]'); if (!target) return; if (target.hasAttribute('data-overview-retry')) { void load(state.query); return; } if (target.hasAttribute('data-overview-paid-records')) { if (state.data && rangeMatches(state.data) && !state.loading && !state.stale && state.data.paid.status !== 'failed') openPaidRecordsDrawer(state.data); return; } const period = target.dataset.overviewPeriod as Period | undefined; if (!period) return; if (period === 'custom') { openCustomDraft(); return; } void load({ period }); });
   root.addEventListener('submit', (event) => { const form = (event.target as Element | null)?.closest<HTMLFormElement>('[data-overview-custom]'); if (!form) return; event.preventDefault(); applyCustom(form); });
   void load({ period: 'today' });
 }

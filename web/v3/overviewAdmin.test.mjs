@@ -32,12 +32,29 @@ function overview(period, { amount = 12500, refund = 1200 } = {}) {
 let scenario = 'today';
 let releaseDeferred;
 const calls = [];
+let releasePaidRecords;
+let paidRecordsMoreAttempts = 0;
+function paidRecordsPage(cursor = '') {
+  const range = { period: 'custom', timezone: 'Asia/Shanghai', start: '2026-09-14T16:00:00Z', end: '2026-09-15T16:00:00Z' };
+  if (cursor) return { range, items: [{ provider: 'wechat_shop', order_reference: 'M-OVERVIEW-COLLISION', payer_customer_id: null, amount_minor: 2500, currency: 'CNY', paid_confirmed_at: '2026-09-15T01:30:00Z' }], next_cursor: '' };
+  return { range, items: [{ provider: 'wechat_pay', order_reference: 'M-OVERVIEW-COLLISION', payer_customer_id: 17, amount_minor: 10000, currency: 'CNY', paid_confirmed_at: '2026-09-15T02:00:00Z' }], next_cursor: 'next-paid-records-page' };
+}
 const dom = new JSDOM('<!doctype html><main id="overview-admin-root"></main>', {
   url: 'https://crm.example/admin', runScripts: 'outside-only', pretendToBeVisual: true,
   beforeParse(window) {
     window.Response = Response; window.Headers = Headers;
+    window.HTMLDialogElement.prototype.showModal = function showModal() { this.open = true; };
+    window.HTMLDialogElement.prototype.close = function close() { this.open = false; this.dispatchEvent(new window.Event('close')); };
     window.fetch = async (input) => {
       const url = new URL(String(input), window.location.href); calls.push(url);
+      if (url.pathname === '/api/admin/overview/paid-records') {
+        if (scenario === 'paid-records-pending') return new Promise((resolve) => { releasePaidRecords = () => resolve(reply(paidRecordsPage(url.searchParams.get('cursor') || ''))); });
+        if (scenario === 'paid-records-unavailable') return reply({ error: { message: 'unavailable' } }, 503);
+        if (scenario === 'paid-records-forbidden') return reply({ error: { message: 'permission_denied' } }, 403);
+        if (scenario === 'paid-records-more-forbidden' && url.searchParams.get('cursor')) return reply({ error: { message: 'permission_denied' } }, 403);
+        if (scenario === 'paid-records-more-fail-once' && url.searchParams.get('cursor')) { paidRecordsMoreAttempts += 1; if (paidRecordsMoreAttempts === 1) return reply({ error: { message: 'unavailable' } }, 503); }
+        return reply(paidRecordsPage(url.searchParams.get('cursor') || ''));
+      }
       if (scenario === 'network') throw new Error('网络暂时不可用');
       if (scenario === 'deferred') return new Promise((resolve) => { releaseDeferred = () => resolve(reply(overview('7d', { amount: 20000 }))); });
       if (scenario === 'forbidden') return reply({ error: { message: 'permission_denied' } }, 403);
@@ -76,6 +93,57 @@ releaseDeferred();
 await delay(30);
 assert.equal(dom.window.document.querySelector('[data-overview-custom]')?.classList.contains('is-open'), true, 'an obsolete preset response must not close the custom draft');
 assert.ok(dom.window.document.body.textContent.includes('当前显示：今日（北京时间 2026-09-15 至 2026-09-15）（上次成功读取）'), 'a custom draft must retain the range of the last successful response');
+
+scenario = 'today';
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
+await waitFor(() => dom.window.document.querySelector('[data-overview-paid-records]'), 'a fresh matching overview did not restore the paid-record action');
+
+const paidRecordsButton = dom.window.document.querySelector('[data-overview-paid-records]');
+assert.ok(paidRecordsButton, 'only the confirmed-payment metric must expose its detail action');
+assert.equal([...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付客户'))?.querySelector('[data-overview-paid-records]'), null, 'canonical payer count must not reuse payment-order records as an invalid drill-down');
+paidRecordsButton.focus();
+scenario = 'paid-records-pending';
+paidRecordsButton.click();
+await waitFor(() => dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('正在读取支付记录'), 'paid-record drawer did not show its loading state');
+assert.equal(dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('已确认无支付记录'), false, 'a pending first page must not be presented as a confirmed zero');
+scenario = 'paid-records';
+releasePaidRecords();
+await waitFor(() => dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('M-OVERVIEW-COLLISION'), 'paid-record drawer did not render its first page');
+const paidInitialCall = calls[calls.length - 1];
+assert.equal(paidInitialCall.pathname, '/api/admin/overview/paid-records');
+assert.equal(paidInitialCall.search, '?period=custom&from=2026-09-15&to=2026-09-15', 'drawer must freeze the already-rendered Beijing range, including across midnight');
+assert.equal(dom.window.document.querySelector('.overview-paid-records a')?.getAttribute('href'), '/admin/orderDetail.html?id=M-OVERVIEW-COLLISION&provider=wechat', 'Payment wechat_pay must use the existing provider-scoped Order detail URL');
+assert.ok(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17'), 'historical payer fact must be labelled without pretending it is a current root');
+
+scenario = 'paid-records-more-fail-once';
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '加载更多').click();
+await waitFor(() => dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('HTTP 503'), 'load-more failure did not remain inside the drawer');
+assert.ok(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17'), 'load-more failure must retain the successful first page');
+assert.equal(calls[calls.length - 1].search, '?cursor=next-paid-records-page', 'load-more must send the original continuation alone');
+scenario = 'paid-records';
+[...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '重试').click();
+await waitFor(() => dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户待确认'), 'load-more retry did not preserve and extend the original page');
+assert.equal(dom.window.document.querySelector('.overview-paid-records a[href*="provider=wechat_shop"]')?.getAttribute('href'), '/admin/orderDetail.html?id=M-OVERVIEW-COLLISION&provider=wechat_shop', 'Payment wechat_shop must retain its provider-scoped Order detail URL');
+
+[...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '关闭').click();
+assert.equal(dom.window.document.activeElement, paidRecordsButton, 'closing the drawer must return focus to the still-mounted overview action');
+scenario = 'paid-records-unavailable';
+paidRecordsButton.click();
+await waitFor(() => dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('HTTP 503'), 'drawer did not disclose its independent 503 state');
+assert.equal(dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('已确认无支付记录'), false, '503 must not be presented as a confirmed zero');
+assert.ok(dom.window.document.querySelector('.shared-detail-drawer [data-overview-paid-records-retry]'), '503 without a completed page must offer an in-drawer retry');
+[...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '关闭').click();
+
+scenario = 'paid-records';
+paidRecordsButton.click();
+await waitFor(() => dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17'), 'fresh drawer did not read its first page before permission loss');
+scenario = 'paid-records-more-forbidden';
+[...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '加载更多').click();
+await waitFor(() => dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('没有查看支付记录的权限'), 'drawer did not disclose its independent 403 state');
+assert.equal(dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('已确认无支付记录'), false, '403 must not be presented as a confirmed zero');
+assert.equal(Boolean(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17')), false, '403 after a successful page must clear records that are no longer authorized');
+assert.equal(dom.window.document.querySelector('.shared-detail-drawer [data-overview-paid-records-retry]'), null, '403 must remove a retry that cannot restore authorization');
+[...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '关闭').click();
 
 scenario = 'network';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 7 天').click();
