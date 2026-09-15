@@ -2538,6 +2538,10 @@ console.log('admin/products.html（真实状态、销量与分享）');
     d = dom.window.document;
     ok(`分享拒绝${label}响应`, d.querySelector('#product-v3-toast')?.textContent === '商品分享响应不完整或越过站内边界' && !d.querySelector('#product-share-overlay'));
   }
+  // jsdom.close() does not dispatch the browser pagehide lifecycle event. The
+  // product-list Host owns a pagehide cleanup for its observer and overflow
+  // action menus, so exercise that real teardown before removing the document.
+  dom.window.dispatchEvent(new dom.window.Event('pagehide'));
   dom.window.close();
 }
 console.log('admin/productForm.html（渠道存量异常隔离）');

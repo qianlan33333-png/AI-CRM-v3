@@ -21,10 +21,12 @@
 .v3-confirmation-dialog__description,
 .v3-confirmation-dialog__status { margin: 0; font-size: var(--ui-body, 14px); line-height: var(--ui-line, 22px); }
 .v3-confirmation-dialog__description { color: var(--text-2, #596579); }
+.v3-confirmation-dialog__fields { display: grid; gap: 14px; }
 .v3-confirmation-dialog__reason { display: grid; gap: 7px; color: var(--text-2, #596579); font-size: var(--ui-caption, 13px); font-weight: 600; }
-.v3-confirmation-dialog__reason textarea { width: 100%; min-height: 82px; box-sizing: border-box; resize: vertical; border: 1px solid var(--line-strong, #c4c7cc); border-radius: var(--radius-md, 8px); padding: 9px 10px; color: var(--text, #1f2329); background: var(--panel, #fff); font: inherit; line-height: var(--ui-line, 22px); }
-.v3-confirmation-dialog__reason textarea:focus-visible { outline: 2px solid var(--brand, #3370ff); outline-offset: 1px; border-color: var(--brand, #3370ff); }
-.v3-confirmation-dialog__reason textarea[aria-invalid="true"] { border-color: var(--danger, #d83931); }
+.v3-confirmation-dialog__reason :is(textarea, input) { width: 100%; min-height: var(--ui-control, 36px); box-sizing: border-box; border: 1px solid var(--line-strong, #c4c7cc); border-radius: var(--radius-md, 8px); padding: 9px 10px; color: var(--text, #1f2329); background: var(--panel, #fff); font: inherit; line-height: var(--ui-line, 22px); }
+.v3-confirmation-dialog__reason textarea { min-height: 82px; resize: vertical; }
+.v3-confirmation-dialog__reason :is(textarea, input):focus-visible { outline: 2px solid var(--brand, #3370ff); outline-offset: 1px; border-color: var(--brand, #3370ff); }
+.v3-confirmation-dialog__reason :is(textarea, input)[aria-invalid="true"] { border-color: var(--danger, #d83931); }
 .v3-confirmation-dialog__status { color: var(--danger, #d83931); }
 .v3-confirmation-dialog__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--line, #dee0e3); }
 .v3-confirmation-dialog__actions button { min-height: var(--ui-control, 36px); border: 1px solid var(--line-strong, #c4c7cc); border-radius: var(--radius-md, 8px); padding: 7px 14px; color: var(--text, #1f2329); background: var(--panel, #fff); font: inherit; font-weight: 600; cursor: pointer; }
