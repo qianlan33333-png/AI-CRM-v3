@@ -372,7 +372,7 @@ class ImageLibraryHost {
     table.style.cssText = "width:100%;border-collapse:collapse;table-layout:fixed";
     const header = document.createElement("thead");
     const heading = document.createElement("tr");
-    for (const [label, width] of [["图片 / 名称", "27%"], ["尺寸", "8%"], ["大小", "8%"], ["分组 / 标签", "18%"], ["上传时间", "16%"], ["状态", "10%"], ["操作", "8%"]] as const) {
+    for (const [label, width] of [["图片 / 名称", "52%"], ["大小", "12%"], ["上传时间", "19%"], ["状态", "9%"], ["操作", "8%"]] as const) {
       const cell = document.createElement("th");
       cell.textContent = label;
       cell.style.cssText = `padding:10px 12px;width:${width};font-size:12px;font-weight:500;color:#8F959E;text-align:left;background:#FAFAFB;border-bottom:1px solid #DEE0E3;white-space:nowrap`;
@@ -416,16 +416,19 @@ class ImageLibraryHost {
       status.style.position = "absolute";
       status.style.inset = "0";
       status.style.placeItems = "center";
-      status.style.padding = "12px";
-      status.style.fontSize = "11px";
+      status.style.padding = "4px";
+      status.style.fontSize = "10px";
+      status.style.lineHeight = "14px";
       status.style.textAlign = "center";
+      status.style.overflowWrap = "anywhere";
       status.style.background = "#EFF4FF";
     }
     preview.title = "图片预览暂不可用时仍可编辑素材";
     if (thumbnail.image) {
       thumbnail.image.style.width = "100%";
       thumbnail.image.style.height = "48px";
-      thumbnail.image.style.objectFit = "cover";
+      thumbnail.image.style.objectFit = "contain";
+      thumbnail.image.style.background = "#F7F9FC";
     }
     preview.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
     const labels = document.createElement("div");
@@ -434,17 +437,14 @@ class ImageLibraryHost {
     name.textContent = item.name;
     name.style.cssText = "display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;color:#1F2329";
     name.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
-    const fileName = document.createElement("span");
-    fileName.textContent = item.fileName || "—";
-    fileName.style.cssText = "font-size:12px;color:#8F959E;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
-    labels.append(name, fileName);
+    const details = document.createElement("span");
+    const groupValue = [item.tag, item.tags].filter(Boolean).join(" · ");
+    details.textContent = [imageDimensions(item), item.fileName, groupValue].filter(Boolean).join(" · ");
+    details.style.cssText = "font-size:12px;color:#8F959E;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    labels.append(name, details);
     identityWrap.append(preview, labels);
     identity.append(identityWrap);
-    const dimensions = cell(); dimensions.textContent = imageDimensions(item); dimensions.style.color = "#646A73";
     const size = cell(); size.textContent = formatFileSize(item.size); size.style.color = "#646A73";
-    const group = cell();
-    const groupValue = [item.tag, item.tags].filter(Boolean).join(" · ") || "未分组";
-    group.textContent = groupValue; group.style.cssText += ";color:#646A73;overflow-wrap:anywhere;line-height:18px";
     const time = cell(); time.textContent = chinaTime(item.uploadedAt); time.style.cssText += ";color:#646A73;overflow-wrap:anywhere;line-height:18px";
     const state = cell();
     const chip = document.createElement("span");
@@ -458,7 +458,7 @@ class ImageLibraryHost {
     edit.style.cssText = "height:24px;padding:0 8px;border:0;border-radius:4px;background:transparent;color:#245BDB;font-size:12px;cursor:pointer";
     edit.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
     actions.append(edit);
-    row.append(identity, dimensions, size, group, time, state, actions);
+    row.append(identity, size, time, state, actions);
     return row;
   }
 

@@ -95,3 +95,107 @@ async function settle() { await sleep(); await sleep(); }
 }
 
 console.log('material library presentation: PASS');
+
+{
+  const dom = domFor('mpLib', `
+    <div style="height:52px"><button>新建小程序卡片</button></div>
+    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))">
+      <div data-source="first"><div><div style="height:112px"></div><div><div>同名卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div>
+      <div data-source="second"><div><div style="height:112px"></div><div><div>同名卡片</div><div>● not_available</div><div>已停用</div><div><button>编辑</button><button>删除</button></div></div></div></div>
+    </div></section>`, async (input) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected duplicate mini request ${url.pathname}`);
+    return response({ ok: true, items: [
+      { id: 9, name: '同名卡片', appid: 'wx-first', pagepath: 'pages/first', page_path: 'pages/first', title: '第一条', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 2 },
+      { id: 10, name: '同名卡片', appid: 'wx-second', pagepath: 'pages/second', page_path: 'pages/second', title: '第二条', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: false, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 4 },
+    ], miniprograms: [], total: 2, limit: 100, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+  });
+  try {
+    const calls = [];
+    dom.window.document.querySelector('[data-source="first"] button')?.addEventListener('click', () => calls.push('first'));
+    dom.window.document.querySelector('[data-source="second"] button')?.addEventListener('click', () => calls.push('second'));
+    dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle();
+    const directory = dom.window.document.querySelector('[data-material-library-mini-directory]');
+    const rows = [...directory.querySelectorAll('[role="row"]')].filter((node) => node.dataset.materialLibraryMiniHeader !== 'true');
+    assert.equal(rows.length, 2, 'duplicate mini-program names remain two distinct donor rows');
+    assert.ok(rows.every((row) => row.textContent.includes('信息待确认') && row.textContent.includes('—')), 'duplicate mini-program rows show explicit unknown typed metadata instead of a guessed sibling record');
+    assert.ok(!directory.textContent.includes('wx-first') && !directory.textContent.includes('wx-second'), 'duplicate mini-program rows never cross-map a typed AppID');
+    rows[0].querySelector('button')?.click(); rows[1].querySelector('button')?.click();
+    assert.deepEqual(calls, ['first', 'second'], 'duplicate mini-program edit callbacks retain each original donor node');
+    assert.ok(directory.querySelector('[data-material-library-mini-header][role="row"]')?.parentElement === directory, 'mini directory keeps its column header inside the table role hierarchy');
+  } finally { dom.window.close(); }
+}
+
+{
+  const dom = domFor('attach', `
+    <div style="height:52px"><button>上传附件</button></div>
+    <section><div><input placeholder="搜索附件名"></div><table><thead><tr><th>附件名</th><th>标签</th><th>类型</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody>
+      <tr><td><span>PDF</span><span>同名附件.pdf</span></td><td>甲</td><td>PDF</td><td>1 B</td><td>旧时间一</td><td><button>编辑</button></td></tr>
+      <tr><td><span>PDF</span><span>同名附件.pdf</span></td><td>乙</td><td>PDF</td><td>2 B</td><td>旧时间二</td><td><button>编辑</button></td></tr>
+    </tbody></table></section>`, async (input) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    if (url.pathname !== '/api/admin/attachment-library') throw new Error(`unexpected duplicate attachment request ${url.pathname}`);
+    return response({ items: [
+      { id: 7, name: '同名附件.pdf', file_name: 'first.pdf', mime_type: 'application/pdf', file_size: 100, description: '', tags: ['甲'], enabled: true, version: 1, created_by: 1, updated_by: 1, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' },
+      { id: 8, name: '同名附件.pdf', file_name: 'second.pdf', mime_type: 'application/pdf', file_size: 200, description: '', tags: ['乙'], enabled: false, version: 4, created_by: 1, updated_by: 1, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' },
+    ], total: 2, limit: 100, offset: 0 });
+  });
+  try {
+    dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle();
+    const table = dom.window.document.querySelector('table');
+    assert.equal(table.dataset.materialLibraryAttachmentTable, 'unresolved', 'duplicate attachment names are never mapped by a display-name guess');
+    assert.match(dom.window.document.body.textContent, /补充信息待确认/, 'duplicate attachment mapping state remains explicit');
+    assert.deepEqual([...table.querySelectorAll('tbody tr')].map((row) => row.cells[3].textContent), ['1 B', '2 B'], 'duplicate attachment rows retain their distinct donor fields');
+  } finally { dom.window.close(); }
+}
+
+{
+  let authorized = true;
+  const dom = domFor('mpLib', `
+    <div style="height:52px"><button id="create">新建小程序卡片</button></div>
+    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div><div><div style="height:112px"></div><div><div>授权卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected authorization mini request ${url.pathname}`);
+    if (!authorized) return response({ code: 'FORBIDDEN' }, 403);
+    return response({ ok: true, items: [{ id: 12, name: '授权卡片', appid: 'wx-authorized', pagepath: 'pages/ok', page_path: 'pages/ok', title: '已授权', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 }], miniprograms: [], total: 1, limit: 100, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
+  });
+  try {
+    dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle();
+    assert.match(dom.window.document.body.textContent, /wx-authorized/, 'authorized read enriches the mini-program row');
+    authorized = false;
+    const input = dom.window.document.querySelector('#fMpQuery');
+    input.value = '授权'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    await settle(); await settle();
+    assert.equal(dom.window.document.querySelector('#stage').dataset.materialLibraryReadonly, 'true', 'a 403 makes the composed material directory read-only');
+    assert.equal(dom.window.document.querySelector('#create').disabled, true, 'a 403 disables the moved mutation control without navigating or mutating');
+    assert.ok(!dom.window.document.body.textContent.includes('wx-authorized'), 'a 403 clears previously enriched typed metadata instead of presenting it as current');
+    assert.match(dom.window.document.body.textContent, /当前账号无权查看该类素材/, 'a 403 presents the authorization-specific read error');
+  } finally { dom.window.close(); }
+}
+
+{
+  let available = true;
+  const dom = domFor('attach', `
+    <div style="height:52px"><button>上传附件</button></div>
+    <section><div><input placeholder="搜索附件名"></div><table><thead><tr><th>附件名</th><th>标签</th><th>类型</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody><tr><td><span>PDF</span><span>保留附件.pdf</span></td><td>课程</td><td>PDF</td><td>1 B</td><td>旧时间</td><td><button>编辑</button></td></tr></tbody></table></section>`, async (input) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    if (url.pathname !== '/api/admin/attachment-library') throw new Error(`unexpected unavailable attachment request ${url.pathname}`);
+    if (!available) return response({ code: 'UNAVAILABLE' }, 503);
+    return response({ items: [{ id: 13, name: '保留附件.pdf', file_name: 'keep.pdf', mime_type: 'application/pdf', file_size: 417430, description: '', tags: ['课程'], enabled: true, version: 3, created_by: 1, updated_by: 1, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' }], total: 1, limit: 100, offset: 0 });
+  });
+  try {
+    dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle();
+    assert.equal(dom.window.document.querySelector('tbody tr').cells[3].textContent, '408 KB', 'available attachment read enriches the existing owner row');
+    available = false;
+    const input = dom.window.document.querySelector('input[placeholder="搜索附件名"]');
+    input.value = '保留'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    await settle(); await settle();
+    assert.equal(dom.window.document.querySelector('tbody tr').cells[3].textContent, '408 KB', 'a 503 preserves the last readable attachment metadata');
+    assert.equal(dom.window.document.querySelector('button').disabled, false, 'a 503 does not turn existing local controls into an authorization failure');
+    assert.match(dom.window.document.body.textContent, /素材列表暂不可读取/, 'a 503 remains distinct from authorization loss');
+  } finally { dom.window.close(); }
+}

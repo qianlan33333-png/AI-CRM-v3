@@ -20,6 +20,8 @@ function item(id, name, enabled = true) {
     description: "素材说明",
     tags: ["回归"],
     category: "海报",
+    width: 160,
+    height: 90,
     enabled,
     created_at: "2026-09-12T00:00:00Z",
     original_url: `/api/admin/image-library/${id}/variants/original`,
@@ -186,9 +188,13 @@ assert.ok(dom.window.document.body.textContent.includes("默认启用素材"), "
 assert.ok(dom.window.document.body.textContent.includes("已启用"), "enabled image did not render a Chinese status");
 assert.ok(dom.window.document.body.textContent.includes("2026-09-12 08:00:00"), "image time did not render in Asia/Shanghai YYYY-MM-DD HH:mm:ss form");
 assert.ok(!dom.window.document.body.textContent.includes("2026-09-12T00:00:00Z"), "raw ISO time leaked into the image workspace");
+const directoryHeaders = [...dom.window.document.querySelectorAll('[data-image-library-directory] th')].map((node) => node.textContent?.trim());
+assert.deepEqual(directoryHeaders, ["图片 / 名称", "大小", "上传时间", "状态", "操作"], "image directory keeps dimensions and tags with the compact image identity");
+assert.match(dom.window.document.body.textContent || "", /160 × 90 · 默认启用素材\.png · 海报 · 回归/, "image dimensions, filename, and existing tags render beneath the name");
 const initialThumbnail = dom.window.document.querySelector('[data-image-library-thumbnail="true"]');
 const initialImage = initialThumbnail?.querySelector('img');
 assert.equal(initialThumbnail?.dataset.materialThumbnailState, "loading", "source-owned card exposes the shared thumbnail loading state");
+assert.equal(initialImage?.style.objectFit, "contain", "image directory thumbnail preserves complete landscape and portrait sources");
 initialImage?.dispatchEvent(new dom.window.Event('error'));
 assert.equal(initialThumbnail?.dataset.materialThumbnailState, "error", "a source-owned card keeps the shared thumbnail error state");
 assert.match(initialThumbnail?.textContent || "", /预览不可用/, "image directory error has a visible fallback");

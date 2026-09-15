@@ -530,8 +530,8 @@ try {
       if (!ownerReads.includes(`GET ${ownerPath}`) || ownerReads.some(value => value !== `GET ${ownerPath}`)) {
         throw new Error(`${label} read a non-active material owner: ${JSON.stringify(ownerReads)}`);
       }
-      if (requiredText && !await evaluate(cdp, `document.querySelector('#stage')?.textContent?.includes(${JSON.stringify(requiredText)})`)) {
-        throw new Error(`${label} did not present fixture metadata ${JSON.stringify(requiredText)}`);
+      if (requiredText) {
+        await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes(${JSON.stringify(requiredText)})`, `${label} did not present fixture metadata ${JSON.stringify(requiredText)}`);
       }
       await waitForFonts(label);
       await recordGeometry(label, () => assertMaterialWorkspace(label, tab, actionLabel), false);
@@ -539,6 +539,7 @@ try {
         await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
         await delay(80);
         await assertMaterialWorkspace(label + `-${width}`, tab, actionLabel);
+        if (tab === 'images') await assertImageDirectory(label + `-${width}`);
         await capture(`${label}-${width}`);
       }
       await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
@@ -546,6 +547,20 @@ try {
     } catch (error) {
       await recordRouteFailure(label, error);
       return false;
+    }
+  };
+  const assertImageDirectory = async (label) => {
+    const result = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage[data-material-library-workspace="true"]');
+      const table=stage?.querySelector('[data-image-library-directory]');
+      const rows=Array.from(table?.querySelectorAll('tbody [data-image-library-row]') || []);
+      const names=['素材工作台横向缩略图','素材工作台纵向缩略图','素材工作台小尺寸缩略图'];
+      const thumbnails=Array.from(table?.querySelectorAll('[data-image-library-thumbnail] img') || []);
+      const overflow=Boolean(table && table.parentElement && (table.scrollWidth > table.parentElement.clientWidth + 1 || table.getBoundingClientRect().right > table.parentElement.getBoundingClientRect().right + 1));
+      return {rowCount:rows.length,names:names.map(name => stage?.textContent?.includes(name)),objectFits:thumbnails.map(node => getComputedStyle(node).objectFit),overflow};
+    })()`);
+    if (!result || result.rowCount < 3 || result.names.some(value => !value) || result.objectFits.length < 3 || result.objectFits.some(value => value !== 'contain') || result.overflow) {
+      throw new Error(`${label} compact image directory geometry invalid: ${JSON.stringify(result)}`);
     }
   };
   const assertMaterialAlias = async (pathname, tab, ready, label) => {
@@ -898,7 +913,7 @@ try {
   await assertProductDimensions('sp');
   await navigate("/admin/coupons", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "coupons", "embedded", embeddedTitle, true, true);
 
-  await navigateMaterialWorkspace('images', 'materials-images', '上传图片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-cards]'))", '/api/admin/image-library', '素材工作台缩略图');
+  await navigateMaterialWorkspace('images', 'materials-images', '上传图片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-cards]'))", '/api/admin/image-library', '素材工作台横向缩略图');
   await navigateMaterialWorkspace('miniprograms', 'materials-miniprograms', '新建小程序卡片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('#fMpQuery'))", '/api/admin/miniprogram-library', 'wx_material_layout');
   await assertMaterialHeaderActionOpens('material-library-mpLib', '新建小程序卡片', '#fMpAppid', 'materials-miniprograms-create');
   await navigateMaterialWorkspace('attachments', 'materials-attachments', '上传附件', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", '/api/admin/attachment-library', '素材工作台附件');
