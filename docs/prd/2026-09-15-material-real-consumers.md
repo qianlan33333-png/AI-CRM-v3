@@ -35,7 +35,7 @@
 
 ## 前端一致性和 Product Design 路由
 
-Product Design `index` 路由与前端一致性组件索引要求扩展已验收的 Material Adapter，而不是复制冻结 `material_picker`。本 PR 只在实际 Product/Radar Host 接缝替换可见选择流程，保留管理端单壳、共享 dialog CSS、IME／focus／keyboard 合同和调用方既有表单布局。
+本次 Skills catalog 没有可调用的 Product Design 路由，因此该步骤未完成；未安装、替代或伪称已使用该插件。前端一致性组件索引要求扩展已验收的 Material Adapter，而不是复制冻结 `material_picker`。本 PR 只在实际 Product/Radar Host 接缝替换可见选择流程，沿用已审核的管理端灰白蓝视觉基线、单壳、共享 dialog CSS、IME／focus／keyboard 合同和调用方既有表单布局。
 
 构建链仍为 `scripts/build-v3-host-adapters.mjs` → stable Host／领域 Host → manifest → `scripts/stage-new-shell-ui.mjs`；release staged artifact 必须继续装载 Material Adapter 及其 chunk，冻结 donor 不得被写入。
 
