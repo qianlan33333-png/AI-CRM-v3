@@ -107,7 +107,9 @@ paths:
       security: [{adminSession: []}]
       parameters:
         - {name: status, in: query, schema: {type: string, enum: [all, draft, enabled, disabled], default: all}}
-        - {$ref: "#/components/parameters/Limit"}
+        - {name: search, in: query, description: Trimmed UTF-8 byte length must not exceed 200., schema: {type: string, maxLength: 200}}
+        - {name: content_type, in: query, schema: {type: string, enum: [link, image, pdf]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
         - {$ref: "#/components/parameters/Offset"}
       responses:
         "200": {description: Radar definitions with local lifecycle facts, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkPage"}}}}
@@ -2757,6 +2759,7 @@ paths:
       security: [{adminSession: []}]
       parameters:
         - {name: owner_userid, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: q, in: query, description: "Case-insensitive local group name or opaque chat reference search.", schema: {type: string, maxLength: 160}}
         - {$ref: "#/components/parameters/Limit"}
         - {$ref: "#/components/parameters/Offset"}
       responses: {"200": {description: Local group directory projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
@@ -2782,6 +2785,7 @@ paths:
       security: [{adminSession: []}]
       parameters:
         - {name: owner_userid, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: q, in: query, description: "Case-insensitive local group name or opaque chat reference search.", schema: {type: string, maxLength: 160}}
         - {$ref: "#/components/parameters/Limit"}
         - {$ref: "#/components/parameters/Offset"}
       responses: {"200": {description: Local group picker projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
@@ -5901,11 +5905,24 @@ components:
         profile_read_state: {type: string, enum: [ready, unavailable], description: "`unavailable` records a failed directory-profile read."}
         profile_read_error_code: {type: string, maxLength: 64, pattern: "^$|^[a-z0-9_]{1,64}$"}
     GroupOpsPlanListItem:
-      allOf:
-        - {$ref: "#/components/schemas/GroupOpsPlan"}
-        - type: object
-          required: [queue_count]
-          properties: {queue_count: {type: integer, minimum: 0}}
+      # Do not use allOf with GroupOpsPlan here: GroupOpsPlan is intentionally
+      # closed, so JSON Schema would reject this list projection's counters.
+      type: object
+      additionalProperties: false
+      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at, owner, queue_count, bound_group_count]
+      properties:
+        plan_type: {type: string, enum: [standard, webhook]}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        name: {type: string, minLength: 1, maxLength: 128}
+        status: {$ref: "#/components/schemas/GroupOpsPlanStatus"}
+        revision: {type: integer, format: int64, minimum: 1}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        owner: {$ref: "#/components/schemas/GroupOpsPlanOwner"}
+        queue_count: {type: integer, minimum: 0}
+        bound_group_count: {type: integer, minimum: 0, description: "Persisted Group Ops asset bindings for this plan, including references absent from the current directory and archived plans."}
     GroupOpsMember:
       type: object
       additionalProperties: false

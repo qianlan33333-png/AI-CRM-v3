@@ -7,6 +7,7 @@
 
 
 import { formatShanghaiDateTime } from './adminDateTime';
+import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 
 type Json = Record<string, unknown>;
 type Channel = Json & { id?: number; version?: number; config_version?: number };
@@ -63,6 +64,14 @@ function catalogMutation(url: URL, method: string): boolean {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+/** Local Staff Owner IDs are numeric in the authorised response; external
+ * user IDs remain strings and are never synthesized from this conversion. */
+function localStaffID(value: unknown): string {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return String(value);
+  const candidate = text(value).trim();
+  return /^[1-9]\d*$/.test(candidate) ? candidate : '';
 }
 
 function has(payload: Json, name: string): boolean {
@@ -473,34 +482,259 @@ async function currentChannel(): Promise<Channel | null> {
   return channel;
 }
 
-// The frozen donor uses user_id as its persisted staff key. Keep the shared
-// picker payload untouched for display, and adapt only its channel callback.
-function installChannelPickerIdentityAdapter(): void {
-  type PickerSelection = { mode?: unknown; max?: unknown };
-  type PickerOptions = Json & { onConfirm?: (members: Json[]) => void; selection?: PickerSelection; context?: string };
-  const picker = (window as Window & { OperationMemberPicker?: { open: (options: PickerOptions) => unknown } }).OperationMemberPicker;
-  if (!picker) return;
-  const open = picker.open.bind(picker);
-  picker.open = async (options) => {
-    if (options.scope !== 'channel_code' || typeof options.onConfirm !== 'function') return open(options);
-    const confirm = options.onConfirm;
-    const disabled = Array.isArray(options.disabledUserIds) ? options.disabledUserIds.map(String) : [];
-    let disabledUserIds: string[] = [];
-    if (disabled.length) {
-      const members = await channelOperationMembers();
-      disabledUserIds = members.flatMap((member) => disabled.includes(String(member.staff_id)) && member.user_id ? [String(member.user_id)] : []);
-    }
-    const requestedMax = Number(options.selection?.max ?? options.max);
-    const max = Number.isSafeInteger(requestedMax) && requestedMax >= 1 ? requestedMax : 1;
-    return open({ ...options, context: 'channel_assignees', selection: { mode: 'multiple', max }, multiple: true, max, disabledUserIds, onConfirm: (members) => {
-      const mapped = members.map((member) => {
-        const staffID = Number(member.staff_id);
-        if (!Number.isSafeInteger(staffID) || staffID < 1) throw new Error('客服本地标识缺失，请刷新客服后重试');
-        return { ...member, user_id: String(staffID) };
-      });
-      confirm(mapped);
-    } });
+function channelStaffPickerError(root: HTMLElement, message: string): void {
+  let notice = root.querySelector<HTMLElement>('[data-channel-staff-picker-error]');
+  if (!notice) {
+    notice = document.createElement('p');
+    notice.dataset.channelStaffPickerError = '';
+    notice.className = 'save-feedback is-error';
+    notice.setAttribute('role', 'alert');
+    root.querySelector('[data-assignee-list]')?.insertAdjacentElement('beforebegin', notice);
+  }
+  notice.textContent = message;
+}
+
+function clearChannelStaffPickerError(root: HTMLElement): void {
+  root.querySelector('[data-channel-staff-picker-error]')?.remove();
+}
+
+type FrozenChannelMemberPicker = {
+  open(options: Json & { scope?: unknown; onConfirm?: (members: Json[]) => void }): Promise<unknown> | unknown;
+};
+
+type StaffPickerWindow = Window & {
+  AICRMStaffPicker?: {
+    open(options: {
+      title: string; source: string; scope: string; selectedRecords: Array<{ source: string; staff_id: string; user_id: string; display_name: string; active?: boolean; unavailable_reason?: string }>;
+      mode: 'multiple'; limit: number; directoryHint: string;
+      loadPage(request: { query: string; cursor?: string; signal: AbortSignal }): Promise<{ items: Array<{ source: string; staff_id: string; user_id: string; display_name: string; active?: boolean; unavailable_reason?: string }>; nextCursor?: string }>;
+      refresh(request: { query: string; signal: AbortSignal }): Promise<void>;
+      accessLossMessage(error: unknown): string | undefined;
+      onCommit(result: { selected: Array<{ source: string; staff_id: string | number; user_id: string; display_name: string; active?: boolean }> }): void;
+    }): void;
   };
+  OperationMemberPicker?: FrozenChannelMemberPicker;
+};
+
+function channelStaffAccessLoss(error: unknown): string | undefined {
+  const status = Number((error as { status?: unknown } | undefined)?.status);
+  return status === 401 || status === 403 ? '渠道客服目录权限已失效；当前渠道草稿仍保留，请取消后重新登录。' : undefined;
+}
+
+function operationMemberFailure(response: Response, fallback: string): Error & { status: number } {
+  const error = new Error(fallback) as Error & { status: number };
+  error.status = response.status;
+  return error;
+}
+
+/**
+ * Captures exactly the frozen add-assignee callback raised by this channel form.
+ * The frozen handler still owns its draft and later Catalog save/readback; the
+ * V3 picker supplies only the selected, trusted local staff IDs to that callback.
+ */
+function installChannelStaffPicker(root: HTMLElement): void {
+  const runtime = window as StaffPickerWindow;
+  const frozen = runtime.OperationMemberPicker;
+  if (!frozen || typeof frozen.open !== 'function') {
+    channelStaffPickerError(root, '渠道客服选择器无法打开；当前渠道草稿已保留，请刷新后重试。');
+    return;
+  }
+  const originalOpen = frozen.open.bind(frozen);
+  let captureNextAdd = false;
+  let opening = false;
+
+  root.addEventListener('click', (event) => {
+    const trigger = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-add-channel-assignee]') : null;
+    if (!trigger || !root.contains(trigger)) return;
+    const picker = (window as StaffPickerWindow).AICRMStaffPicker;
+    if (!picker || typeof picker.open !== 'function') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      channelStaffPickerError(root, '渠道客服选择器无法打开；当前渠道草稿已保留，请刷新后重试。');
+      return;
+    }
+    // The frozen root listener calls open synchronously in this same event.
+    // Only that call is replaced below; unrelated frozen picker calls retain
+    // their original behavior and scope.
+    captureNextAdd = true;
+  }, true);
+
+  frozen.open = (options) => {
+    const callback = typeof options?.onConfirm === 'function' ? options.onConfirm : undefined;
+    const scopedAdd = captureNextAdd && options?.scope === 'channel_code' && callback;
+    captureNextAdd = false;
+    if (!scopedAdd) return originalOpen(options);
+    const picker = (window as StaffPickerWindow).AICRMStaffPicker;
+    if (!picker || typeof picker.open !== 'function') {
+      channelStaffPickerError(root, '渠道客服选择器无法打开；当前渠道草稿已保留，请刷新后重试。');
+      return undefined;
+    }
+    if (opening) return undefined;
+    const currentIDs = new Set((Array.isArray(options.disabledUserIds) ? options.disabledUserIds : []).map((value) => text(value)).filter(Boolean));
+    const remaining = 5 - currentIDs.size;
+    if (remaining < 1) {
+      channelStaffPickerError(root, '当前渠道最多配置 5 位客服；请先移除一位后再选择。');
+      return undefined;
+    }
+    const requested = Number((options.selection as Json | undefined)?.max ?? options.max);
+    const capacity = Number.isSafeInteger(requested) && requested > 0 ? Math.min(remaining, requested) : remaining;
+    opening = true;
+    const read = async ({ query, signal }: { query: string; signal: AbortSignal }) => {
+      const url = new URL('/api/admin/common/operation-members', location.origin);
+      url.searchParams.set('scope', 'channel_code');
+      url.searchParams.set('page_size', '100');
+      if (query.trim()) url.searchParams.set('q', query.trim());
+      const response = await nativeFetch(url.toString(), { credentials: 'same-origin', headers: { Accept: 'application/json' }, signal });
+      const payload = await response.json().catch(() => ({})) as Json;
+      if (!response.ok) throw operationMemberFailure(response, `客服目录读取失败（HTTP ${response.status}）`);
+      if (!Array.isArray(payload.items)) throw new Error('客服目录响应不完整，请重试。');
+      return {
+        items: payload.items.flatMap((entry): Array<{ source: string; staff_id: string; user_id: string; display_name: string; active?: boolean; unavailable_reason?: string }> => {
+          const member = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry as Json : {};
+          const staffID = localStaffID(member.staff_id);
+          const userID = text(member.user_id);
+          if (!/^[1-9]\d*$/.test(staffID) || !userID) return [];
+          return [{ source: 'channel_code.operation_members', staff_id: staffID, user_id: userID, display_name: text(member.display_name) || userID, active: member.active !== false, unavailable_reason: currentIDs.has(staffID) ? '该客服已在当前渠道草稿中。' : undefined }];
+        }),
+      };
+    };
+    try {
+      picker.open({
+        title: '选择企微客服', source: 'channel_code.operation_members', scope: 'channel_code.assignment', mode: 'multiple', limit: capacity,
+        // This is an additive action. Existing assignees stay in the frozen
+        // caller draft and are disabled in the scoped results, rather than
+        // becoming a false over-limit initial selection in this dialog.
+        selectedRecords: [],
+        directoryHint: '当前受权目录最多显示 100 项；未出现在本页的已有客服仍保留，不能据此判定失效。',
+        loadPage: read,
+        refresh: async () => { channelOperationMemberDirectory = null; },
+        accessLossMessage: channelStaffAccessLoss,
+        onCommit: ({ selected }) => {
+          callback(selected.map((member) => ({
+            // The frozen channel callback persists this `user_id` slot as its
+            // local staff ID. Keep the string received from the channel Owner;
+            // do not convert or infer an external identifier here.
+            user_id: text(member.staff_id), staff_id: text(member.staff_id), display_name: member.display_name,
+          })));
+          clearChannelStaffPickerError(root);
+        },
+      });
+    } catch (error) {
+      opening = false;
+      channelStaffPickerError(root, error instanceof Error ? `渠道客服选择器无法打开：${error.message}` : '渠道客服选择器无法打开；当前渠道草稿已保留，请重试。');
+      return undefined;
+    }
+    // Active-dialog exclusion is also enforced by the shared adapter. Reset
+    // this short callback bridge after the synchronous frozen event returns.
+    window.setTimeout(() => { opening = false; }, 0);
+    return undefined;
+  };
+}
+
+function tagPickerError(root: HTMLElement, message: string): void {
+  let notice = root.querySelector<HTMLElement>('[data-channel-entry-tag-picker-error]');
+  if (!notice) {
+    notice = document.createElement('p');
+    notice.dataset.channelEntryTagPickerError = '';
+    notice.className = 'save-feedback is-error';
+    notice.setAttribute('role', 'alert');
+    root.querySelector('[data-tag-selected]')?.insertAdjacentElement('afterend', notice);
+  }
+  notice.textContent = message;
+}
+
+function clearTagPickerError(root: HTMLElement): void {
+  root.querySelector('[data-channel-entry-tag-picker-error]')?.remove();
+}
+
+function renderEntryTagSummary(root: HTMLElement): void {
+  const selected = root.querySelector<HTMLElement>('[data-tag-selected]');
+  if (!selected) return;
+  const tagID = root.querySelector<HTMLInputElement>('[data-entry-tag-id]')?.value.trim() || '';
+  const tagName = root.querySelector<HTMLInputElement>('[data-entry-tag-name]')?.value.trim() || '';
+  const groupName = root.querySelector<HTMLInputElement>('[data-entry-tag-group-name]')?.value.trim() || '';
+  selected.replaceChildren();
+  if (!tagID) {
+    selected.textContent = '暂未选择标签';
+    return;
+  }
+  // The frozen page already owns the remove action. Rebuild only its existing
+  // summary pill with DOM APIs so a V3 selection remains removable through
+  // that single form state, without introducing another picker or command.
+  const pill = document.createElement('button');
+  pill.type = 'button';
+  pill.className = 'pill';
+  pill.dataset.removePicked = 'tag';
+  pill.textContent = `${groupName ? `${groupName} / ` : ''}${tagName || '已选择标签'} ×`;
+  selected.append(pill);
+}
+
+function tagPickerAccessLoss(error: unknown): string | undefined {
+  const status = Number((error as { status?: unknown } | null)?.status);
+  if (status === 401) return '登录已失效，标签目录不可读取；已保留当前渠道草稿。';
+  if (status === 403) return '当前账号无权读取标签目录；已保留当前渠道草稿。';
+  return undefined;
+}
+
+/**
+ * The byte-frozen channel script is loaded after this Host and binds the same
+ * button.  Capture only that form control, and only once the V3 picker is
+ * present, so the fallback never silently changes the source/contract.
+ */
+function installChannelEntryTagPicker(root: HTMLElement): void {
+  root.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target?.closest<HTMLButtonElement>('[data-open-tag-picker]');
+    if (!button || !root.contains(button)) return;
+
+    const picker = window.AICRMTagPicker;
+    if (!picker?.open) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      tagPickerError(root, 'V3 标签选择器尚未就绪；当前渠道草稿已保留，请刷新后重试。');
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const tagID = root.querySelector<HTMLInputElement>('[data-entry-tag-id]')?.value || '';
+    const selectedRecords: TagPickerRecord[] = [];
+    const existing = unresolvedTagRecord('local_tag_catalog', tagID);
+    if (existing) selectedRecords.push(existing);
+    try {
+      picker.open({
+        title: '选择入渠标签',
+        source: 'local_tag_catalog',
+        scope: 'channel.entry_tag',
+        selectedRecords,
+        mode: 'single',
+        limit: 1,
+        loadPage: createTagCatalogPageLoader('local_tag_catalog', async ({ signal }) => {
+          const response = await nativeFetch('/api/admin/wecom/tags', { credentials: 'same-origin', headers: { Accept: 'application/json' }, signal });
+          if (!response.ok) {
+            const failure = new Error(`标签目录读取失败（HTTP ${response.status}）`) as Error & { status?: number };
+            failure.status = response.status;
+            throw failure;
+          }
+          return response.json();
+        }),
+        accessLossMessage: tagPickerAccessLoss,
+        onCommit: ({ selected }) => {
+          const record = selected[0];
+          const id = root.querySelector<HTMLInputElement>('[data-entry-tag-id]');
+          const name = root.querySelector<HTMLInputElement>('[data-entry-tag-name]');
+          const group = root.querySelector<HTMLInputElement>('[data-entry-tag-group-name]');
+          if (id) id.value = record?.tag_id || '';
+          if (name) name.value = record?.tag_name || '';
+          if (group) group.value = record?.group_name || '';
+          clearTagPickerError(root);
+          renderEntryTagSummary(root);
+        },
+      });
+    } catch (error) {
+      tagPickerError(root, error instanceof Error ? `标签选择器无法打开：${error.message}` : '标签选择器无法打开；当前渠道草稿已保留，请重试。');
+    }
+  }, true);
 }
 
 export async function startChannelAdmissionHost(): Promise<void> {
@@ -530,9 +764,10 @@ export async function startChannelAdmissionHost(): Promise<void> {
       }
     }
     await (window as Window & { AICRMStandardComponents?: { ready?: () => Promise<void> } }).AICRMStandardComponents?.ready?.();
-    installChannelPickerIdentityAdapter();
+    installChannelEntryTagPicker(root);
     installSaveFeedbackTime(root);
     await executeChannelDonorScript();
+    installChannelStaffPicker(root);
   } catch (error) {
     const message = error instanceof Error ? error.message : '渠道读取失败';
     (document.querySelector('main') || document.body).innerHTML = `<div role="alert" style="margin:24px;color:#b42318">${escapeHTML(message)}；未修改当前配置，请刷新后重试。</div>`;

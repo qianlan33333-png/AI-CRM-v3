@@ -9,7 +9,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const page = fs.readFileSync(path.join(root, 'web/dist/admin/productForm.html'), 'utf8');
 const host = await buildTestBrowserBundle(path.join(root, 'web/v3/productAdapter.ts'));
 const admin = await buildTestBrowserBundle(path.join(root, 'web/src/admin/main.ts'));
-const standardTagPicker = fs.readFileSync(path.join(root, 'web/dist/assets/standard-components/wecom_tag_picker.js'), 'utf8');
 const standardMaterialPicker = fs.readFileSync(path.join(root, 'web/donors/ai-assistant-production/static/material_picker.js'), 'utf8');
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 async function waitFor(check, message) {
@@ -39,6 +38,7 @@ const dom = new JSDOM(page, {
     window.Request = Request;
     window.Response = Response;
     window.Headers = Headers;
+    window.AICRMTagPicker = { open(options) { options.loadPage({ query: '', signal: new AbortController().signal }).then((page) => options.onCommit({ selected: page.items.slice(0, 1), added: page.items.slice(0, 1), removed: [] })); } };
     window.fetch = async (input, init = {}) => {
       const raw = input instanceof Request ? input.url : String(input);
       const url = new URL(raw, window.location.href);
@@ -58,7 +58,7 @@ const dom = new JSDOM(page, {
         return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'recovery.push', updated_at: '2026-09-08T00:01:00Z' });
       }
       if (url.pathname === '/api/admin/channels') return reply({ items: [], total: 0 });
-      if (url.pathname === '/api/admin/wecom/tags') return reply({ groups: [{ group_id: 4, group_name: '已同步标签' }], items: [{ tag_id: 37, tag_name: '已购买', group_id: 4, group_name: '已同步标签' }] });
+      if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [{ group_id: 4, group_name: '已同步标签' }], items: [{ tag_id: 37, tag_name: '已购买', group_id: 4, group_name: '已同步标签' }], count: 1, total_tags: 1, tag_limit: 1000 });
       if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return reply({ items: [{ id: 38, name: '页面素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true }], total: 1, has_more: true, next_offset: 1 });
       if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '1') return reply({ items: [{ id: 39, name: '后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], total: 2, has_more: false });
       if (url.pathname === '/api/admin/image-library') return reply({ items: [{ id: 39, name: '后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], total: 1, has_more: false });
@@ -70,7 +70,6 @@ const dom = new JSDOM(page, {
   },
 });
 
-dom.window.eval(standardTagPicker);
 dom.window.eval(standardMaterialPicker);
 dom.window.eval(host);
 
@@ -88,12 +87,9 @@ const legacyProductMask = dom.window.document.querySelector('.pk-mask');
 assert.equal(legacyProductMask.style.getPropertyPriority('display'), 'important', 'the delayed frozen product picker must stay hidden');
 materialRow.click();
 await waitFor(() => [...dom.window.document.querySelectorAll('img')].some((image) => image.src.includes('/39/variants/thumb_320')), 'the frozen form must render the original later-page material selection');
-dom.window.eval(standardTagPicker);
 const tagOpen = await waitFor(() => dom.window.document.querySelector('[data-product-tag-open]'), 'standard product tag control must mount');
 tagOpen.click();
-const tagRow = await waitFor(() => dom.window.document.querySelector('[data-tag-key="37"]'), 'real tag catalog row must render in the original picker');
-tagRow.click();
-dom.window.document.querySelector('[data-action="confirm"]').click();
+await waitFor(() => dom.window.document.getElementById('pfWecomTagging').value.includes('37'), 'V3 tag picker must return an Owner catalog tag to the product draft');
 const tagEnabled = dom.window.document.querySelector('[data-product-tag-enabled]');
 tagEnabled.checked = true; tagEnabled.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 await waitFor(() => dom.window.document.getElementById('pfWecomTagging').value === '{"enabled":true,"tag_ids":[37]}', 'original tag picker must persist an enabled canonical numeric tag id');

@@ -1,4 +1,7 @@
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
+import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+
+installCommittedTextSearch();
 
 type ClientSummary = {
   client_id: string;
@@ -472,6 +475,7 @@ function staticDocumentation(onClients: () => void): HTMLElement {
     }
     searchEmpty.hidden = !keyword || visibleSections > 0;
   };
+  search.dataset.openPlatformDocSearch = '';
   search.addEventListener('input', applySearch);
   for (const anchor of toc.querySelectorAll<HTMLAnchorElement>('a')) {
     anchor.addEventListener('click', () => {

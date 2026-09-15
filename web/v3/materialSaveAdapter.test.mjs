@@ -48,6 +48,12 @@ function button(document, label) {
   return found;
 }
 
+function buttonContaining(document, text) {
+  const found = [...document.querySelectorAll("button")].find((item) => item.textContent?.trim().includes(text));
+  if (!found) fail(`actual frozen template has no button containing ${text}: ${[...document.querySelectorAll("button")].map((item) => item.textContent?.trim()).join(",")}`);
+  return found;
+}
+
 function setInput(window, id, value) {
   const input = window.document.getElementById(id);
   if (!(input instanceof window.HTMLInputElement)) fail(`actual frozen template has no ${id} input`);
@@ -222,6 +228,51 @@ async function waitFor(condition, description) {
   releaseReadback();
   await waitFor(() => !create.disabled && create.textContent?.trim() === "创建", "mini-program create did not release after delayed readback");
   if (!dom.window.document.body.textContent?.includes("小程序卡片已创建")) fail("mini-program success feedback from the frozen controller disappeared");
+  dom.window.close();
+}
+
+// The frozen create/edit thumbnail controls describe unavailable Provider work.
+// The V3 Host must make precisely those two controls persistently unavailable
+// without turning the local-only resolver into a fake WeCom refresh or
+// disturbing the existing mini-program save lifecycle.
+{
+  const mutations = [];
+  const dom = pageFixture("mpLib.html", (window) => async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url, window.location.origin);
+    const method = (init.method || "GET").toUpperCase();
+    if (url.pathname === "/api/admin/miniprogram-library" && method === "GET") return json(mediaRows.mini);
+    if (method !== "GET") mutations.push(`${method} ${url.pathname}`);
+    return json({ code: "unexpected", path: url.pathname, method }, 500);
+  });
+  await sleep(100);
+
+  button(dom.window.document, "新建小程序卡片").click();
+  await waitFor(() => !![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "上传缩略图（暂不支持）"), "mini-program create thumbnail control did not become unavailable");
+  const upload = button(dom.window.document, "上传缩略图（暂不支持）");
+  assert.equal(upload.disabled, true, "create thumbnail control remains clickable");
+  assert.equal(upload.getAttribute("aria-disabled"), "true", "create thumbnail control is missing aria-disabled");
+  assert.equal(upload.style.cursor, "not-allowed", "create thumbnail control is missing disabled styling");
+  const uploadHelp = dom.window.document.getElementById(upload.getAttribute("aria-describedby"));
+  assert.equal(uploadHelp?.textContent, "当前不支持企微缩略图上传；不会上传至企微。", "create thumbnail explanation is not persistent and specific");
+  assert.equal([...dom.window.document.querySelectorAll("button")].some((item) => item.textContent?.trim() === "＋ 上传缩略图（将缓存到企微）"), false, "create thumbnail retains its misleading Provider claim");
+  upload.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  await sleep(10);
+  assert.deepEqual(mutations, [], "unavailable create thumbnail control issued a mutation");
+  assert.equal(dom.window.document.body.textContent?.includes("后端能力未就绪"), false, "synthetic create thumbnail click reached the frozen generic capability toast");
+
+  button(dom.window.document, "取消").click();
+  button(dom.window.document, "编辑").click();
+  await waitFor(() => !![...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "刷新缩略图缓存（暂不支持）"), "mini-program edit thumbnail control did not become unavailable");
+  const refresh = buttonContaining(dom.window.document, "刷新缩略图缓存（暂不支持）");
+  assert.equal(refresh.disabled, true, "edit thumbnail control remains clickable");
+  assert.equal(refresh.getAttribute("aria-disabled"), "true", "edit thumbnail control is missing aria-disabled");
+  assert.equal(refresh.style.cursor, "not-allowed", "edit thumbnail control is missing disabled styling");
+  const refreshHelp = dom.window.document.getElementById(refresh.getAttribute("aria-describedby"));
+  assert.equal(refreshHelp?.textContent, "当前不支持企微缩略图刷新；不会发起企微调用。", "edit thumbnail explanation is not persistent and specific");
+  refresh.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  await sleep(10);
+  assert.deepEqual(mutations, [], "unavailable edit thumbnail control issued a resolver or mutation");
+  assert.equal(dom.window.document.body.textContent?.includes("后端能力未就绪"), false, "synthetic edit thumbnail click reached the frozen generic capability toast");
   dom.window.close();
 }
 
