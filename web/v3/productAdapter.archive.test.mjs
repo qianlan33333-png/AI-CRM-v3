@@ -17,7 +17,7 @@ const transform = (html) => html
 
 const bundle = await build({
   stdin: {
-    contents: "import './web/v3/productAdapter';\nimport { AdminController } from './web/src/admin/controller';\nimport { mount } from './web/src/shared/ui/runtime';\nwindow.ProductControllerFixture = AdminController;\nwindow.ProductMountFixture = mount;",
+    contents: "import './web/v3/productAdapter';\nimport { AdminController } from './web/src/admin/controller';\nimport { mount } from './web/src/shared/ui/runtime';\nimport { api } from './web/src/shared/api/client';\nwindow.ProductControllerFixture = AdminController;\nwindow.ProductMountFixture = mount;\nwindow.ProductApiFixture = api;",
     resolveDir: root,
     loader: 'ts',
   },
@@ -40,7 +40,7 @@ const bundle = await build({
   logLevel: 'silent',
 });
 
-const dom = new JSDOM('<!doctype html><body data-page="products"><main id="stage"></main></body>', {
+const dom = new JSDOM('<!doctype html><body data-page="products"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">商品管理</h1></div></header><main id="stage"></main></body>', {
   url: 'https://test.invalid/admin/products.html',
   runScripts: 'outside-only',
   pretendToBeVisual: true,
@@ -56,7 +56,7 @@ async function waitFor(check, message) {
 }
 const source = (resourceId, name, version) => ({
   resourceId, code: 'product-' + resourceId, name, price: '99.00', status: '已启用', tone: 'ok',
-  sold: '1', updated: '2026-09-15 09:00', lifecycle: 'enabled', version,
+  sold: '1', updated: '2026-09-15T01:02:03Z', lifecycle: 'enabled', version,
 });
 
 try {
@@ -80,6 +80,12 @@ try {
   const mount = dom.window.ProductMountFixture;
   const Controller = dom.window.ProductControllerFixture;
   const stage = dom.window.document.getElementById('stage');
+  const actionMenuTrigger = prefix => dom.window.document.querySelector(`[data-table-action-menu-trigger^="${prefix}-"]`);
+  const visibleActionMenuPanel = () => [...dom.window.document.querySelectorAll('[data-table-action-menu-panel]')].find((panel) => !panel.hidden);
+  const visibleAction = label => {
+    const panel = visibleActionMenuPanel();
+    return panel && [...panel.querySelectorAll('button')].find((node) => node.textContent?.trim() === label);
+  };
 
   const ordinary = new Controller({ mode: 'mock' }, 'products');
   ordinary.db.rows.products = [source(101, '已下单商品', 3)];
@@ -89,21 +95,44 @@ try {
     ordinary.__render?.();
   };
   mount(stage, transform(readFileSync(path.join(root, 'web/src/admin/templates/products.html'), 'utf8')), ordinary);
+  const ordinaryHeaderAction = await waitFor(
+    () => dom.window.document.querySelector('[data-page-header-actions="product-list-products"] > button'),
+    'ordinary create action must relocate to the shared page header',
+  );
+  assert.equal(ordinaryHeaderAction.textContent, '创建商品');
+  assert.equal(stage.textContent.includes('商品管理'), false, 'the donor list heading must not duplicate the shell title');
+  assert.match(stage.textContent, /2026-09-15 09:02:03/, 'ordinary product updated time is rendered with the shared Shanghai formatter');
+  assert.equal(stage.textContent.includes('2026-09-15T01:02:03Z'), false, 'ordinary product list does not expose raw ISO time');
+  const ordinaryMore = await waitFor(
+    () => actionMenuTrigger('product-products'),
+    'ordinary frozen product row must expose the shared overflow action menu',
+  );
+  ordinaryMore.click();
   const ordinaryDelete = await waitFor(
-    () => [...dom.window.document.querySelectorAll('button')].find((node) => node.textContent?.trim() === '删除'),
-    'ordinary frozen product table must bind the delete action',
+    () => visibleAction('删除'),
+    'ordinary delete must be reachable through the visible overflow menu',
   );
   ordinaryDelete.click();
   assert.equal(dom.window.document.getElementById('fb-head')?.textContent, '删除商品');
   dom.window.document.getElementById('fb-cancel').click();
   assert.equal(calls.length, 0, 'cancelled ordinary delete must send zero writes');
 
-  ordinaryDelete.click();
+  ordinaryMore.click();
+  const ordinaryConfirmedDelete = await waitFor(
+    () => visibleAction('删除'),
+    'ordinary delete must remain reachable after cancellation',
+  );
+  ordinaryConfirmedDelete.click();
   dom.window.document.getElementById('fb-ok').click();
   await waitFor(() => calls.length === 1, 'first ordinary delete request was not sent');
+  const retryMenu = await waitFor(
+    () => actionMenuTrigger('product-products'),
+    'failed delete must retain the visible row and its overflow menu',
+  );
+  retryMenu.click();
   const retry = await waitFor(
-    () => [...dom.window.document.querySelectorAll('button')].find((node) => node.textContent?.trim() === '删除'),
-    'failed delete must retain the visible row for the same frozen command',
+    () => visibleAction('删除'),
+    'retry must be reachable through the visible overflow menu',
   );
   retry.click();
   dom.window.document.getElementById('fb-ok').click();
@@ -116,6 +145,7 @@ try {
   await waitFor(() => !stage.textContent.includes('已下单商品'), 'successful owner readback must remove the archived ordinary row');
 
   dom.window.document.body.dataset.page = 'spProducts';
+  dom.window.document.querySelector('.admin-page-title').textContent = '周期商品管理';
   stage.replaceChildren();
   const periodic = new Controller({ mode: 'mock' }, 'spProducts');
   periodic.db.rows.products = [];
@@ -125,9 +155,20 @@ try {
     periodic.__render?.();
   };
   mount(stage, transform(readFileSync(path.join(root, 'web/src/admin/templates/spProducts.html'), 'utf8')), periodic);
+  const periodicHeaderAction = await waitFor(
+    () => dom.window.document.querySelector('[data-page-header-actions="product-list-spProducts"] > button'),
+    'service-period create action must relocate to the shared page header',
+  );
+  assert.equal(periodicHeaderAction.textContent, '创建周期商品');
+  assert.equal(stage.textContent.includes('周期商品管理'), false, 'the periodic donor heading must not duplicate the shell title');
+  const periodicMore = await waitFor(
+    () => actionMenuTrigger('product-spProducts'),
+    'service-period frozen product row must expose the shared overflow action menu',
+  );
+  periodicMore.click();
   const periodicDelete = await waitFor(
-    () => [...dom.window.document.querySelectorAll('button')].find((node) => node.textContent?.trim() === '删除'),
-    'service-period donor archive action must be relabeled and bound as 删除',
+    () => visibleAction('删除'),
+    'service-period delete must be visible in its overflow menu',
   );
   periodicDelete.click();
   assert.equal(dom.window.document.getElementById('fb-head')?.textContent, '删除周期商品');
@@ -143,6 +184,81 @@ try {
 }
 
 console.log('product and service-period delete DOM lifecycle: PASS');
+
+// The overflow panel lives under document.body, while the original lifecycle
+// action was rendered in a particular list row. A refresh may reorder or
+// remove rows while a stale panel is still visible. The Host must retain the
+// original Product subject (not the old array position), and reject a removed
+// source row before it can produce a lifecycle write.
+{
+  const lifecycleCalls = [];
+  let rawProducts = [];
+  const raw = (id, version) => ({ id, lifecycle: 'enabled', enabled: true, version, paid_order_count: 1, refund_order_count: 0, sold_count: 1, admin_projection: { enabled: true } });
+  const lifecycle = new JSDOM('<!doctype html><body data-page="products"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">商品管理</h1></div></header><main id="stage"></main></body>', {
+    url: 'https://test.invalid/admin/products.html', runScripts: 'outside-only', pretendToBeVisual: true,
+    beforeParse(window) {
+      window.__AICRM_TEST_MOCK__ = true;
+      window.Request = Request; window.Response = Response; window.Headers = Headers;
+      window.fetch = async (url, init = {}) => {
+        const requestURL = new URL(String(url), window.location.href);
+        const method = String(init.method || 'GET').toUpperCase();
+        if (requestURL.pathname === '/api/v1/products') return new Response(JSON.stringify({ items: rawProducts }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (method === 'POST' && /^\/api\/admin\/wechat-pay\/products\/(501|502)\/disable$/.test(requestURL.pathname)) {
+          lifecycleCalls.push(requestURL.pathname);
+          const id = Number(requestURL.pathname.split('/')[5]);
+          return new Response(JSON.stringify({ id, version: 4, lifecycle: 'disabled', enabled: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      };
+    },
+  });
+  try {
+    lifecycle.window.eval(bundle.outputFiles[0].text);
+    const api = lifecycle.window.ProductApiFixture;
+    const first = source(501, '原始商品 A', 3);
+    const second = source(502, '原始商品 B', 3);
+    // Seed the MockApi base rows before its Product adapter validates the
+    // authoritative `/api/v1/products` facts against those rows.
+    rawProducts = [];
+    const stored = await api.loadDb({ page: 'products' });
+    stored.rows.products = [first, second];
+    lifecycle.window.sessionStorage.setItem('aicrm.mock.db.v4', JSON.stringify(stored));
+    rawProducts = [raw(501, 3), raw(502, 3)];
+    await api.loadDb({ page: 'products' });
+    const controller = new lifecycle.window.ProductControllerFixture({ mode: 'mock' }, 'products');
+    controller.db.rows.products = [first, second]; controller.db.rows.spProducts = [];
+    lifecycle.window.ProductMountFixture(lifecycle.window.document.getElementById('stage'), transform(readFileSync(path.join(root, 'web/src/admin/templates/products.html'), 'utf8')), controller);
+    const action = async (name) => {
+      const row = await waitFor(() => [...lifecycle.window.document.querySelectorAll('tbody tr')].find((item) => item.textContent.includes(name)), `missing ${name} row`);
+      const trigger = await waitFor(() => row.querySelector('button[data-table-action-menu-trigger]'), `missing ${name} overflow trigger`);
+      trigger.click();
+      return waitFor(() => {
+        const panel = lifecycle.window.document.getElementById(trigger.getAttribute('aria-controls'));
+        return panel && [...panel.querySelectorAll('button')].find((button) => button.textContent?.trim() === '停用');
+      }, `missing ${name} overflow lifecycle action`);
+    };
+    const originalA = await action('原始商品 A');
+    rawProducts = [raw(502, 3), raw(501, 3)];
+    await api.loadDb({ page: 'products' });
+    originalA.click();
+    await waitFor(() => lifecycleCalls.length === 1, 'reordered list did not issue its original lifecycle command');
+    assert.deepEqual(lifecycleCalls, ['/api/admin/wechat-pay/products/501/disable'], 'a reordered read must not retarget the retained action to product B');
+
+    const removedB = await action('原始商品 B');
+    rawProducts = [raw(501, 3)];
+    await api.loadDb({ page: 'products' });
+    const bRow = [...lifecycle.window.document.querySelectorAll('tbody tr')].find((item) => item.textContent.includes('原始商品 B'));
+    bRow.remove();
+    removedB.click();
+    await pause(20);
+    assert.equal(lifecycleCalls.length, 1, 'a removed source row must not issue a lifecycle write from its stale overflow panel');
+    assert.match(lifecycle.window.document.body.textContent, /商品操作上下文已失效/, 'a removed source row gives an explicit no-write refresh message');
+  } finally {
+    lifecycle.window.dispatchEvent(new lifecycle.window.Event('pagehide'));
+    lifecycle.window.close();
+  }
+}
+console.log('product overflow lifecycle retains its original subject and rejects stale rows: PASS');
 
 const projection = {
   schema_version: 1, status: 'archived', enabled: false, buy_button_text: '', require_mobile: false,
