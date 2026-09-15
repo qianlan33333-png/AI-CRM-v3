@@ -1381,8 +1381,35 @@ function mountProductTagPicker(): void {
   });
 }
 
-const productStandardObserver = new MutationObserver(mountProductTagPicker);
-productStandardObserver.observe(document, { childList: true, subtree: true });
+// JSDOM does not emit pagehide when a test Window is closed. All Product Host
+// observers therefore own their teardown and also fail closed if a queued
+// mutation is delivered after its document has been destroyed.
+function productDocumentIsActive(): boolean {
+  try {
+    return document.defaultView === window && document.documentElement !== null && document.body !== null;
+  } catch {
+    return false;
+  }
+}
+
+function observeProductDocument(callback: () => void): MutationObserver {
+  let observer: MutationObserver;
+  const run = (): void => {
+    if (!productDocumentIsActive()) {
+      observer.disconnect();
+      return;
+    }
+    callback();
+  };
+  observer = new MutationObserver(run);
+  observer.observe(document, { childList: true, subtree: true });
+  const dispose = (): void => observer.disconnect();
+  window.addEventListener('pagehide', dispose, { once: true });
+  window.addEventListener('unload', dispose, { once: true });
+  return observer;
+}
+
+const productStandardObserver = observeProductDocument(mountProductTagPicker);
 mountProductTagPicker();
 
 type PurchaseActionMode = '' | 'qr' | 'redirect';
@@ -1478,10 +1505,8 @@ function mountProductEditorHeaderActions(): void {
   mountedProductEditorHeaderActions = { ...source, cleanup };
 }
 
-const productEditorHeaderActionObserver = new MutationObserver(mountProductEditorHeaderActions);
-productEditorHeaderActionObserver.observe(document, { childList: true, subtree: true });
+const productEditorHeaderActionObserver = observeProductDocument(mountProductEditorHeaderActions);
 mountProductEditorHeaderActions();
-window.addEventListener('pagehide', () => productEditorHeaderActionObserver.disconnect(), { once: true });
 
 function productActionState(prefix: string): PurchaseActionDOM {
   const route = productEditorRoute();
@@ -1631,14 +1656,11 @@ function mountPurchaseActionControls(): void {
   purchaseActionControls(prefix);
 }
 
-const purchaseActionObserver = new MutationObserver(mountPurchaseActionControls);
-purchaseActionObserver.observe(document, { childList: true, subtree: true });
+const purchaseActionObserver = observeProductDocument(mountPurchaseActionControls);
 mountPurchaseActionControls();
-const distributionPolicyObserver = new MutationObserver(mountDistributionPolicyControls);
-distributionPolicyObserver.observe(document, { childList: true, subtree: true });
+const distributionPolicyObserver = observeProductDocument(mountDistributionPolicyControls);
 mountDistributionPolicyControls();
-const servicePeriodDurationObserver = new MutationObserver(mountNewServicePeriodDuration);
-servicePeriodDurationObserver.observe(document, { childList: true, subtree: true });
+const servicePeriodDurationObserver = observeProductDocument(mountNewServicePeriodDuration);
 mountNewServicePeriodDuration();
 
 type ProductMaterial = MaterialPickerRecord & { metadata: RecordValue };
@@ -1808,8 +1830,7 @@ function mountProductDimensions(): void {
   }
   select(nav.dataset.productDimension || first);
 }
-const productDimensionsObserver = new MutationObserver(mountProductDimensions);
-productDimensionsObserver.observe(document, { childList: true, subtree: true });
+const productDimensionsObserver = observeProductDocument(mountProductDimensions);
 mountProductDimensions();
 
 // A successful dimension save updates this editor rather than invoking the
@@ -2137,14 +2158,13 @@ productController.setCommerceImageUrls = function (kind, urls) {
   updateProductMaterialDraft(this, kind, urls);
 };
 
-const productMaterialPresentationObserver = new MutationObserver(() => {
+const productMaterialPresentationObserver = observeProductDocument(() => {
   const controller = activeProductMaterialController;
   if (!controller) return;
   const page = document.body?.dataset.page;
   if (page === 'productForm' && controller.page === page) renderProductMaterialDraft(controller, 'product');
   if (page === 'spProductForm' && controller.page === page) renderProductMaterialDraft(controller, 'service');
 });
-productMaterialPresentationObserver.observe(document, { childList: true, subtree: true });
 
 const productUploadIntentKeys = new Map<string, string>();
 const confirmedProductUploadMaterials = new Map<string, ProductMaterial>();
@@ -2502,6 +2522,7 @@ function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
 let productListPresentationQueued = false;
 function presentProductLists(): void {
   productListPresentationQueued = false;
+  if (!productDocumentIsActive()) return;
   const page = productListPage();
   if (!page) return;
   for (const [mountedPage, cleanup] of productListHeaderCleanups) {
@@ -2521,14 +2542,14 @@ function scheduleProductListPresentation(): void {
   queueMicrotask(presentProductLists);
 }
 
-const productListPresentationObserver = new MutationObserver(scheduleProductListPresentation);
-productListPresentationObserver.observe(document, { childList: true, subtree: true });
-window.addEventListener('pagehide', () => {
-  productListPresentationObserver.disconnect();
+const productListPresentationObserver = observeProductDocument(scheduleProductListPresentation);
+const disposeProductListPresentation = (): void => {
   for (const menu of productListActionMenus.values()) menu.dispose();
   productListActionMenus.clear();
   for (const cleanup of productListHeaderCleanups.values()) cleanup();
   productListHeaderCleanups.clear();
   productListHeaderElements.clear();
-}, { once: true });
+};
+window.addEventListener('pagehide', disposeProductListPresentation, { once: true });
+window.addEventListener('unload', disposeProductListPresentation, { once: true });
 scheduleProductListPresentation();
