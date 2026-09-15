@@ -176,3 +176,6 @@ body[data-ui-surface="share"] [data-share-read-error] { margin: 12px 0; color: #
     overflow-wrap: anywhere;
   }
 }
+/* Page-owned dynamic commands share the single admin topbar with SSR links
+ * and tabs. This stylesheet is mounted by every admin shell. */
+body[data-ui-surface="admin"] .admin-topbar .page-header-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }

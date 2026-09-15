@@ -3,6 +3,8 @@
 // already-authorized client commands without creating a second page header.
 
 export type PageHeaderAction = {
+  // Use a stable id when a mounted button's disabled state changes over time.
+  id?: string;
   label: string;
   variant?: 'primary' | 'secondary' | 'ghost';
   disabled?: boolean;
@@ -11,6 +13,8 @@ export type PageHeaderAction = {
   href?: string;
   target?: string;
 };
+
+function actionID(action: PageHeaderAction): string { return action.id || action.label; }
 
 function buttonClass(variant: PageHeaderAction['variant']): string {
   return `admin-button${variant ? ` admin-button--${variant}` : ''}`;
@@ -30,12 +34,14 @@ function actionElement(action: PageHeaderAction): HTMLElement {
       if (action.target === '_blank') link.rel = 'noopener';
     }
     link.textContent = action.label;
+    link.dataset.pageHeaderAction = actionID(action);
     return link;
   }
   const control = document.createElement('button');
   control.type = 'button';
   control.className = buttonClass(action.variant);
   control.textContent = action.label;
+  control.dataset.pageHeaderAction = actionID(action);
   control.disabled = action.disabled === true;
   if (control.disabled) control.setAttribute('aria-disabled', 'true');
   const reset = () => {
@@ -75,6 +81,25 @@ function actionElement(action: PageHeaderAction): HTMLElement {
  * replace only this owner’s actions, leaving SSR tabs and link actions intact.
  * It returns a cleanup for hosts which unmount inside a still-live document.
  */
+function actionHost(owner: string): HTMLElement | undefined {
+  const topbar = document.querySelector<HTMLElement>('.admin-topbar');
+  const meta = topbar?.querySelector<HTMLElement>(':scope > .admin-topbar-meta');
+  return Array.from(meta?.querySelectorAll<HTMLElement>(':scope > [data-page-header-actions]') || [])
+    .find((candidate) => candidate.dataset.pageHeaderActions === owner);
+}
+
+/** Updates only an already-mounted button's disabled state without replacing
+ * the control, preserving its DOM identity and surrounding header focus. */
+export function setPageHeaderActionDisabled(owner: string, action: string, disabled: boolean): boolean {
+  const control = Array.from(actionHost(owner)?.querySelectorAll<HTMLElement>(':scope > [data-page-header-action]') || [])
+    .find((candidate) => candidate.dataset.pageHeaderAction === action);
+  if (!(control instanceof HTMLButtonElement)) return false;
+  control.disabled = disabled;
+  if (disabled) control.setAttribute('aria-disabled', 'true');
+  else control.removeAttribute('aria-disabled');
+  return true;
+}
+
 export function mountPageHeaderActions(owner: string, actions: readonly PageHeaderAction[]): () => void {
   const topbar = document.querySelector<HTMLElement>('.admin-topbar');
   if (!topbar) return () => {};

@@ -4,7 +4,7 @@ import { JSDOM } from 'jsdom';
 
 const bundle = await build({
   stdin: {
-    contents: "import { mountPageHeaderActions } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions;",
+    contents: "import { mountPageHeaderActions, setPageHeaderActionDisabled } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions; globalThis.setDisabled = setPageHeaderActionDisabled;",
     resolveDir: process.cwd(), sourcefile: 'page-header-actions-test-entry.ts',
   }, bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, logLevel: 'warning',
 });
@@ -49,6 +49,13 @@ try {
   assert.equal(disabled.disabled, true, 'an explicit action-disabled state is preserved at mount');
   assert.equal(disabled.getAttribute('aria-disabled'), 'true', 'disabled actions expose their state');
   assert.equal(clicked, 1, 'a disabled action cannot invoke its page command');
+  dom.window.mount('groupops', [{ id: 'create-plan', label: '创建计划', onClick: () => {} }]);
+  const create = topbar.querySelector('[data-page-header-actions="groupops"] button');
+  create.focus();
+  assert.equal(dom.window.setDisabled('groupops', 'create-plan', true), true, 'stable API updates an existing action by id');
+  assert.equal(topbar.querySelector('[data-page-header-actions="groupops"] button'), create, 'stable disabled update keeps the same control node');
+  assert.equal(create.disabled, true, 'stable API exposes dynamic disabled state');
+  assert.equal(dom.window.setDisabled('groupops', 'missing', true), false, 'stable API never creates an unknown action');
   const rejectedAction = dom.window.mount('distribution-safe', [{
     label: '重试',
     onClick: () => Promise.reject(new Error('expected rejection')),
