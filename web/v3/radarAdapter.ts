@@ -7,6 +7,7 @@ import { rememberActionInputs, runAction } from './actionFeedback';
 import { apiRequestOptions, request as authenticatedRequest, unwrapGenerated } from '../src/api/transport';
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest } from './shared/ui/materialPickerAdapter';
+import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 
 const takeRadarUploadInput = rememberActionInputs((input) =>
   document.body.dataset.page === 'radarForm' && Boolean(input.files?.length),
@@ -677,6 +678,13 @@ function installRadarListController(): void {
     const rows = root?.querySelector<HTMLTableSectionElement>('#listRows');
     const tableCard = rows?.closest('table')?.closest<HTMLElement>('.card');
     if (!root || !search || !contentType || !status || !frozenRefresh || !tableCard) return;
+    // The V3 shell owns the single page title. Keep the list's filter and
+    // refresh controls in the workspace, but move the existing create route
+    // to its shared topbar action host before discarding the donor page-head.
+    mountPageHeaderActions('radar-list', [
+      { label: '新建雷达链接', href: '/admin/radarForm.html', variant: 'primary' },
+    ]);
+    root.querySelector<HTMLElement>(':scope > .page-head')?.remove();
     controller = new RadarListController(root, frozenRadarLinks, search, contentType, status, frozenRefresh);
     controller.mount(tableCard);
     observer.disconnect();

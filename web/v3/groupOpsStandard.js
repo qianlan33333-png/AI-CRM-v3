@@ -7,6 +7,9 @@
   const app = document.getElementById("group-ops-app");
   if (!app) return;
 
+  const pageHeaderActions = window.AICRMPageHeaderActions || null;
+  let listHeaderActionsMounted = false;
+
   const state = {
     mode: app.dataset.pageMode || "list",
     planId: Number(app.dataset.planId || 0),
@@ -487,7 +490,30 @@
   }
 
   function renderLoading() {
+    if (listHeaderActionsMounted) pageHeaderActions?.setDisabled("groupops", "create-plan", true);
     renderShell('<section class="group-ops__card"><div class="group-ops__empty">加载中</div></section>');
+  }
+
+  function syncListHeaderActions() {
+    const disabled = listWritesDisabled();
+    if (!pageHeaderActions) return;
+    if (listHeaderActionsMounted) {
+      pageHeaderActions.setDisabled("groupops", "create-plan", disabled);
+      return;
+    }
+    pageHeaderActions.mount("groupops", [
+      { id: "view-groups", label: "查看所有群", href: routes.groups, variant: "secondary" },
+      {
+        id: "create-plan",
+        label: "创建计划",
+        variant: "primary",
+        disabled,
+        // This remains the same local GroupOps transition. It creates a
+        // browser draft only; POST/CAS/receipt handling stays in createPlan.
+        onClick: () => showCreatePlan(),
+      },
+    ]);
+    listHeaderActionsMounted = true;
   }
 
   function renderError(message) {
@@ -1900,11 +1926,8 @@
     const rangeStart = !totalKnown ? null : total === 0 ? 0 : Math.min(state.listOffset + 1, total);
     const rangeEnd = !totalKnown ? null : total === 0 ? 0 : Math.min(state.listOffset + state.plans.length, total);
     const paginationDisabled = listNavigationDisabled();
+    syncListHeaderActions();
     renderShell(`
-      <div class="group-ops__bar">
-        ${pageButton("查看所有群", routes.groups)}
-        ${actionButton("创建计划", "show-create-plan", "group-ops__button--primary", listWritesDisabled())}
-      </div>
       <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}"${state.noticeIsError ? ' role="alert"' : ""} ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}${state.planReadbackPending ? ` ${actionButton("重新读取最新配置", "reload-plan-detail", "", state.savingPlan)}` : ""}</div>
       <div class="group-ops__notice group-ops__notice--error" role="alert" ${state.listError ? "" : "hidden"}>${escapeHtml(state.listError)}${state.listRetrySnapshot ? ` ${actionButton("重新读取当前页", "retry-list-page", "", state.listBusy || state.listUnauthorized)}` : ""}</div>
       <section class="group-ops__metric-grid">
