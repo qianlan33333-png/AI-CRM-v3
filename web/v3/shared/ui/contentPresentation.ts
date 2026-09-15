@@ -331,6 +331,7 @@ export function renderContentPresentation(target: HTMLElement, options: ContentP
     const visual = document.createElement('div');
     visual.className = 'aicrm-content-presentation__visual';
     const thumbnailURL = controlledThumbnail(record.thumbnailURL);
+    if (!thumbnailURL) item.classList.add('aicrm-content-presentation__material--without-thumbnail');
     if (thumbnailURL) {
       const preview = document.createElement('img');
       preview.className = 'aicrm-content-presentation__thumbnail';
@@ -376,6 +377,7 @@ export function renderContentPresentation(target: HTMLElement, options: ContentP
       item.className = 'aicrm-content-presentation__supplement';
       item.dataset.contentPresentationSupplement = block.key;
       const thumbnailURL = controlledThumbnail(block.thumbnailURL);
+      if (!thumbnailURL) item.classList.add('aicrm-content-presentation__supplement--without-thumbnail');
       if (thumbnailURL) {
         const visual = document.createElement('div');
         visual.className = 'aicrm-content-presentation__visual';
