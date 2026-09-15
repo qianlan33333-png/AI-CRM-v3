@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,7 @@ import (
 // MediaPageRenderer is implemented by the v3 webshell adapter in composition.
 // The immutable donor template is read only from the release build directory.
 type MediaPageRenderer func(http.ResponseWriter, *http.Request, string, string, MediaAssets) error
-type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageLibraryFilterHostJS string }
+type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageLibraryFilterHostJS, MaterialLibraryHostJS string }
 type mediaUI struct {
 	dist   string
 	render MediaPageRenderer
@@ -42,13 +43,13 @@ func (h *mediaUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	page, _, ok := mediaPage(r.URL.Path)
+	page, canonical, ok := mediaRequest(r.URL)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	if len(r.URL.Query()) != 0 {
-		http.Redirect(w, r, canonicalMediaPath(page), http.StatusSeeOther)
+	if canonical != "" {
+		http.Redirect(w, r, canonical, http.StatusSeeOther)
 		return
 	}
 	templateBody := ""
@@ -69,26 +70,44 @@ func (h *mediaUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "media UI unavailable", http.StatusInternalServerError)
 	}
 }
-func mediaPage(path string) (string, string, bool) {
-	switch path {
-	case "/admin/image-library":
-		return "images", "图片素材库", true
-	case "/admin/miniprogram-library":
-		return "mpLib", "小程序素材库", true
-	case "/admin/attachment-library":
-		return "attach", "附件素材库", true
+func mediaRequest(requestURL *url.URL) (page, canonical string, ok bool) {
+	switch requestURL.Path {
+	case "/admin/image-library", "/admin/images.html":
+		return "", canonicalMaterialPath("images"), true
+	case "/admin/miniprogram-library", "/admin/mpLib.html":
+		return "", canonicalMaterialPath("mpLib"), true
+	case "/admin/attachment-library", "/admin/attach.html":
+		return "", canonicalMaterialPath("attach"), true
+	case "/admin/materials":
+		query := requestURL.Query()
+		if len(query) == 0 {
+			return "images", "", true
+		}
+		if len(query) != 1 || len(query["tab"]) != 1 {
+			return "", canonicalMaterialPath("images"), true
+		}
+		switch query.Get("tab") {
+		case "images":
+			return "images", "", true
+		case "attachments":
+			return "attach", "", true
+		case "miniprograms":
+			return "mpLib", "", true
+		default:
+			return "", canonicalMaterialPath("images"), true
+		}
 	default:
 		return "", "", false
 	}
 }
-func canonicalMediaPath(page string) string {
+func canonicalMaterialPath(page string) string {
 	switch page {
 	case "images":
-		return "/admin/image-library"
+		return "/admin/materials?tab=images"
 	case "mpLib":
-		return "/admin/miniprogram-library"
+		return "/admin/materials?tab=miniprograms"
 	default:
-		return "/admin/attachment-library"
+		return "/admin/materials?tab=attachments"
 	}
 }
 func (h *mediaUI) template(page string) (string, error) {
@@ -117,12 +136,12 @@ func (h *mediaUI) assets() (MediaAssets, error) {
 	if err = json.Unmarshal(raw, &manifest); err != nil {
 		return MediaAssets{}, err
 	}
-	for _, name := range []string{"tokens", "labs", "admin", "materialSaveHost", "imageLibraryFilterHost"} {
+	for _, name := range []string{"tokens", "labs", "admin", "materialSaveHost", "imageLibraryFilterHost", "materialLibraryHost"} {
 		if manifest.Entries[name] == "" {
 			return MediaAssets{}, errors.New("media bundle asset missing")
 		}
 	}
-	return MediaAssets{TokensCSS: "/media-assets/" + manifest.Entries["tokens"], LabsCSS: "/media-assets/" + manifest.Entries["labs"], AdminJS: "/media-assets/" + manifest.Entries["admin"], MaterialSaveHostJS: "/media-assets/" + manifest.Entries["materialSaveHost"], ImageLibraryFilterHostJS: "/media-assets/" + manifest.Entries["imageLibraryFilterHost"]}, nil
+	return MediaAssets{TokensCSS: "/media-assets/" + manifest.Entries["tokens"], LabsCSS: "/media-assets/" + manifest.Entries["labs"], AdminJS: "/media-assets/" + manifest.Entries["admin"], MaterialSaveHostJS: "/media-assets/" + manifest.Entries["materialSaveHost"], ImageLibraryFilterHostJS: "/media-assets/" + manifest.Entries["imageLibraryFilterHost"], MaterialLibraryHostJS: "/media-assets/" + manifest.Entries["materialLibraryHost"]}, nil
 }
 func (h *mediaUI) asset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
