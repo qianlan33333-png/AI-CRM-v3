@@ -134,7 +134,7 @@ type HXCAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // MediaAssets are manifest-derived URLs for the immutable Media donor bundle.
 // They are supplied by the Media module's release-only UI adapter.
-type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageLibraryFilterHostJS string }
+type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS, MaterialSaveHostJS, ImageLibraryFilterHostJS, MaterialLibraryHostJS string }
 
 // TagsAssets are manifest-derived frozen donor bundle paths. The tag page is
 // mounted in admin_base and never publishes the donor's own shell/sidebar.
@@ -210,7 +210,7 @@ type ComponentStatesAssets struct {
 // OverviewAssets is the V3-owned stylesheet and Host module for the read-only
 // operating overview. The shell receives only manifest-derived URLs; all
 // business facts remain in the authorized overview HTTP endpoint.
-type OverviewAssets struct{ CSS, AdminJS string }
+type OverviewAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -323,7 +323,7 @@ func (renderer *Renderer) RenderComponentStates(writer http.ResponseWriter, data
 // shell. The Host independently fetches the already-authorized read-only API;
 // this package never receives or resolves operating facts.
 func (renderer *Renderer) RenderOverview(writer http.ResponseWriter, data AdminPageData, assets OverviewAssets) error {
-	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" {
+	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.DetailDrawerCSS == "" || assets.AdminJS == "" {
 		return errors.New("overview shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -401,16 +401,62 @@ func (renderer *Renderer) RenderHXC(writer http.ResponseWriter, data AdminPageDa
 // RenderMedia mounts immutable Media donor templates in the v3 shell. The
 // image library is source-owned and deliberately receives its own stable host;
 // the other Media workspaces receive only verified release templates.
+//
+// The frozen templates expose display names but the running controller carries
+// a stable resourceId for every attachment and mini-program. Add that ID at the
+// v3 render seam so presentation code can join read-only metadata without
+// guessing from a name or row position. This changes the rendered copy only;
+// the byte-frozen release template remains untouched. A changed loop shape
+// fails closed instead of silently reintroducing a name-based join.
+func materialTemplateIdentitySeams(page, donorTemplate string) (string, error) {
+	type seam struct {
+		loop   string
+		needle string
+		withID string
+	}
+	var expected seam
+	switch page {
+	case "attach":
+		expected = seam{
+			loop:   `data-sc-for="{{ rows.attachItems }}"`,
+			needle: `<tr style="{{ a.rowStyle }}">`,
+			withID: `<tr data-material-library-id="{{ a.resourceId }}" style="{{ a.rowStyle }}">`,
+		}
+	case "mpLib":
+		expected = seam{
+			loop:   `data-sc-for="{{ rows.mpItems }}"`,
+			needle: `<div style="background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden">`,
+			withID: `<div data-material-library-id="{{ m.resourceId }}" style="background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden">`,
+		}
+	default:
+		return donorTemplate, nil
+	}
+	if strings.Count(donorTemplate, expected.loop) != 1 || strings.Count(donorTemplate, expected.needle) != 1 {
+		return "", errors.New("media donor identity seam is missing or ambiguous")
+	}
+	return strings.Replace(donorTemplate, expected.needle, expected.withID, 1), nil
+}
+
 func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets MediaAssets) error {
-	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.MaterialSaveHostJS == "" || (page == "images" && assets.ImageLibraryFilterHostJS == "") || (page != "images" && page != "attach" && page != "mpLib") || (page != "images" && donorTemplate == "") {
+	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.MaterialSaveHostJS == "" || assets.MaterialLibraryHostJS == "" || (page == "images" && assets.ImageLibraryFilterHostJS == "") || (page != "images" && page != "attach" && page != "mpLib") || (page != "images" && donorTemplate == "") {
 		return errors.New("media shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`
+	unified := data.RequestPath == "/admin/materials"
+	data.ShowPageHeader = unified
+	workspaceAttribute := ""
+	if unified {
+		workspaceAttribute = ` data-material-library-workspace="true"`
+	}
+	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"` + workspaceAttribute + `></main>`
 	if page == "images" {
-		content = `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded" data-image-library-v3-root></main>`
+		content = `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded" data-image-library-v3-root` + workspaceAttribute + `></main>`
 	} else {
+		var seamErr error
+		donorTemplate, seamErr = materialTemplateIdentitySeams(page, donorTemplate)
+		if seamErr != nil {
+			return seamErr
+		}
 		content += `<template id="tpl">` + donorTemplate + `</template>`
 	}
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Media: true, MediaPage: page, MediaAssets: assets})
@@ -441,11 +487,14 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 4 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 5 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// Product list pages use the shared V3 shell title and action slot; form
+	// pages use the same shell header for their existing editor actions. The
+	// Product adapter retains original controls while removing duplicate donor headings.
+	data.ShowPageHeader = page == "products" || page == "spProducts" || page == "productForm" || page == "spProductForm"
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
 	if err != nil {

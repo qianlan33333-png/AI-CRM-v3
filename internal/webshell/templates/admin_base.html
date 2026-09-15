@@ -51,6 +51,7 @@
   <script type="module" src="{{.MediaAssets.AdminJS}}"></script>
   <script type="module" src="{{.MediaAssets.MaterialSaveHostJS}}"></script>
   {{end}}
+  <script type="module" src="{{.MediaAssets.MaterialLibraryHostJS}}"></script>
   {{end}}
   {{if .Customers}}
   <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v3">
@@ -186,10 +187,12 @@
   {{if .Distribution}}
   <link rel="stylesheet" href="{{.DistributionAssets.CSS}}">
 	<link rel="stylesheet" href="{{.DistributionAssets.DetailDrawerCSS}}">
+  {{with presentationAssets}}{{if .ConfirmationDialogCSS}}<link rel="stylesheet" href="{{.ConfirmationDialogCSS}}">{{end}}{{if .ConfirmationDialogScript}}<script type="module" src="{{.ConfirmationDialogScript}}"></script>{{end}}{{end}}
   <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
   {{end}}
   {{if .Overview}}
   <link rel="stylesheet" href="{{.OverviewAssets.CSS}}">
+  <link rel="stylesheet" href="{{.OverviewAssets.DetailDrawerCSS}}">
   <script type="module" src="{{.OverviewAssets.AdminJS}}"></script>
   {{end}}
   {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}

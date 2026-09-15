@@ -1,10 +1,17 @@
 import { openDetailDrawer } from './shared/ui/detailDrawer';
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
 import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
-import { renderQr } from '../src/admin/sections/qr';
+import { openShareQrDialog } from './shared/ui/shareQrDialog';
 import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionSettlementStatusLabel } from './distributionPresentation';
+import type { ConfirmationDialogOptions, ConfirmationDialogResult } from './shared/ui/confirmationDialog';
 
 export {};
+
+declare global {
+  interface Window {
+    AICRMConfirmation?: { confirm(options: ConfirmationDialogOptions): Promise<ConfirmationDialogResult> };
+  }
+}
 
 type Row = Record<string, unknown>;
 type Tab = 'distributors' | 'orders' | 'exceptions';
@@ -22,8 +29,9 @@ const root = document.getElementById('distribution-admin-root');
 if (!root) throw new Error('分销管理容器缺失');
 const distributionRoot: HTMLElement = root;
 const summaryHost = document.createElement('section');
+const controlsHost = document.createElement('section');
 const tabsHost = document.createElement('section');
-const filterHost = document.createElement('section');
+let mountedFilter: HTMLElement | undefined;
 const tableHost = document.createElement('section');
 const paginationHost = document.createElement('section');
 const messageHost = document.createElement('p');
@@ -97,6 +105,7 @@ function errText(status: number, payload: unknown): string {
 
 const keys = new Map<string, string>();
 const pendingMutations = new Set<string>();
+const pendingConfirmations = new Set<string>();
 function key(scope: string): string {
   let value = keys.get(scope);
   if (!value) {
@@ -236,20 +245,13 @@ async function copyApplicationLink(): Promise<void> {
 }
 
 function showApplicationEntry(): void {
-  const body = document.createElement('section');
-  body.className = 'distribution-detail-body';
   const url = applicationURL();
-  const note = document.createElement('p');
-  note.textContent = '该入口用于微信可信登录后的分销员注册。商品售卖信息页不提供分销申请入口；请在本后台按需打开或复制此入口。';
-  const input = document.createElement('input');
-  input.value = url;
-  input.readOnly = true;
-  input.className = 'distribution-application-link';
-  const qr = document.createElement('div');
-  qr.className = 'distribution-application-qr';
-  renderQr(qr, url, '分销员申请入口');
-  body.append(note, input, qr, button('复制申请链接', () => copyApplicationLink(), true));
-  openDetailDrawer('分销申请入口', body);
+  openShareQrDialog({
+    title: '分销申请二维码',
+    url,
+    qrLabel: '分销员申请入口',
+    actions: [{ label: '复制申请链接', primary: true, onClick: () => copyApplicationLink() }],
+  });
 }
 
 let tab: Tab = 'distributors';
@@ -270,6 +272,46 @@ let detailGeneration = 0;
 const activeDetailBodies = new Map<HTMLElement, Tab>();
 
 function pageState(value = tab): PageState { return pageStates[value]; }
+
+function actionTargetIsCurrent(target: Tab, id: string, version: number, requestAccessGeneration: number): boolean {
+  if (requestAccessGeneration !== accessGeneration || tab !== target || pageState(target).loading) return false;
+  const key = target === 'distributors' ? 'id' : 'exception_id';
+  return pageState(target).rows.some((row) => idText(row[key]) === id && integer(row.version) === version);
+}
+
+async function confirmAction(
+  scope: string,
+  target: Tab,
+  id: string,
+  version: number,
+  options: ConfirmationDialogOptions,
+): Promise<ConfirmationDialogResult | undefined> {
+  if (pendingConfirmations.has(scope)) {
+    notice('确认窗口已打开，请先完成或取消当前操作。', true);
+    return undefined;
+  }
+  const confirm = window.AICRMConfirmation?.confirm;
+  if (typeof confirm !== 'function') {
+    notice('确认界面未完成加载，本次操作未提交；请重新加载页面后再试。', true);
+    return undefined;
+  }
+  const requestAccessGeneration = accessGeneration;
+  pendingConfirmations.add(scope);
+  try {
+    const result = await confirm(options);
+    if (!result.confirmed) return undefined;
+    if (!actionTargetIsCurrent(target, id, version, requestAccessGeneration)) {
+      notice('目标记录或授权范围已变化，未提交操作；请重新读取后确认。', true);
+      return undefined;
+    }
+    return result;
+  } catch {
+    notice('确认界面暂时不可用，本次操作未提交；请重新加载页面后再试。', true);
+    return undefined;
+  } finally {
+    pendingConfirmations.delete(scope);
+  }
+}
 
 function accessFailure(error: unknown, status: number): error is RequestError {
   return error instanceof RequestError && error.status === status;
@@ -325,23 +367,6 @@ function overviewResponse(value: unknown): Row {
   return response;
 }
 
-function summaryReason(value: unknown): string {
-  const reason = optionalText(value);
-  if (reason === 'distribution_not_configured') return '分销汇总尚未配置';
-  if (reason === 'distribution_summary_unavailable') return '分销汇总暂不可用';
-  return reason ? '原因待确认' : '';
-}
-
-function statusCopy(section: Row, fallback = '正在读取…'): string {
-  const status = summaryStatus(section);
-  const reason = summaryReason(section.reason_code);
-  if (status === 'ready') return `观察时间：${timeText(section.as_of)}`;
-  if (status === 'zero') return '当前口径内未形成';
-  if (status === 'data_missing') return `待确认${reason ? `：${reason}` : ''}`;
-  if (status === 'failed') return `读取失败${reason ? `：${reason}` : ''}`;
-  return fallback;
-}
-
 function summaryMoney(section: Row, amount: unknown, code: unknown): string {
   const status = summaryStatus(section);
   if (status === 'data_missing') return '待确认';
@@ -358,27 +383,29 @@ function summaryNumber(section: Row, value: unknown): string {
   return numericText(value);
 }
 
-function distributionExceptionCount(todos: Row): unknown {
-  if (!Array.isArray(todos.items)) return undefined;
-  const item = todos.items.map(obj).find((candidate) => optionalText(candidate.code) === 'distribution_exceptions');
-  return item?.count;
+function exceptionOrderNumber(section: Row, value: unknown): string {
+  const status = summaryStatus(section);
+  if (status === 'data_missing') return '待确认';
+  if (status === 'failed') return '读取失败';
+  if (!status) return '—';
+  const count = integer(value);
+  // This is a count, unlike adjustment amounts elsewhere in the Distribution
+  // UI. Negative values are invalid facts and must remain explicitly unknown.
+  return count === undefined || count < 0 ? '待确认' : count.toLocaleString('zh-CN');
 }
 
-function metric(label: string, value: string, detail: string, status: SummaryStatus | undefined): HTMLElement {
+function metric(label: string, value: string, status: SummaryStatus | undefined): HTMLElement {
   const card = document.createElement('article');
   card.className = 'distribution-summary-card';
   card.dataset.distributionSummaryStatus = status || 'loading';
   card.append(Object.assign(document.createElement('span'), { className: 'distribution-summary-card__label', textContent: label }));
   card.append(Object.assign(document.createElement('strong'), { textContent: value }));
-  card.append(Object.assign(document.createElement('small'), { textContent: detail }));
   return card;
 }
 
 function summary(): HTMLElement {
   const section = obj(overview?.distribution);
-  const todos = obj(overview?.todos);
   const status = summaryStatus(section);
-  const todoStatus = summaryStatus(todos);
   const summaryRoot = document.createElement('section');
   summaryRoot.className = 'distribution-summary';
   summaryRoot.setAttribute('aria-label', '分销汇总');
@@ -386,7 +413,6 @@ function summary(): HTMLElement {
   head.className = 'distribution-summary__head';
   const copy = document.createElement('div');
   copy.append(Object.assign(document.createElement('h2'), { textContent: '分销概览' }));
-  copy.append(Object.assign(document.createElement('p'), { textContent: '期内指标按支付确认时间计算；未结算、系统分账成功确认和待处理异常为当前状态。' }));
   const periods = document.createElement('div');
   periods.className = 'distribution-summary__periods';
   for (const [period, label] of [['today', '今日'], ['7d', '近 7 天'], ['30d', '近 30 天']] as const) {
@@ -399,12 +425,10 @@ function summary(): HTMLElement {
   const cards = document.createElement('div');
   cards.className = 'distribution-summary__grid';
   cards.append(
-    metric('期内推广成交', summaryMoney(section, section.period_paid_sales_minor, section.currency), statusCopy(section), status),
-    metric('期内初始佣金', summaryMoney(section, section.period_initial_commission_minor, section.currency), '仅初始佣金，退款与调整不混入此指标。', status),
-    metric('期内佣金笔数', summaryNumber(section, section.period_commission_count), '使用同一支付确认口径。', status),
-    metric('当前未结算', summaryMoney(section, section.current_unsettled_minor, section.currency), '当前状态，不随期间过滤。', status),
-    metric('系统分账成功确认', summaryMoney(section, section.current_settled_minor, section.currency), '系统成功确认，不代称银行到账。', status),
-    metric('待处理异常', summaryNumber(todos, distributionExceptionCount(todos)), statusCopy(todos, overviewFailure || (overviewLoading ? '正在读取…' : '等待读取…')), todoStatus),
+    metric('成交额', summaryMoney(section, section.period_paid_sales_minor, section.currency), status),
+    metric('待结算佣金', summaryMoney(section, section.current_unsettled_minor, section.currency), status),
+    metric('已结算佣金', summaryMoney(section, section.current_settled_minor, section.currency), status),
+    metric('待处理异常订单', exceptionOrderNumber(section, section.current_exception_order_count), status),
   );
   summaryRoot.append(head, cards);
   if (overviewFailure) {
@@ -505,28 +529,27 @@ function filterControl(value = tab): HTMLElement {
   if (existing) return existing.element;
   const filter = document.createElement('section');
   filter.className = 'distribution-admin-filter';
-  filter.append(Object.assign(document.createElement('span'), { textContent: '当前页筛选' }));
   const input = document.createElement('input');
   input.type = 'search';
   input.value = pageState(value).draftFilter;
   input.placeholder = '按当前已加载记录筛选';
   input.setAttribute('aria-label', '仅筛选当前已加载页');
   input.addEventListener('input', () => commitCurrentPageFilter(input));
+  filter.append(Object.assign(document.createElement('span'), { textContent: '当前页筛选' }));
   filter.append(input);
   filter.append(button('筛选', () => commitCurrentPageFilter(input)));
-  filter.append(Object.assign(document.createElement('small'), { textContent: '仅筛选当前已加载页，不扫描后续页，也不代表总数。' }));
   filterControls[value] = { element: filter, input };
   return filter;
 }
 
 function ensurePage(): void {
   if (pageMounted) return;
-  distributionRoot.replaceChildren(summaryHost, tabsHost, filterHost, tableHost, paginationHost, messageHost);
+  controlsHost.className = 'distribution-admin-controls';
+  controlsHost.append(tabsHost);
+  distributionRoot.replaceChildren(summaryHost, controlsHost, tableHost, paginationHost, messageHost);
   // The shell title is the page’s only title. Mount its actions once so table,
   // filter and summary redraws preserve header focus and an in-flight command.
   mountPageHeaderActions('distribution-admin', [
-    { label: '打开申请页', href: '/distribution', target: '_blank', variant: 'secondary' },
-    { label: '复制申请链接', onClick: () => copyApplicationLink() },
     { label: '申请二维码', onClick: () => showApplicationEntry() },
   ]);
   pageMounted = true;
@@ -544,7 +567,11 @@ function render(): void {
   }
   tabsHost.replaceChildren(nav);
   const currentFilter = filterControl();
-  if (filterHost.firstElementChild !== currentFilter) filterHost.replaceChildren(currentFilter);
+  if (mountedFilter !== currentFilter) {
+    mountedFilter?.remove();
+    controlsHost.append(currentFilter);
+    mountedFilter = currentFilter;
+  }
   tableHost.replaceChildren(tab === 'distributors' ? distributors() : tab === 'orders' ? orders() : exceptions());
   paginationHost.replaceChildren();
   if (pageState().cursor) {
@@ -756,10 +783,21 @@ async function mutate(scope: string, path: string, body: string): Promise<void> 
 }
 
 async function setDistributor(id: number, version: number, operation: 'disable' | 'enable'): Promise<void> {
-  const reason = operation === 'disable' ? window.prompt('停用原因（将记录审计）：') || '' : '管理员恢复';
-  if (!reason.trim()) {
-    notice('必须填写停用原因，未提交操作。', true);
-    return;
+  let reason = '管理员恢复';
+  if (operation === 'disable') {
+    const result = await confirmAction(`confirm:distributor:disable:${id}:${version}`, 'distributors', String(id), version, {
+      title: '停用分销员',
+      description: `即将停用分销员 ID ${id}。停用后该分销员不能继续推广。请填写原因，系统会记录审计。`,
+      confirmLabel: '确认停用',
+      tone: 'danger',
+      fields: [{ name: 'reason', label: '停用原因', placeholder: '请输入停用原因', required: true, kind: 'textarea' }],
+    });
+    if (!result?.confirmed) return;
+    reason = result.values?.reason || result.reason || '';
+    if (!reason.trim()) {
+      notice('必须填写停用原因，未提交操作。', true);
+      return;
+    }
   }
   await mutate(`distributor:${operation}:${id}:${version}:${reason}`, `/api/admin/distribution/distributors/${id}/${operation}`, JSON.stringify({ version, reason }));
 }
@@ -775,8 +813,19 @@ function amount(value: string | null): number | undefined {
 }
 
 async function recovery(id: string, version: number): Promise<void> {
-  const value = amount(window.prompt('追回金额（分）：'));
-  const evidence = window.prompt('追回凭证参考：');
+  const result = await confirmAction(`confirm:recovery:${id}:${version}`, 'exceptions', id, version, {
+    title: '登记追回',
+    description: `即将为异常编号 ${id} 登记追回。金额单位为分。请核对金额和凭证参考后再登记；此操作不会声明已完成微信分账。`,
+    confirmLabel: '确认登记追回',
+    tone: 'danger',
+    fields: [
+      { name: 'amount_minor', label: '追回金额（分）', placeholder: '请输入正整数（分）', required: true, kind: 'positive-integer' },
+      { name: 'evidence_reference', label: '追回凭证参考', placeholder: '请输入凭证参考', required: true, kind: 'text' },
+    ],
+  });
+  if (!result?.confirmed) return;
+  const value = amount(result.values?.amount_minor || '');
+  const evidence = result.values?.evidence_reference || '';
   if (value === undefined || !evidence?.trim()) {
     notice('追回金额必须是有效正整数分，且必须填写凭证参考；未提交操作。', true);
     return;
@@ -785,8 +834,19 @@ async function recovery(id: string, version: number): Promise<void> {
 }
 
 async function liability(id: string, version: number): Promise<void> {
-  const value = amount(window.prompt('商户承担金额（分）：'));
-  const reason = window.prompt('承担原因：');
+  const result = await confirmAction(`confirm:liability:${id}:${version}`, 'exceptions', id, version, {
+    title: '登记商户承担',
+    description: `即将为异常编号 ${id} 登记商户承担。金额单位为分。请核对金额和承担原因后再登记。`,
+    confirmLabel: '确认登记商户承担',
+    tone: 'danger',
+    fields: [
+      { name: 'amount_minor', label: '承担金额（分）', placeholder: '请输入正整数（分）', required: true, kind: 'positive-integer' },
+      { name: 'reason', label: '承担原因', placeholder: '请输入承担原因', required: true, kind: 'textarea' },
+    ],
+  });
+  if (!result?.confirmed) return;
+  const value = amount(result.values?.amount_minor || '');
+  const reason = result.values?.reason || '';
   if (value === undefined || !reason?.trim()) {
     notice('承担金额必须是有效正整数分，且必须填写原因；未提交操作。', true);
     return;

@@ -23,8 +23,13 @@ type Overview struct {
 	PeriodCommissionCount   int64
 	CurrentUnsettledMinor   int64
 	CurrentSettledMinor     int64
-	OpenExceptionCount      int64
-	Currency                string
+	// CurrentExceptionOrderCount is the current number of distinct order IDs
+	// with at least one Distribution exception in open or querying status. It
+	// intentionally differs from OpenExceptionCount, which remains a count of
+	// exception records for the operating to-do list.
+	CurrentExceptionOrderCount int64
+	OpenExceptionCount         int64
+	Currency                   string
 }
 
 // OverviewReader is the stable Distribution seam for the admin overview. Its

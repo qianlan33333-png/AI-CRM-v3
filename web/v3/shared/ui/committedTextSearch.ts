@@ -24,6 +24,8 @@ const registeredSearches: RegisteredSearch[] = [
   { selector: 'input[placeholder="搜索计划名称、发送人"]:not(:disabled)', trigger: 'input' },
   { selector: 'input[placeholder="按名称、链接、文件名搜索"]', trigger: 'input' },
   { selector: 'input[data-image-library-query]', trigger: 'input' },
+  { selector: 'input[data-material-library-query="attachment"]', trigger: 'input' },
+  { selector: 'input[data-material-library-query="miniprogram"]', trigger: 'keydown' },
   { selector: 'input[data-open-platform-doc-search]', trigger: 'input' },
   { selector: 'input[data-field-mapping-variable-search]', trigger: 'input' },
   // Distribution is a current-page-only client filter. It shares the same
@@ -209,6 +211,16 @@ export function replayCommittedTextSearch(input: HTMLInputElement): void {
   dispatchLegacySearch(input, search);
   input.value = draft;
   if (selectionStart !== null && selectionEnd !== null) input.setSelectionRange(selectionStart, selectionEnd);
+}
+
+/**
+ * Returns the query most recently sent through the explicit commit boundary.
+ * Callers that redraw or refresh a list must not consult a live IME draft.
+ */
+export function committedTextSearchValue(input: HTMLInputElement): string {
+  const search = registered(input);
+  if (!search) return '';
+  return state().committedQueries.get(input) ?? '';
 }
 
 /** Mark a programmatic clear/open value as the new committed query. */
