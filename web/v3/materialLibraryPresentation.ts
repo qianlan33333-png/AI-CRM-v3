@@ -5,7 +5,12 @@ import {
   mountPageHeaderActionElements,
   pageHeaderActionElementsHaveConnectedOrigins,
 } from './shared/ui/pageHeaderActions';
-import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+import {
+  committedTextSearchValue,
+  installCommittedTextSearch,
+  replayCommittedTextSearch,
+  resetCommittedTextSearch,
+} from './shared/ui/committedTextSearch';
 import { formatShanghaiDateTime } from './adminDateTime';
 import { listLegacyAttachments, listLegacyMiniPrograms } from '../src/api/generated/p4-media-compat/p4-media-compat';
 import { ApiError, apiRequestOptions, unwrapGenerated } from '../src/api/transport';
@@ -53,6 +58,8 @@ const tabItems = [
   { value: 'attachments', label: '附件' },
   { value: 'miniprograms', label: '小程序' },
 ] as const;
+
+const mediaContentChangedEvent = 'aicrm:media-content-changed';
 
 function isNonnegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -131,6 +138,10 @@ class FrozenMaterialPresentation {
   private metadataReadFailed = false;
   private metadataLoaded = false;
   private authorizationLost = false;
+  // Only an explicit Enter, 查询, 重置 or 重试 may update this value. The
+  // visible input can contain an IME draft while another owner redraws.
+  private committedMiniProgramQuery = '';
+  private miniProgramQueryInitialized = false;
   private readonly attachmentRows = new WeakMap<HTMLTableRowElement, AttachmentRowSource>();
   private attachmentHeader?: NodePresentation[];
   private readonly miniCards = new WeakMap<HTMLElement, MiniCardSource>();
@@ -146,6 +157,8 @@ class FrozenMaterialPresentation {
     this.sync();
     this.observer = new MutationObserver(() => this.sync());
     this.observer.observe(this.stage, { childList: true, subtree: true });
+    window.addEventListener(mediaContentChangedEvent, () => this.invalidateCurrentMetadata());
+    document.addEventListener('click', (event) => this.blockUnauthorizedMutation(event), true);
   }
 
   private sync(): void {
@@ -153,6 +166,7 @@ class FrozenMaterialPresentation {
     this.installCommittedSearch();
     this.readVisibleMiniProgramPage();
     this.applyCachedMetadata();
+    this.reapplyAuthorizationReadOnly();
     const action = Array.from(this.stage.querySelectorAll<HTMLButtonElement>('button'))
       .find((candidate) => candidate.textContent?.trim() === this.config.actionLabel);
     if (!action) {
@@ -186,29 +200,87 @@ class FrozenMaterialPresentation {
 
   private installCommittedSearch(): void {
     const input = this.stage.querySelector<HTMLInputElement>(this.config.querySelector);
-    if (!input || input.dataset.materialLibraryQuery === this.config.queryMode) return;
-    input.dataset.materialLibraryQuery = this.config.queryMode;
-    if (this.config.queryMode === 'miniprogram') {
-      input.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
-        event.preventDefault();
-        this.listSignature = '';
-        this.stage.querySelector<HTMLButtonElement>('#mpSearch')?.click();
-        this.readVisibleMiniProgramPage();
-      });
-      for (const control of this.stage.querySelectorAll<HTMLButtonElement>('#mpPrevious, #mpNext')) {
-        if (control.dataset.materialLibraryPagination === 'true') continue;
-        control.dataset.materialLibraryPagination = 'true';
-        control.addEventListener('click', () => { this.listSignature = ''; });
+    if (!input) return;
+    if (this.config.queryMode === 'miniprogram' && input.dataset.materialLibraryQuery !== this.config.queryMode) {
+      input.dataset.materialLibraryQuery = this.config.queryMode;
+      if (!this.miniProgramQueryInitialized) {
+        // Server-rendered list state is already committed. Later donor
+        // redraws must keep our last explicit user commit instead.
+        this.committedMiniProgramQuery = input.value.trim();
+        this.miniProgramQueryInitialized = true;
       }
+      input.addEventListener('compositionend', () => {
+        input.dataset.materialLibraryCompositionSettling = 'true';
+        window.setTimeout(() => delete input.dataset.materialLibraryCompositionSettling, 0);
+      });
+      // The shared capture listener has already copied the committed value
+      // before this forwarded keydown reaches the donor and this listener.
+      input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || input.dataset.materialLibraryCompositionSettling === 'true') return;
+        // A normal browser path arrives here as a shared forwarded event. The
+        // fallback to input.value is still an explicit non-composing Enter,
+        // which keeps synthetic/native owner test events representative.
+        this.commitMiniProgramQuery(committedTextSearchValue(input) || input.value);
+        this.stage.querySelector<HTMLButtonElement>('#mpSearch')?.click();
+      });
+    }
+    if (this.config.queryMode === 'miniprogram') {
+      this.installMiniProgramControls(input);
       return;
     }
+    if (input.dataset.materialLibraryQuery === this.config.queryMode) return;
+    input.dataset.materialLibraryQuery = this.config.queryMode;
     this.attachmentQuery = input;
     input.addEventListener('input', () => {
       this.filterVisibleAttachments();
       void this.readMetadata(input.value);
     });
     void this.readMetadata(input.value);
+  }
+
+  private installMiniProgramControls(input: HTMLInputElement): void {
+    const install = (selector: string, key: string, callback: () => void) => {
+      const control = this.stage.querySelector<HTMLButtonElement>(selector);
+      if (!control || control.dataset[key] === 'true') return;
+      control.dataset[key] = 'true';
+      control.addEventListener('click', callback, true);
+    };
+    install('#mpSearch', 'materialLibrarySearch', () => {
+      // A button click is an explicit commit. The donor still owns the
+      // actual query/re-render callback; this read follows that same value.
+      this.commitMiniProgramQuery(input.value);
+      resetCommittedTextSearch(input);
+    });
+    install('#mpReset', 'materialLibraryReset', () => {
+      // Clear is explicit even when the donor redraw replaces the input.
+      this.commitMiniProgramQuery('');
+      queueMicrotask(() => {
+        const current = this.stage.querySelector<HTMLInputElement>(this.config.querySelector);
+        if (current) resetCommittedTextSearch(current);
+      });
+    });
+    install('#mpRetry', 'materialLibraryRetry', () => {
+      // Retry deliberately replays the last committed value without
+      // submitting a newer draft still held by an IME/text control.
+      this.listSignature = '';
+      replayCommittedTextSearch(input);
+      this.readVisibleMiniProgramPage();
+    });
+    for (const control of this.stage.querySelectorAll<HTMLButtonElement>('#mpPrevious, #mpNext')) {
+      if (control.dataset.materialLibraryPagination === 'true') continue;
+      control.dataset.materialLibraryPagination = 'true';
+      control.addEventListener('click', () => { this.listSignature = ''; });
+    }
+  }
+
+  private commitMiniProgramQuery(value: string): void {
+    this.committedMiniProgramQuery = value.trim();
+    this.listSignature = '';
+    this.metadataQuery = '';
+    this.metadataLoaded = false;
+    // Let the donor query handler redraw first. Its subsequent DOM mutation
+    // calls sync, which reads the selected page using this committed value.
+    queueMicrotask(() => this.readVisibleMiniProgramPage());
   }
 
   private visibleMiniProgramPage(): { offset: number; limit: number } {
@@ -223,13 +295,11 @@ class FrozenMaterialPresentation {
 
   private readVisibleMiniProgramPage(): void {
     if (this.page !== 'mpLib') return;
-    const input = this.stage.querySelector<HTMLInputElement>(this.config.querySelector);
-    if (!input) return;
     const page = this.visibleMiniProgramPage();
-    const signature = `${input.value.trim()}\u0000${page.offset}:${page.limit}`;
+    const signature = `${this.committedMiniProgramQuery}\u0000${page.offset}:${page.limit}`;
     if (signature === this.listSignature) return;
     this.listSignature = signature;
-    void this.readMetadata(input.value, page);
+    void this.readMetadata(this.committedMiniProgramQuery, page);
   }
 
   private filterVisibleAttachments(): void {
@@ -304,6 +374,62 @@ class FrozenMaterialPresentation {
     if (this.authorizationLost) this.setMutationReadOnly(true);
   }
 
+  private invalidateCurrentMetadata(): void {
+    // A source-owned save announces only after its own readback. The compact
+    // directory must therefore re-read the visible owner page, but a redraw
+    // caused by this presentation itself must not repeatedly invalidate it.
+    this.metadataQuery = '';
+    this.metadataLoaded = false;
+    this.metadataReadFailed = false;
+    this.listSignature = '';
+    if (this.page === 'mpLib') {
+      this.readVisibleMiniProgramPage();
+      return;
+    }
+    const input = this.stage.querySelector<HTMLInputElement>(this.config.querySelector);
+    if (input) void this.readMetadata(committedTextSearchValue(input));
+  }
+
+  private isMutationLabel(label: string): boolean {
+    return new Set([
+      '编辑', '删除', '创建', '保存', '上传', '启用', '停用',
+      '刷新缩略图缓存', '＋ 上传缩略图（将缓存到企微）',
+    ]).has(label);
+  }
+
+  private isModalMutationButton(control: HTMLButtonElement): boolean {
+    if (!this.stage.contains(control)) return false;
+    const modal = control.closest<HTMLElement>('div[style*="position:fixed"]');
+    if (!modal) return false;
+    return Boolean(modal.querySelector('#fMpName, #fAttName, #fAttUpName')) && this.isMutationLabel(control.textContent?.trim() || '');
+  }
+
+  private isMiniCover(control: Element): boolean {
+    return Boolean(control.closest('[data-material-library-mini-cover]')) ||
+      Boolean(control.closest('[data-material-library-mini-directory] div[style*="height:112px"][style*="cursor:pointer"]'));
+  }
+
+  private markMutationControls(): void {
+    if (this.action) this.action.dataset.materialLibraryMutationControl = 'true';
+    for (const control of this.stage.querySelectorAll<HTMLButtonElement>('button')) {
+      const label = control.textContent?.trim() || '';
+      if (this.isMutationLabel(label) || this.isModalMutationButton(control)) control.dataset.materialLibraryMutationControl = 'true';
+    }
+    for (const cover of this.stage.querySelectorAll<HTMLElement>('[data-material-library-mini-directory] div[style*="height:112px"][style*="cursor:pointer"]')) {
+      cover.dataset.materialLibraryMiniCover = 'true';
+      cover.dataset.materialLibraryMutationControl = 'true';
+    }
+  }
+
+  private blockUnauthorizedMutation(event: MouseEvent): void {
+    if (!this.authorizationLost || !(event.target instanceof Element)) return;
+    const control = event.target.closest<HTMLElement>('[data-material-library-mutation-control="true"]');
+    const button = event.target.closest<HTMLButtonElement>('button');
+    if (!control && !this.isMiniCover(event.target) && !(button && this.isModalMutationButton(button))) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
   private setMutationReadOnly(readonly: boolean): void {
     if (!readonly) {
       for (const [control, prior] of this.authorizationDisabled) {
@@ -315,11 +441,11 @@ class FrozenMaterialPresentation {
       return;
     }
     this.stage.dataset.materialLibraryReadonly = 'true';
+    this.markMutationControls();
     const controls = new Set<HTMLButtonElement>();
     if (this.action instanceof HTMLButtonElement) controls.add(this.action);
     for (const control of this.stage.querySelectorAll<HTMLButtonElement>('button')) {
-      const label = control.textContent?.trim() || '';
-      if (label === '编辑' || label === '删除' || label === this.config.actionLabel) controls.add(control);
+      if (control.dataset.materialLibraryMutationControl === 'true') controls.add(control);
     }
     for (const control of controls) {
       if (!this.authorizationDisabled.has(control)) this.authorizationDisabled.set(control, { disabled: control.disabled, ariaDisabled: control.getAttribute('aria-disabled') });
@@ -494,9 +620,18 @@ class FrozenMaterialPresentation {
       card.setAttribute('role', 'row');
       card.style.cssText = 'display:grid;grid-template-columns:72px minmax(150px,1.2fr) minmax(112px,1fr) minmax(128px,1.2fr) minmax(122px,1fr) minmax(110px,1fr) 88px;gap:10px;align-items:center;min-width:0;padding:9px 12px;border:0;border-bottom:1px solid #F2F3F5;border-radius:0;overflow:visible;background:#fff';
       cover.setAttribute('role', 'cell');
+      // The frozen cover itself opens edit. Keep that identity explicit so a
+      // permission loss blocks the direct div handler as well as row buttons.
+      cover.dataset.materialLibraryMiniCover = 'true';
+      cover.dataset.materialLibraryMutationControl = 'true';
       cover.style.cssText = 'height:56px;border-radius:5px;grid-column:1;cursor:pointer;background:#EFF4FF';
       nameNode.setAttribute('role', 'cell');
       nameNode.style.cssText = 'grid-column:2;min-width:0;font-size:13px;font-weight:500;color:#1F2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      // The donor source snapshot preserves the node identity. Its text is a
+      // display projection, so replace only that text when a current typed
+      // read changes the material name on the same physical card.
+      const displayName = item?.name || '信息待确认';
+      nameNode.replaceChildren(document.createTextNode(displayName));
       const title = document.createElement('small'); title.textContent = item?.title || '信息待确认'; title.style.cssText = 'display:block;margin-top:3px;color:#8F959E;font-size:12px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
       nameNode.append(title);
       const appid = document.createElement('span'); appid.setAttribute('role', 'cell'); appid.textContent = item?.appid || '—'; appid.style.cssText = 'grid-column:3;min-width:0;color:#646A73;font-size:12px;overflow-wrap:anywhere';

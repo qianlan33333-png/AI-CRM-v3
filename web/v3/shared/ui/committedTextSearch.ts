@@ -213,6 +213,16 @@ export function replayCommittedTextSearch(input: HTMLInputElement): void {
   if (selectionStart !== null && selectionEnd !== null) input.setSelectionRange(selectionStart, selectionEnd);
 }
 
+/**
+ * Returns the query most recently sent through the explicit commit boundary.
+ * Callers that redraw or refresh a list must not consult a live IME draft.
+ */
+export function committedTextSearchValue(input: HTMLInputElement): string {
+  const search = registered(input);
+  if (!search) return '';
+  return state().committedQueries.get(input) ?? '';
+}
+
 /** Mark a programmatic clear/open value as the new committed query. */
 export function resetCommittedTextSearch(input: HTMLInputElement): void {
   const search = registered(input);

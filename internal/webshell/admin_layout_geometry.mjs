@@ -599,6 +599,58 @@ try {
       await recordRouteFailure(label, error);
     }
   };
+  const assertMiniProgramCommittedSearchAndSecondPage = async () => {
+    currentStep = 'materials-miniprograms-search-pagination';
+    try {
+      const ownerReadCount = () => requestEvents.filter(value => value === 'GET /api/admin/miniprogram-library').length;
+      const beforeDraft = ownerReadCount();
+      const drafted = await evaluate(cdp, `(() => {
+        const input=document.querySelector('#fMpQuery');
+        const stage=document.querySelector('#stage');
+        if (!(input instanceof HTMLInputElement) || !(stage instanceof HTMLElement)) return false;
+        input.focus(); input.value='输入法草稿';
+        input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+        input.dispatchEvent(new Event('input',{bubbles:true}));
+        stage.append(document.createElement('aside'));
+        return true;
+      })()`);
+      if (!drafted) throw new Error('mini-program search input was unavailable');
+      await delay(100);
+      if (ownerReadCount() !== beforeDraft) throw new Error('an IME draft or unrelated DOM mutation issued a mini-program read');
+      const committed = await evaluate(cdp, `(() => {
+        const input=document.querySelector('#fMpQuery');
+        if (!(input instanceof HTMLInputElement)) return false;
+        input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
+        input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter'}));
+        return true;
+      })()`);
+      if (!committed) throw new Error('mini-program IME candidate input was unavailable');
+      await delay(50);
+      if (ownerReadCount() !== beforeDraft) throw new Error('an IME candidate Enter issued a mini-program read');
+      await evaluate(cdp, `(() => {
+        const input=document.querySelector('#fMpQuery');
+        if (!(input instanceof HTMLInputElement)) return false;
+        input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter'})); return true;
+      })()`);
+      await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes('当前条件下没有小程序素材。')`, 'explicit committed mini-program search did not complete');
+      const beforeContentChange = ownerReadCount();
+      await evaluate(cdp, `window.dispatchEvent(new Event('aicrm:media-content-changed'))`);
+      for (let attempt = 0; attempt < 40 && ownerReadCount() <= beforeContentChange; attempt += 1) await delay(50);
+      if (ownerReadCount() <= beforeContentChange) throw new Error('saved-content event did not refresh the current mini-program page');
+      const reset = await evaluate(cdp, `(() => { const button=document.querySelector('#mpReset'); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()`);
+      if (!reset) throw new Error('mini-program reset was unavailable');
+      await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes('wx_material_layout') && document.querySelector('#mpNext') instanceof HTMLButtonElement`, 'mini-program reset did not restore the owner page');
+      const next = await evaluate(cdp, `(() => { const button=document.querySelector('#mpNext'); if (!(button instanceof HTMLButtonElement) || button.disabled) return false; button.click(); return true; })()`);
+      if (!next) throw new Error('mini-program second-page action was unavailable');
+      await waitFor(cdp, `document.querySelector('#stage')?.textContent?.includes('wx_material_page_01') && /51\\s*[-–—]\\s*51/.test(document.querySelector('#stage')?.textContent || '')`, 'mini-program second page did not render its owner row');
+      await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 900 });
+      await assertMaterialWorkspace('materials-miniprograms-page-2-1280', 'miniprograms', '新建小程序卡片');
+      await capture('materials-miniprograms-page-2-1280');
+      await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+    } catch (error) {
+      await recordRouteFailure('materials-miniprograms-search-pagination', error);
+    }
+  };
   const assertGroupOpsLayout = async label => {
     await assertLayout("standard", label, ".admin-page-title");
     const layout = await evaluate(cdp, `(() => {
@@ -917,6 +969,7 @@ try {
   await navigateMaterialWorkspace('images', 'materials-images', '上传图片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-image-library-v3-root][data-image-library-host-mounted=\"true\"] [data-image-library-cards]'))", '/api/admin/image-library', '素材工作台横向缩略图');
   await navigateMaterialWorkspace('miniprograms', 'materials-miniprograms', '新建小程序卡片', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('#fMpQuery'))", '/api/admin/miniprogram-library', 'wx_material_layout');
   await assertMaterialHeaderActionOpens('material-library-mpLib', '新建小程序卡片', '#fMpAppid', 'materials-miniprograms-create');
+  await assertMiniProgramCommittedSearchAndSecondPage();
   await navigateMaterialWorkspace('attachments', 'materials-attachments', '上传附件', "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded[data-material-library-workspace=\"true\"][data-material-library-presentation-mounted=\"true\"] [data-material-library-tabs]')) && Boolean(document.querySelector('input[data-material-library-query=\"attachment\"]'))", '/api/admin/attachment-library', '素材工作台附件');
   await assertMaterialHeaderActionOpens('material-library-attach', '上传附件', '#fAttUpFile', 'materials-attachments-upload');
   await assertMaterialAlias('/admin/image-library', 'images', "Boolean(document.querySelector('[data-image-library-host-mounted=\"true\"]'))", 'materials-image-alias');

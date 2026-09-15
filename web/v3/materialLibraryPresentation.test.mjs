@@ -66,18 +66,21 @@ async function settle() { await sleep(); await sleep(); }
 }
 
 {
-  let reads = 0; let searches = 0;
+  let reads = 0; let searches = 0; let retryCalls = 0; const queries = [];
   const dom = domFor('mpLib', `
     <div style="height:52px"><button id="create">新建小程序卡片</button></div>
-    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="9"><div><div style="height:112px"></div><div><div>报名卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
+    <section><input id="fMpQuery"><button id="mpSearch">查询</button><button id="mpReset">重置</button><button id="mpRetry">重试当前页</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="9"><div><div style="height:112px"></div><div><div>报名卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
     const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected miniprogram request ${url.pathname}`);
     reads += 1;
+    queries.push(url.searchParams.get('q') || '');
     return response({ ok: true, items: [{ id: 9, name: '报名卡片', appid: 'wx-test', pagepath: 'pages/signup', page_path: 'pages/signup', title: '立即报名', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: false, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 2 }], miniprograms: [], total: 1, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   });
   try {
     dom.window.document.querySelector('#create').addEventListener('click', () => { searches += 10; });
     dom.window.document.querySelector('#mpSearch').addEventListener('click', () => { searches += 1; });
+    dom.window.document.querySelector('#mpReset').addEventListener('click', () => { dom.window.document.querySelector('#fMpQuery').value = ''; });
+    dom.window.document.querySelector('#mpRetry').addEventListener('click', () => { retryCalls += 1; });
     dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
     await settle();
     dom.window.document.querySelector('[data-page-header-actions="material-library-mpLib"] #create').click();
@@ -87,10 +90,27 @@ async function settle() { await sleep(); await sleep(); }
     const input = dom.window.document.querySelector('#fMpQuery'); const before = reads;
     input.value = '报名'; input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     assert.equal(reads, before, 'ordinary mini-program typing is a draft');
+    input.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = '报名草稿'; input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    dom.window.document.querySelector('#stage').append(dom.window.document.createElement('aside'));
+    await settle();
+    assert.equal(reads, before, 'an unrelated mini-program DOM mutation cannot read an IME draft');
+    input.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true }));
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    await sleep();
+    assert.equal(reads, before, 'the IME candidate Enter remains a draft even while the donor redraws');
+    await sleep();
     input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
     await settle();
     assert.equal(searches, 11, 'committed mini-program search retains the donor query callback');
     assert.equal(reads, before + 1, 'committed mini-program search reads only its own Media list');
+    input.value = '未提交草稿'; dom.window.document.querySelector('#mpRetry').click();
+    await settle();
+    assert.equal(retryCalls, 1, 'retry retains the donor retry callback');
+    assert.equal(queries.at(-1), '报名草稿', 'retry replays the committed query instead of a newer draft');
+    input.value = '仍未提交'; dom.window.document.querySelector('#mpReset').click();
+    await settle();
+    assert.equal(queries.at(-1), '', 'reset commits only the cleared query after its donor callback');
   } finally { dom.window.close(); }
 }
 
@@ -156,13 +176,17 @@ console.log('material library presentation: PASS');
   let authorized = true;
   const dom = domFor('mpLib', `
     <div style="height:52px"><button id="create">新建小程序卡片</button></div>
-    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="12"><div><div style="height:112px"></div><div><div>授权卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
+    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="12"><div><div id="auth-cover" style="height:112px;cursor:pointer"></div><div><div>授权卡片</div><div>● 可用</div><div>已启用</div><div><button id="auth-edit">编辑</button><button id="auth-delete">删除</button></div></div></div></div></div></section>`, async (input) => {
     const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected authorization mini request ${url.pathname}`);
     if (!authorized) return response({ code: 'FORBIDDEN' }, 403);
     return response({ ok: true, items: [{ id: 12, name: '授权卡片', appid: 'wx-authorized', pagepath: 'pages/ok', page_path: 'pages/ok', title: '已授权', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 }], miniprograms: [], total: 1, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   });
   try {
+    let mutations = 0;
+    for (const selector of ['#create', '#auth-cover', '#auth-edit', '#auth-delete']) {
+      dom.window.document.querySelector(selector)?.addEventListener('click', () => { mutations += 1; });
+    }
     dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
     await settle();
     assert.match(dom.window.document.body.textContent, /wx-authorized/, 'authorized read enriches the mini-program row');
@@ -172,6 +196,19 @@ console.log('material library presentation: PASS');
     await settle(); await settle();
     assert.equal(dom.window.document.querySelector('#stage').dataset.materialLibraryReadonly, 'true', 'a 403 makes the composed material directory read-only');
     assert.equal(dom.window.document.querySelector('#create').disabled, true, 'a 403 disables the moved mutation control without navigating or mutating');
+    assert.equal(dom.window.document.querySelector('#auth-edit').disabled, true, 'a 403 disables an existing edit operation');
+    assert.equal(dom.window.document.querySelector('#auth-delete').disabled, true, 'a 403 disables an existing delete operation');
+    dom.window.document.querySelector('#auth-cover').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    assert.equal(mutations, 0, 'a 403 capture guard blocks the donor cover edit handler as well as buttons');
+    const modal = dom.window.document.createElement('div');
+    modal.style.position = 'fixed';
+    modal.innerHTML = '<input id="fMpName"><button id="late-save">保存</button><button id="late-toggle">停用</button><button id="late-refresh">刷新缩略图缓存</button><button id="late-cancel">取消</button>';
+    dom.window.document.querySelector('#stage').append(modal);
+    await settle();
+    assert.equal(dom.window.document.querySelector('#late-save').disabled, true, 'a late save modal is disabled after authorization loss');
+    assert.equal(dom.window.document.querySelector('#late-toggle').disabled, true, 'a late enablement modal action is disabled after authorization loss');
+    assert.equal(dom.window.document.querySelector('#late-refresh').disabled, true, 'a late thumbnail-cache refresh action is disabled after authorization loss');
+    assert.equal(dom.window.document.querySelector('#late-cancel').disabled, false, 'a close action stays available after authorization loss');
     assert.ok(!dom.window.document.body.textContent.includes('wx-authorized'), 'a 403 clears previously enriched typed metadata instead of presenting it as current');
     assert.match(dom.window.document.body.textContent, /当前账号无权查看该类素材/, 'a 403 presents the authorization-specific read error');
   } finally { dom.window.close(); }
@@ -270,23 +307,24 @@ console.log('material library presentation: PASS');
 {
   let phase = 1; let editCount = 0;
   const complete = (items) => ({ ok: true, items, miniprograms: [], total: items.length, limit: 50, offset: 0, local_only: true, provider_call_executed: false, real_external_call_executed: false });
-  const item = (version, appid, title, enabled) => ({ id: 31, name: '更新中的卡片', appid, pagepath: 'pages/revision', page_path: 'pages/revision', title, thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled, created_at: '2026-09-15T00:00:00Z', updated_at: `2026-09-15T00:0${version}:00Z`, created_by: 1, updated_by: 1, version });
+  const item = (version, name, appid, title, enabled) => ({ id: 31, name, appid, pagepath: 'pages/revision', page_path: 'pages/revision', title, thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled, created_at: '2026-09-15T00:00:00Z', updated_at: `2026-09-15T00:0${version}:00Z`, created_by: 1, updated_by: 1, version });
   const dom = domFor('mpLib', `
     <div style="height:52px"><button>新建小程序卡片</button></div>
     <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="31"><div><div style="height:112px"></div><div><div>更新中的卡片</div><div>● 可用</div><div>已启用</div><div><button id="revision-edit">编辑</button><button>删除</button></div></div></div></div></div></section>`, async (input) => {
     const url = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     if (url.pathname !== '/api/admin/miniprogram-library') throw new Error(`unexpected revision request ${url.pathname}`);
-    return response(phase === 1 ? complete([item(1, 'wx-v1', '第一标题', true)]) : phase === 2 ? complete([item(2, 'wx-v2', '第二标题', false)]) : complete([]));
+    return response(phase === 1 ? complete([item(1, '更新中的卡片', 'wx-v1', '第一标题', true)]) : phase === 2 ? complete([item(2, '更新后卡片', 'wx-v2', '第二标题', false)]) : complete([]));
   });
   try {
     dom.window.document.querySelector('#revision-edit').addEventListener('click', () => { editCount += 1; });
     dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
     await settle();
     const input = dom.window.document.querySelector('#fMpQuery');
-    phase = 2; input.value = '第二版'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    phase = 2;
+    dom.window.dispatchEvent(new dom.window.Event('aicrm:media-content-changed'));
     await settle(); await settle();
     const row = dom.window.document.querySelector('[data-material-library-mini-directory] [data-material-library-id="31"]');
-    assert.ok(row.textContent.includes('wx-v2') && row.textContent.includes('第二标题') && row.textContent.includes('已停用') && row.textContent.includes('v2'), 'a newer response updates the same mini-program row instead of retaining v1 metadata');
+    assert.ok(row.textContent.includes('更新后卡片') && row.textContent.includes('wx-v2') && row.textContent.includes('第二标题') && row.textContent.includes('已停用') && row.textContent.includes('v2') && row.textContent.includes('2026-09-15 08:02'), 'a source-owned saved-content event refreshes name, title, state and updated time on the same physical row');
     row.querySelector('#revision-edit').click(); assert.equal(editCount, 1, 'the physical edit callback remains single and attached after a metadata update');
     phase = 3; input.value = '空结果'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
     await settle(); await settle();

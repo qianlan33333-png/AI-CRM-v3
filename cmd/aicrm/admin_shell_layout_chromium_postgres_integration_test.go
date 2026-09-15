@@ -225,7 +225,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 	}
 	for _, name := range []string{
 		"automation.png", "cycles.png", "groupops.png", "channels.png", "ai.png", "ai-detail.png", "ai-detail-1280.png", "ai-detail-1440.png", "customers.png", "hxc.png", "questionnaires.png", "radar.png", "radar-detail.png", "radar-form.png", "tags.png", "tags-1280.png", "tags-1440.png",
-		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "materials-images-1280.png", "materials-images-1440.png", "materials-miniprograms-1280.png", "materials-miniprograms-1440.png", "materials-attachments-1280.png", "materials-attachments-1440.png",
+		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "materials-images-1280.png", "materials-images-1440.png", "materials-miniprograms-1280.png", "materials-miniprograms-1440.png", "materials-miniprograms-page-2-1280.png", "materials-attachments-1280.png", "materials-attachments-1440.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
@@ -322,6 +322,15 @@ func seedAdminShellLayoutAttachmentAndMiniProgram(t *testing.T, ctx context.Cont
 	}
 	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_attachments(blob_digest,file_name,name,description,tags,mime_type,byte_size,enabled,created_by,updated_by) VALUES($1,'material-workspace.pdf','素材工作台附件','Chromium 附件目录夹具','["目录验收"]'::jsonb,'application/pdf',$2,true,1,1)`, digest, len(pdf)); err != nil {
 		t.Fatal(err)
+	}
+	// Keep a real second owner page in the browser fixture. These are local
+	// PostgreSQL facts only: the journey exercises pagination/read rendering
+	// and never starts a Provider or mutation flow.
+	for index := 1; index <= 50; index++ {
+		name := fmt.Sprintf("wx_material_page_%02d", index)
+		if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_miniprograms(name,app_id,page_path,title,thumb_image_id,enabled,created_by,updated_by) VALUES($1,$2,$3,$4,NULL,true,1,1)`, name, fmt.Sprintf("wx-material-page-%02d", index), fmt.Sprintf("pages/materials/%02d", index), fmt.Sprintf("素材工作台分页 %02d", index)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_miniprograms(name,app_id,page_path,title,thumb_image_id,enabled,created_by,updated_by) VALUES('wx_material_layout','wx-material-layout','pages/materials/index','素材工作台小程序',NULL,true,1,1)`); err != nil {
 		t.Fatal(err)
