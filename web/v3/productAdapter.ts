@@ -1943,6 +1943,15 @@ function renderProductMaterialDraft(controller: ProductController, kind: 'produc
   host.replaceChildren();
   const count = root.firstElementChild?.querySelector<HTMLElement>('span');
   if (count) count.textContent = `${urls.length} 张`;
+  const summaryLabel = Array.from(document.querySelectorAll<HTMLElement>('span')).find((label) =>
+    label.textContent?.trim() === '页面素材' && label.parentElement?.querySelector(':scope > strong'),
+  );
+  const summaryCount = summaryLabel?.parentElement?.querySelector<HTMLElement>(':scope > strong');
+  if (summaryCount) summaryCount.textContent = String(urls.length);
+  const persistenceHint = Array.from(root.querySelectorAll<HTMLElement>('div')).find((node) =>
+    node.children.length === 0 && node.textContent?.includes('保存后写入 V2 product_images') === true,
+  );
+  if (persistenceHint) persistenceHint.textContent = '保存后按当前顺序展示。';
   if (!urls.length) {
     const empty = document.createElement('div');
     empty.textContent = '暂无页面素材，请上传图片或从素材库选择';
@@ -1990,8 +1999,8 @@ function renderProductMaterialDraft(controller: ProductController, kind: 'produc
       node.style.cssText = 'height:26px;padding:0 9px;border:1px solid #DEE0E3;border-radius:5px;background:#fff;color:#344054;font-size:12px;cursor:pointer;white-space:nowrap';
       return node;
     };
-    const up = button('上移', '上移一位', 'up'); up.disabled = index === 0; up.onclick = () => moveProductMaterialDraft(controller, kind, index, index - 1);
-    const down = button('下移', '下移一位', 'down'); down.disabled = index === urls.length - 1; down.onclick = () => moveProductMaterialDraft(controller, kind, index, index + 1);
+    const up = button('上移', '上移一位', 'up'); up.disabled = index === 0; if (up.disabled) up.style.cssText += 'opacity:.45;cursor:not-allowed;background:#F7F8FA;color:#98A2B3'; up.onclick = () => moveProductMaterialDraft(controller, kind, index, index - 1);
+    const down = button('下移', '下移一位', 'down'); down.disabled = index === urls.length - 1; if (down.disabled) down.style.cssText += 'opacity:.45;cursor:not-allowed;background:#F7F8FA;color:#98A2B3'; down.onclick = () => moveProductMaterialDraft(controller, kind, index, index + 1);
     const remove = button('移除', '移除当前素材', 'remove'); remove.style.borderColor = '#FBC4C2'; remove.style.background = '#FFF5F5'; remove.style.color = '#D83931';
     // Preserve the frozen owner's removal semantics. It resolves the current
     // draft and invokes the V3 local draft setter above, without a save/write.
