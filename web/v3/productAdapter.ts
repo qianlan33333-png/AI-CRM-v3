@@ -1437,15 +1437,15 @@ function productEditorHeaderActionSource(): { title: HTMLHeadingElement; source:
   // JSDOM can flush a queued donor mutation after its Window closes; a disposed
   // document has no editor and must not keep the test/browser lifecycle alive.
   if (typeof document === 'undefined' || !document.documentElement || !document.defaultView) return undefined;
-  const route = productEditorRoute();
+  const prefix = productPrefix();
   const stage = document.getElementById('stage');
-  if (!route || !stage) return undefined;
-  const editorTitle = route.prefix === 'pf' ? '编辑普通商品' : '编辑周期商品';
+  if (!prefix || !stage) return undefined;
+  const editorTitles = prefix === 'pf' ? ['编辑普通商品', '创建普通商品'] : ['编辑周期商品', '创建周期商品'];
   const title = Array.from(stage.querySelectorAll<HTMLHeadingElement>('h2'))
-    .find((candidate) => candidate.textContent?.trim() === editorTitle);
+    .find((candidate) => editorTitles.includes(candidate.textContent?.trim() || ''));
   const headerRow = title?.parentElement?.parentElement;
   if (!title || !headerRow) return undefined;
-  const returnLabel = route.prefix === 'pf' ? '返回商品管理' : '返回周期商品管理';
+  const returnLabel = prefix === 'pf' ? '返回商品管理' : '返回周期商品管理';
   const returnControl = Array.from(headerRow.querySelectorAll<HTMLButtonElement>('button'))
     .find((candidate) => candidate.textContent?.trim() === returnLabel);
   const saveControl = Array.from(headerRow.querySelectorAll<HTMLButtonElement>('button'))

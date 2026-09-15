@@ -38,10 +38,15 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
     return json({ code: 'unexpected' }, 500);
   };
 } });
+dom.window.document.body.insertAdjacentHTML('afterbegin', '<header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">创建周期商品</h1></div></header>');
 const fixtureFetch = dom.window.fetch;
 dom.window.eval(materialPicker); dom.window.eval(host);  dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 const document = dom.window.document;
 await waitFor(() => document.getElementById('spfName'), 'frozen periodic form did not mount');
+await waitFor(() => document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button').length === 2, 'new periodic product topbar must receive the existing return and save controls');
+assert.deepEqual([...document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button')].map((button) => button.textContent.trim()), ['返回周期商品管理', '保存当前维度'], 'new periodic product retains the existing commands in the shared header');
+const newPeriodicTitle = [...document.querySelectorAll('#stage h2')].find((heading) => heading.textContent.trim() === '创建周期商品');
+assert.ok(newPeriodicTitle?.hidden, 'new periodic body summary must not repeat the shell title');
 await waitFor(() => document.getElementById('spfDurationDays'), 'new periodic product must require a service duration before create');
 const duration = document.getElementById('spfDurationDays');
 assert.equal(duration.value, '', 'new periodic product must not invent a service duration');
