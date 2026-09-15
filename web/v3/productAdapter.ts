@@ -2004,9 +2004,15 @@ function renderProductMaterialDraft(controller: ProductController, kind: 'produc
     host.append(row);
   });
   if (focusKey && focusAction) {
-    const replacement = Array.from(host.querySelectorAll<HTMLElement>('[data-v3-product-material-key]'))
-      .find((row) => row.dataset.v3ProductMaterialKey === focusKey)
-      ?.querySelector<HTMLElement>(`[data-v3-product-material-action="${focusAction}"]`);
+    const row = Array.from(host.querySelectorAll<HTMLElement>('[data-v3-product-material-key]'))
+      .find((candidate) => candidate.dataset.v3ProductMaterialKey === focusKey);
+    const actions = row ? Array.from(row.querySelectorAll<HTMLButtonElement>('[data-v3-product-material-action]')) : [];
+    // Moving to either boundary can disable the exact button that initiated
+    // the move. Keep keyboard users on the same row via its next enabled
+    // sorting action, then its remove action when it has no move left.
+    const replacement = actions.find((action) => action.dataset.v3ProductMaterialAction === focusAction && !action.disabled)
+      || actions.find((action) => (action.dataset.v3ProductMaterialAction === 'up' || action.dataset.v3ProductMaterialAction === 'down') && !action.disabled)
+      || actions.find((action) => !action.disabled);
     replacement?.focus();
   }
 }
@@ -2045,11 +2051,12 @@ async function productUploadContentDigest(file: File): Promise<string> {
 }
 
 async function productUploadIntentFingerprint(context: ProductMaterialEditorContext, file: File): Promise<string> {
-  // The idempotency identity is content-derived. Names, MIME types, dates and
-  // sizes can collide, so they must never decide whether two Media writes are
-  // the same logical upload.
+  // The idempotency identity starts with content rather than metadata, then
+  // binds every field sent in this multipart payload. Same bytes under a new
+  // filename or MIME type are a different request body and therefore never
+  // reuse an unknown prior write key.
   const contentDigest = await productUploadContentDigest(file);
-  return [context.kind, context.productID, context.dimension, contentDigest].join('\u001F');
+  return [context.kind, context.productID, context.dimension, contentDigest, file.name, file.type].join('\u001F');
 }
 
 async function productUploadIntent(context: ProductMaterialEditorContext, file: File): Promise<{ fingerprint: string; key: string; confirmed?: ProductMaterial }> {
@@ -2064,8 +2071,22 @@ async function productUploadIntent(context: ProductMaterialEditorContext, file: 
   return { fingerprint, key };
 }
 
-async function uploadProductMaterial(file: File, context: ProductMaterialEditorContext): Promise<{ material: ProductMaterial; fingerprint: string; cached: boolean }> {
-  const intent = await productUploadIntent(context, file);
+function productUploadNewDraftSlots(current: readonly string[], intents: readonly { fingerprint: string; confirmed?: ProductMaterial }[]): number {
+  const knownURLs = new Set(current);
+  const pending = new Set<string>();
+  for (const intent of intents) {
+    if (intent.confirmed) {
+      const url = productSelectedURL(intent.confirmed);
+      if (!knownURLs.has(url)) knownURLs.add(url);
+    } else {
+      pending.add(intent.fingerprint);
+    }
+  }
+  return knownURLs.size - current.length + pending.size;
+}
+
+async function uploadProductMaterial(file: File, context: ProductMaterialEditorContext, existingIntent?: { fingerprint: string; key: string; confirmed?: ProductMaterial }): Promise<{ material: ProductMaterial; fingerprint: string; cached: boolean }> {
+  const intent = existingIntent || await productUploadIntent(context, file);
   if (intent.confirmed) return { material: intent.confirmed, fingerprint: intent.fingerprint, cached: true };
   const form = new FormData();
   form.append('image', file);
@@ -2104,18 +2125,22 @@ productController.uploadCommerceImage = function (kind, event) {
     showMessage('当前商品页面素材维度已切换，未上传图片。');
     return;
   }
-  if (files.length + context.draft.length > 10) {
-    showMessage('页面素材最多 10 张；未开始上传。');
-    return;
-  }
   // A duplicate event for this same product/version/dimension joins the active
   // upload. A prior upload from another route remains isolated instead of
   // blocking the editor that the user has subsequently opened.
   if ([...productUploadFlights].some((flight) => productUploadOwnsCurrentEditor(flight, context))) return;
   let flight: ProductUploadFlight;
   const pending = (async () => {
-    for (const file of files) {
-      const uploaded = await uploadProductMaterial(file, context);
+    const intents = await Promise.all(files.map((file) => productUploadIntent(context, file)));
+    if (!productMaterialEditorContextIsCurrent(context)) return;
+    const currentAtStart = this.currentCommerceImageUrls(kind);
+    if (currentAtStart.length + productUploadNewDraftSlots(currentAtStart, intents) > 10) {
+      showMessage('页面素材最多 10 张；未开始上传。');
+      return;
+    }
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const uploaded = await uploadProductMaterial(file, context, intents[index]);
       const material = uploaded.material;
       if (!productMaterialEditorContextIsCurrent(context)) {
         showMessage('图片已上传到素材库，但当前商品、版本或页面维度已变化；未加入其它商品草稿。');

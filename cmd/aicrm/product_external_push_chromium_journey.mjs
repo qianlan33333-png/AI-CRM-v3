@@ -288,6 +288,23 @@ try {
   await waitFor(cdp, `Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-remove$=":${materialLaterID}"]'))`, 'product material reopening did not reconstruct the owner draft');
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove$=\":" + materialLaterID + "\"]').click(); document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Array.from(document.querySelectorAll('#product-media img')).some((image)=>image.src.includes('/" + materialLaterID + "/variants/thumb_320'))", 'product material cancellation changed the original draft');
+  // Upload a real PNG through the same current media dimension. The V3 Host
+  // must append the typed Media receipt, leave unsaved form state and the tab
+  // intact, then persist the order only through the explicit owner save.
+  const uploadedProductKey = await evaluate(cdp, `(()=>{
+    const input=document.querySelector('#pfImageUpload'); const description=document.querySelector('#pfDescription');
+    if(!(input instanceof HTMLInputElement)||!(description instanceof HTMLTextAreaElement)) return '';
+    description.value='Chromium material draft remains active';
+    const bytes=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'),item=>item.charCodeAt(0));
+    const transfer=new DataTransfer(); transfer.items.add(new File([bytes],'chromium-product-upload.png',{type:'image/png'}));
+    Object.defineProperty(input,'files',{configurable:true,value:transfer.files}); input.dispatchEvent(new Event('change',{bubbles:true})); return 'started';
+  })()`);
+  if (uploadedProductKey !== 'started') throw new Error('product material upload input was unavailable');
+  await waitFor(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];const tab=document.querySelector('a[href=\"#product-media\"]');return rows.length===2&&tab?.getAttribute('aria-current')==='step'&&document.querySelector('#pfDescription')?.value==='Chromium material draft remains active'})()", 'product upload reset the current media dimension or did not append its typed receipt');
+  const uploadedProduct = await evaluate(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];return rows.find(row=>row.dataset.v3ProductMaterialKey!=='image:" + materialLaterID + "')?.dataset.v3ProductMaterialKey||''})()");
+  if (!/^image:[1-9][0-9]*$/.test(uploadedProduct || '')) throw new Error('product upload did not expose a typed Media row');
+  const productSortMoved = await evaluate(cdp, "(()=>{const row=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].find(item=>item.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + ");const button=row?.querySelector('[data-v3-product-material-action=\"up\"]');if(!(button instanceof HTMLButtonElement))return false;button.focus();button.click();return document.activeElement?.getAttribute('data-v3-product-material-action')==='up'&&document.activeElement?.closest('[data-v3-product-material-key]')?.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + "})()");
+  if (!productSortMoved) throw new Error('product material sort did not preserve the active row action');
   await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='保存当前维度').click(); true");
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')", 'product material owner save did not complete');
   await waitFor(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Number(body?.revision)===2)", 'product material owner save did not advance the original external-push CAS revision');
@@ -298,7 +315,8 @@ try {
   if (!preservedAfterMaterialSave?.enabled || !preservedAfterMaterialSave?.url || !preservedAfterMaterialSave?.type || !preservedAfterMaterialSave?.params) {
     throw new Error('product material owner save changed an external-push field ' + JSON.stringify(preservedAfterMaterialSave || {}));
   }
-  await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Array.isArray(body?.images)&&body.images.length===1&&body.images[0]==='/api/admin/image-library/" + materialLaterID + "/variants/original')", 'product material owner save/readback did not preserve the later-page URL');
+  const uploadedProductID = Number(String(uploadedProduct).slice('image:'.length));
+  await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Array.isArray(body?.images)&&body.images.length===2&&body.images[0]==='/api/admin/image-library/" + "' + uploadedProductID + '" + "/variants/original'&&body.images[1]==='/api/admin/image-library/" + materialLaterID + "/variants/original')", 'product material owner save/readback did not preserve the uploaded typed receipt and chosen order');
   // Field-variable filtering belongs to the mounted V3 mapping editor. It
   // filters locally only after explicit Enter; preview/save remain unchanged.
   const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');const panel=document.querySelector('#product-push');if(!(tab instanceof HTMLAnchorElement)||!(panel instanceof HTMLElement))return false;tab.click();return true})()");

@@ -75,9 +75,11 @@ const dom = new JSDOM(page, {
         const file = body && typeof body === 'object' && 'get' in body && typeof body.get === 'function' ? body.get('image') : null;
         uploadCalls.push({ name: file && typeof file === 'object' && 'name' in file ? String(file.name) : '', key: new Headers(init.headers).get('Idempotency-Key') || '' });
         const response = () => {
-          if (uploadCalls.length === 2) return json({ code: 'upload_temporarily_failed' }, 503);
-          const id = uploadCalls.length === 1 ? 41 : 42;
-          return json({ ok: true, item: { id, name: id === 41 ? '首张已确认图片' : '重试后图片', original_url: `/api/admin/image-library/${id}/variants/original`, thumb_320_url: `/api/admin/image-library/${id}/variants/thumb_320`, enabled: true } });
+          const attempts = uploadCalls.filter((call) => call.name === (file && typeof file === 'object' && 'name' in file ? String(file.name) : '')).length;
+          if ((String(file?.name) === 'retry.png' || String(file?.name) === 'cap-b.png') && attempts === 1) return json({ code: 'upload_temporarily_failed' }, 503);
+          const ids = { 'first.png': 41, 'retry.png': 42, 'fill-a.png': 43, 'fill-b.png': 44, 'fill-c.png': 45, 'fill-d.png': 46, 'cap-a.png': 47, 'cap-b.png': 48, 'late.png': 49 };
+          const id = ids[String(file?.name)] || 50;
+          return json({ ok: true, item: { id, name: `图片素材 ${id}`, original_url: `/api/admin/image-library/${id}/variants/original`, thumb_320_url: `/api/admin/image-library/${id}/variants/thumb_320`, enabled: true } });
         };
         if (!holdUpload) return response();
         return new Promise((resolve) => heldUploads.push(() => resolve(response())));
@@ -188,10 +190,9 @@ const moved = document.querySelector('[data-v3-product-material-key="image:42"] 
 assert.ok(moved instanceof dom.window.HTMLButtonElement, 'the newly appended typed Media item exposes keyboard sorting');
 moved.focus(); moved.click();
 await waitFor(() => document.activeElement?.getAttribute('data-v3-product-material-action') === 'up' && document.activeElement?.closest('[data-v3-product-material-key]')?.getAttribute('data-v3-product-material-key') === 'image:42', 'sorting must restore focus to the same reachable row action');
+document.activeElement.click(); document.activeElement.click();
+await waitFor(() => document.activeElement?.getAttribute('data-v3-product-material-action') === 'down' && document.activeElement?.closest('[data-v3-product-material-key]')?.getAttribute('data-v3-product-material-key') === 'image:42', 'moving to the first position must retain focus on an enabled action in that same row');
 assert.equal(document.querySelector('a[href="#product-media"]')?.getAttribute('aria-current'), 'step', 'sorting must keep the active 页面素材 dimension');
-save.click();
-await waitFor(() => Array.isArray(saved?.images) && saved.images.includes('/api/admin/image-library/42/variants/original'), 'saving the current material dimension must serialize its reordered typed Media receipts');
-assert.ok(saved.images.indexOf('/api/admin/image-library/42/variants/original') < saved.images.indexOf('/api/admin/image-library/41/variants/original'), 'the current-dimension save preserves the displayed drag/button order');
 
 // A late upload from the former route can create a Media record, but it may
 // never attach that record to a different product's draft.
@@ -205,6 +206,31 @@ heldUploads.splice(0).forEach((release) => release());
 holdUpload = false;
 await wait(30);
 assert.equal(document.querySelector('[data-v3-product-material-key="image:42"]')?.isConnected, true, 'late former-product upload may not replace the current material draft');
-assert.equal(document.querySelector('[data-v3-product-material-key="image:43"]'), null, 'late former-product receipt must not attach to a new route');
+assert.equal(document.querySelector('[data-v3-product-material-key="image:49"]'), null, 'late former-product receipt must not attach to a new route');
+dom.window.history.replaceState(null, '', '/admin/productForm.html?id=101');
+
+// Fill to eight current items, then retry a partially-successful four-file
+// selection. Cached first items count as no new slots; the lone failed item
+// reuses its own receipt key and reaches the ten-item boundary exactly.
+const fillers = ['fill-a.png', 'fill-b.png', 'fill-c.png', 'fill-d.png'].map((name, index) => makeImage(name, [20 + index]));
+Object.defineProperty(upload, 'files', { configurable: true, value: fillers });
+upload.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]').length === 8, 'four fresh typed uploads must fill the current draft to eight');
+const capA = makeImage('cap-a.png', [31]); const capB = makeImage('cap-b.png', [32]);
+Object.defineProperty(upload, 'files', { configurable: true, value: [makeImage('first.png', [1, 2, 3]), makeImage('retry.png', [4, 5, 6]), capA, capB] });
+upload.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => document.querySelector('[data-v3-product-material-key="image:47"]') && uploadCalls.filter((call) => call.name === 'cap-b.png').length === 1, 'near-capacity selection must append its acknowledged item before the final failure');
+const failedCapKey = uploadCalls.find((call) => call.name === 'cap-b.png')?.key;
+Object.defineProperty(upload, 'files', { configurable: true, value: [makeImage('first.png', [1, 2, 3]), makeImage('retry.png', [4, 5, 6]), makeImage('cap-a.png', [31]), makeImage('cap-b.png', [32])] });
+upload.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => document.querySelector('[data-v3-product-material-key="image:48"]') && document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]').length === 10, 'partial retry must account for cached successful items and append only the remaining item');
+const capRetries = uploadCalls.filter((call) => call.name === 'cap-b.png');
+assert.equal(capRetries.length, 2, 'partial retry issues only the previously failed Media request');
+assert.equal(capRetries[1].key, failedCapKey, 'partial retry retains the failed request idempotency key');
+assert.equal(uploadCalls.filter((call) => ['first.png', 'retry.png', 'cap-a.png'].includes(call.name)).length, 4, 'cached confirmed items are not uploaded again near the capacity boundary');
+save.click();
+await waitFor(() => Array.isArray(saved?.images) && saved.images.includes('/api/admin/image-library/42/variants/original'), 'saving the current material dimension must serialize its reordered typed Media receipts');
+assert.ok(saved.images.indexOf('/api/admin/image-library/42/variants/original') < saved.images.indexOf('/api/admin/image-library/41/variants/original'), 'the current-dimension save preserves the displayed drag/button order');
+
 dom.window.close();
 console.log('product material owner URL ordering, typed upload, retry, sort, and stale-route isolation: PASS');
