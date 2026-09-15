@@ -105,7 +105,7 @@ func newQuestionnaireListReadStateChromiumFixture(t *testing.T) *questionnaireLi
 		t.Fatal(err)
 	}
 	screenshots := t.TempDir()
-	if configured := os.Getenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR"); configured != "" {
+	if configured := platformconfig.QuestionnaireListScreenshotDirectory(); configured != "" {
 		if !filepath.IsAbs(configured) {
 			t.Fatal("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR must be absolute")
 		}

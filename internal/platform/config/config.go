@@ -961,6 +961,12 @@ func PublicCommerceScreenshotDirectory() string {
 	return os.Getenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR")
 }
 
+// QuestionnaireListScreenshotDirectory returns the optional evidence directory
+// for the authenticated questionnaire list Chromium journey.
+func QuestionnaireListScreenshotDirectory() string {
+	return os.Getenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR")
+}
+
 // NamedDatabaseURL is restricted to explicit target and read-only source roles
 // used by controlled offline migrations. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment
