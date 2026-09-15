@@ -95,6 +95,11 @@ try {
  await wait(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===1",'image-library ordinary Enter did not issue exactly one existing list read');
  const imageSearchFocus=await value(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return Boolean(field&&document.activeElement===field&&field.value==='Chromium素材')})()");
  if(!imageSearchFocus)throw new Error('image-library ordinary Enter did not retain focused draft query');
+ // The Enter check intentionally leaves a committed search active. Reset through
+ // the existing Host control before asserting page-wide refresh facts so the
+ // fixture's historical source is visible again.
+ await value(cdp,"document.querySelector('button[data-image-library-reset=\"true\"]')?.click();true");
+ await wait(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return field instanceof HTMLInputElement&&field.value===''&&window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===2})()",'image-library reset did not restore the unfiltered list');
  await wait(cdp,`Boolean(document.querySelector('#material-refresh-panel')&&document.querySelector('#material-refresh-panel').textContent.includes('素材刷新状态')&&document.querySelector('#material-refresh-panel').textContent.includes(${JSON.stringify(missingSourceRef)})&&document.querySelector('#material-refresh-panel').textContent.includes('原文件缺失，请补传'))`,`refresh panel and missing source ${missingSourceRef}`);
  await assertImageLibraryLayout(cdp,1280,800); await assertImageLibraryLayout(cdp,1440,900); await assertImageLibraryLayout(cdp,780,700); await assertImageLibraryLayout(cdp,390,420); await cdp.call("Emulation.clearDeviceMetricsOverride");
  await value(cdp,"(()=>{const region=[...document.querySelectorAll('main#stage div')].find(n=>n.style.overflow==='auto');if(!region)return false;region.scrollTop=180;return region.scrollTop>=0})()");
