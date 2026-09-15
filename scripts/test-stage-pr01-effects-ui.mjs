@@ -72,6 +72,7 @@ try {
     ['assets/cycles-legacy.js', { inputs: ['web/src/admin/legacy.ts'], imports: [] }],
     ['assets/material-host.js', { inputs: ['web/v3/materialSaveAdapter.ts'], imports: [] }],
     ['assets/image-filter-host.js', { inputs: ['web/v3/imageLibraryFilterHost.ts'], imports: [] }],
+    ['assets/material-library-host.js', { inputs: ['web/v3/materialLibraryPresentation.ts'], imports: [] }],
     ['assets/order-host.js', { inputs: ['web/v3/orderAdapter.ts'], imports: [{ path: 'assets/product-main.js', kind: 'dynamic-import' }] }],
     ['assets/product-host.js', { inputs: ['web/v3/productAdapter.ts'], imports: [{ kind: 'import-statement', path: 'assets/product-qr.js' }, { kind: 'dynamic-import', path: 'assets/product-main.js' }] }],
     ['assets/product-main.js', { inputs: ['web/src/admin/main.ts'], imports: [{ kind: 'dynamic-import', path: 'assets/product-legacy.js' }] }],
