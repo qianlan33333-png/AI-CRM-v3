@@ -156,4 +156,3 @@ assert.ok(editDocument.querySelector('[data-v3-material-key$=":1"]'), 'the separ
 editDocument.querySelector('[data-v3-picker-cancel]').click();
 editDom.window.close();
 console.log('radar edit existing image direct PDF switch: PASS');
-
