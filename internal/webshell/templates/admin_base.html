@@ -177,8 +177,17 @@
   <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
   {{end}}
   {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}
+  {{if .ComponentStates}}
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.VisualTokensCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.GroupOpsCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.GroupPickerCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.MaterialPickerCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.SelectionDialogCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.StylesCSS}}">
+  <script type="module" src="{{.ComponentStatesAssets.HostJS}}"></script>
+  {{end}}
 </head>
-<body data-ui-surface="admin" class="admin-shell" data-admin-shell-source="v3_webshell"{{if .OwnerHandoff}} data-page="owner-handoff"{{end}}{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .Radar}} data-page="{{.RadarPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .RuntimeConfig}} data-runtime-config-page="{{.RuntimeConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}>
+<body data-ui-surface="admin" class="admin-shell" data-admin-shell-source="v3_webshell"{{if .OwnerHandoff}} data-page="owner-handoff"{{end}}{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .Radar}} data-page="{{.RadarPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .RuntimeConfig}} data-runtime-config-page="{{.RuntimeConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}{{if .ComponentStates}} data-page="component-states"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
