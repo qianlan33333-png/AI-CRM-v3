@@ -116,13 +116,15 @@ function readMessage(error: unknown, fallback: string): string {
   if (status === 401) return '登录状态已失效，请重新登录后读取固定话术。';
   if (status === 403) return '当前账号无权读取或修改该固定话术。';
   if (status === 404) return '该自动化配置已不存在或无权访问。';
-  if (status === 409) return '当前 Agent 已启用，不能修改固定话术；请使用既有暂停流程后重新读取。';
+  if (status === 409) return '当前 Agent 已启用，请先暂停，再修改固定话术。';
   if (status === 503) return '自动化服务暂时不可用，请稍后重试。';
   return fallback;
 }
 function saveMessage(error: unknown): string {
   const code = errorCode(error);
   if (code === 'invalid_agent_payload') return '固定话术不符合当前保存规则，请检查文本和素材上限。';
+  const status = errorStatus(error);
+  if (!status || status >= 500) return '保存结果暂未确认，草稿已保留。请使用原操作重试确认。';
   return readMessage(error, '固定话术保存失败，当前编辑草稿已保留。');
 }
 function isAbort(error: unknown, signal: AbortSignal): boolean { return signal.aborted || (error instanceof DOMException && error.name === 'AbortError'); }
@@ -362,6 +364,11 @@ function mountContent(content: HTMLElement, agentID: number): MountedHost {
   let revision = 0;
   let disposed = false;
   let state: HostState = { kind: 'loading' };
+  // A response can be lost after the Owner accepts a save. Retain the command
+  // key for this exact serialized package until acceptance is confirmed; a
+  // changed draft is a new logical command and receives a new key.
+  let pendingSavePayload: string | undefined;
+  let pendingSaveKey: string | undefined;
   const staleElements = [...content.children].filter((element) => !element.matches('h2, details, [data-v3-automation-fixed-content]'));
   for (const element of staleElements) {
     element.setAttribute('data-v3-automation-legacy-content', 'hidden');
@@ -414,13 +421,13 @@ function mountContent(content: HTMLElement, agentID: number): MountedHost {
     // local composer draft as if it were saved.
     renderContentPresentation(readonly, {
       mode: 'readonly', package: detail.content, selectedRecords: records, materialOrder: 'canonical_by_kind',
-      title: '已保存的固定话术', readonlyNote: '此内容来自当前 Agent 的服务端读回；保存后仍需使用既有发布流程。', normalizeText: trimText,
+      title: '已保存的固定话术', readonlyNote: '这是已保存的固定话术；修改后需发布才会生效。', normalizeText: trimText,
     });
     host.append(readonly);
     if (detail.status === 'paused') {
       action.textContent = '编辑固定话术'; action.dataset.v3AutomationEditFixedContent = '1'; host.append(action);
     } else {
-      status.textContent = '当前 Agent 已启用，不能修改固定话术；请使用既有暂停流程后重新读取。'; host.append(status);
+      status.textContent = '当前 Agent 已启用，请先暂停，再修改固定话术。'; host.append(status);
     }
   };
 
@@ -445,15 +452,24 @@ function mountContent(content: HTMLElement, agentID: number): MountedHost {
     if (!isCurrent() || state.kind !== 'ready') throw new Error('当前自动化配置已切换，请重新读取后编辑。');
     const detailAtOpen = state.detail;
     if (detailAtOpen.automationType !== 'fixed_script') throw new Error('当前类型不支持固定话术编辑。');
-    if (detailAtOpen.status !== 'paused') throw new Error('当前 Agent 已启用，不能修改固定话术；请使用既有暂停流程后重新读取。');
+    if (detailAtOpen.status !== 'paused') throw new Error('当前 Agent 已启用，请先暂停，再修改固定话术。');
+    const body = JSON.stringify({ content_package: result.package });
+    if (pendingSavePayload !== body || !pendingSaveKey) {
+      pendingSavePayload = body;
+      pendingSaveKey = key();
+    }
     try {
       await request(`/api/admin/automation-agents/${agentID}/fixed-content`, {
-        method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': key() },
-        body: JSON.stringify({ content_package: result.package }),
+        method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': pendingSaveKey },
+        body,
       });
     } catch (error) {
       throw new Error(saveMessage(error));
     }
+    // Only an accepted response releases the retry key. A failed or lost
+    // response keeps it so the same package reuses the Owner command.
+    pendingSavePayload = undefined;
+    pendingSaveKey = undefined;
     // Accepted writes are never converted back into a failed editor just
     // because a following read cannot complete. The composer closes and this
     // Host exposes a read-only retry instead of issuing another PUT.

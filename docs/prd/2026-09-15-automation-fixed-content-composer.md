@@ -77,6 +77,8 @@
 - 复用 `ContentComposer`、`ContentPresentation`、`MaterialPickerAdapter`、`SelectionSession`、`SelectionDialog` 与已加载的 `presentation.css` 作用域。自动化场景传入准确的顶部说明，不能复用“实际发送由计划执行触发”的群运营文案。
 - Host 负责页面范围内 GET、PUT、Media 详情/目录调用和状态翻译；共享组件不含 Automation URL、权限猜测或持久化命令。
 
+本次会话的 Skills catalog 没有可用的 Product Design 路由，因此该环节未完成。本页继续沿用已审核的管理端视觉 token 与共享组件基线；不安装、替代或伪称已使用该插件。
+
 ## 7. 参考与取舍
 
 | 参考 | 采用 | 不采用 |

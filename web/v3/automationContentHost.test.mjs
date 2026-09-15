@@ -24,6 +24,12 @@ const waitFor = async (predicate, message, timeout = 1_000) => {
 let contentText = '初始固定话术';
 let draftVersion = 1;
 let putCount = 0;
+let putRequests = 0;
+const acceptedSaveKeys = new Set();
+const saveKeys = [];
+let loseAcceptedResponse = true;
+let holdSave = false;
+let releaseHeldSave;
 let readbackFailure = false;
 let readbackHang = false;
 let retryRead = false;
@@ -53,13 +59,23 @@ globalThis.fetch = async (input, init = {}) => {
     ], has_more: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
   if (url.pathname === '/api/admin/automation-agents/7/fixed-content' && init.method === 'PUT') {
-    putCount += 1;
+    putRequests += 1;
     const payload = JSON.parse(String(init.body));
     const idempotencyKey = init.headers.get ? init.headers.get('Idempotency-Key') : (init.headers['Idempotency-Key'] || init.headers['idempotency-key']);
     assert.match(String(idempotencyKey), /^automation-fixed-content-/, 'fixed-content save uses one explicit existing-command idempotency key');
     assert.equal(payload.content_package.content_text, '更新后的固定话术');
-    contentText = payload.content_package.content_text;
-    draftVersion = 2;
+    saveKeys.push(String(idempotencyKey));
+    if (!acceptedSaveKeys.has(String(idempotencyKey))) {
+      acceptedSaveKeys.add(String(idempotencyKey));
+      putCount += 1;
+      contentText = payload.content_package.content_text;
+      draftVersion = 2;
+    }
+    if (loseAcceptedResponse) {
+      loseAcceptedResponse = false;
+      throw new TypeError('accepted response lost');
+    }
+    if (holdSave) await new Promise((resolve) => { releaseHeldSave = resolve; });
     readbackFailure = true;
     return new Response(JSON.stringify({ ok: true, agent: agent() }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
@@ -106,6 +122,11 @@ textarea.dispatchEvent(new Event('input', { bubbles: true }));
 composer.querySelector('[data-v3-composer-confirm]').click();
 await waitFor(() => putCount === 1, 'fixed-content PUT completes');
 assert.equal(putCount, 1, 'one confirmation issues one fixed-content PUT');
+await waitFor(() => /保存结果暂未确认，草稿已保留/.test(composer.textContent), 'lost response keeps the local draft with an unknown-result message');
+composer.querySelector('[data-v3-composer-confirm]').click();
+await waitFor(() => putRequests === 2, 'same fixed-content package retries after a lost response');
+assert.equal(putCount, 1, 'same-key retry does not accept a second Owner write');
+assert.equal(saveKeys[0], saveKeys[1], 'same fixed-content package retries with the original idempotency key');
 await waitFor(() => document.querySelector('[data-v3-content-composer]') === null, 'accepted fixed-content save closes the local composer draft');
 assert.equal(document.querySelector('[data-v3-content-composer]'), null, 'accepted fixed-content save closes the local composer draft');
 assert.match(content.textContent, /固定话术已保存，暂时无法刷新当前展示/);
@@ -122,8 +143,13 @@ retryRead = false;
 content.querySelector('[data-v3-automation-edit-fixed-content]').click();
 await waitFor(() => document.querySelector('[data-v3-content-composer]'), 'fixed-content composer opens before its bounded readback test');
 const hangingReadbackComposer = document.querySelector('[data-v3-content-composer]');
+holdSave = true;
+hangingReadbackComposer.querySelector('[data-v3-composer-confirm]').click();
 hangingReadbackComposer.querySelector('[data-v3-composer-confirm]').click();
 await waitFor(() => putCount === 2, 'second accepted fixed-content PUT completes exactly once');
+assert.equal(putRequests, 3, 'repeated confirmation while the fixed-content request is pending sends one PUT');
+holdSave = false;
+releaseHeldSave();
 await waitFor(() => document.querySelector('[data-v3-content-composer]') === null, 'accepted PUT closes even while its following Agent GET is still pending');
 await waitFor(() => /固定话术已保存，暂时无法刷新当前展示/.test(content.textContent), 'bounded Agent readback exposes a read-only retry after its deadline', 4_000);
 assert.equal(putCount, 2, 'a timed-out readback does not transform the accepted write into another PUT');
@@ -171,7 +197,7 @@ globalThis.fetch = async (input, init = {}) => {
   return previousFetch(input, init);
 };
 await flush();
-assert.match(replacement.textContent, /当前 Agent 已启用，不能修改固定话术/);
+assert.match(replacement.textContent, /当前 Agent 已启用，请先暂停，再修改固定话术/);
 assert.equal(replacement.querySelector('[data-v3-automation-edit-fixed-content]'), null, 'active Agent never exposes a bypass edit action');
 assert.equal(document.querySelector('#agentRolePrompt').value, '保留角色 Prompt', 'Host replacement continues to leave ordinary Prompt fields untouched');
 
