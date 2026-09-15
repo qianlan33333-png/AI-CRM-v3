@@ -31,6 +31,7 @@ func TestPostgreSQLComponentStatesCompositionPreflight(t *testing.T) {
 	for _, marker := range []string{
 		`data-page="component-states"`,
 		`data-component-states-root`,
+		`presentationStyles-`,
 		`sharedVisualTokens-`,
 		`componentStatesStyles-`,
 		`componentStatesHost-`,
@@ -75,6 +76,10 @@ func TestPostgreSQLComponentStatesChromiumJourney(t *testing.T) {
 		"component-states-420.png",
 		"component-states-error-retry.png",
 		"component-states-forbidden.png",
+		"component-states-tag-420.png",
+		"component-states-staff-1440.png",
+		"component-states-composer-360.png",
+		"component-states-composer-readonly-1440.png",
 		"component-states-form.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
@@ -112,7 +117,7 @@ func prepareComponentStatesChromiumArtifacts(t *testing.T, repository string) {
 	if err != nil {
 		t.Fatalf("component states Chromium requires built asset manifest: %v", err)
 	}
-	for _, entry := range []string{"sharedVisualTokens", "componentStatesStyles", "componentStatesHost", "selectionDialogStyles", "groupopsStyles"} {
+	for _, entry := range []string{"presentationStyles", "sharedVisualTokens", "componentStatesStyles", "componentStatesHost", "selectionDialogStyles", "groupopsStyles"} {
 		if !bytes.Contains(manifest, []byte("\""+entry+"\"")) {
 			t.Fatalf("component states Chromium manifest lacks %s", entry)
 		}

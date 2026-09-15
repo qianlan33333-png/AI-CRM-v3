@@ -153,8 +153,8 @@ try {
   await evaluate(cdp, "(() => { document.querySelector('input[name=\"username\"]').value=" + JSON.stringify(username) + "; document.querySelector('input[name=\"password\"]').value=" + JSON.stringify(password) + "; document.querySelector('form[action=\"/login\"]').requestSubmit(); return true; })()");
   await waitFor(cdp, 'Boolean(document.querySelector(\'[data-component-states-root][data-component-states-ready="true"]\'))', "authenticated component state Host did not mount");
   await waitFor(cdp, "document.fonts.ready", "component state fonts did not settle");
-  const page = await evaluate(cdp, "(() => ({path:location.pathname,page:document.body.dataset.page,root:Boolean(document.querySelector('[data-component-states-root]')),tokens:Array.from(document.styleSheets).some(sheet=>String(sheet.href||'').includes('sharedVisualTokens')),host:Array.from(document.scripts).some(script=>String(script.src||'').includes('componentStatesHost'))}))()");
-  if (page.path !== "/admin/component-states" || page.page !== "component-states" || !page.root || !page.tokens || !page.host) {
+  const page = await evaluate(cdp, "(() => ({path:location.pathname,page:document.body.dataset.page,root:Boolean(document.querySelector('[data-component-states-root]')),tokens:Array.from(document.styleSheets).some(sheet=>String(sheet.href||'').includes('sharedVisualTokens')),host:Array.from(document.scripts).some(script=>String(script.src||'').includes('componentStatesHost')),presentation:Array.from(document.styleSheets).some(sheet=>String(sheet.href||'').includes('presentationStyles'))}))()");
+  if (page.path !== "/admin/component-states" || page.page !== "component-states" || !page.root || !page.tokens || !page.host || !page.presentation) {
     throw new Error("authenticated component state route did not use its real resource closure");
   }
 
@@ -187,6 +187,64 @@ try {
   await capture("component-states-forbidden");
   if (!await click('[data-v3-selection-session="material"] [data-v3-picker-cancel]')) throw new Error("material cancel was unavailable");
   if (!await evaluate(cdp, "document.activeElement?.matches('[data-component-states-material-open]')")) throw new Error("material cancel did not return focus to the mounted trigger");
+
+  if (!await click('[data-component-states-mode="ready"]') || !await click('[data-component-states-tag-open]')) throw new Error("tag controls were unavailable");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"tag\"] [data-v3-tag-key]'))", "tag local selector did not open");
+  const tagCandidate = await evaluate(cdp, "(() => { const search=document.querySelector('[data-v3-selection-session=\"tag\"] [data-v3-picker-search-input]'); search.focus(); search.value='服务'; search.dispatchEvent(new Event('input',{bubbles:true})); search.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); search.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',isComposing:true}); search.dispatchEvent(event); return event.defaultPrevented; })()");
+  if (tagCandidate) throw new Error("tag IME candidate Enter was intercepted");
+  await delay(0);
+  const tagEnter = await evaluate(cdp, "(() => { const search=document.querySelector('[data-v3-selection-session=\"tag\"] [data-v3-picker-search-input]'); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter'}); search.dispatchEvent(event); return event.defaultPrevented; })()");
+  if (!tagEnter) throw new Error("tag ordinary Enter did not submit the local directory search");
+  await waitFor(cdp, "document.querySelector('[data-v3-selection-session=\"tag\"] [data-v3-tag-list]')?.textContent.includes('需要跟进')", "tag Enter query did not show the local search result");
+  await resize(420);
+  await capture("component-states-tag-420");
+  await resize(1440);
+  if (!await click('[data-v3-selection-session="tag"] [data-v3-tag-key]') || !await click('[data-v3-selection-session="tag"] [data-v3-tag-confirm]')) throw new Error("tag local confirmation controls were unavailable");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"tag\"]')", "tag local confirmation did not close its dialog");
+  if (!await evaluate(cdp, "document.activeElement?.matches('[data-component-states-tag-open]')")) throw new Error("tag confirmation did not return focus to the mounted trigger");
+  if (!await evaluate(cdp, "document.querySelector('[data-component-states-tag-result]')?.textContent.includes('需要跟进')")) throw new Error("tag confirmation did not update only the local summary");
+
+  if (!await click('[data-component-states-mode="ready"]') || !await click('[data-component-states-staff-open]')) throw new Error("staff controls were unavailable");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-key]'))", "staff local selector did not open");
+  const staffCandidate = await evaluate(cdp, "(() => { const search=document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-picker-search-input]'); search.focus(); search.value='增长'; search.dispatchEvent(new Event('input',{bubbles:true})); search.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); search.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',isComposing:true}); search.dispatchEvent(event); return event.defaultPrevented; })()");
+  if (staffCandidate) throw new Error("staff IME candidate Enter was intercepted");
+  await delay(0);
+  const staffEnter = await evaluate(cdp, "(() => { const search=document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-picker-search-input]'); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter'}); search.dispatchEvent(event); return event.defaultPrevented; })()");
+  if (!staffEnter) throw new Error("staff ordinary Enter did not submit the local directory search");
+  await waitFor(cdp, "(() => { const list=document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-list]')?.textContent||''; const confirm=document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-confirm]'); return list.includes('增长客服') && !list.includes('北区客服') && !confirm?.disabled; })()", "staff Enter query did not settle to the local result");
+  await capture("component-states-staff-1440");
+  if (!await click('[data-v3-selection-session="staff"] [data-v3-staff-key]') || !await click('[data-v3-selection-session="staff"] [data-v3-staff-confirm]')) throw new Error("staff local confirmation controls were unavailable");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"staff\"]')", "staff local confirmation did not close its dialog");
+  if (!await evaluate(cdp, "document.activeElement?.matches('[data-component-states-staff-open]')")) throw new Error("staff confirmation did not return focus to the mounted trigger");
+  if (!await evaluate(cdp, "document.querySelector('[data-component-states-staff-result]')?.textContent.includes('增长客服')")) throw new Error("staff confirmation did not update only the local summary");
+
+  if (!await click('[data-component-states-mode="invalid"]') || !await click('[data-component-states-staff-open]')) throw new Error("staff invalid controls were unavailable");
+  await waitFor(cdp, "document.querySelector('[data-v3-selection-session=\"staff\"]')?.textContent.includes('待目录确认的失效员工')", "staff invalid selection was not retained");
+  const invalidStaff = await evaluate(cdp, "(() => { const mask=document.querySelector('[data-v3-selection-session=\"staff\"]'); return {reason:mask?.textContent.includes('缺少可信企微 UserID'),disabled:mask?.querySelector('[data-v3-staff-confirm]')?.disabled}; })()");
+  if (!invalidStaff.reason || !invalidStaff.disabled) throw new Error("staff invalid selection was not explicit and locked");
+  if (!await click('[data-v3-selection-session="staff"] [data-v3-staff-cancel]')) throw new Error("staff invalid cancellation was unavailable");
+  if (!await evaluate(cdp, "document.activeElement?.matches('[data-component-states-staff-open]')")) throw new Error("staff invalid cancellation did not return focus to the mounted trigger");
+
+  if (!await click('[data-component-states-mode="ready"]') || !await click('[data-component-states-composer-open]')) throw new Error("content composer controls were unavailable");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-content-composer] [data-v3-composer-text]'))", "content composer did not open");
+  const unknownComposerVariable = await evaluate(cdp, "(() => { const mask=document.querySelector('[data-v3-content-composer]'); const text=mask.querySelector('[data-v3-composer-text]'); text.value='未授权变量 {{unknown_demo}}'; text.dispatchEvent(new Event('input',{bubbles:true})); return {disabled:mask.querySelector('[data-v3-composer-confirm]').disabled,reason:mask.textContent.includes('示例变量不在当前本地目录中')}; })()");
+  if (!unknownComposerVariable.disabled || !unknownComposerVariable.reason) throw new Error("content composer did not block an unknown caller token");
+  const composerDraft = await evaluate(cdp, "(() => { const mask=document.querySelector('[data-v3-content-composer]'); const text=mask.querySelector('[data-v3-composer-text]'); text.value='你好，{{customer_name}}，欢迎查看{{plan_name}}。'; text.dispatchEvent(new Event('input',{bubbles:true})); mask.querySelector('[data-v3-composer-variable]').click(); mask.querySelector('[data-v3-composer-move=\"1:-1\"]').click(); return {text:mask.querySelector('[data-v3-composer-text]').value,first:mask.querySelector('[data-v3-composer-records] strong')?.textContent,disabled:mask.querySelector('[data-v3-composer-confirm]').disabled}; })()");
+  if (composerDraft.disabled || !composerDraft.text.includes('{{customer_name}}') || composerDraft.first !== '附件：活动说明 PDF') throw new Error("content composer did not retain caller-provided variable or local order");
+  await resize(360);
+  await capture("component-states-composer-360");
+  await resize(1440);
+  if (!await click('[data-v3-content-composer] [data-v3-composer-confirm]')) throw new Error("content composer confirmation was unavailable");
+  await waitFor(cdp, "!document.querySelector('[data-v3-content-composer]')", "content composer confirmation did not close");
+  if (!await evaluate(cdp, "document.activeElement?.matches('[data-component-states-composer-open]')")) throw new Error("content composer confirmation did not return focus to the mounted trigger");
+  if (!await evaluate(cdp, "(() => { const summary=document.querySelector('[data-component-states-composer-result]')?.textContent||''; const preview=document.querySelector('[data-component-states-composer-preview]')?.textContent||''; return summary.indexOf('活动说明 PDF') < summary.indexOf('秋日活动封面') && preview.includes('不会保存或发送'); })()")) throw new Error("content composer did not preserve local order or zero-effect preview");
+  if (!await click('[data-component-states-composer-readonly]')) throw new Error("content readonly trigger was unavailable");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-content-readonly]'))", "content readonly presentation did not open");
+  const readonlyContent = await evaluate(cdp, "(() => { const mask=document.querySelector('[data-v3-content-readonly]'); return {editor:Boolean(mask?.querySelector('[data-v3-composer-text]')),note:mask?.textContent.includes('未保存、未发送')}; })()");
+  if (readonlyContent.editor || !readonlyContent.note) throw new Error("content readonly presentation exposed editing or omitted its local-only notice");
+  await capture("component-states-composer-readonly-1440");
+  if (!await click('[data-v3-content-readonly] [data-v3-content-readonly-close]')) throw new Error("content readonly close was unavailable");
+  if (!await evaluate(cdp, "document.activeElement?.matches('[data-component-states-composer-readonly]')")) throw new Error("content readonly close did not return focus to the mounted trigger");
 
   if (!await click('[data-component-states-form-open]')) throw new Error("form demo trigger was unavailable");
   await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"component-states\"] [data-component-states-form-textarea]'))", "form focus demo did not open");
