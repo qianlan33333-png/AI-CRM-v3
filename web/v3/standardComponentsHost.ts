@@ -5,6 +5,7 @@ export {};
 // It supplies the V3 envelope for the shared directory refresh command and
 // guarantees dependency order and one evaluation per page.
 import { installTagPickerAdapter } from './shared/ui/tagPickerAdapter';
+import { installCommittedTextSearch, resetCommittedTextSearch } from './shared/ui/committedTextSearch';
 import { installStaffPickerAdapter } from './shared/ui/staffPickerAdapter';
 declare global {
   interface Window {
@@ -18,6 +19,50 @@ declare global {
 
 type StandardComponentCapability = 'operationMembers' | 'groupChats' | 'materials' | 'sendContent' | 'tags';
 type OnDemandStandardComponentCapability = 'tags';
+
+type OperationMemberPickerOptions = Record<string, unknown>;
+type OperationMemberPicker = { open(options: OperationMemberPickerOptions): unknown };
+type OperationMemberPickerWindow = { OperationMemberPicker?: OperationMemberPicker };
+
+function operationMemberPicker(): OperationMemberPicker | undefined {
+  return (window as unknown as OperationMemberPickerWindow).OperationMemberPicker;
+}
+
+const operationMemberSearchLifecycleInstalled = new WeakSet<object>();
+
+function installOperationMemberSearchLifecycle(): void {
+  const picker = operationMemberPicker();
+  if (!picker || operationMemberSearchLifecycleInstalled.has(picker)) return;
+  operationMemberSearchLifecycleInstalled.add(picker);
+  const open = picker.open.bind(picker);
+  picker.open = (options: OperationMemberPickerOptions) => {
+    const result = open(options);
+    const input = document.querySelector<HTMLInputElement>('[data-operation-member-picker] [data-operation-member-search]');
+    if (input) resetCommittedTextSearch(input);
+    return result;
+  };
+}
+
+// The frozen script assigns this global after the stable Host. Observe the
+// assignment once so every actual picker starts from its own empty committed
+// query. The V3 Host never changes its caller-owned read or refresh envelope.
+function observeOperationMemberPicker(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(window, 'OperationMemberPicker');
+  if (descriptor && !descriptor.configurable) {
+    installOperationMemberSearchLifecycle();
+    return;
+  }
+  let current = operationMemberPicker();
+  Object.defineProperty(window, 'OperationMemberPicker', {
+    configurable: true,
+    get: () => current,
+    set: (value) => {
+      current = value;
+      installOperationMemberSearchLifecycle();
+    },
+  });
+  installOperationMemberSearchLifecycle();
+}
 
 const components: ReadonlyArray<{ capability: StandardComponentCapability; source: string; ready: () => boolean }> = [
   { capability: 'operationMembers', source: '/assets/standard-components/operation_member_picker.js?v=1b12b405d7377948', ready: () => typeof (window as unknown as Record<string, { open?: unknown }>).OperationMemberPicker?.open === 'function' },
@@ -83,6 +128,7 @@ function load(component: { capability: StandardComponentCapability; source: stri
       settled = true;
       readyComponents.add(component.capability);
       if (component.capability === 'tags') lockOriginalTagPicker();
+      if (component.capability === 'operationMembers') installOperationMemberSearchLifecycle();
       resolve();
     };
     script.addEventListener('load', () => { script!.dataset.aicrmStandardComponentState = 'loaded'; succeed(); }, { once: true });
@@ -111,6 +157,9 @@ function readyFor(capabilities: readonly OnDemandStandardComponentCapability[]):
   });
   return Promise.all(selected.map(load)).then(() => undefined);
 }
+
+installCommittedTextSearch();
+observeOperationMemberPicker();
 
 window.AICRMStandardComponents = {
   ready(): Promise<void> {

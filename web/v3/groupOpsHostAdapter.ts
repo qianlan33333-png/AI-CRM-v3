@@ -6,6 +6,9 @@ import { installStaffPickerAdapter } from './shared/ui/staffPickerAdapter';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord, type MaterialType } from './shared/ui/materialPickerAdapter';
 import { openContentComposer, openReadonlyContentPresentation, type ContentComposerResult } from './shared/ui/contentComposer';
 import type { ContentMaterialKind, ContentMaterialRecord } from './shared/ui/contentPresentation';
+import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+
+installCommittedTextSearch();
 
 type Json = Record<string, any>;
 const base = "/api/admin/automation-conversion/group-ops";
@@ -46,6 +49,77 @@ function csrf(): string {
 function key(): string {
   return `groupops-${Date.now()}-${crypto.randomUUID()}`;
 }
+function privateCreateRecoveryKey(value: unknown): string {
+  const normalized =
+    typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!/^[a-z0-9._:-]{16,128}$/.test(normalized))
+    throw new Error("创建恢复请求无效");
+  return normalized;
+}
+function createRecoverySessionMarker(value: unknown): string {
+  if (typeof value !== "string" || !value) throw new Error("创建恢复请求无效");
+  return value;
+}
+function createRecoveryOptions(value: unknown): Json | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Json;
+  const stage = source.stage;
+  if (stage !== "post" && stage !== "configuration")
+    throw new Error("创建恢复请求无效");
+  const result: Json = {
+    stage,
+    createKey: privateCreateRecoveryKey(source.create_key),
+    configurationKey: privateCreateRecoveryKey(source.configuration_key),
+    sessionMarker: createRecoverySessionMarker(source.session_marker),
+    planName: String(source.plan_name || "").trim(),
+    planType: source.plan_type,
+  };
+  if (
+    !result.planName ||
+    (result.planType !== "standard" && result.planType !== "webhook")
+  )
+    throw new Error("创建恢复请求无效");
+  result.ownerID = requiredIdentifier(source.owner_userid, "创建恢复请求无效");
+  if (stage === "configuration") {
+    result.planID = requiredIdentifier(source.plan_id, "创建恢复请求无效");
+    result.expectedRevision = requiredNumericPositiveInteger(
+      source.expected_revision,
+      "创建恢复请求无效",
+    );
+  }
+  return Object.freeze(result);
+}
+function createRecoverySessionChangedError(recovery: Json): Error {
+  const result = new Error("登录状态已变化，不能恢复这次创建");
+  Object.assign(result, {
+    groupOpsCreateRecovery: {
+      stage: recovery.stage,
+      plan_id: recovery.planID || 0,
+      expected_revision: recovery.expectedRevision || 0,
+      session_changed: true,
+    },
+  });
+  return result;
+}
+function assertCreateRecoverySession(recovery: Json): void {
+  if (!recovery.sessionMarker || csrf() !== recovery.sessionMarker)
+    throw createRecoverySessionChangedError(recovery);
+}
+function createRecoveryError(error: unknown, recovery: Json): Error {
+  const result =
+    error instanceof Error
+      ? error
+      : new Error(errorMessage(error, "创建结果未确认"));
+  Object.assign(result, {
+    groupOpsCreateRecovery: {
+      stage: recovery.stage,
+      plan_id: recovery.planID || 0,
+      expected_revision: recovery.expectedRevision || 0,
+      session_changed: Boolean((error as Json)?.groupOpsCreateRecovery?.session_changed),
+    },
+  });
+  return result;
+}
 function html(value: unknown): string {
   // The donor expects legacy new/updated counters; V3 returns a snapshot total.
   // Translate only the next notice belonging to a completed refresh/readback.
@@ -85,9 +159,10 @@ function isOperationsConflict(data: Json): boolean {
   return data?.code === "operations_conflict" || (data?.error as Json)?.code === "operations_conflict";
 }
 function announceDirectoryReadFailure(): void {
-  // The frozen detail renderer still asks for its directory decoration while
-  // loading a plan. Preserve authoritative bindings and make that independent
-  // read failure visible after its own render completes.
+  // The detail renderer has a second, decorative owner-scoped group read.
+  // Its failure must remain visible without changing the saved bindings. The
+  // groups list owns its own explicit failed-read state instead.
+  if (document.getElementById("group-ops-app")?.dataset.pageMode !== "detail") return;
   window.setTimeout(() => {
     const notice = document.querySelector<HTMLElement>("#group-ops-app .group-ops__notice");
     if (notice) {
@@ -109,7 +184,12 @@ async function nativeRequest(url: string, options: Json = {}, onOperationsConfli
   if (options.body !== undefined)
     headers.set("Content-Type", "application/json");
   if (options.method && options.method !== "GET") {
-    headers.set("Idempotency-Key", typeof options.idempotencyKey === "string" ? options.idempotencyKey : key());
+    headers.set(
+      "Idempotency-Key",
+      typeof options.idempotencyKey === "string"
+        ? options.idempotencyKey
+        : options.privateCreateRecoveryKey || key(),
+    );
     const token = csrf();
     if (token) headers.set("X-CSRF-Token", token);
   }
@@ -371,6 +451,83 @@ async function expectedRevision(body: Json, id: number): Promise<number> {
     return requiredNumericPositiveInteger(body.expected_revision, "计划版本数据无效");
   return revision(id);
 }
+function createPlanResult(
+  value: Json,
+  message: string,
+): { raw: Json; id: number; revision: number } {
+  const raw =
+    value?.plan && typeof value.plan === "object" ? value.plan : value;
+  if (!raw || typeof raw !== "object") throw new Error(message);
+  return {
+    raw,
+    id: requiredIdentifier(raw.plan_id, message),
+    revision: requiredNumericPositiveInteger(raw.revision, message),
+  };
+}
+function confirmedCreatedPlan(value: Json, recovery: Json): { raw: Json; id: number; revision: number } {
+  const created = createPlanResult(value, "创建结果未确认，请重新确认创建");
+  if (created.revision !== 1 || created.raw.status !== "draft" || created.raw.name !== recovery.planName)
+    throw new Error("创建结果未确认，请重新确认创建");
+  return created;
+}
+function createConfigurationPayload(_body: Json, recovery: Json): Json {
+  return {
+    expected_revision: recovery.expectedRevision,
+    name: recovery.planName,
+    plan_type: recovery.planType,
+    owner_staff_id: recovery.ownerID,
+  };
+}
+function confirmedCreateConfiguration(
+  value: Json,
+  recovery: Json,
+  payload: Json,
+): Json {
+  const confirmed = createPlanResult(
+    value,
+    "基础配置结果未确认，请重新确认配置",
+  );
+  if (
+    confirmed.id !== recovery.planID ||
+    confirmed.revision !== recovery.expectedRevision + 1 ||
+    confirmed.raw.name !== payload.name ||
+    confirmed.raw.status !== "draft" ||
+    confirmed.raw.plan_type !== payload.plan_type
+  )
+    throw new Error("基础配置结果未确认，请重新确认配置");
+  if (
+    !Array.isArray(value.members) ||
+    value.members.length !== 1 ||
+    requiredIdentifier(
+      value.members[0]?.staff_id,
+      "基础配置结果未确认，请重新确认配置",
+    ) !== payload.owner_staff_id
+  )
+    throw new Error("基础配置结果未确认，请重新确认配置");
+  return plan(confirmed.raw);
+}
+async function completeCreateConfiguration(
+  body: Json,
+  recovery: Json,
+): Promise<Json> {
+  const payload = createConfigurationPayload(body, recovery);
+  let value: Json;
+  try {
+    assertCreateRecoverySession(recovery);
+    value = await nativeRequest(`${base}/plans/${recovery.planID}`, {
+      method: "PUT",
+      body: payload,
+      privateCreateRecoveryKey: recovery.configurationKey,
+    });
+  } catch (error) {
+    throw createRecoveryError(error, recovery);
+  }
+  try {
+    return confirmedCreateConfiguration(value, recovery, payload);
+  } catch (error) {
+    throw createRecoveryError(error, recovery);
+  }
+}
 function newInitialDetailReadEpoch(id: number): InitialDetailReadEpoch {
   const generation = (detailReadGenerations.get(id) || 0) + 1;
   detailReadGenerations.set(id, generation);
@@ -502,6 +659,35 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     };
   }
   if (url === `${base}/plans` && method === "POST") {
+    const recovery = createRecoveryOptions(options.createRecovery);
+    if (recovery?.stage === "configuration")
+      return { item: await completeCreateConfiguration(body, recovery) };
+    if (recovery?.stage === "post") {
+      let created: Json;
+      try {
+        assertCreateRecoverySession(recovery);
+        created = await nativeRequest(url, {
+          method,
+          body: { name: recovery.planName },
+          privateCreateRecoveryKey: recovery.createKey,
+        });
+      } catch (error) {
+        throw createRecoveryError(error, recovery);
+      }
+      let current: { raw: Json; id: number; revision: number };
+      try {
+        current = confirmedCreatedPlan(created, recovery);
+      } catch (error) {
+        throw createRecoveryError(error, recovery);
+      }
+      const configuration = Object.freeze({
+        ...recovery,
+        stage: "configuration",
+        planID: current.id,
+        expectedRevision: current.revision,
+      });
+      return { item: await completeCreateConfiguration(body, configuration) };
+    }
     const created = await nativeRequest(url, {
       method,
       body: { name: String(body.plan_name || "").trim() || "新建群运营计划" },
@@ -685,16 +871,17 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
     let data: Json;
     try {
       data = await nativeRequest(url);
-    } catch {
+    } catch (error) {
       refreshedGroupTotal = null;
       announceDirectoryReadFailure();
-      // Keep the page and its Owner binding projection usable. The V3 picker
-      // performs its own scoped read and reports a retryable load failure.
-      return { items: [], total: 0, limit: 50, offset: 0, has_more: false };
+      // The groups screen distinguishes a directory outage from a confirmed
+      // empty page and retains any rows it already rendered. Do not translate
+      // a failed read into an empty success payload.
+      throw error;
     }
     if (!Array.isArray(data.items)) {
-      announceDirectoryReadFailure();
-      return { items: [], total: 0, limit: 50, offset: 0, has_more: false };
+      refreshedGroupTotal = null;
+      throw new Error("群聊列表暂不可读取");
     }
     return {
       ...data,

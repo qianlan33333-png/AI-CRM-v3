@@ -121,7 +121,10 @@ try {
   // confirm callback still refers to the prior row's captured resourceId.
   const search = list.window.document.querySelector('input[aria-label="搜索渠道名称"]');
   search.value = '权限渠道'; search.dispatchEvent(new list.window.Event('input', { bubbles: true }));
-  await waitFor(() => Boolean(actionForName('权限渠道')) && !actionForName('同名渠道'), 'search input must invoke the frozen controller and rerender a different row');
+  await pause();
+  assert.ok(actionForName('同名渠道'), 'typing keeps the frozen channel list as a draft until Enter');
+  search.dispatchEvent(new list.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+  await waitFor(() => Boolean(actionForName('权限渠道')) && !actionForName('同名渠道'), 'an ordinary Enter must invoke the frozen controller and rerender a different row');
   state.failRefresh = true;
   list.window.document.querySelector('#fb-ok').click();
   await waitFor(() => state.calls.filter((call) => call.method === 'PATCH').length === 2, 'same-version retry must issue one further write');
@@ -148,7 +151,8 @@ try {
   }
 
   search.value = '预读渠道'; search.dispatchEvent(new list.window.Event('input', { bubbles: true }));
-  await waitFor(() => Boolean(actionForName('预读渠道')), 'search renders the preflight fixture');
+  search.dispatchEvent(new list.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+  await waitFor(() => Boolean(actionForName('预读渠道')), 'an ordinary Enter renders the preflight fixture');
   const preflightAction = actionForName('预读渠道');
   state.outcomes.set('12', 'preflight_network');
   const beforePreflight = state.calls.filter((call) => call.method === 'PATCH').length;

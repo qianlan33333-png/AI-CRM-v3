@@ -42,7 +42,7 @@ try {
   const exceptions = []; const resources = new Map();
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
   const requiredResources = ["/static/admin_console/admin_customers.js", "/assets/standard-components/standard_components_host.js", "/assets/standard-components/wecom_tag_picker.js", "/api/admin/customers", "/api/admin/wecom/tags"];
-  cdp.on("Network.responseReceived", (params) => { try { const pathname = new URL(String(params.response?.url || "")).pathname; if ([...requiredResources, "/api/v1/customer-tag-commands/preview", "/api/v1/customer-tag-commands"].includes(pathname)) resources.set(pathname, Number(params.response?.status) || 0); } catch (_) {} });
+  cdp.on("Network.responseReceived", (params) => { try { const pathname = new URL(String(params.response?.url || "")).pathname; if ([...requiredResources, "/api/v1/customer-tag-commands/preview", "/api/v1/customer-tag-commands"].includes(pathname) || pathname.startsWith("/assets/chunks/")) resources.set(pathname, Number(params.response?.status) || 0); } catch (_) {} });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fcustomers` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
@@ -55,6 +55,14 @@ try {
   // only the two form drafts; it must not replace the durable command path.
   await evaluate(cdp, `(() => { const form=document.querySelector('#customer-tag-batch'); const add=form.querySelector('[name="add_tag_ids"]'); const button=add.parentElement.querySelector('button'); button.click(); return true; })()`);
   await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"tag\"] [data-v3-tag-key]').length >= 2", "V3 add-tag picker did not render the real catalog");
+  if (requiredResources.some((pathname) => resources.get(pathname) !== 200)) throw new Error(`customer Host release assets did not load after tag entry: ${await diagnostic()}`);
+  // The public stable Host is copied under assets/standard-components. Its V3
+  // chunks must resolve one directory up and be fetched by this real module
+  // graph; source text alone cannot validate the staged asset path.
+  const stableHostChunkReferences = await evaluate(cdp, "fetch('/assets/standard-components/standard_components_host.js',{credentials:'same-origin'}).then(async(response)=>{if(!response.ok)throw new Error('stable Host HTTP '+response.status);const source=await response.text();return source.split(/[\"']/).filter((part)=>part.startsWith('../chunks/'));})");
+  if (!Array.isArray(stableHostChunkReferences) || stableHostChunkReferences.length === 0 || stableHostChunkReferences.some((reference) => !reference.startsWith('../chunks/'))) throw new Error(`customer Host stable component entry did not expose rebased chunk imports: ${await diagnostic()}`);
+  const stableHostChunkPaths = stableHostChunkReferences.map((reference) => new URL(reference, `${baseURL}/assets/standard-components/standard_components_host.js`).pathname);
+  if (stableHostChunkPaths.some((pathname) => resources.get(pathname) !== 200)) throw new Error(`customer Host stable component chunks were not fetched through the real module graph: ${await diagnostic()}`);
   await evaluate(cdp, "document.querySelectorAll('[data-v3-selection-session=\"tag\"] [data-v3-tag-key]')[0].click(); document.querySelector('[data-v3-selection-session=\"tag\"] [data-v3-tag-confirm]').click(); true");
   await waitFor(cdp, "(() => { const select=document.querySelector('#customer-tag-batch [name=\"add_tag_ids\"]'); return select?.selectedOptions[0]?.value === select?.options[0]?.value; })()", "V3 add-tag picker did not update the original form draft");
   await evaluate(cdp, `(() => { const form=document.querySelector('#customer-tag-batch'); const remove=form.querySelector('[name="remove_tag_ids"]'); const button=remove.parentElement.querySelector('button'); button.click(); return true; })()`);
