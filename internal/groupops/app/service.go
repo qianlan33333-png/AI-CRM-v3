@@ -714,7 +714,7 @@ func validPlan(value groupopsport.Plan) bool {
 }
 func validPlanList(items []groupopsport.PlanListItem) bool {
 	for i, item := range items {
-		if !validPlan(item.Plan) || item.QueueCount < 0 {
+		if !validPlan(item.Plan) || item.QueueCount < 0 || item.BoundGroupCount < 0 {
 			return false
 		}
 		if i > 0 && (items[i-1].UpdatedAt.Before(item.UpdatedAt) || items[i-1].UpdatedAt.Equal(item.UpdatedAt) && items[i-1].ID <= item.ID) {

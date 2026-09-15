@@ -33,6 +33,7 @@ let savedOwner = [];
 let operationMemberReads = 0;
 let materialDetailReads = 0;
 let ownerProjection = { staff_id: 7, sender_userid: "real-owner", display_name: "真实昵称 · 完整姓名", name_source: "wecom_profile", profile_read_state: "ready" };
+let listPayload = { items: [{ plan_id: 41, name: "列表计划", revision: 7, status: "draft", plan_type: "standard", owner: ownerProjection, queue_count: 0, bound_group_count: 3 }], total: 1 };
 const detail = () => ({
   plan: { plan_id: 41, name: "浏览器计划", revision: 7, status: "draft", plan_type: "standard", owner: ownerProjection },
   nodes,
@@ -50,6 +51,9 @@ window.fetch = async (input, init = {}) => {
   if (url.pathname === "/api/admin/image-library/99" && (!init.method || init.method === "GET")) {
     materialDetailReads += 1;
     return new Response(JSON.stringify({ code: "NOT_FOUND" }), { status: 404, headers: { "content-type": "application/json" } });
+  }
+  if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && (!init.method || init.method === "GET")) {
+    return new Response(JSON.stringify(listPayload), { status: 200, headers: { "content-type": "application/json" } });
   }
   if (url.pathname === "/api/admin/common/operation-members") {
     operationMemberReads += 1;
@@ -77,6 +81,18 @@ assert.deepEqual(foreignResult, foreignPayload, "foreign same-path GET payload m
 
 const host = window.AdminApi;
 assert.equal(typeof host?.requestJson, "function", "Group Ops Host bridge must expose requestJson");
+let projectedList = await host.requestJson("/api/admin/automation-conversion/group-ops/plans");
+assert.equal(projectedList.items[0].bound_group_count, 3, "list binding count must come from the List DTO without a detail read");
+listPayload = { items: [{ plan_id: 41, name: "旧服务列表计划", revision: 7, status: "draft", plan_type: "standard", owner: ownerProjection, queue_count: 0 }], total: 1 };
+projectedList = await host.requestJson("/api/admin/automation-conversion/group-ops/plans");
+assert.equal(projectedList.items[0].bound_group_count, null, "an older List DTO must remain readable as an explicit unknown");
+listPayload = { items: [
+  { plan_id: 41, name: "已渲染计划", revision: 8, status: "draft", plan_type: "standard", owner: ownerProjection, queue_count: 0, bound_group_count: 3 },
+  { plan_id: 42, name: "错误列表计划", revision: 9, status: "draft", plan_type: "standard", owner: ownerProjection, queue_count: 0, bound_group_count: -1 },
+], total: 2 };
+await assert.rejects(() => host.requestJson("/api/admin/automation-conversion/group-ops/plans"), /计划绑定群数数据无效/, "a later negative List DTO count must reject the complete page before it publishes an earlier revision");
+listPayload = { items: [{ plan_id: 41, name: "错误列表计划", revision: 10, status: "draft", plan_type: "standard", owner: ownerProjection, queue_count: 0, bound_group_count: 1.5 }], total: 1 };
+await assert.rejects(() => host.requestJson("/api/admin/automation-conversion/group-ops/plans"), /计划绑定群数数据无效/, "fractional List DTO counts must not become zero");
 await host.requestJson("/api/admin/automation-conversion/group-ops/plans/41/nodes", {
   method: "POST",
   body: {
@@ -1299,11 +1315,12 @@ try {
 
 // List lifecycle controls must give a visible in-flight state, submit exactly
 // once, and only show enabled after the V3 command response has been read.
-let listPlan = { plan_id: 13, name: "授权测试群计划", revision: 8, status: "disabled", plan_type: "standard", owner: { staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营", name_source: "wecom_profile", profile_read_state: "ready" } };
+let listPlan = { plan_id: 13, name: "授权测试群计划", revision: 8, status: "disabled", plan_type: "standard", bound_group_count: 2, owner: { staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营", name_source: "wecom_profile", profile_read_state: "ready" } };
 let enableCalls = 0;
 let releaseEnable;
 let holdConflictReads = false;
 const pendingConflictReads = [];
+const listRequests = [];
 const delayedConflictRead = (body) => new Promise((resolve) => pendingConflictReads.push(() => resolve(response(body))));
 const listJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
   url: "https://groupops.test/admin/automation-conversion/group-ops/ui",
@@ -1318,6 +1335,7 @@ listWindow.document.cookie = "aicrm_admin_csrf=test-csrf";
 listWindow.fetch = async (input, init = {}) => {
   const url = new URL(String(input), listWindow.location.href);
   const method = String(init.method || "GET").toUpperCase();
+  listRequests.push({ path: url.pathname + url.search, method });
   if (url.pathname === "/api/admin/common/operation-members" && method === "GET") return holdConflictReads ? delayedConflictRead({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] }) : response({ items: [{ staff_id: 7, sender_userid: "wecom-owner", display_name: "一号运营" }] });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans" && method === "GET") return holdConflictReads ? delayedConflictRead({ items: [clone(listPlan)], total: 1 }) : response({ items: [clone(listPlan)], total: 1 });
   if (url.pathname === "/api/admin/automation-conversion/group-ops/plans/13" && method === "GET") return holdConflictReads ? delayedConflictRead({ plan: clone(listPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] }) : response({ plan: clone(listPlan), members: [{ staff_id: 7 }], group_assets: [], nodes: [] });
@@ -1346,6 +1364,12 @@ try {
   listWindow.eval(pickerSource);
   listWindow.eval(bundle.outputFiles[0].text);
   await waitFor(() => listWindow.document.querySelector('[data-action="enable-plan"]'), "disabled plan did not render its enable control");
+  assert.deepEqual(
+    listRequests.filter((request) => request.method === "GET").map((request) => request.path).sort(),
+    ["/api/admin/automation-conversion/group-ops/plans", "/api/admin/common/operation-members?scope=group_ops&page_size=100"].sort(),
+    "an initial list must read only its page and the existing operation-member projection",
+  );
+  assert.equal(listWindow.document.body.textContent.includes("已绑定群（暂不可用）"), false, "a valid zero-or-positive List DTO count remains known");
   const enable = () => listWindow.document.querySelector('[data-action="enable-plan"]');
   enable().click();
   await waitFor(() => pendingConflictReads.length === 3 && enableCalls === 1 && enable()?.disabled, "conflict refresh did not keep lifecycle control locked");
@@ -1405,6 +1429,7 @@ try {
   archivedListWindow.eval(pickerSource);
   archivedListWindow.eval(bundle.outputFiles[0].text);
   await waitFor(() => archivedListWindow.document.body.textContent.includes("已归档"), "archived list status did not render");
+  assert(archivedListWindow.document.body.textContent.includes("已绑定群（暂不可用）"), "an older list response must make the missing binding metric visibly unknown");
   assert(archivedListWindow.document.body.textContent.includes("一号运营"), "list must render the same trusted owner projection as detail");
   assert.equal(archivedListWindow.document.querySelector('[data-action="enable-plan"]'), null, "archived list must not render an enable action");
   assert.equal(archivedListWindow.document.querySelector('[data-action="delete-plan"]'), null, "archived list must not offer a repeat archive action");

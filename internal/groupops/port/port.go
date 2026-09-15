@@ -66,7 +66,8 @@ type PlanOwner struct {
 
 type PlanListItem struct {
 	Plan
-	QueueCount int64 `json:"queue_count"`
+	QueueCount      int64 `json:"queue_count"`
+	BoundGroupCount int64 `json:"bound_group_count"`
 }
 
 type Member struct {

@@ -57,6 +57,7 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 	rows, err := tx.Query(ctx, `
 		SELECT p.id,p.name,p.status,p.revision,p.created_by,p.updated_by,p.created_at,p.updated_at,p.plan_type,
 		       COALESCE(executions.queue_count,0),
+		       COALESCE(assets.bound_group_count,0),
 		       COALESCE(owner.staff_id,0),COALESCE(owner.sender_userid,''),COALESCE(owner.display_name,''),
 		       COALESCE(owner.name_source,''),COALESCE(owner.profile_read_state,''),COALESCE(owner.profile_read_error_code,'')
 		FROM group_ops_plans p
@@ -65,6 +66,11 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 			FROM group_ops_executions
 			WHERE plan_id=p.id
 		) executions ON true
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS bound_group_count
+			FROM group_ops_plan_group_assets
+			WHERE plan_id=p.id
+		) assets ON true
 		LEFT JOIN LATERAL (
 			SELECT pm.staff_id,d.sender_userid,d.display_name,d.name_source,d.profile_read_state,d.profile_read_error_code
 			FROM group_ops_plan_members pm
@@ -82,7 +88,7 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 	for rows.Next() {
 		var item groupopsport.PlanListItem
 		if err = rows.Scan(
-			&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.Type, &item.QueueCount,
+			&item.ID, &item.Name, &item.Status, &item.Revision, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.Type, &item.QueueCount, &item.BoundGroupCount,
 			&item.Owner.StaffID, &item.Owner.SenderUserID, &item.Owner.DisplayName, &item.Owner.NameSource, &item.Owner.ProfileReadState, &item.Owner.ProfileReadErrorCode,
 		); err != nil {
 			return nil, err
