@@ -12,6 +12,7 @@ const materialFirstID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID;
 const materialLaterID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID;
 const historicalOrderReference = process.env.AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER;
 const exactParams = process.env.AICRM_PRODUCT_PUSH_TEST_PARAMS;
+const screenshotDirectory = process.env.AICRM_PRODUCT_PUSH_SCREENSHOT_DIR;
 // The Product owner derives a stable per-product endpoint reference from the
 // target submitted to its admin command. Browser checks must use the owner's
 // readback value, rather than compare that derived reference to the target.
@@ -25,6 +26,15 @@ if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+async function captureProductMaterialScreens(cdp, prefix) {
+  if (!screenshotDirectory) return;
+  await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
+  for (const width of [1280, 1440]) {
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const image = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    await fs.writeFile(path.join(screenshotDirectory, `${prefix}-${width}.png`), Buffer.from(image.data, 'base64'), { mode: 0o600 });
+  }
+}
 // Do not embed a regular expression in a Runtime.evaluate template string:
 // JavaScript string escaping would turn `\s` into a literal `s`. Cookie order
 // is arbitrary, so split exact names instead of relying on a position-specific
@@ -177,7 +187,7 @@ try {
   cdp.on("Network.requestWillBeSent", (params) => {
     try {
       const pathname = new URL(String(params.request?.url || "")).pathname;
-      if (pathname.includes("products") || pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.includes("service-period-products") || pathname.startsWith("/assets/")) {
+      if (pathname.includes("products") || pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.includes("service-period-products") || pathname.startsWith("/api/admin/image-library") || pathname.startsWith("/assets/")) {
         requests.set(params.requestId, { pathname, method: String(params.request?.method || "GET") });
       }
     } catch (_) {}
@@ -328,6 +338,34 @@ try {
   await waitFor(cdp, `Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-remove$=":${materialLaterID}"]'))`, 'product material reopening did not reconstruct the owner draft');
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove$=\":" + materialLaterID + "\"]').click(); document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Array.from(document.querySelectorAll('#product-media img')).some((image)=>image.src.includes('/" + materialLaterID + "/variants/thumb_320'))", 'product material cancellation changed the original draft');
+  // Upload a real PNG through the same current media dimension. The V3 Host
+  // must append the typed Media receipt, leave unsaved form state and the tab
+  // intact, then persist the order only through the explicit owner save.
+  const productUploadPath = path.join(profile, 'chromium-product-upload.png');
+  await fs.writeFile(productUploadPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII=', 'base64'));
+  const productUploadPrepared = await evaluate(cdp, "(()=>{const description=document.querySelector('#pfDescription');if(!(description instanceof HTMLTextAreaElement))return false;description.value='Chromium material draft remains active';return true})()");
+  if (!productUploadPrepared) throw new Error('product material upload input was unavailable');
+  await evaluate(cdp, "(()=>{const input=document.querySelector('#pfImageUpload');if(!(input instanceof HTMLInputElement))return false;window.__productUploadChangeSeen=0;input.addEventListener('change',()=>{window.__productUploadChangeSeen=(window.__productUploadChangeSeen||0)+1},{capture:true});return true})()");
+  const productDOM = await cdp.call('DOM.getDocument', { depth: 2 });
+  const productUploadNode = await cdp.call('DOM.querySelector', { nodeId: productDOM.root.nodeId, selector: '#pfImageUpload' });
+  if (!productUploadNode.nodeId) throw new Error('product material upload source input was unavailable');
+  await cdp.call('DOM.setFileInputFiles', { files: [productUploadPath], nodeId: productUploadNode.nodeId });
+  // DOM.setFileInputFiles dispatches the browser's native change event. The
+  // product host clears the input while its async upload is in flight, so do not
+  // infer whether it started from a later input.files inspection.
+  await delay(250);
+  const earlyProductUploadState = await evaluate(cdp, "(()=>({toast:document.querySelector('#product-v3-toast')?.textContent||'',rows:[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].map(row=>row.dataset.v3ProductMaterialKey)}))()");
+  try {
+    await waitFor(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];const tab=document.querySelector('a[href=\"#product-media\"]');return rows.length===2&&tab?.getAttribute('aria-current')==='step'&&document.querySelector('#pfDescription')?.value==='Chromium material draft remains active'})()", 'product upload reset the current media dimension or did not append its typed receipt');
+  } catch (_) {
+    const uploadState = await evaluate(cdp, "(()=>({rows:[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].map(row=>row.dataset.v3ProductMaterialKey),tab:document.querySelector('a[href=\"#product-media\"]')?.getAttribute('aria-current')||'',description:document.querySelector('#pfDescription')?.value||'',toast:document.querySelector('#product-v3-toast')?.textContent||'',subtle:Boolean(globalThis.crypto&&globalThis.crypto.subtle),inputFiles:document.querySelector('#pfImageUpload')?.files?.length||0,changeSeen:Number(window.__productUploadChangeSeen||0)}))()");
+    throw new Error('product upload reset the current media dimension or did not append its typed receipt ' + JSON.stringify({...uploadState,earlyProductUploadState,responses:responses.slice(-12),runtimeExceptions}));
+  }
+  const uploadedProduct = await evaluate(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];return rows.find(row=>row.dataset.v3ProductMaterialKey!=='image:" + materialLaterID + "')?.dataset.v3ProductMaterialKey||''})()");
+  if (!/^image:[1-9][0-9]*$/.test(uploadedProduct || '')) throw new Error('product upload did not expose a typed Media row');
+  await captureProductMaterialScreens(cdp, 'ordinary-material-draft');
+  const productSortMoved = await evaluate(cdp, "(()=>{const row=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].find(item=>item.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + ");const button=row?.querySelector('[data-v3-product-material-action=\"up\"]');if(!(button instanceof HTMLButtonElement))return false;button.focus();button.click();const active=document.activeElement;return active instanceof HTMLButtonElement&&!active.disabled&&active.closest('[data-v3-product-material-key]')?.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + "})()");
+  if (!productSortMoved) throw new Error('product material sort did not preserve the active row action');
   await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='保存当前维度').click(); true");
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')", 'product material owner save did not complete');
   await waitFor(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Number(body?.revision)===2)", 'product material owner save did not advance the original external-push CAS revision');
@@ -338,7 +376,9 @@ try {
   if (!preservedAfterMaterialSave?.enabled || !preservedAfterMaterialSave?.url || !preservedAfterMaterialSave?.type || !preservedAfterMaterialSave?.params) {
     throw new Error('product material owner save changed an external-push field ' + JSON.stringify(preservedAfterMaterialSave || {}));
   }
-  await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Array.isArray(body?.images)&&body.images.length===1&&body.images[0]==='/api/admin/image-library/" + materialLaterID + "/variants/original')", 'product material owner save/readback did not preserve the later-page URL');
+  const uploadedProductID = Number(String(uploadedProduct).slice('image:'.length));
+  const expectedProductImages = [`/api/admin/image-library/${uploadedProductID}/variants/original`, `/api/admin/image-library/${materialLaterID}/variants/original`];
+  await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>JSON.stringify(body?.images)===" + JSON.stringify(JSON.stringify(expectedProductImages)) + ")",  'product material owner save/readback did not preserve the uploaded typed receipt and chosen order');
   // Field-variable filtering belongs to the mounted V3 mapping editor. It
   // filters locally only after explicit Enter; preview/save remain unchanged.
   const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');const panel=document.querySelector('#product-push');if(!(tab instanceof HTMLAnchorElement)||!(panel instanceof HTMLElement))return false;tab.click();return true})()");
@@ -416,6 +456,19 @@ try {
   } catch (_) {
     throw new Error("service-period product configuration did not load " + await browserSaveDiagnostic());
   }
+  // The service-period editor uses a separate frozen callback. Exercise its
+  // real file input too: the receipt must remain in the active media draft and
+  // must not reset this form before its owner explicitly saves.
+  const serviceMediaOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#sp-media\"]');if(!(tab instanceof HTMLAnchorElement))return false;tab.click();const description=document.querySelector('#spfDescription');if(!(description instanceof HTMLTextAreaElement))return false;description.value='Chromium service material draft remains active';return true})()");
+  if (!serviceMediaOpened) throw new Error('service-period material dimension was unavailable');
+  const serviceUploadPath = path.join(profile, 'chromium-service-upload.png');
+  await fs.writeFile(serviceUploadPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII=', 'base64'));
+  const serviceDOM = await cdp.call('DOM.getDocument', { depth: 2 });
+  const serviceUploadNode = await cdp.call('DOM.querySelector', { nodeId: serviceDOM.root.nodeId, selector: '#spfImageUpload' });
+  if (!serviceUploadNode.nodeId) throw new Error('service-period material upload source input was unavailable');
+  await cdp.call('DOM.setFileInputFiles', { files: [serviceUploadPath], nodeId: serviceUploadNode.nodeId });
+  await waitFor(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];const tab=document.querySelector('a[href=\"#sp-media\"]');return rows.length===1&&tab?.getAttribute('aria-current')==='step'&&document.querySelector('#spfDescription')?.value==='Chromium service material draft remains active'})()", 'service-period upload reset the current media dimension or did not append its typed receipt');
+  await captureProductMaterialScreens(cdp, 'service-material-draft');
   await evaluate(cdp, "(() => { document.querySelector('a[href=\"#sp-push\"]')?.click(); const enabled=document.querySelector('#spfExternalPushEnabled'); const reference=document.querySelector('#spfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-url').value='https://commerce-browser.invalid'; document.querySelector('#product-v3-external-push-type').value='member_renew'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='service browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; (Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')) || document.querySelector('[data-external-push-configuration-save]')).click(); return true; })()");
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '2' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "service-period browser configuration save did not finish");

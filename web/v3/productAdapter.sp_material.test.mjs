@@ -13,6 +13,7 @@ const materialPicker = fs.readFileSync(path.join(root, 'web/donors/ai-assistant-
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check, label) { for (let i = 0; i < 80; i += 1) { if (check()) return; await wait(20); } throw new Error(label); }
 const calls = [];
+const uploadCalls = [];
 let version = 1;
 const projection = { schema_version: 1, status: 'draft', enabled: false, buy_button_text: '', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
 const navigationErrors = [];
@@ -20,6 +21,7 @@ const editorConsole = new VirtualConsole();
 editorConsole.on('jsdomError', error => { if (String(error.message).includes('navigation')) navigationErrors.push(error.message); });
 const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.html', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: editorConsole, beforeParse(window) {
   window.__AICRM_TEST_MOCK__ = false; window.Request = Request; window.Response = Response; window.Headers = Headers;
+  if (!window.crypto.subtle && globalThis.crypto?.subtle) Object.defineProperty(window.crypto, 'subtle', { value: globalThis.crypto.subtle });
   window.AICRMStandardComponents = { ready: () => Promise.resolve() };
   window.fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href); const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -31,6 +33,11 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
       return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, version } });
     }
     if (url.pathname === '/api/admin/service-period-products' || url.pathname === '/api/v1/products') return json({ items: [], total: 0, has_more: false });
+    if (url.pathname === '/api/admin/image-library/upload' && method === 'POST') {
+      const body = init.body; const file = body && typeof body === 'object' && 'get' in body && typeof body.get === 'function' ? body.get('image') : null;
+      uploadCalls.push({ name: file && typeof file === 'object' && 'name' in file ? String(file.name) : '', key: new Headers(init.headers).get('Idempotency-Key') || '' });
+      return json({ ok: true, item: { id: 41, name: '周期上传素材', original_url: '/api/admin/image-library/41/variants/original', thumb_320_url: '/api/admin/image-library/41/variants/thumb_320', enabled: true } });
+    }
     if (url.pathname === '/api/admin/image-library/38') return json({ item: { id: 38, name: '首页素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });
     if (url.pathname === '/api/admin/image-library/39') return json({ item: { id: 39, name: '周期后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true } });
     if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return json({ items: [{ id: 38, name: '首页素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true }], has_more: true, next_offset: 1 });
@@ -94,6 +101,7 @@ assert.ok(document.querySelector('[data-v3-selection-session="material"]'), 'per
 document.querySelector('[data-v3-picker-confirm]').click();
 await waitFor(() => document.querySelector('[data-v3-selection-session="material"]') === null, 'periodic V3 confirm did not return to the owner draft');
 await waitFor(() => [...document.querySelectorAll('#sp-media img')].some((image) => image.src.includes('/39/variants/thumb_320')), 'periodic frozen form did not receive original material');
+document.querySelector('a[href="#sp-sale"]').click();
 for (const [id, value] of [['spfName', '周期素材'], ['spfCode', 'sp-media'], ['spfPrice', '0.02'], ['spfStock', '1']]) document.getElementById(id).value = value;
 const durationBeforeCreate = document.getElementById('spfDurationDays');
 durationBeforeCreate.value = '90'; durationBeforeCreate.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
@@ -121,6 +129,16 @@ assert.equal(policyAfterCreate.dataset.distributionPolicyVersion, '1', 'new peri
 assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-enabled]').checked, true, 'new periodic product readback must retain the selected distribution state');
 assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-rate]').value, '23.45', 'new periodic product readback must retain the edited commission rate');
 assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-wait-days]').value, '9', 'new periodic product readback must retain the edited wait days');
+document.querySelector('a[href="#sp-media"]').click();
+const periodicUpload = document.querySelector('#spfImageUpload');
+assert.ok(periodicUpload instanceof dom.window.HTMLInputElement, 'periodic product upload input remains available in its media dimension');
+const periodicFile = new dom.window.File([new Uint8Array([9, 8, 7])], 'periodic.png', { type: 'image/png', lastModified: 101 });
+Object.defineProperty(periodicFile, 'arrayBuffer', { value: async () => new Uint8Array([9, 8, 7]).buffer });
+Object.defineProperty(periodicUpload, 'files', { configurable: true, value: [periodicFile] });
+periodicUpload.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => uploadCalls.length === 1 && document.querySelector('[data-v3-product-material-key="image:41"]'), 'periodic typed upload must append to the active product draft');
+assert.equal(document.querySelector('a[href="#sp-media"]')?.getAttribute('aria-current'), 'step', 'periodic upload must not reset the selected media dimension');
+assert.deepEqual(uploadCalls.map((call) => call.name), ['periodic.png'], 'periodic upload sends the selected file once');
 document.querySelector('a[href="#sp-action"]').click();
 assert.equal(document.querySelector('a[href="#sp-action"]').getAttribute('aria-current'), 'step', 'saved editor must still switch dimensions');
 save.click();
