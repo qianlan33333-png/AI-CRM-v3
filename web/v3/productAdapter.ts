@@ -798,7 +798,8 @@ function runProductLifecycleAction(button: HTMLButtonElement, product: ProductPr
 
 function lifecycleProjection(row: ProductArchiveRow): ProductProjection | undefined {
   const product = row as ProductProjection;
-  if (!Number.isSafeInteger(product.resourceId) || product.resourceId < 1 || !Number.isSafeInteger(product.version) || product.version < 1) return undefined;
+  const version = product.version;
+  if (!Number.isSafeInteger(product.resourceId) || product.resourceId < 1 || !Number.isSafeInteger(version) || version < 1) return undefined;
   if (product.lifecycle !== 'draft' && product.lifecycle !== 'enabled' && product.lifecycle !== 'disabled') return undefined;
   return product;
 }
