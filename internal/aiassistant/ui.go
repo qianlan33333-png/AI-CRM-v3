@@ -14,8 +14,8 @@ import (
 
 type PageRenderer func(http.ResponseWriter, *http.Request, string, string, Assets) error
 type Assets struct {
-	TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS string
-	DonorScripts                                                                []string
+	TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS, PageHeaderActionHostJS string
+	DonorScripts                                                                                        []string
 }
 type uiHandler struct {
 	dist   string
@@ -131,6 +131,10 @@ func (h *uiHandler) assets() (Assets, error) {
 	if err != nil {
 		return Assets{}, err
 	}
+	pageHeaderActions, err := get(manifest.Entries["pageHeaderActionHost"])
+	if err != nil {
+		return Assets{}, err
+	}
 	group, err := get("assets/standard-components/group_chat_picker.css")
 	if err != nil {
 		return Assets{}, err
@@ -152,7 +156,7 @@ func (h *uiHandler) assets() (Assets, error) {
 		}
 		scripts = append(scripts, value)
 	}
-	return Assets{tokens, labs, group, material, composer, readonly, host, scripts}, nil
+	return Assets{tokens, labs, group, material, composer, readonly, host, pageHeaderActions, scripts}, nil
 }
 func (h *uiHandler) asset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
