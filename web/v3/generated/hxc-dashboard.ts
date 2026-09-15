@@ -353,6 +353,21 @@ export interface HXCDashboardRefreshEnvelope {
  */
 export type PositiveID = number;
 
+export type GroupOpsWebhookErrorError = {
+  /**
+   * @minLength 1
+   * @maxLength 128
+   */
+  code: string;
+};
+
+export interface GroupOpsWebhookError {
+  ok: unknown;
+  error: GroupOpsWebhookErrorError;
+  provider_execution_eligible: unknown;
+  real_external_call_executed: unknown;
+}
+
 export interface ErrorResponse {
   ok?: false;
   error?: string;

@@ -581,6 +581,7 @@ function installCouponListBridge(): void {
     const table = document.querySelector<HTMLTableElement>('#stage table');
     if (!table) return;
     table.querySelectorAll('tbody tr').forEach((row) => {
+      if (!(row instanceof HTMLTableRowElement)) return;
       const actions = [...row.querySelectorAll<HTMLAnchorElement>('a')];
       const archived = row.cells[5]?.textContent?.trim() === '已删除';
       if (archived) {

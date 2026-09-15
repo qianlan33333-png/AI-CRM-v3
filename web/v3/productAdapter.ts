@@ -1694,6 +1694,7 @@ api.saveImageItem = (originalName, patch) => runAction(takeProductUploadInput() 
 type ProductController = {
   page: string;
   db: AdminDb;
+  init(): Promise<void>;
   goto(page: string, query?: string): void;
   qs(): URLSearchParams;
   renderVals(): Record<string, unknown>;
