@@ -190,6 +190,11 @@ const waitFor = async (condition, message) => {
   }
   throw new Error(typeof message === "function" ? message() : message);
 };
+const groupOpsListDocument = (mode, planID = "") => `<!doctype html><html><body>
+  <header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">群运营计划</h1></div><div class="admin-topbar-meta"></div></header>
+  <main id="group-ops-app" data-page-mode="${mode}"${planID ? ` data-plan-id="${planID}"` : ""}></main>
+</body></html>`;
+const groupOpsCreateAction = (view) => view.document.querySelector('[data-page-header-actions="groupops"] [data-page-header-action="create-plan"]');
 // The Host lease is deliberately narrower than a plan-ID cache. These
 // controlled responses exercise same-kind reentry and A -> B -> A: late A
 // success/error/finally must not replace the current A view or its subsequent
@@ -1503,7 +1508,7 @@ const collisionMembers = [
 ];
 const collisionResponse = (body) => response(body);
 const collisionWindow = (mode, planID = "") => {
-  const journey = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="${mode}"${planID ? ` data-plan-id="${planID}"` : ""}></main></body></html>`, {
+  const journey = new JSDOM(groupOpsListDocument(mode, planID), {
     url: `https://groupops.test/admin/automation-conversion/group-ops${mode === "groups" ? "/groups" : planID ? `/plans/${planID}` : ""}`,
     runScripts: "outside-only", pretendToBeVisual: true,
   });
@@ -1533,8 +1538,8 @@ const chooseCollisionStaffTwo = async (view, message) => {
 };
 const collisionCreate = collisionWindow("list");
 try {
-  await waitFor(() => collisionCreate.view.document.querySelector('[data-action="show-create-plan"]'), "collision create page did not render");
-  collisionCreate.view.document.querySelector('[data-action="show-create-plan"]').click();
+  await waitFor(() => groupOpsCreateAction(collisionCreate.view), "collision create page did not render");
+  groupOpsCreateAction(collisionCreate.view).click();
   collisionCreate.view.document.querySelector('[data-action="pick-create-owner"]').click();
   await chooseCollisionStaffTwo(collisionCreate.view, "collision create picker did not render local staff #2");
   await waitFor(() => collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value === "2", "create selection did not retain local staff #2");
@@ -1542,7 +1547,7 @@ try {
   // Re-render the open draft without cancelling it. Cancelling a plan creation
   // intentionally discards the whole draft; a normal re-render must retain
   // the selected local staff ID and never substitute external UserID "2".
-  collisionCreate.view.document.querySelector('[data-action="show-create-plan"]').click();
+  groupOpsCreateAction(collisionCreate.view).click();
   assert.equal(collisionCreate.view.document.querySelector('[name="create_owner_userid"]')?.value, "2", "create rerender must retain the local staff ID rather than external UserID");
   assert.match(collisionCreate.view.document.querySelector('[data-member-current="create_owner_userid"]')?.textContent || "", /本地二号员工/);
 } finally { collisionCreate.journey.window.close(); }
@@ -1720,7 +1725,7 @@ let holdConflictReads = false;
 const pendingConflictReads = [];
 const listRequests = [];
 const delayedConflictRead = (body) => new Promise((resolve) => pendingConflictReads.push(() => resolve(response(body))));
-const listJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
+const listJourney = new JSDOM(groupOpsListDocument("list"), {
   url: "https://groupops.test/admin/automation-conversion/group-ops/ui",
   runScripts: "outside-only",
   pretendToBeVisual: true,
@@ -1814,7 +1819,7 @@ let pagedWriteReply = "conflict";
 let archiveTailRead = false;
 let pagedDetailRevision = 50;
 const pagedRequests = [];
-const paginationJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
+const paginationJourney = new JSDOM(groupOpsListDocument("list"), {
   url: "https://groupops.test/admin/automation-conversion/group-ops/ui",
   runScripts: "outside-only",
   pretendToBeVisual: true,
@@ -2104,7 +2109,7 @@ try {
 }
 
 // An initial read failure is unknown data, not a legitimate zero-plan page.
-const initialFailureJourney = new JSDOM(`<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`, {
+const initialFailureJourney = new JSDOM(groupOpsListDocument("list"), {
   url: "https://groupops.test/admin/automation-conversion/group-ops/ui",
   runScripts: "outside-only",
   pretendToBeVisual: true,
@@ -2129,14 +2134,14 @@ try {
   assert.equal(initialFailureWindow.document.querySelector(".group-ops__metric-value")?.textContent, "—", "an initial failure must not display a fabricated zero total");
   assert(initialFailureWindow.document.body.textContent.includes("尚未取得列表数据"), "an initial failure must remain distinct from an authoritative empty page");
   assert.equal(initialFailureWindow.document.querySelector('[data-action="next-list-page"]').disabled, true, "pagination must remain disabled until the failed first page is retried");
-  initialFailureWindow.document.querySelector('[data-action="show-create-plan"]').click();
+  groupOpsCreateAction(initialFailureWindow).click();
   assert.equal(initialFailureWindow.document.querySelector(".group-ops__metric-value")?.textContent, "—", "opening creation after an unknown page must not fabricate a zero total");
   initialFailureWindow.document.querySelector('[data-action="cancel-create-plan"]').click();
   assert.equal(initialFailureWindow.document.querySelector(".group-ops__metric-value")?.textContent, "—", "cancelling creation after an unknown page must not fabricate a zero total");
   initialFailureStatus = 403;
   initialFailureWindow.document.querySelector('[data-action="retry-list-page"]').click();
   await waitFor(() => initialFailureWindow.document.body.textContent.includes("当前账号无权读取运营计划"), "403 list read did not clear the unknown page into a visible access error");
-  assert.equal(initialFailureWindow.document.querySelector('[data-action="show-create-plan"]').disabled, true, "a forbidden list read must disable list writes");
+  assert.equal(groupOpsCreateAction(initialFailureWindow).disabled, true, "a forbidden list read must disable list writes");
   console.log("groupops-list-initial-failure-dom: PASS");
 } finally {
   initialFailureJourney.window.close();
@@ -2179,7 +2184,7 @@ async function startCreateJourney(label, handlers = {}) {
     else errors.push(message);
   });
   const journey = new JSDOM(
-    `<!doctype html><html><body><main id="group-ops-app" data-page-mode="list"></main></body></html>`,
+    groupOpsListDocument("list"),
     {
       url: `https://groupops.test/admin/automation-conversion/group-ops/ui?fixture=${encodeURIComponent(label)}`,
       runScripts: "outside-only",
@@ -2255,7 +2260,7 @@ async function startCreateJourney(label, handlers = {}) {
   fixtureWindow.eval(bundle.outputFiles[0].text);
   await waitFor(
     () =>
-      fixtureWindow.document.querySelector('[data-action="show-create-plan"]'),
+      groupOpsCreateAction(fixtureWindow),
     `${label} list did not render`,
   );
   return { journey, fixtureWindow, requests, errors, navigations };
@@ -2266,9 +2271,7 @@ async function openCreate(
   { name = "保留的创建草稿", planType = "webhook", owner = true } = {},
 ) {
   const { fixtureWindow } = fixture;
-  fixtureWindow.document
-    .querySelector('[data-action="show-create-plan"]')
-    .click();
+  groupOpsCreateAction(fixtureWindow).click();
   await waitFor(
     () => fixtureWindow.document.querySelector('[name="create_plan_name"]'),
     "create panel did not render",

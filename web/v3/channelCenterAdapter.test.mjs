@@ -48,7 +48,7 @@ const state = {
   calls: [], etag: new Map([['9', '"5"'], ['10', '"7"'], ['11', '"11"'], ['12', '"13"']]),
   listReads: 0, listSnapshots: [], holdInitialListRead: true, failNextListRead: false, outcomes: new Map([['10', 'proxy_502']]),
 };
-const list = new JSDOM(`<!doctype html><body data-page="channels"><template id="tpl">${template}</template><main id="stage"></main></body>`, {
+const list = new JSDOM(`<!doctype html><body data-page="channels"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">渠道码中心</h1></div></header><template id="tpl">${template}</template><main id="stage"></main></body>`, {
   url: 'https://test.invalid/admin/channels', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
   beforeParse(window) {
     window.Request = Request; window.Response = Response; window.Headers = Headers;
@@ -108,10 +108,18 @@ try {
   assert.equal(state.calls.at(-1)?.path, '/api/admin/channels/9', 'the normal-list seam never appends or removes detail query parameters');
   releaseInitialListRead();
   await waitFor(() => actionForName('同名渠道'), 'the real frozen controller and SC list must bind active archive actions');
+  assert.equal(list.window.document.querySelectorAll('.admin-topbar .admin-page-title').length, 1, 'the shell keeps the one channel page title');
+  const pageActions = list.window.document.querySelector('[data-page-header-actions="channel-center"]');
+  assert.equal(pageActions?.querySelectorAll('a').length, 1, 'the channel creation action mounts once in the existing topbar');
+  assert.equal(pageActions?.querySelector('a')?.getAttribute('href'), '/admin/channels/new', 'the topbar keeps the canonical channel creation route');
+  assert.equal(list.window.document.querySelectorAll('#stage h2').length, 0, 'the embedded channel list does not retain a duplicate title');
+  assert.equal(list.window.document.querySelector('#stage')?.textContent?.includes('独立管理普通二维码和企微获客助手链接'), false, 'the embedded page description is removed without touching the frozen source');
+  assert.ok(list.window.document.querySelector('#stage input[aria-label="搜索渠道名称"]'), 'the existing channel search remains in the workspace');
+  assert.ok(list.window.document.querySelector('#stage table'), 'the donor list table remains mounted after page-header cleanup');
   const initialListRead = state.calls.find((call) => call.method === 'GET' && call.path.startsWith('/api/admin/channels?'));
   assert.equal(initialListRead?.path, '/api/admin/channels?limit=50', 'the normal channel list removes the frozen include_archived=true parameter before its real GET');
   assert.deepEqual(state.listSnapshots.at(0), ['10', '11', '12'], 'the normal list total projects only its three non-archived resources');
-  assert.equal([...list.window.document.querySelectorAll('tbody tr')].length, 3, 'the normal channel list renders only its non-archived rows');
+  assert.equal([...list.window.document.querySelectorAll('tbody tr')].length, 3, 'the normal channel list renders only its three non-archived rows');
   assert.equal([...list.window.document.querySelectorAll('tbody tr')].some((row) => row.querySelectorAll(':scope > td')[2]?.textContent?.trim() === '归档'), false, 'an archived row is not retained as a disabled normal-list row');
   assert.equal([...list.window.document.querySelectorAll('tr')].some((row) => row.textContent?.includes('同名渠道') && [...row.querySelectorAll('a')].some((node) => node.textContent === '下载二维码')), true, 'an active row keeps its QR download action');
   assert.equal(list.window.document.querySelector('[title*="永久删除"]')?.textContent, '删除不可用', 'permanent deletion remains visibly unavailable');

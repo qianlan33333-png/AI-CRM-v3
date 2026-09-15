@@ -521,7 +521,9 @@ func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminP
 		}
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// The channel list uses the shared V3 topbar for its one title and create
+	// action. The form keeps its existing embedded layout and controls.
+	data.ShowPageHeader = page == "channels"
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Channel: true, ChannelPage: page, ChannelResourceID: resourceID, ChannelAssets: assets})
 	if err != nil {

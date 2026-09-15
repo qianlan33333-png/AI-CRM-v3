@@ -172,6 +172,16 @@ try {
     const result = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     await fs.writeFile(path.join(screenshotDirectory, name + ".png"), Buffer.from(result.data, "base64"), { mode: 0o600 });
   };
+  const captureHeaderWidths = async (owner, label) => {
+    for (const width of [1440, 1280]) {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+      await delay(80);
+      const header = await evaluate(cdp, `(() => { const action=document.querySelector('[data-page-header-actions="${owner}"]'); const rect=action?.getBoundingClientRect(); const style=action ? getComputedStyle(action) : null; return {width:innerWidth,documentWidth:document.documentElement.scrollWidth,titleCount:document.querySelectorAll('.admin-topbar .admin-page-title').length,actions:action?.querySelectorAll('a,button').length || 0,visible:Boolean(rect && style?.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.right <= innerWidth + 1)}; })()`);
+      if (!header || header.width !== width || header.documentWidth > width + 1 || header.titleCount !== 1 || header.actions !== 1 || !header.visible) throw new Error(`${label} ${width}px topbar action layout invalid: ${JSON.stringify(header)}`);
+      await capture(`${label}-${width}`);
+    }
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+  };
   const captureFailureEvidence = async label => {
     const safeLabel = label.replace(/[^A-Za-z0-9_.-]/g, "_");
     let screenshotCaptured = false;
@@ -284,6 +294,23 @@ try {
     })()`);
     if (!hxc?.stage || !hxc.pageTitleVisible || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible || !hxc.refreshInTopbar) throw new Error(label + " HXC title/padding/action layout invalid");
   };
+  const assertRadarListLayout = async label => {
+    await assertLayout("standard", label, ".admin-page-title");
+    const radar = await evaluate(cdp, `(() => {
+      const stage=document.querySelector('#stage.labs.sec-radar');
+      const topbar=document.querySelector('.admin-topbar');
+      const title=topbar?.querySelector('.admin-page-title');
+      const action=topbar?.querySelector('[data-page-header-actions="radar-list"] a[href="/admin/radarForm.html"]');
+      const search=stage?.querySelector('#fKeyword');
+      const table=stage?.querySelector('#listRows');
+      const style=stage ? getComputedStyle(stage) : null;
+      const visible=node => { const rect=node?.getBoundingClientRect(), computed=node ? getComputedStyle(node) : null; return Boolean(node && computed?.display !== 'none' && computed?.visibility !== 'hidden' && rect && rect.width > 1 && rect.height > 1); };
+      return {stage:Boolean(stage),paddingLeft:style?.paddingLeft || '',paddingTop:style?.paddingTop || '',title:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,actionVisible:visible(action),pageHead:Boolean(stage?.querySelector(':scope > .page-head')),searchVisible:visible(search),rows:table?.querySelectorAll('tr').length || 0};
+    })()`);
+    const radarReason = {stage:Boolean(radar?.stage),padding:radar?.paddingLeft === "20px" && radar?.paddingTop === "16px",title:radar?.title === "内容雷达",headers:radar?.headers === 1,action:Boolean(radar?.actionVisible),pageHead:!radar?.pageHead,search:Boolean(radar?.searchVisible),rows:(radar?.rows || 0) >= 1};
+    if (!Object.values(radarReason).every(Boolean)) throw new Error(label + " V3 radar list topbar/filter/table layout invalid: " + JSON.stringify(radarReason));
+  };
+
   const assertRadarLayout = async (label, actionSelector, contentSelector = ".sec-radar .page-head") => {
     await assertLayout("standard", label, contentSelector);
     const radar = await evaluate(cdp, `(() => {
@@ -484,14 +511,15 @@ try {
       const topbar=document.querySelector('.admin-topbar');
       const title=topbar?.querySelector('.admin-page-title');
       const root=stage?.querySelector('#group-ops-app[data-group-ops-standard-host="true"]');
-      const toolbar=root?.querySelector(':scope > .group-ops__bar');
-      const create=toolbar?.querySelector('[data-action="show-create-plan"]');
-      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),toolbar:box(toolbar),createVisible:visible(create),pageH1Count:Array.from(document.querySelectorAll('h1')).filter(visible).length,syntheticWorkspaceHeadings:root?.querySelectorAll('.group-ops__page-heading').length ?? -1,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
+      const actions=topbar?.querySelector('[data-page-header-actions="groupops"]');
+      const viewGroups=actions?.querySelector('a[href="/admin/automation-conversion/group-ops/groups/ui"]');
+      const create=actions?.querySelector('button');
+      return {stage:box(stage),topbar:box(topbar),titleText:String(title?.textContent || '').trim(),headers:document.querySelectorAll('header.admin-topbar').length,root:box(root),actions:box(actions),viewGroupsVisible:visible(viewGroups),createVisible:visible(create),workspaceToolbar:Boolean(root?.querySelector(':scope > .group-ops__bar')),pageH1Count:Array.from(document.querySelectorAll('h1')).filter(visible).length,syntheticWorkspaceHeadings:root?.querySelectorAll('.group-ops__page-heading').length ?? -1,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1};
     })()`);
     // The final dd8 standard shell cascade gives native pages a 20px/16px
     // content inset. Keep this exact source-backed value rather than the
     // earlier declaration that the final cascade overrides.
-    const invalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "群运营计划" || !layout.root || !layout.toolbar || !layout.createVisible || layout.pageH1Count !== 1 || layout.syntheticWorkspaceHeadings !== 0 || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom || Math.abs(layout.root.left - layout.stage.left - 20) > 1 || Math.abs(layout.root.top - layout.stage.top - 16) > 1 || Math.abs(layout.toolbar.left - layout.root.left) > 1 || Math.abs(layout.toolbar.top - layout.root.top) > 1;
+    const invalid = !layout.stage || !layout.topbar || layout.headers !== 1 || layout.titleText !== "群运营计划" || !layout.root || !layout.actions || !layout.viewGroupsVisible || !layout.createVisible || layout.workspaceToolbar || layout.pageH1Count !== 1 || layout.syntheticWorkspaceHeadings !== 0 || layout.overflow || layout.stage.paddingLeft !== "20px" || layout.stage.paddingTop !== "16px" || layout.root.top + 1 < layout.topbar.bottom || Math.abs(layout.root.left - layout.stage.left - 20) > 1 || Math.abs(layout.root.top - layout.stage.top - 16) > 1;
     if (invalid) throw new Error(label + " native Group Ops topbar/content geometry invalid");
   };
   const navigateGroupOps = async (pathname, label, screenshot = false, fromMenu = false, finalPath = pathname) => {
@@ -500,7 +528,7 @@ try {
       if (fromMenu) await clickNavigation(pathname, label);
       else await cdp.call("Page.navigate", { url: baseURL + pathname });
       await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, label + " did not navigate");
-      await waitFor(cdp, "Boolean(document.querySelector('#stage.admin-page[data-group-ops-standard-stage] #group-ops-app[data-group-ops-standard-host=\"true\"] > .group-ops__bar [data-action=\"show-create-plan\"]'))", label + " native Group Ops Host did not become ready");
+      await waitFor(cdp, "Boolean(document.querySelector('#stage.admin-page[data-group-ops-standard-stage] #group-ops-app[data-group-ops-standard-host=\"true\"]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"groupops\"] a[href=\"/admin/automation-conversion/group-ops/groups/ui\"]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"groupops\"] button'))", label + " native Group Ops Host did not become ready");
       await waitForFonts(label);
       await recordGeometry(label, () => assertGroupOpsLayout(label), screenshot);
       return true;
@@ -647,15 +675,21 @@ try {
   await navigate("/admin/operation-cycles", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "cycles", "embedded", embeddedTitle, true, true);
   await recordGeometry("cycles-padding-regression-control", () => assertInsetRegressionRejected("cycles", embeddedTitle), false);
   await navigateGroupOps("/admin/automation-conversion/group-ops/ui", "groupops", true, true, "/admin/groupops.html");
-  await navigate("/admin/channels", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "channels", "embedded", embeddedTitle, true, true);
+  const channelsMounted = await navigateStandard("/admin/channels", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"channel-center\"] a[href=\"/admin/channels/new\"]')) && Boolean(document.querySelector('input[aria-label=\"搜索渠道名称\"]')) && Boolean(document.querySelector('#stage table'))", "channels", true, true);
+  if (channelsMounted) await recordGeometry("channels", async () => {
+    const channel = await evaluate(cdp, `(() => { const topbar=document.querySelector('.admin-topbar'); const title=topbar?.querySelector('.admin-page-title'); const action=topbar?.querySelector('[data-page-header-actions="channel-center"] a[href="/admin/channels/new"]'); const stage=document.querySelector('#stage'); const listHeading=Array.from(stage?.querySelectorAll('h2') || []).some(node => String(node.textContent || '').trim() === '渠道码列表'); const description=stage?.textContent?.includes('渠道码中心只管理渠道资产、渠道用户、欢迎语、标签和客服分配。'); const search=stage?.querySelector('input[aria-label="搜索渠道名称"]'); const rows=stage?.querySelectorAll('tbody tr').length || 0; return {headers:document.querySelectorAll('header.admin-topbar').length,title:String(title?.textContent || '').trim(),action:Boolean(action),listHeading,description,search:Boolean(search),rows}; })()`);
+    if (channel.headers !== 1 || channel.title !== "渠道码中心" || !channel.action || channel.listHeading || channel.description || !channel.search) throw new Error("channels topbar/filter/table layout invalid");
+  }, true);
+  if (channelsMounted) await captureHeaderWidths("channel-center", "channels-header");
   await navigateAIAssistant("/admin/cloud-orchestrator/plans", "ai", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] .cloud-plan-toolbar [data-plan-refresh]')) && document.querySelector('[data-plan-list]')?.textContent?.includes('AI layout detail fixture')", false, true);
   await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('#stage.admin-workspace-stage--dynamic [data-cloud-plan-root] [data-plan-approve]')) && Boolean(document.querySelector('[data-plan-reject]')) && Boolean(document.querySelector('a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);
   await navigateStandard("/admin/customers", "Boolean(document.querySelector('[data-customer-directory-root]'))", "customers", true, true);
   const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel')) && document.querySelectorAll('#hxcBody tr').length > 1", "hxc", "standard", "#hxcStats", false, true);
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
   await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", questionnaireTitle, true, true);
-  const radarMounted = await navigate("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#btnNew'))", "radar", "standard", ".sec-radar .page-head", false, true);
-  if (radarMounted) await recordGeometry("radar", () => assertRadarLayout("radar", "#btnNew"), true);
+  const radarMounted = await navigateStandard("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar #listRows')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"radar-list\"] a[href=\"/admin/radarForm.html\"]'))", "radar", true, true);
+  if (radarMounted) await recordGeometry("radar", () => assertRadarListLayout("radar"), true);
+  if (radarMounted) await captureHeaderWidths("radar-list", "radar-header");
   const radarNumericID = Number(radarID);
   const radarDetailMounted = await navigate("/admin/radarDetail.html?id=" + encodeURIComponent(String(radarNumericID)), "Boolean(document.querySelector('#stage.labs.sec-radar')) && Boolean(document.querySelector('#dEdit')) && Boolean(document.querySelector('[data-v3-radar-visitor-host]')) && document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('雷达布局访客') && document.querySelector('[data-v3-radar-visitor-host]')?.textContent?.includes('2026-09-07 09:02:03')", "radar-detail", "standard", "#dEdit", false);
   if (radarDetailMounted) {

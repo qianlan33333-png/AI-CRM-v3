@@ -130,7 +130,7 @@ async function mountRadar(respond) {
   const ready = new Promise((resolve) => { releaseReady = resolve; });
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error) => errors.push(error));
-  const dom = new JSDOM('<!doctype html><body data-page="radar"><main id="stage"></main></body>', {
+  const dom = new JSDOM('<!doctype html><body data-page="radar"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">内容雷达</h1></div></header><main id="stage"></main></body>', {
     url: 'https://test.invalid/admin/radar.html', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole,
     beforeParse(window) {
       window.Response = Response; window.Headers = Headers; window.Request = Request;
@@ -263,14 +263,12 @@ function queryInput(rootNode, fixture, selector, value) {
       contentType: stage.querySelector('#fType'),
       status: stage.querySelector('#fStatus'),
       refresh: stage.querySelector('#fRefresh'),
-      create: stage.querySelector('#btnNew'),
     };
     const assertFrozenToolbarIdentity = (step) => {
       assert.strictEqual(stage.querySelector('#fKeyword'), toolbar.search, `${step}: frozen search input is not remounted`);
       assert.strictEqual(stage.querySelector('#fType'), toolbar.contentType, `${step}: frozen type select is not remounted`);
       assert.strictEqual(stage.querySelector('#fStatus'), toolbar.status, `${step}: frozen status select is not remounted`);
       assert.strictEqual(stage.querySelector('#fRefresh'), toolbar.refresh, `${step}: frozen refresh callback stays on its original button`);
-      assert.strictEqual(stage.querySelector('#btnNew'), toolbar.create, `${step}: frozen create callback stays on its original button`);
       assert.equal(stage.querySelectorAll('[data-v3-radar-list-controls]').length, 1, `${step}: one Host pagination panel proves the page was not mounted twice`);
     };
     assertFrozenToolbarIdentity('initial read');
@@ -279,7 +277,6 @@ function queryInput(rootNode, fixture, selector, value) {
     assert.match(stage.querySelector('#listRows')?.textContent || '', /PDF 状态：未处理/, 'the retained frozen PDF row still uses its original renderer when the declared list DTO has no processing metadata');
     for (const control of [
       ...panel.querySelectorAll('button'),
-      stage.querySelector('#btnNew'),
       stage.querySelector('#shareCopy'),
       stage.querySelector('#shareQrDownload'),
       stage.querySelector('[data-toggle]'),
@@ -288,6 +285,11 @@ function queryInput(rootNode, fixture, selector, value) {
       assert.equal(control?.dataset.capabilityState, 'real', 'owned action is never labelled backend_blocked');
       assert.equal(control?.hasAttribute('aria-description'), false, 'owned action removes stale unavailable text');
     }
+    const radarActions = fixture.dom.window.document.querySelector('[data-page-header-actions="radar-list"]');
+    assert.equal(fixture.dom.window.document.querySelectorAll('.admin-topbar .admin-page-title').length, 1, 'the shell keeps the one radar page title');
+    assert.equal(radarActions?.querySelectorAll('a').length, 1, 'radar creation mounts once in the existing topbar');
+    assert.equal(radarActions?.querySelector('a')?.getAttribute('href'), '/admin/radarForm.html', 'the topbar keeps the original radar create route');
+    assert.equal(stage.querySelector('.page-head'), null, 'the duplicate donor page head is removed');
     assert.equal(stage.querySelector('[data-detail]')?.dataset.capabilityState, 'presentation_only', 'the frozen detail callback remains outside the Host action capture');
     assert.equal(stage.querySelector('[data-edit]')?.dataset.capabilityState, 'presentation_only', 'the frozen edit callback remains outside the Host action capture');
     const unbound = fixture.dom.window.document.createElement('button');
@@ -413,9 +415,7 @@ function queryInput(rootNode, fixture, selector, value) {
     assert.doesNotMatch(stage.querySelector('#shareQr').textContent || '', /rd_/, '401/403 clear the prior QR payload');
     assert.equal(stage.querySelector('#fKeyword').disabled, true, '401/403 lock further list reads until reauthentication');
     assertFrozenToolbarIdentity('permission cleanup');
-    button(stage, '＋ 新建雷达链接').click();
-    navigationAttempts = 1;
-    await waitFor(() => fixture.errors.filter((error) => error.message === 'Not implemented: navigation to another Document').length === 1, 'the original create callback navigates exactly once');
+    assert.equal(radarActions?.querySelector('a')?.getAttribute('href'), '/admin/radarForm.html', 'permission cleanup does not remove the page-level creation route');
   } finally {
     await fixture.close({ navigationAttempts });
   }

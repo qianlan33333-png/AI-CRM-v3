@@ -7,6 +7,7 @@ import type { AdminDb } from '../src/shared/api/types';
 import { confirmBox, toast } from '../src/shared/ui/feedback';
 import { startChannelAdmissionHost } from './channelAdmissionHost';
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 // @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
 import { AdminController } from '../src/admin/controller';
 
@@ -215,6 +216,25 @@ function prepareFrozenChannelListTemplate(): void {
   if (document.body?.dataset.page !== 'channels') return;
   const template = document.getElementById('tpl');
   if (!(template instanceof HTMLTemplateElement)) return;
+  // The V3 shell now owns the only page title and primary creation action.
+  // Mutate the in-memory fragment only: the donor remains the list renderer
+  // and keeps its search field, table, drawer and all row-level operations.
+  const donorPageHeader = Array.from(template.content.children).find((node) =>
+    node instanceof HTMLElement
+    && node.style.minHeight === '64px'
+    && node.querySelector(':scope > div > div:nth-child(2)')?.textContent?.trim() === '渠道码中心',
+  );
+  donorPageHeader?.remove();
+  const listHeading = Array.from(template.content.querySelectorAll('h2')).find((node) => node.textContent?.trim() === '渠道码列表');
+  // The surrounding filter row remains: it now contains only the search
+  // control, while the one page title and creation action live in topbar.
+  listHeading?.parentElement?.remove();
+  Array.from(template.content.querySelectorAll('button'))
+    .find((node) => node.textContent?.trim() === '新建渠道')
+    ?.remove();
+  mountPageHeaderActions('channel-center', [
+    { label: '新建渠道', href: '/admin/channels/new', variant: 'primary' },
+  ]);
   // Rows live in a nested <template data-sc-for>; walk each template.content
   // explicitly because querySelectorAll does not cross template fragments.
   const fragments: DocumentFragment[] = [template.content];
