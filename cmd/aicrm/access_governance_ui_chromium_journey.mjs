@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { chromiumStartupDiagnostic } from "../../internal/webshell/chromium_launch.mjs";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -14,6 +15,7 @@ const credentials = {
 };
 if (!/^https:\/\//.test(baseURL || "") || !screenshots || Object.values(credentials).flat().some((value) => !value)) throw new Error("Access UI Chromium journey environment is incomplete");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const accessChromiumStartupTimeoutMS = 8_000;
 const browserBinary = () => {
   const choices = [process.env.AICRM_CHROMIUM_BINARY, process.env.CHROME_BIN, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "google-chrome", "chromium"].filter(Boolean);
   for (const candidate of choices) { try { if (candidate.includes("/") ? spawnSync(candidate, ["--version"], { stdio: "ignore" }).status === 0 : spawnSync("which", [candidate], { stdio: "ignore" }).status === 0) return candidate; } catch (_) {} }
@@ -24,7 +26,21 @@ class CDP {
   call(method, params = {}) { return new Promise((resolve, reject) => { const id = ++this.id; const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, 8000); this.pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } }); this.socket.send(JSON.stringify({ id, method, params })); }); }
   close() { this.socket.close(); }
 }
-async function address(profile) { for (let index = 0; index < 160; index += 1) { try { const port = String(await fs.readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]; if (/^\d+$/.test(port)) return `http://127.0.0.1:${port}`; } catch (_) {} await sleep(50); } throw new Error("Chromium DevTools did not start"); }
+async function address(profile, processState) {
+  const deadline = Date.now() + accessChromiumStartupTimeoutMS;
+  while (Date.now() < deadline) {
+    try {
+      const port = String(await fs.readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0];
+      if (/^\d+$/.test(port)) return `http://127.0.0.1:${port}`;
+    } catch (_) {}
+    const state = processState();
+    if (state.launchError || state.exitCode !== null || state.signalCode) {
+      throw new Error(chromiumStartupDiagnostic({ ...state, profile, timeoutMS: accessChromiumStartupTimeoutMS }));
+    }
+    await sleep(50);
+  }
+  throw new Error(chromiumStartupDiagnostic({ ...processState(), profile, timeoutMS: accessChromiumStartupTimeoutMS }));
+}
 async function evaluate(cdp, expression) { const result = await cdp.call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error("page evaluation failed"); return result.result?.value; }
 async function waitFor(cdp, expression, message) { for (let index = 0; index < 180; index += 1) { if (await evaluate(cdp, expression)) return; await sleep(50); } throw new Error(message); }
 const cookiesFrom = (response) => typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
@@ -64,10 +80,12 @@ async function screenshot(cdp, width, filename) {
 }
 
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-access-ui-chromium-"));
-let child; let cdp;
+let child; let cdp; let chromeLaunchError; let chromeStderr = "";
 try {
-  child = spawn(browserBinary(), ["--headless=new", "--no-sandbox", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--ignore-certificate-errors", "--allow-insecure-localhost", "about:blank"], { stdio: "ignore" });
-  const page = await (await fetch(`${await address(profile)}/json/new?about:blank`, { method: "PUT" })).json();
+  child = spawn(browserBinary(), ["--headless=new", "--no-sandbox", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--ignore-certificate-errors", "--allow-insecure-localhost", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  child.once("error", (error) => { chromeLaunchError = error; });
+  child.stderr?.on("data", (chunk) => { chromeStderr = (chromeStderr + String(chunk)).slice(-1024); });
+  const page = await (await fetch(`${await address(profile, () => ({ exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, launchError: chromeLaunchError, stderr: chromeStderr }))}/json/new?about:blank`, { method: "PUT" })).json();
   const socket = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("CDP page connection failed")), { once: true }); });
   cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");

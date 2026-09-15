@@ -25,6 +25,10 @@ func TestPresentationAssetsAndInitialServerStage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, entries["adminDateTimeHost"]), []byte("test"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	entries["selectionDialogStyles"] = "assets/selectionDialogStyles.test"
+	if err := os.WriteFile(filepath.Join(dir, entries["selectionDialogStyles"]), []byte("test"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	encoded, _ := json.Marshal(map[string]any{"entries": entries})
 	if err := os.WriteFile(filepath.Join(dir, "asset-manifest.json"), encoded, 0600); err != nil {
 		t.Fatal(err)
@@ -34,7 +38,7 @@ func TestPresentationAssetsAndInitialServerStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	assets := functions["presentationAssets"].(func() PresentationAssets)()
-	if len(assets.Styles) != 3 || assets.Script != "/assets/surfaceFeedbackHost.test" || assets.AdminDateTimeScript != "/assets/adminDateTimeHost.test" {
+	if len(assets.Styles) != 3 || assets.Script != "/assets/surfaceFeedbackHost.test" || assets.AdminDateTimeScript != "/assets/adminDateTimeHost.test" || assets.SelectionDialogCSS != "/assets/selectionDialogStyles.test" {
 		t.Fatalf("unexpected assets: %#v", assets)
 	}
 	content := functions["presentationContent"].(func(template.HTML) template.HTML)

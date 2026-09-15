@@ -92,28 +92,30 @@ type AdminShellView struct {
 	AutomationAssets AutomationAssets
 	// AutomationCreateCode is a v3 host binding for the frozen create form.
 	// It is absent for existing records, whose immutable code stays donor-owned.
-	AutomationCreateCode string
-	Survey               bool
-	SurveyPage           string
-	SurveyAssets         SurveyAssets
-	OperationCycles      bool
-	OperationPage        string
-	OperationAssets      OperationCycleAssets
-	Config               bool
-	ConfigPage           string
-	ConfigAssets         ConfigAssets
-	RuntimeConfig        bool
-	RuntimeConfigPage    string
-	Channel              bool
-	ChannelPage          string
-	ChannelResourceID    string
-	ChannelAssets        ChannelAssets
-	AIAssistant          bool
-	OwnerHandoff         bool
-	MessageArchive       bool
-	AIAssistantAssets    AIAssistantAssets
-	Distribution         bool
-	DistributionAssets   DistributionAssets
+	AutomationCreateCode  string
+	Survey                bool
+	SurveyPage            string
+	SurveyAssets          SurveyAssets
+	OperationCycles       bool
+	OperationPage         string
+	OperationAssets       OperationCycleAssets
+	Config                bool
+	ConfigPage            string
+	ConfigAssets          ConfigAssets
+	RuntimeConfig         bool
+	RuntimeConfigPage     string
+	Channel               bool
+	ChannelPage           string
+	ChannelResourceID     string
+	ChannelAssets         ChannelAssets
+	AIAssistant           bool
+	OwnerHandoff          bool
+	MessageArchive        bool
+	AIAssistantAssets     AIAssistantAssets
+	Distribution          bool
+	DistributionAssets    DistributionAssets
+	ComponentStates       bool
+	ComponentStatesAssets ComponentStatesAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -149,14 +151,14 @@ type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
 type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS string }
 
-type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS string }
+type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS, HostJS, StandardHostJS, SelectionDialogCSS string }
 
 // GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
 // template and runtime assets.
 type GroupOpsAssets struct {
 	TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string
-	StandardCSS, HostJS                                  string
+	StandardCSS, HostJS, SelectionDialogCSS              string
 	OperationPickerJS                                    string
 	GroupPickerCSS, GroupPickerJS                        string
 	MaterialPickerCSS, MaterialPickerJS                  string
@@ -189,6 +191,15 @@ type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, Compos
 // DistributionAssets is the small manifest-derived closure mounted inside the
 // admin shell. It never contains a donor document or business data.
 type DistributionAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
+
+// ComponentStatesAssets are the V3-owned presentation resources for the
+// authenticated component-state demo. They contain no business data or API
+// endpoint; the Host uses explicit in-memory fixture records only.
+type ComponentStatesAssets struct {
+	VisualTokensCSS, StylesCSS, SelectionDialogCSS string
+	GroupOpsCSS, GroupPickerCSS, MaterialPickerCSS string
+	HostJS                                         string
+}
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -274,6 +285,23 @@ func (renderer *Renderer) RenderDistribution(writer http.ResponseWriter, data Ad
 	normalizeAdminPage(&data)
 	content := template.HTML(`<section id="distribution-admin-root" aria-live="polite"></section>`)
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: content, Distribution: true, DistributionAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderComponentStates mounts the V3 component-state demo in the existing
+// admin shell. The generic /admin route remains protected by Access in the
+// composition root; this renderer never receives an identity or domain data.
+func (renderer *Renderer) RenderComponentStates(writer http.ResponseWriter, data AdminPageData, assets ComponentStatesAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.VisualTokensCSS == "" || assets.StylesCSS == "" || assets.SelectionDialogCSS == "" || assets.GroupOpsCSS == "" || assets.GroupPickerCSS == "" || assets.MaterialPickerCSS == "" || assets.HostJS == "" {
+		return errors.New("component state shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = true
+	content := template.HTML(`<section id="component-states-root" data-component-states-root aria-live="polite"></section>`)
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: content, ComponentStates: true, ComponentStatesAssets: assets})
 	if err != nil {
 		return err
 	}
@@ -377,7 +405,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 3 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 4 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -452,7 +480,7 @@ func (renderer *Renderer) RenderRadar(writer http.ResponseWriter, data AdminPage
 // are supplied as inert body data for the v3 host adapter; they are never
 // interpolated into donor markup.
 func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminPageData, page, resourceID, donorTemplate string, assets ChannelAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 5 || (page != "channels" && page != "channelForm") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 6 || (page != "channels" && page != "channelForm") {
 		return errors.New("channel shell assets are required")
 	}
 	if resourceID != "" {
@@ -478,7 +506,7 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 		return errors.New("Group Ops shell assets are required")
 	}
 	standard := strings.Contains(donorTemplate, `data-group-ops-standard-host="true"`)
-	if standard && (assets.StandardCSS == "" || assets.HostJS == "" || assets.OperationPickerJS == "" || assets.GroupPickerCSS == "" || assets.GroupPickerJS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ComposerCSS == "" || assets.ComposerJS == "") {
+	if standard && (assets.StandardCSS == "" || assets.HostJS == "" || assets.SelectionDialogCSS == "" || assets.OperationPickerJS == "" || assets.GroupPickerCSS == "" || assets.GroupPickerJS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ComposerCSS == "" || assets.ComposerJS == "") {
 		return errors.New("Group Ops standard host assets are required")
 	}
 	normalizeAdminPage(&data)

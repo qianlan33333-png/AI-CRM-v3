@@ -25,9 +25,9 @@ var OwnerHandoffHost = (() => {
     mod
   ));
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/conventions.js
+  // node_modules/@xmldom/xmldom/lib/conventions.js
   var require_conventions = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/conventions.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/conventions.js"(exports) {
       "use strict";
       function find(list, predicate, ac) {
         if (ac === void 0) {
@@ -234,9 +234,9 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/errors.js
+  // node_modules/@xmldom/xmldom/lib/errors.js
   var require_errors = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/errors.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/errors.js"(exports) {
       "use strict";
       var conventions = require_conventions();
       function extendError(constructor, writableName) {
@@ -324,7 +324,7 @@ var OwnerHandoffHost = (() => {
       function endsWithError(value) {
         return typeof value === "string" && value.substring(value.length - DOMExceptionName.Error.length) === DOMExceptionName.Error;
       }
-      function DOMException(messageOrCode, nameOrMessage) {
+      function DOMException2(messageOrCode, nameOrMessage) {
         if (isValidDomExceptionCode(messageOrCode)) {
           this.name = DOMExceptionNames[messageOrCode];
           this.message = nameOrMessage || "";
@@ -332,10 +332,10 @@ var OwnerHandoffHost = (() => {
           this.message = messageOrCode;
           this.name = endsWithError(nameOrMessage) ? nameOrMessage : DOMExceptionName.Error;
         }
-        if (Error.captureStackTrace) Error.captureStackTrace(this, DOMException);
+        if (Error.captureStackTrace) Error.captureStackTrace(this, DOMException2);
       }
-      extendError(DOMException, true);
-      Object.defineProperties(DOMException.prototype, {
+      extendError(DOMException2, true);
+      Object.defineProperties(DOMException2.prototype, {
         code: {
           enumerable: true,
           get: function() {
@@ -375,7 +375,7 @@ var OwnerHandoffHost = (() => {
       var entries = Object.entries(ExceptionCode);
       for (i = 0; i < entries.length; i++) {
         key2 = entries[i][0];
-        DOMException[key2] = entries[i][1];
+        DOMException2[key2] = entries[i][1];
       }
       var key2;
       var i;
@@ -386,16 +386,16 @@ var OwnerHandoffHost = (() => {
         if (Error.captureStackTrace) Error.captureStackTrace(this, ParseError);
       }
       extendError(ParseError);
-      exports.DOMException = DOMException;
+      exports.DOMException = DOMException2;
       exports.DOMExceptionName = DOMExceptionName;
       exports.ExceptionCode = ExceptionCode;
       exports.ParseError = ParseError;
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/grammar.js
+  // node_modules/@xmldom/xmldom/lib/grammar.js
   var require_grammar = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/grammar.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/grammar.js"(exports) {
       "use strict";
       function detectUnicodeSupport(RegExpImpl) {
         try {
@@ -600,9 +600,9 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/dom.js
+  // node_modules/@xmldom/xmldom/lib/dom.js
   var require_dom = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/dom.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/dom.js"(exports) {
       "use strict";
       var conventions = require_conventions();
       var find = conventions.find;
@@ -615,7 +615,7 @@ var OwnerHandoffHost = (() => {
       var NAMESPACE = conventions.NAMESPACE;
       var PDC = Symbol();
       var errors = require_errors();
-      var DOMException = errors.DOMException;
+      var DOMException2 = errors.DOMException;
       var DOMExceptionName = errors.DOMExceptionName;
       var g = require_grammar();
       function checkSymbol(symbol) {
@@ -647,7 +647,7 @@ var OwnerHandoffHost = (() => {
       }
       function validateQualifiedName(qualifiedName) {
         if (!g.QName_exact.test(qualifiedName)) {
-          throw new DOMException(DOMException.INVALID_CHARACTER_ERR, 'invalid character in qualified name "' + qualifiedName + '"');
+          throw new DOMException2(DOMException2.INVALID_CHARACTER_ERR, 'invalid character in qualified name "' + qualifiedName + '"');
         }
       }
       function validateAndExtract(namespace, qualifiedName) {
@@ -661,20 +661,20 @@ var OwnerHandoffHost = (() => {
           localName = splitResult[1];
         }
         if (prefix !== null && namespace === null) {
-          throw new DOMException(DOMException.NAMESPACE_ERR, "prefix is non-null and namespace is null");
+          throw new DOMException2(DOMException2.NAMESPACE_ERR, "prefix is non-null and namespace is null");
         }
         if (prefix === "xml" && namespace !== conventions.NAMESPACE.XML) {
-          throw new DOMException(DOMException.NAMESPACE_ERR, 'prefix is "xml" and namespace is not the XML namespace');
+          throw new DOMException2(DOMException2.NAMESPACE_ERR, 'prefix is "xml" and namespace is not the XML namespace');
         }
         if ((prefix === "xmlns" || qualifiedName === "xmlns") && namespace !== conventions.NAMESPACE.XMLNS) {
-          throw new DOMException(
-            DOMException.NAMESPACE_ERR,
+          throw new DOMException2(
+            DOMException2.NAMESPACE_ERR,
             'either qualifiedName or prefix is "xmlns" and namespace is not the XMLNS namespace'
           );
         }
         if (namespace === conventions.NAMESPACE.XMLNS && prefix !== "xmlns" && qualifiedName !== "xmlns") {
-          throw new DOMException(
-            DOMException.NAMESPACE_ERR,
+          throw new DOMException2(
+            DOMException2.NAMESPACE_ERR,
             'namespace is the XMLNS namespace and neither qualifiedName nor prefix is "xmlns"'
           );
         }
@@ -983,7 +983,7 @@ var OwnerHandoffHost = (() => {
         setNamedItem: function(attr) {
           var el = attr.ownerElement;
           if (el && el !== this._ownerElement) {
-            throw new DOMException(DOMException.INUSE_ATTRIBUTE_ERR);
+            throw new DOMException2(DOMException2.INUSE_ATTRIBUTE_ERR);
           }
           var oldAttr = _nnmIndexFind(this, attr.namespaceURI, attr.localName);
           if (oldAttr === attr) {
@@ -1025,7 +1025,7 @@ var OwnerHandoffHost = (() => {
         removeNamedItem: function(localName) {
           var attr = this.getNamedItem(localName);
           if (!attr) {
-            throw new DOMException(DOMException.NOT_FOUND_ERR, localName);
+            throw new DOMException2(DOMException2.NOT_FOUND_ERR, localName);
           }
           _removeNamedNode(this._ownerElement, this, attr);
           return attr;
@@ -1049,7 +1049,7 @@ var OwnerHandoffHost = (() => {
         removeNamedItemNS: function(namespaceURI, localName) {
           var attr = this.getNamedItemNS(namespaceURI, localName);
           if (!attr) {
-            throw new DOMException(DOMException.NOT_FOUND_ERR, namespaceURI ? namespaceURI + " : " + localName : localName);
+            throw new DOMException2(DOMException2.NOT_FOUND_ERR, namespaceURI ? namespaceURI + " : " + localName : localName);
           }
           _removeNamedNode(this._ownerElement, this, attr);
           return attr;
@@ -1943,7 +1943,7 @@ var OwnerHandoffHost = (() => {
       }
       function _removeChild(parentNode, child) {
         if (parentNode !== child.parentNode) {
-          throw new DOMException(DOMException.NOT_FOUND_ERR, "child's parent is not parent");
+          throw new DOMException2(DOMException2.NOT_FOUND_ERR, "child's parent is not parent");
         }
         var oldPreviousSibling = child.previousSibling;
         var oldNextSibling = child.nextSibling;
@@ -1999,10 +1999,10 @@ var OwnerHandoffHost = (() => {
       }
       function assertPreInsertionValidity1to5(parent, node, child) {
         if (!hasValidParentNodeType(parent)) {
-          throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Unexpected parent node type " + parent.nodeType);
+          throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Unexpected parent node type " + parent.nodeType);
         }
         if (child && child.parentNode !== parent) {
-          throw new DOMException(DOMException.NOT_FOUND_ERR, "child not in parent");
+          throw new DOMException2(DOMException2.NOT_FOUND_ERR, "child not in parent");
         }
         if (
           // 4. If `node` is not a DocumentFragment, DocumentType, Element, or CharacterData node, then throw a "HierarchyRequestError" DOMException.
@@ -2012,8 +2012,8 @@ var OwnerHandoffHost = (() => {
           // or `node` is a doctype and `parent` is not a document, then throw a "HierarchyRequestError" DOMException.
           isDocTypeNode(node) && parent.nodeType !== Node.DOCUMENT_NODE
         ) {
-          throw new DOMException(
-            DOMException.HIERARCHY_REQUEST_ERR,
+          throw new DOMException2(
+            DOMException2.HIERARCHY_REQUEST_ERR,
             "Unexpected node type " + node.nodeType + " for parent node type " + parent.nodeType
           );
         }
@@ -2024,27 +2024,27 @@ var OwnerHandoffHost = (() => {
         if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
           var nodeChildElements = nodeChildNodes.filter(isElementNode);
           if (nodeChildElements.length > 1 || find(nodeChildNodes, isTextNode)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "More than one element or text in fragment");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "More than one element or text in fragment");
           }
           if (nodeChildElements.length === 1 && !isElementInsertionPossible(parent, child)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Element in fragment can not be inserted before doctype");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Element in fragment can not be inserted before doctype");
           }
         }
         if (isElementNode(node)) {
           if (!isElementInsertionPossible(parent, child)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Only one element can be added and only after doctype");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Only one element can be added and only after doctype");
           }
         }
         if (isDocTypeNode(node)) {
           if (find(parentChildNodes, isDocTypeNode)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Only one doctype is allowed");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Only one doctype is allowed");
           }
           var parentElementChild = find(parentChildNodes, isElementNode);
           if (child && parentChildNodes.indexOf(parentElementChild) < parentChildNodes.indexOf(child)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Doctype can only be inserted before an element");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Doctype can only be inserted before an element");
           }
           if (!child && parentElementChild) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Doctype can not be appended since element is present");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Doctype can not be appended since element is present");
           }
         }
       }
@@ -2054,15 +2054,15 @@ var OwnerHandoffHost = (() => {
         if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
           var nodeChildElements = nodeChildNodes.filter(isElementNode);
           if (nodeChildElements.length > 1 || find(nodeChildNodes, isTextNode)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "More than one element or text in fragment");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "More than one element or text in fragment");
           }
           if (nodeChildElements.length === 1 && !isElementReplacementPossible(parent, child)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Element in fragment can not be inserted before doctype");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Element in fragment can not be inserted before doctype");
           }
         }
         if (isElementNode(node)) {
           if (!isElementReplacementPossible(parent, child)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Only one element can be added and only after doctype");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Only one element can be added and only after doctype");
           }
         }
         if (isDocTypeNode(node)) {
@@ -2070,11 +2070,11 @@ var OwnerHandoffHost = (() => {
             return isDocTypeNode(node2) && node2 !== child;
           };
           if (find(parentChildNodes, hasDoctypeChildThatIsNotChild)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Only one doctype is allowed");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Only one doctype is allowed");
           }
           var parentElementChild = find(parentChildNodes, isElementNode);
           if (child && parentChildNodes.indexOf(parentElementChild) < parentChildNodes.indexOf(child)) {
-            throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR, "Doctype can only be inserted before an element");
+            throw new DOMException2(DOMException2.HIERARCHY_REQUEST_ERR, "Doctype can only be inserted before an element");
           }
         }
       }
@@ -2291,7 +2291,7 @@ var OwnerHandoffHost = (() => {
          */
         createCDATASection: function(data) {
           if (data.indexOf("]]>") !== -1) {
-            throw new DOMException(DOMException.INVALID_CHARACTER_ERR, 'data contains "]]>"');
+            throw new DOMException2(DOMException2.INVALID_CHARACTER_ERR, 'data contains "]]>"');
           }
           var node = new CDATASection(PDC);
           node.ownerDocument = this;
@@ -2343,7 +2343,7 @@ var OwnerHandoffHost = (() => {
          */
         createAttribute: function(name) {
           if (!g.QName_exact.test(name)) {
-            throw new DOMException(DOMException.INVALID_CHARACTER_ERR, 'invalid character in name "' + name + '"');
+            throw new DOMException2(DOMException2.INVALID_CHARACTER_ERR, 'invalid character in name "' + name + '"');
           }
           if (this.type === "html") {
             name = name.toLowerCase();
@@ -2388,10 +2388,10 @@ var OwnerHandoffHost = (() => {
          */
         createEntityReference: function(name) {
           if (!g.Name_exact.test(name)) {
-            throw new DOMException(DOMException.INVALID_CHARACTER_ERR, 'not a valid xml name "' + name + '"');
+            throw new DOMException2(DOMException2.INVALID_CHARACTER_ERR, 'not a valid xml name "' + name + '"');
           }
           if (this.type === "html") {
-            throw new DOMException("document is an html document", DOMExceptionName.NotSupportedError);
+            throw new DOMException2("document is an html document", DOMExceptionName.NotSupportedError);
           }
           var node = new EntityReference(PDC);
           node.ownerDocument = this;
@@ -2827,7 +2827,7 @@ var OwnerHandoffHost = (() => {
       }
       function addSerializedAttribute(buf, qualifiedName, value, requireWellFormed) {
         if (requireWellFormed && !g.QName_exact.test(qualifiedName)) {
-          throw new DOMException(
+          throw new DOMException2(
             'The attribute name "' + qualifiedName + '" is not a valid XML QName',
             DOMExceptionName.InvalidStateError
           );
@@ -2896,7 +2896,7 @@ var OwnerHandoffHost = (() => {
                     }
                   }
                   if (requireWellFormed && !g.QName_exact.test(prefixedNodeName)) {
-                    throw new DOMException(
+                    throw new DOMException2(
                       'The element name "' + prefixedNodeName + '" is not a valid XML QName',
                       DOMExceptionName.InvalidStateError
                     );
@@ -2963,7 +2963,7 @@ var OwnerHandoffHost = (() => {
                 case DOCUMENT_NODE:
                 case DOCUMENT_FRAGMENT_NODE:
                   if (requireWellFormed && n.nodeType === DOCUMENT_NODE && n.documentElement == null) {
-                    throw new DOMException("The Document has no documentElement", DOMExceptionName.InvalidStateError);
+                    throw new DOMException2("The Document has no documentElement", DOMExceptionName.InvalidStateError);
                   }
                   return { ns: namespaces };
                 case ATTRIBUTE_NODE:
@@ -2971,7 +2971,7 @@ var OwnerHandoffHost = (() => {
                   return null;
                 case TEXT_NODE:
                   if (requireWellFormed && g.InvalidChar.test(n.data)) {
-                    throw new DOMException(
+                    throw new DOMException2(
                       "The Text node data contains characters outside the XML Char production",
                       DOMExceptionName.InvalidStateError
                     );
@@ -2980,7 +2980,7 @@ var OwnerHandoffHost = (() => {
                   return null;
                 case CDATA_SECTION_NODE:
                   if (requireWellFormed && n.data.indexOf("]]>") !== -1) {
-                    throw new DOMException('The CDATASection data contains "]]>"', DOMExceptionName.InvalidStateError);
+                    throw new DOMException2('The CDATASection data contains "]]>"', DOMExceptionName.InvalidStateError);
                   }
                   if (splitCDATASections) {
                     buf.push(g.CDATA_START, n.data.replace(/]]>/g, "]]]]><![CDATA[>"), g.CDATA_END);
@@ -2991,13 +2991,13 @@ var OwnerHandoffHost = (() => {
                 case COMMENT_NODE:
                   if (requireWellFormed) {
                     if (g.InvalidChar.test(n.data)) {
-                      throw new DOMException(
+                      throw new DOMException2(
                         "The comment node data contains characters outside the XML Char production",
                         DOMExceptionName.InvalidStateError
                       );
                     }
                     if (n.data.indexOf("--") !== -1 || n.data[n.data.length - 1] === "-") {
-                      throw new DOMException(
+                      throw new DOMException2(
                         'The comment node data contains "--" or ends with "-"',
                         DOMExceptionName.InvalidStateError
                       );
@@ -3010,19 +3010,19 @@ var OwnerHandoffHost = (() => {
                   var sysid = n.systemId;
                   if (requireWellFormed) {
                     if (!g.Name_exact.test(n.name)) {
-                      throw new DOMException(
+                      throw new DOMException2(
                         'The doctype name "' + n.name + '" is not a valid XML Name',
                         DOMExceptionName.InvalidStateError
                       );
                     }
                     if (pubid && !g.PubidLiteral_match.test(pubid)) {
-                      throw new DOMException("DocumentType publicId is not a valid PubidLiteral", DOMExceptionName.InvalidStateError);
+                      throw new DOMException2("DocumentType publicId is not a valid PubidLiteral", DOMExceptionName.InvalidStateError);
                     }
                     if (sysid && sysid !== "." && !g.SystemLiteral_match.test(sysid)) {
-                      throw new DOMException("DocumentType systemId is not a valid SystemLiteral", DOMExceptionName.InvalidStateError);
+                      throw new DOMException2("DocumentType systemId is not a valid SystemLiteral", DOMExceptionName.InvalidStateError);
                     }
                     if (n.internalSubset && n.internalSubset.indexOf("]>") !== -1) {
-                      throw new DOMException('DocumentType internalSubset contains "]>"', DOMExceptionName.InvalidStateError);
+                      throw new DOMException2('DocumentType internalSubset contains "]>"', DOMExceptionName.InvalidStateError);
                     }
                   }
                   buf.push(g.DOCTYPE_DECL_START, " ", n.name);
@@ -3042,26 +3042,26 @@ var OwnerHandoffHost = (() => {
                 case PROCESSING_INSTRUCTION_NODE:
                   if (requireWellFormed) {
                     if (!g.NCName_exact.test(n.target) || n.target.toLowerCase() === "xml") {
-                      throw new DOMException(
+                      throw new DOMException2(
                         'The processing instruction target "' + n.target + '" is not a valid XML NCName or is reserved',
                         DOMExceptionName.InvalidStateError
                       );
                     }
                     if (g.InvalidChar.test(n.data)) {
-                      throw new DOMException(
+                      throw new DOMException2(
                         "The ProcessingInstruction data contains characters outside the XML Char production",
                         DOMExceptionName.InvalidStateError
                       );
                     }
                     if (n.data.indexOf("?>") !== -1) {
-                      throw new DOMException('The ProcessingInstruction data contains "?>"', DOMExceptionName.InvalidStateError);
+                      throw new DOMException2('The ProcessingInstruction data contains "?>"', DOMExceptionName.InvalidStateError);
                     }
                   }
                   buf.push("<?", n.target, " ", n.data, "?>");
                   return null;
                 case ENTITY_REFERENCE_NODE:
                   if (requireWellFormed && !g.Name_exact.test(n.nodeName)) {
-                    throw new DOMException(
+                    throw new DOMException2(
                       'The entity reference name "' + n.nodeName + '" is not a valid XML Name',
                       DOMExceptionName.InvalidStateError
                     );
@@ -3267,9 +3267,9 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/entities.js
+  // node_modules/@xmldom/xmldom/lib/entities.js
   var require_entities = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/entities.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/entities.js"(exports) {
       "use strict";
       var freeze = require_conventions().freeze;
       exports.XML_ENTITIES = freeze({
@@ -5410,9 +5410,9 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/sax.js
+  // node_modules/@xmldom/xmldom/lib/sax.js
   var require_sax = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/sax.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/sax.js"(exports) {
       "use strict";
       var conventions = require_conventions();
       var g = require_grammar();
@@ -5423,7 +5423,7 @@ var OwnerHandoffHost = (() => {
       var hasOwn = conventions.hasOwn;
       var NAMESPACE = conventions.NAMESPACE;
       var ParseError = errors.ParseError;
-      var DOMException = errors.DOMException;
+      var DOMException2 = errors.DOMException;
       var S_TAG = 0;
       var S_ATTR = 1;
       var S_ATTR_SPACE = 2;
@@ -5627,7 +5627,7 @@ var OwnerHandoffHost = (() => {
           } catch (e) {
             if (e instanceof ParseError) {
               throw e;
-            } else if (e instanceof DOMException) {
+            } else if (e instanceof DOMException2) {
               return errorHandler.fatalError("Error constructing the DOM: " + e.name + ": " + e.message, e);
             }
             errorHandler.error("element parse error: " + e);
@@ -6192,9 +6192,9 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/dom-parser.js
+  // node_modules/@xmldom/xmldom/lib/dom-parser.js
   var require_dom_parser = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/dom-parser.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/dom-parser.js"(exports) {
       "use strict";
       var conventions = require_conventions();
       var dom = require_dom();
@@ -6460,9 +6460,9 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/@xmldom/xmldom/lib/index.js
+  // node_modules/@xmldom/xmldom/lib/index.js
   var require_lib = __commonJS({
-    "../../../Users/qianlan/Downloads/\u65B0CRM/node_modules/@xmldom/xmldom/lib/index.js"(exports) {
+    "node_modules/@xmldom/xmldom/lib/index.js"(exports) {
       "use strict";
       var conventions = require_conventions();
       exports.assign = conventions.assign;
@@ -6504,7 +6504,7 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/fflate/esm/browser.js
+  // node_modules/fflate/esm/browser.js
   var ch2 = {};
   var wk = function(c, id, msg, transfer, cb) {
     var w = new Worker(ch2[id] || (ch2[id] = URL.createObjectURL(new Blob([
@@ -7665,7 +7665,7 @@ var OwnerHandoffHost = (() => {
     return files;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/worker-f/lib/stringifyFunctionReferences.js
+  // node_modules/worker-f/lib/stringifyFunctionReferences.js
   var JAVASCRIPT_VARIABLE_NAME_REG_EXP = /^[$_\u0080-\uFFFFa-zA-Z][$_\u0080-\uFFFF\w]*$/;
   function stringifyFunctionReferences(getDependencies) {
     const functions = {};
@@ -7713,7 +7713,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/worker-f/lib/createWorker.js
+  // node_modules/worker-f/lib/createWorker.js
   function createWorker(createWorkerInEnvironment, createInputHandler, onError, onOutput, getFromCache, setInCache) {
     let started = false;
     let worker;
@@ -7784,7 +7784,7 @@ var OwnerHandoffHost = (() => {
     return [functionDefinitions, vars];
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/worker-f/lib/createWorkerFunction_.js
+  // node_modules/worker-f/lib/createWorkerFunction_.js
   function createWorkerFunction_(createWorkerInEnvironment, fnOrAlias, createMethods, createInputHandler, handleError, handleOutput) {
     let started = false;
     let stopped = false;
@@ -7970,7 +7970,7 @@ var OwnerHandoffHost = (() => {
   }
   var CACHE = {};
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/worker-f/lib/createWorkerFunction.js
+  // node_modules/worker-f/lib/createWorkerFunction.js
   function createWorkerFunction(createWorkerInEnvironment, fnOrAlias) {
     let resolveCall = void 0;
     let rejectCall = void 0;
@@ -8028,7 +8028,7 @@ var OwnerHandoffHost = (() => {
     return createWorkerFunction_(createWorkerInEnvironment, fnOrAlias, createMethods, createInputHandler, handleError, handleOutput);
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/worker-f/lib/environment/createWorkerInBrowser.js
+  // node_modules/worker-f/lib/environment/createWorkerInBrowser.js
   function createWorkerInBrowser(javascriptCode, getFromCache, setInCache, onError, onOutput) {
     let url = getFromCache();
     if (!url) {
@@ -8071,12 +8071,12 @@ var OwnerHandoffHost = (() => {
     "self.onmessage = function(evt) {onMessage(evt.data)};function onErr(err_, msg) {var err = err_ instanceof Error ? err_ : new Error(msg);postMessage({" + ERROR_MESSAGE_PROPERTY_NAME + ':[err.message,err.stack].concat(Object.keys(err).map(function(k){return[k,err[k]]}))})};var postMessage = self.postMessage;addEventListener("error",function(evt) {onErr(evt.error, evt.message)});addEventListener("unhandledrejection",function(evt) {evt.preventDefault();onErr(evt.reason, String(evt.reason))})'
   );
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/worker-f/lib/export/browser/createWorkerFunctionInBrowser.js
+  // node_modules/worker-f/lib/export/browser/createWorkerFunctionInBrowser.js
   function createWorkerFunctionInBrowser(fnOrAlias) {
     return createWorkerFunction(createWorkerInBrowser, fnOrAlias);
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/saxen/parser.js
+  // node_modules/read-excel-file/modules/saxen/parser.js
   function _typeof(o) {
     "@babel/helpers - typeof";
     return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -8773,7 +8773,7 @@ var OwnerHandoffHost = (() => {
     return new Parser(options);
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xml/parseXmlStream.saxen.js
+  // node_modules/read-excel-file/modules/xml/parseXmlStream.saxen.js
   function parseXmlStream(state, onOpenTag, onCloseTag, onText) {
     var errored = false;
     var mustNotHaveErrored = function mustNotHaveErrored2() {
@@ -8842,7 +8842,7 @@ var OwnerHandoffHost = (() => {
     return string;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/InvalidSpreadsheetError.js
+  // node_modules/read-excel-file/modules/xlsx/InvalidSpreadsheetError.js
   function _typeof2(o) {
     "@babel/helpers - typeof";
     return _typeof2 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -8995,7 +8995,7 @@ var OwnerHandoffHost = (() => {
     return _createClass(InvalidSpreadsheetError2);
   }(/* @__PURE__ */ _wrapNativeSuper(Error));
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xml/parseXml.js
+  // node_modules/read-excel-file/modules/xml/parseXml.js
   function parseXml(xml, state, onOpenTag, onCloseTag, onText, onProgress) {
     var parser = parseXmlStream(state, onOpenTag, onCloseTag, onText);
     if (onProgress) {
@@ -9060,7 +9060,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/zip/UnzipError.js
+  // node_modules/read-excel-file/modules/zip/UnzipError.js
   function _typeof3(o) {
     "@babel/helpers - typeof";
     return _typeof3 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -9221,7 +9221,7 @@ var OwnerHandoffHost = (() => {
     return unzipError;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/zip/unzipFromArrayBuffer.js
+  // node_modules/read-excel-file/modules/zip/unzipFromArrayBuffer.js
   function unzipFromArrayBuffer(input, options) {
     return unzipFromArrayBufferUsingFunction(input, options, unzipAsync, true);
   }
@@ -9264,7 +9264,7 @@ var OwnerHandoffHost = (() => {
     return typeof error.code === "number";
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/file/InvalidInputError.js
+  // node_modules/read-excel-file/modules/xlsx/file/InvalidInputError.js
   function _typeof4(o) {
     "@babel/helpers - typeof";
     return _typeof4 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -9425,13 +9425,13 @@ var OwnerHandoffHost = (() => {
     return _createClass3(InvalidInputError2);
   }(/* @__PURE__ */ _wrapNativeSuper3(Error));
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/export/filterZipArchiveEntry.js
+  // node_modules/read-excel-file/modules/export/filterZipArchiveEntry.js
   function filterZipArchiveEntry(_ref) {
     var path = _ref.path;
     return path.endsWith(".xml") || path.endsWith(".xml.rels");
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/file/createFileTypeDetector.js
+  // node_modules/read-excel-file/modules/xlsx/file/createFileTypeDetector.js
   var ZIP_FILE_SIGNATURE = [80, 75];
   var XLS_FILE_SIGNATURE = [208, 207, 17, 224];
   var FILE_TYPE_SIGNATURES = [ZIP_FILE_SIGNATURE, XLS_FILE_SIGNATURE];
@@ -9472,7 +9472,7 @@ var OwnerHandoffHost = (() => {
     return indexes;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/file/validateLeadingBytes.js
+  // node_modules/read-excel-file/modules/xlsx/file/validateLeadingBytes.js
   function _createForOfIteratorHelperLoose(o, allowArrayLike) {
     var it = typeof Symbol !== "undefined" && o[Symbol.iterator] || o["@@iterator"];
     if (it) return (it = it.call(o)).next.bind(it);
@@ -9525,7 +9525,7 @@ var OwnerHandoffHost = (() => {
     throw new InvalidInputError(byteCount === 0 ? "NO_DATA" : "FILE_NOT_SUPPORTED");
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/utility/checkpoint.js
+  // node_modules/read-excel-file/modules/utility/checkpoint.js
   var latestCheckpointTimestamp;
   function checkpoint(name) {
     var now = Date.now();
@@ -9542,7 +9542,7 @@ var OwnerHandoffHost = (() => {
     latestCheckpointTimestamp = void 0;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/export/unpackXlsxFileBrowser.js
+  // node_modules/read-excel-file/modules/export/unpackXlsxFileBrowser.js
   function unpackXlsxFile(input) {
     resetCheckpoint();
     checkpoint("unpack files");
@@ -9566,7 +9566,7 @@ var OwnerHandoffHost = (() => {
     });
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseSpreadsheetInfo.js
+  // node_modules/read-excel-file/modules/xlsx/parseSpreadsheetInfo.js
   function parseSpreadsheetInfo(content, parseXml2) {
     var state = createInitialState();
     return parseXml2(content, state, onOpenTag, null, null).then(function() {
@@ -9607,7 +9607,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseFilePaths.js
+  // node_modules/read-excel-file/modules/xlsx/parseFilePaths.js
   function parseFilePaths(content, parseXml2) {
     var RELATIONSHIPS_BASE_URL_TRANSITIONAL_STANDARD = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
     var RELATIONSHIPS_BASE_URL_STRICT_STANDARD = "http://purl.oclc.org/ooxml/officeDocument/relationships/";
@@ -9654,7 +9654,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseStyles.js
+  // node_modules/read-excel-file/modules/xlsx/parseStyles.js
   function _typeof5(o) {
     "@babel/helpers - typeof";
     return _typeof5 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -9811,7 +9811,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseSharedStrings.js
+  // node_modules/read-excel-file/modules/xlsx/parseSharedStrings.js
   function parseSharedStrings(content, parseXml2) {
     var state = createInitialState();
     return parseXml2(content, state, onOpenTag, onCloseTag, onText).then(function() {
@@ -9884,7 +9884,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseExcelTimestamp.js
+  // node_modules/read-excel-file/modules/xlsx/parseExcelTimestamp.js
   function parseExcelTimestamp(excelSerialDate, epoch1904) {
     var NUMBER_OF_LEAP_YEARS_BETWEEN_1900_AND_1970 = 17;
     var JANUARY_0TH_1900_DAY = 1;
@@ -9898,7 +9898,7 @@ var OwnerHandoffHost = (() => {
     return Math.floor((excelSerialDate - daysBeforeUnixEpoch) * DAY);
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/isDateFormat.js
+  // node_modules/read-excel-file/modules/xlsx/isDateFormat.js
   var DATE_FORMAT_POSTFIX_THAT_ALLOWS_ANY_ARBITRARY_TEXT_INPUT = /;@$/;
   var DATE_FORMAT_TOKEN_SPLITTER_REG_EXP = /[^a-z0#\?%]+/;
   function isDateFormat(formatId, template, dateFormatDetectionCache) {
@@ -10001,7 +10001,7 @@ var OwnerHandoffHost = (() => {
     "eeee"
   ];
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/isDateFormatStyle.js
+  // node_modules/read-excel-file/modules/xlsx/isDateFormatStyle.js
   function isDateFormatStyle(style, defaultDateFormat, shouldGuessDateFormatFromNumberFormatTemplate, dateFormatDetectionCache) {
     if (!style.numberFormat) {
       return false;
@@ -10165,7 +10165,7 @@ var OwnerHandoffHost = (() => {
     })
   );
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseCell.js
+  // node_modules/read-excel-file/modules/xlsx/parseCell.js
   function _slicedToArray(arr, i) {
     return _arrayWithHoles(arr) || _iterableToArrayLimit(arr, i) || _unsupportedIterableToArray2(arr, i) || _nonIterableRest();
   }
@@ -10381,7 +10381,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseCellAddress.js
+  // node_modules/read-excel-file/modules/xlsx/parseCellAddress.js
   function parseCellAddress(cellAddress) {
     var columnNumber = 0;
     var i = 0;
@@ -10409,7 +10409,7 @@ var OwnerHandoffHost = (() => {
     throw new Error('<c r="'.concat(cellAddress, '">'));
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseSheet.js
+  // node_modules/read-excel-file/modules/xlsx/parseSheet.js
   function _slicedToArray2(arr, i) {
     return _arrayWithHoles2(arr) || _iterableToArrayLimit2(arr, i) || _unsupportedIterableToArray3(arr, i) || _nonIterableRest2();
   }
@@ -10814,7 +10814,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/utility/convertValuesFromUint8ArraysToStrings.js
+  // node_modules/read-excel-file/modules/utility/convertValuesFromUint8ArraysToStrings.js
   function convertValuesFromUint8ArraysToStrings(entries) {
     checkpoint("convert files to strings");
     var convertedEntries = {};
@@ -10832,7 +10832,7 @@ var OwnerHandoffHost = (() => {
     }
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/utility/isPromise.js
+  // node_modules/read-excel-file/modules/utility/isPromise.js
   function _typeof6(o) {
     "@babel/helpers - typeof";
     return _typeof6 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -10845,7 +10845,7 @@ var OwnerHandoffHost = (() => {
     return _typeof6(anything) === "object" && typeof anything.then === "function";
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/SheetNotFoundError.js
+  // node_modules/read-excel-file/modules/xlsx/SheetNotFoundError.js
   function _typeof7(o) {
     "@babel/helpers - typeof";
     return _typeof7 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -11000,7 +11000,7 @@ var OwnerHandoffHost = (() => {
     return _createClass4(SheetNotFoundError2);
   }(/* @__PURE__ */ _wrapNativeSuper4(Error));
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/xlsx/parseSpreadsheetContents.js
+  // node_modules/read-excel-file/modules/xlsx/parseSpreadsheetContents.js
   function _typeof8(o) {
     "@babel/helpers - typeof";
     return _typeof8 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -11224,7 +11224,7 @@ var OwnerHandoffHost = (() => {
     return results;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/parseSheetData/InvalidError.js
+  // node_modules/read-excel-file/modules/parseSheetData/InvalidError.js
   function _typeof9(o) {
     "@babel/helpers - typeof";
     return _typeof9 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -11377,7 +11377,7 @@ var OwnerHandoffHost = (() => {
     return _createClass5(InvalidError2);
   }(/* @__PURE__ */ _wrapNativeSuper5(Error));
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/parseSheetData/types/Number.js
+  // node_modules/read-excel-file/modules/parseSheetData/types/Number.js
   function NumberType(value) {
     if (typeof value === "string") {
       var stringifiedValue = value;
@@ -11398,7 +11398,7 @@ var OwnerHandoffHost = (() => {
     return value;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/parseSheetData/types/String.js
+  // node_modules/read-excel-file/modules/parseSheetData/types/String.js
   function StringType(value) {
     if (typeof value === "string") {
       return value;
@@ -11415,7 +11415,7 @@ var OwnerHandoffHost = (() => {
     throw new InvalidError("not_a_string");
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/parseSheetData/types/Boolean.js
+  // node_modules/read-excel-file/modules/parseSheetData/types/Boolean.js
   function BooleanType(value) {
     if (typeof value === "boolean") {
       return value;
@@ -11423,7 +11423,7 @@ var OwnerHandoffHost = (() => {
     throw new InvalidError("not_a_boolean");
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/parseSheetData/types/Date.js
+  // node_modules/read-excel-file/modules/parseSheetData/types/Date.js
   function DateType(value) {
     if (value instanceof Date) {
       if (isNaN(value.valueOf())) {
@@ -11434,13 +11434,13 @@ var OwnerHandoffHost = (() => {
     throw new InvalidError("not_a_date");
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/utility/isObject.js
+  // node_modules/read-excel-file/modules/utility/isObject.js
   var objectConstructor = {}.constructor;
   function isObject(object) {
     return object !== void 0 && object !== null && object.constructor === objectConstructor;
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/parseSheetData/parseSheetData.js
+  // node_modules/read-excel-file/modules/parseSheetData/parseSheetData.js
   function _typeof10(o) {
     "@babel/helpers - typeof";
     return _typeof10 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -12039,7 +12039,7 @@ var OwnerHandoffHost = (() => {
   }
   var PARSED_OBJECT_TREE_START = {};
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/export/parseSheet.js
+  // node_modules/read-excel-file/modules/export/parseSheet.js
   function _typeof11(o) {
     "@babel/helpers - typeof";
     return _typeof11 = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
@@ -12133,7 +12133,7 @@ var OwnerHandoffHost = (() => {
     });
   }
 
-  // ../../../Users/qianlan/Downloads/新CRM/node_modules/read-excel-file/modules/export/readSheetBrowser.js
+  // node_modules/read-excel-file/modules/export/readSheetBrowser.js
   function readSheet(input, sheet, options) {
     if (!options && sheet && typeof sheet !== "number" && typeof sheet !== "string") {
       options = sheet;
@@ -12318,7 +12318,6 @@ var OwnerHandoffHost = (() => {
 
   // internal/webshell/static_src/admin_console/owner_handoff_host.ts
   var donorURL = "/static/admin_console/owner_migration_dd8d60d.html";
-  var pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js?v=1b12b405d7377948";
   var key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
   var text = (value) => String(value ?? "").trim();
   var esc = (value) => text(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] || char);
@@ -12328,7 +12327,6 @@ var OwnerHandoffHost = (() => {
     error.userMessage = true;
     return error;
   };
-  var pickerLoad;
   async function api(path, init) {
     const headers = new Headers(init?.headers);
     if ((init?.method || "GET").toUpperCase() !== "GET") {
@@ -12402,50 +12400,107 @@ var OwnerHandoffHost = (() => {
     if (!node) throw new Error(`\u51BB\u7ED3\u9875\u9762\u7F3A\u5C11 ${selector}`);
     return node;
   }
-  function sharedPicker() {
-    if (window.OperationMemberPicker) return Promise.resolve(window.OperationMemberPicker);
-    if (!pickerLoad) {
-      pickerLoad = new Promise((resolve, reject) => {
-        const existing = document.querySelector("script[data-owner-handoff-shared-picker]");
-        const finish = () => window.OperationMemberPicker ? resolve(window.OperationMemberPicker) : reject(new Error("\u51BB\u7ED3\u5458\u5DE5\u9009\u62E9\u5668\u672A\u6CE8\u518C"));
-        if (existing) {
-          existing.addEventListener("load", finish, { once: true });
-          existing.addEventListener("error", () => reject(new Error("\u51BB\u7ED3\u5458\u5DE5\u9009\u62E9\u5668\u4E0D\u53EF\u7528")), { once: true });
-          return;
-        }
-        const script = document.createElement("script");
-        script.src = pickerURL;
-        script.async = true;
-        script.dataset.ownerHandoffSharedPicker = "dd8d60d";
-        script.addEventListener("load", finish, { once: true });
-        script.addEventListener("error", () => reject(new Error("\u51BB\u7ED3\u5458\u5DE5\u9009\u62E9\u5668\u4E0D\u53EF\u7528")), { once: true });
-        document.head.append(script);
-      });
+  var OwnerStaffDirectory = class {
+    byID = /* @__PURE__ */ new Map();
+    constructor(initial) {
+      initial.forEach((member) => this.upsert(member));
     }
-    return pickerLoad;
+    upsert(member) {
+      const id = Number(member.ID);
+      const userID = text(member.UserID);
+      if (!Number.isSafeInteger(id) || id < 1 || !userID) return;
+      this.byID.set(String(id), { ID: id, UserID: userID, DisplayName: text(member.DisplayName) || userID, Active: member.Active !== false });
+    }
+    get(rawID) {
+      return this.byID.get(text(rawID));
+    }
+  };
+  function ownerPickerFailure(response, body) {
+    const detail = body && typeof body === "object" && "error" in body ? text(body.error) : "";
+    return requestFailure(ownerHandoffRequestMessage(response.status, detail), response.status);
   }
-  async function installPicker(root, staff) {
-    const picker = await sharedPicker();
-    const choose = async (kind) => {
-      await picker.open({
-        scope: "owner_migration",
-        pageSize: 100,
-        includeInactive: kind === "source",
-        allowRefresh: false,
+  function ownerStaffRecord(member, kind) {
+    return {
+      source: "owner_migration.operation_members",
+      staff_id: String(member.ID),
+      user_id: member.UserID,
+      display_name: member.DisplayName || member.UserID,
+      active: member.Active,
+      unavailable_reason: kind === "target" && !member.Active ? "\u76EE\u6807\u8D1F\u8D23\u4EBA\u5FC5\u987B\u662F\u5728\u804C\u5458\u5DE5\u3002" : void 0
+    };
+  }
+  function unresolvedOwnerStaffRecord(rawID) {
+    const id = text(rawID);
+    return /^[1-9]\d*$/.test(id) ? {
+      source: "owner_migration.operation_members",
+      staff_id: id,
+      user_id: "",
+      display_name: `\u5458\u5DE5 #${id}`,
+      unavailable_reason: "\u5F53\u524D\u5458\u5DE5\u76EE\u5F55\u6700\u591A\u8FD4\u56DE\u524D 100 \u9879\u6216\u641C\u7D22\u7ED3\u679C\uFF1B\u539F\u9009\u62E9\u4ECD\u4FDD\u7559\uFF0C\u4E0D\u80FD\u636E\u6B64\u5224\u5B9A\u5931\u6548\u3002"
+    } : void 0;
+  }
+  function installPicker(root, directory) {
+    const choose = (kind) => {
+      const picker = window.AICRMStaffPicker;
+      if (!picker || typeof picker.open !== "function") {
+        const notice = root.querySelector("[data-workbench-notice]");
+        if (notice) notice.textContent = "\u5458\u5DE5\u9009\u62E9\u5668\u65E0\u6CD5\u6253\u5F00\uFF1B\u5F53\u524D\u8D1F\u8D23\u4EBA\u8349\u7A3F\u672A\u4FEE\u6539\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5\u3002";
+        return;
+      }
+      const currentID = query(root, `[data-owner-userid="${kind}"]`).value;
+      const current = directory.get(currentID);
+      const initial = current ? ownerStaffRecord(current, kind) : unresolvedOwnerStaffRecord(currentID);
+      const loadPage = async ({ query: search, signal }) => {
+        const url = new URL("/api/admin/common/operation-members", window.location.origin);
+        url.searchParams.set("scope", "owner_migration");
+        url.searchParams.set("include_inactive", kind === "source" ? "true" : "false");
+        url.searchParams.set("page_size", "100");
+        if (text(search)) url.searchParams.set("q", text(search));
+        const response = await fetch(url.toString(), { credentials: "same-origin", headers: { Accept: "application/json" }, signal });
+        const payload = await response.json().catch(() => ({}));
+        if (signal.aborted) throw new DOMException("\u8D1F\u8D23\u4EBA\u76EE\u5F55\u8BFB\u53D6\u5DF2\u66FF\u6362", "AbortError");
+        if (!response.ok) throw ownerPickerFailure(response, payload);
+        const rawItems = payload && typeof payload === "object" && Array.isArray(payload.items) ? payload.items : null;
+        if (!rawItems) throw new Error("\u5458\u5DE5\u76EE\u5F55\u54CD\u5E94\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u91CD\u8BD5\u3002");
+        const items = rawItems.flatMap((raw) => {
+          if (signal.aborted) return [];
+          const value = raw && typeof raw === "object" ? raw : {};
+          const id = Number(value.staff_id);
+          const userID = text(value.user_id);
+          if (!Number.isSafeInteger(id) || id < 1 || !userID) return [];
+          const member = { ID: id, UserID: userID, DisplayName: text(value.display_name) || userID, Active: value.active !== false };
+          return [ownerStaffRecord(member, kind)];
+        });
+        return { items };
+      };
+      picker.open({
         title: kind === "source" ? "\u9009\u62E9\u539F\u8D1F\u8D23\u4EBA" : "\u9009\u62E9\u76EE\u6807\u8D1F\u8D23\u4EBA",
-        onSelect(member) {
-          const memberID = text(member.user_id);
-          const selected = staff.find((value) => value.UserID === memberID);
-          if (!selected || kind === "target" && !selected.Active) return;
-          query(root, `[data-owner-userid="${kind}"]`).value = String(selected.ID);
-          query(root, `[data-owner-label="${kind}"]`).value = selected.DisplayName || selected.UserID;
+        source: "owner_migration.operation_members",
+        scope: "owner_migration",
+        mode: "single",
+        limit: 1,
+        selectedRecords: initial ? [initial] : [],
+        directoryHint: "\u672C\u9875\u53EA\u663E\u793A\u524D 100 \u9879\u6216\u641C\u7D22\u7ED3\u679C\uFF1B\u672A\u51FA\u73B0\u7684\u539F\u9009\u62E9\u4ECD\u4FDD\u7559\uFF0C\u4E0D\u80FD\u636E\u6B64\u5224\u5B9A\u5931\u6548\u3002",
+        loadPage,
+        // This endpoint exposes an authorised local read only. Refresh merely
+        // re-reads it; it never starts a Provider sync or mutation.
+        refresh: async () => void 0,
+        accessLossMessage: (error) => {
+          const status = Number(error?.httpStatus);
+          return status === 401 || status === 403 ? "\u8D1F\u8D23\u4EBA\u8FC1\u79FB\u5458\u5DE5\u76EE\u5F55\u6743\u9650\u5DF2\u5931\u6548\uFF1B\u5F53\u524D\u9009\u62E9\u4ECD\u53EF\u67E5\u770B\u6216\u53D6\u6D88\u3002" : void 0;
+        },
+        onCommit: ({ selected }) => {
+          const picked = selected[0];
+          const member = picked && Number.isSafeInteger(Number(picked.staff_id)) && Number(picked.staff_id) > 0 && text(picked.user_id) ? { ID: Number(picked.staff_id), UserID: text(picked.user_id), DisplayName: text(picked.display_name) || text(picked.user_id), Active: picked.active !== false } : void 0;
+          if (!member || kind === "target" && !member.Active) throw new Error("\u6240\u9009\u5458\u5DE5\u4E0D\u518D\u53EF\u7528\u4E8E\u8D1F\u8D23\u4EBA\u8FC1\u79FB\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u76EE\u5F55\u3002");
+          directory.upsert(member);
+          query(root, `[data-owner-userid="${kind}"]`).value = String(member.ID);
+          query(root, `[data-owner-label="${kind}"]`).value = member.DisplayName || member.UserID;
           root.dispatchEvent(new Event("owner-handoff-change"));
         }
       });
     };
-    root.querySelectorAll("[data-owner-picker]").forEach((button) => button.addEventListener("click", () => {
-      void choose(button.dataset.ownerPicker);
-    }));
+    root.querySelectorAll("[data-owner-picker]").forEach((button) => button.addEventListener("click", () => choose(button.dataset.ownerPicker)));
   }
   function currentMode(root) {
     return query(root, "[data-include-wecom-transfer]").checked ? "wecom_then_crm" : "local_only";
@@ -12453,9 +12508,8 @@ var OwnerHandoffHost = (() => {
   function ownerID(root, kind) {
     return Number(query(root, `[data-owner-userid="${kind}"]`).value);
   }
-  function ownerUserID(root, kind, staff) {
-    const selected = staff.find((member) => member.ID === ownerID(root, kind));
-    return text(selected?.UserID);
+  function ownerUserID(root, kind, directory) {
+    return text(directory.get(ownerID(root, kind))?.UserID);
   }
   function selectedScope(root) {
     return query(root, 'input[name="scope_type"]:checked').value;
@@ -12619,7 +12673,8 @@ var OwnerHandoffHost = (() => {
       stage.dataset.ownerHandoffInit = "donor_loaded";
       const context = await api("/api/admin/customers/owner-handoffs/context");
       stage.dataset.ownerHandoffInit = "context_loaded";
-      await installPicker(root, context.staff || []);
+      const staffDirectory = new OwnerStaffDirectory(context.staff || []);
+      installPicker(root, staffDirectory);
       query(root, '[data-owner-label="source"]').value = "";
       query(root, '[data-owner-label="target"]').value = "";
       query(root, '[data-owner-userid="source"]').value = "";
@@ -12680,7 +12735,7 @@ var OwnerHandoffHost = (() => {
         try {
           const source = ownerID(root, "source");
           const target = ownerID(root, "target");
-          const sourceUserID = ownerUserID(root, "source", context.staff || []);
+          const sourceUserID = ownerUserID(root, "source", staffDirectory);
           if (!source || !target || source === target || !sourceUserID) throw new Error("\u8BF7\u5148\u9009\u62E9\u4E0D\u540C\u7684\u539F\u8D1F\u8D23\u4EBA\u548C\u76EE\u6807\u8D1F\u8D23\u4EBA");
           const file = query(root, "[data-import-file]").files?.[0];
           if (!file) throw new Error("\u8BF7\u9009\u62E9\u5305\u542B\u65E7\u6A21\u677F\u4E94\u5217\u7684 XLSX\u3001XLS \u6216 CSV \u6587\u4EF6");
@@ -12720,7 +12775,7 @@ var OwnerHandoffHost = (() => {
         try {
           const source = ownerID(root, "source");
           const target = ownerID(root, "target");
-          const sourceUserID = ownerUserID(root, "source", context.staff || []);
+          const sourceUserID = ownerUserID(root, "source", staffDirectory);
           if (!source || !target || source === target || !sourceUserID) throw new Error("\u8BF7\u5148\u9009\u62E9\u4E0D\u540C\u7684\u539F\u8D1F\u8D23\u4EBA\u548C\u76EE\u6807\u8D1F\u8D23\u4EBA");
           const scope = selectedScope(root);
           if (scope === "excel_include" && !importedRows.length) throw new Error("\u8BF7\u5148\u4E0A\u4F20\u65E7\u6A21\u677F\u540D\u5355");

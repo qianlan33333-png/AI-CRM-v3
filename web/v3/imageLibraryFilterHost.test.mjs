@@ -171,6 +171,10 @@ function controls() {
   return { input, includeInactive, reset };
 }
 
+function commitSearch(input) {
+  input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", code: "Enter" }));
+}
+
 await waitFor(() => Boolean(dom.window.document.querySelector('input[data-image-library-query="true"]')), "Host did not mount");
 await waitFor(() => Boolean(dom.window.document.querySelector('[data-material-refresh="true"]')), "MaterialSaveHost refresh/credential panel was not preserved");
 assert.ok(dom.window.document.querySelector('button[data-material-refresh-all]'), "MaterialSaveHost refresh action is not usable from the V3 image workspace");
@@ -186,11 +190,24 @@ assert.ok(!dom.window.document.body.textContent.includes("2026-09-12T00:00:00Z")
 let current = controls();
 current.input.value = "旧";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+current.input.dispatchEvent(new dom.window.FocusEvent("blur", { bubbles: true }));
+await sleep(300);
+assert.equal(releaseStale, undefined, "typing or blurring an image query did not schedule a directory read");
+current.input.dispatchEvent(new dom.window.CompositionEvent("compositionstart", { bubbles: true }));
+current.input.dispatchEvent(new dom.window.CompositionEvent("compositionend", { bubbles: true }));
+const imageCandidateEnter = new dom.window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" });
+Object.defineProperty(imageCandidateEnter, "keyCode", { value: 229 });
+current.input.dispatchEvent(imageCandidateEnter);
+assert.equal(imageCandidateEnter.defaultPrevented, false, "an image-search IME candidate Enter stays with the browser");
+assert.equal(releaseStale, undefined, "an image-search IME candidate Enter did not schedule a directory read");
+await sleep(0);
+commitSearch(current.input);
 await waitFor(() => typeof releaseStale === "function", "debounced first search did not start");
 const focusedQuery = current.input;
 focusedQuery.focus();
 current.input.value = "新";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => dom.window.document.body.textContent.includes("新的搜索结果"), "newer search result did not render");
 assert.equal(dom.window.document.querySelector('[data-image-library-query="true"]'), focusedQuery, "debounced search rebuilt the focused query input");
 assert.equal(dom.window.document.activeElement, focusedQuery, "debounced search lost query focus");
@@ -206,6 +223,7 @@ assert.ok(
 current = controls();
 current.input.value = "弹窗延迟";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => typeof releaseDialogRead === "function", "delayed dialog read did not start");
 const upload = [...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "上传图片");
 assert.ok(upload, "upload action missing from source-owned Host");
@@ -227,6 +245,7 @@ current = controls();
 const callsBeforeReturningQuery = calls.length;
 current.input.value = "新";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => calls.slice(callsBeforeReturningQuery).some((call) => call.path === "/api/admin/image-library" && call.query.includes("q=%E6%96%B0") && call.query.includes("enabled_only=true")), "query did not return to the active filter after dialog preservation check");
 
 current = controls();
@@ -260,15 +279,18 @@ await waitFor(() => dom.window.document.body.textContent.includes("默认启用�
 current = controls();
 current.input.value = "空";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => Boolean(dom.window.document.querySelector("[data-image-library-empty]")), "empty image result did not render its explicit empty state");
 current = controls();
 current.input.value = "";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材"), "successful empty-filter reset did not restore the latest list");
 
 current = controls();
 current.input.value = "失败";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => Boolean(dom.window.document.querySelector('[data-image-library-filter-feedback][role="alert"]')), "failed read did not show an in-context error");
 assert.ok(dom.window.document.body.textContent.includes("默认启用素材"), "failed read discarded the last successful image list");
 assert.equal(current.input.value, "失败", "failed read discarded the query being retried");
@@ -276,21 +298,25 @@ assert.ok(dom.window.document.body.textContent.includes("仍显示上一次成�
 
 current.input.value = "";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材"), "successful retry did not restore the latest list");
 
 current = controls();
 current.input.value = "服务错误";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => dom.window.document.body.textContent.includes("读取图片素材服务暂不可用，请稍后重试。"), "ApiError read failure did not use the controlled Chinese service message");
 const visibleImageWorkspace = dom.window.document.getElementById("stage")?.textContent || "";
 assert.ok(!visibleImageWorkspace.includes("DEPENDENCY_UNAVAILABLE"), "ApiError business code leaked into the image page");
 assert.ok(!visibleImageWorkspace.includes("postgres connection refused"), "ApiError implementation detail leaked into the image page");
 current.input.value = "网络错误";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => dom.window.document.body.textContent.includes("读取图片素材网络暂不可用，请检查网络后重试。"), "network read failure did not use the controlled Chinese retry message");
 assert.ok(!(dom.window.document.getElementById("stage")?.textContent || "").includes("Failed to fetch image-library internal endpoint"), "browser TypeError leaked into the image page");
 current.input.value = "";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 await waitFor(() => dom.window.document.body.textContent.includes("默认启用素材"), "controlled-error recovery did not restore the active list");
 
 failSecondPage = true;
@@ -381,6 +407,7 @@ await waitFor(() => typeof releaseMutationReadback === "function", "aborted-read
 current = controls();
 current.input.value = "新";
 current.input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+commitSearch(current.input);
 releaseMutationReadback();
 await waitFor(() => dom.window.document.body.textContent.includes("素材已保存，但列表回读失败"), "aborted readback restored a normal write action");
 assert.equal([...dom.window.document.querySelectorAll("button")].find((button) => button.textContent === "重新读取列表")?.disabled, false, "aborted readback did not leave a read-only retry");

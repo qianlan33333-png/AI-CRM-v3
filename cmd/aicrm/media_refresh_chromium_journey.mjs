@@ -62,7 +62,19 @@ try {
  await cdp.call("Page.navigate",{url:`${baseURL}/login?next=%2Fadmin%2Fimage-library`}); await wait(cdp,"Boolean(document.querySelector('form[action=\"/login\"] input[name=login_csrf_token]'))","login page");
  await value(cdp,`(()=>{document.querySelector('input[name=username]').value=${JSON.stringify(username)};document.querySelector('input[name=password]').value=${JSON.stringify(password)};document.querySelector('form[action="/login"]').requestSubmit();return true})()`);
  await wait(cdp,"location.pathname==='/admin/image-library'&&document.body?.dataset.page==='images'&&document.title.includes('图片素材库')","image Host title");
+ await wait(cdp,"Boolean(document.querySelector('[data-image-library-query]')&&document.querySelector('[data-image-library-cards]'))",'V3 image library controls');
  await value(cdp,"(()=>{const fetcher=window.fetch.bind(window);window.__mediaRefreshRequests=[];window.fetch=async(...args)=>{const response=await fetcher(...args);window.__mediaRefreshRequests.push(`${args[1]?.method||'GET'} ${typeof args[0]==='string'?args[0]:args[0].url} ${response.status} ${await response.clone().text()}`);return response};return true})()");
+ // The V3 image Host keeps this query as a draft until a deliberate Enter.
+ // Its existing debounce/read handler remains the authoritative loader.
+ const imageCandidatePrevented=await value(cdp,`(()=>{const field=document.querySelector('[data-image-library-query]');if(!(field instanceof HTMLInputElement))return null;field.focus();field.value='Chromium素材';field.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));field.dispatchEvent(new FocusEvent('blur',{bubbles:true}));field.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));field.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));const candidate=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter',isComposing:true});Object.defineProperty(candidate,'keyCode',{value:229});field.dispatchEvent(candidate);return candidate.defaultPrevented})()`);
+ if(imageCandidatePrevented!==false)throw new Error('image-library IME candidate Enter was prevented');
+ await sleep(320);
+ const readsAfterImageCandidate=await value(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length");
+ if(readsAfterImageCandidate!==0)throw new Error(`image-library typing, blur, or IME candidate Enter read ${readsAfterImageCandidate} times`);
+ await value(cdp,"document.querySelector('[data-image-library-query]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}));true");
+ await wait(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===1",'image-library ordinary Enter did not issue exactly one existing list read');
+ const imageSearchFocus=await value(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return Boolean(field&&document.activeElement===field&&field.value==='Chromium素材')})()");
+ if(!imageSearchFocus)throw new Error('image-library ordinary Enter did not retain focused draft query');
  await wait(cdp,`Boolean(document.querySelector('#material-refresh-panel')&&document.querySelector('#material-refresh-panel').textContent.includes('素材刷新状态')&&document.querySelector('#material-refresh-panel').textContent.includes(${JSON.stringify(missingSourceRef)})&&document.querySelector('#material-refresh-panel').textContent.includes('原文件缺失，请补传'))`,`refresh panel and missing source ${missingSourceRef}`);
  await assertImageLibraryLayout(cdp,780,700); await assertImageLibraryLayout(cdp,390,420); await cdp.call("Emulation.clearDeviceMetricsOverride");
  await value(cdp,"(()=>{const region=[...document.querySelectorAll('main#stage div')].find(n=>n.style.overflow==='auto');if(!region)return false;region.scrollTop=180;return region.scrollTop>=0})()");
