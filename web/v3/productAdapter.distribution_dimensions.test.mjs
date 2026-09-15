@@ -94,6 +94,8 @@ assert.equal(document.querySelectorAll('.admin-topbar .admin-page-title').length
 assert.deepEqual([...document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button')].map((button) => button.textContent.trim()), ['返回商品管理', '保存当前维度'], 'ordinary topbar retains the existing commands in their original order');
 const ordinaryEditorTitle = [...document.querySelectorAll('#stage h2')].find((heading) => heading.textContent.trim() === '编辑普通商品');
 assert.ok(ordinaryEditorTitle?.hidden, 'ordinary body summary must not repeat the shell header title');
+const ordinaryFrozenHeader = document.getElementById('stage').firstElementChild.firstElementChild;
+assert.ok(ordinaryFrozenHeader?.hidden && ordinaryFrozenHeader.dataset.v3ProductFrozenHeader === 'hidden', 'ordinary editor must hide the frozen 52px donor header after the SSR shell renders');
 assert.equal([...document.querySelectorAll('#stage button')].some((button) => button.textContent.trim() === '返回商品管理'), false, 'ordinary body summary must not retain a second return control');
 const distribution = await waitFor(() => document.querySelector('[data-distribution-policy]'), 'sale dimension did not mount its distribution controls');
 assert.equal(distribution.parentElement, sale, 'distribution controls must be owned by the sale dimension');

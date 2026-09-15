@@ -1426,6 +1426,7 @@ function productPrefix(): 'pf' | 'spf' | '' {
 type ProductEditorHeaderActions = {
   title: HTMLHeadingElement;
   source: HTMLElement;
+  frozenHeader?: HTMLElement;
   elements: readonly HTMLButtonElement[];
   cleanup: () => void;
 };
@@ -1433,7 +1434,7 @@ type ProductEditorHeaderActions = {
 const productEditorHeaderOwner = 'product-editor';
 let mountedProductEditorHeaderActions: ProductEditorHeaderActions | undefined;
 
-function productEditorHeaderActionSource(): { title: HTMLHeadingElement; source: HTMLElement; elements: readonly HTMLButtonElement[] } | undefined {
+function productEditorHeaderActionSource(): { title: HTMLHeadingElement; source: HTMLElement; frozenHeader?: HTMLElement; elements: readonly HTMLButtonElement[] } | undefined {
   // JSDOM can flush a queued donor mutation after its Window closes; a disposed
   // document has no editor and must not keep the test/browser lifecycle alive.
   if (typeof document === 'undefined' || !document.documentElement || !document.defaultView) return undefined;
@@ -1452,7 +1453,14 @@ function productEditorHeaderActionSource(): { title: HTMLHeadingElement; source:
     .find((candidate) => candidate.textContent?.trim() === '保存当前维度');
   const source = returnControl?.parentElement;
   if (!returnControl || !saveControl || !(source instanceof HTMLElement) || !source.contains(saveControl)) return undefined;
-  return { title, source, elements: [returnControl, saveControl] };
+  const summaryCard = headerRow.parentElement;
+  const donorWorkspace = summaryCard?.parentElement;
+  const frozenHeader = donorWorkspace?.previousElementSibling;
+  // This exact sibling is the frozen 52px donor header. Mark it only after
+  // checking its structural contract; normal Product content is never hidden.
+  const duplicateHeader = frozenHeader instanceof HTMLElement && frozenHeader.style.height === '52px' &&
+    frozenHeader.style.display === 'flex' && frozenHeader.querySelector('a') ? frozenHeader : undefined;
+  return { title, source, frozenHeader: duplicateHeader, elements: [returnControl, saveControl] };
 }
 
 function clearProductEditorHeaderActions(): void {
@@ -1460,6 +1468,10 @@ function clearProductEditorHeaderActions(): void {
   if (!mounted) return;
   mounted.cleanup();
   mounted.source.hidden = false;
+  if (mounted.frozenHeader) {
+    mounted.frozenHeader.hidden = false;
+    delete mounted.frozenHeader.dataset.v3ProductFrozenHeader;
+  }
   mounted.title.hidden = false;
   mounted.title.removeAttribute('aria-hidden');
   mountedProductEditorHeaderActions = undefined;
@@ -1485,6 +1497,10 @@ function mountProductEditorHeaderActions(): void {
   source.title.hidden = true;
   source.title.setAttribute('aria-hidden', 'true');
   source.source.hidden = true;
+  if (source.frozenHeader) {
+    source.frozenHeader.hidden = true;
+    source.frozenHeader.dataset.v3ProductFrozenHeader = 'hidden';
+  }
   mountedProductEditorHeaderActions = { ...source, cleanup };
 }
 

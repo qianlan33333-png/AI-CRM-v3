@@ -219,22 +219,36 @@ try {
     for (const width of [1280, 1440]) {
       await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
       const layout = await evaluate(cdp, `(() => {
+        const visible = (node) => {
+          if (!(node instanceof HTMLElement) || node.hidden) return false;
+          const style = getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
         const topbar = document.querySelector('.admin-topbar');
+        const topbarRect = topbar?.getBoundingClientRect();
         const actions = Array.from(topbar?.querySelectorAll('[data-page-header-actions="product-editor"] button') || []);
-        const bodyTitle = Array.from(document.querySelectorAll('#stage h2')).find((node) => node.textContent?.trim() === ${JSON.stringify(title)});
-        const bodyReturn = Array.from(document.querySelectorAll('#stage button')).some((button) => button.textContent?.trim() === ${JSON.stringify(returnLabel)});
+        const duplicateTitles = Array.from(document.querySelectorAll('#stage *')).filter((node) => node.children.length === 0 && node.textContent?.trim() === ${JSON.stringify(title)} && visible(node));
+        const bodyReturn = Array.from(document.querySelectorAll('#stage button')).some((button) => button.textContent?.trim() === ${JSON.stringify(returnLabel)} && visible(button));
+        const frozenHeader = document.querySelector('#stage [data-v3-product-frozen-header="hidden"]');
+        const frozenRect = frozenHeader?.getBoundingClientRect();
         return {
           topbars: document.querySelectorAll('.admin-topbar').length,
           shellTitles: topbar?.querySelectorAll('.admin-page-title').length || 0,
+          shellTitle: topbar?.querySelector('.admin-page-title')?.textContent?.trim(),
           actions: actions.map((button) => button.textContent?.trim()),
-          actionsFit: actions.every((button) => button.getBoundingClientRect().right <= window.innerWidth),
-          bodyTitleHidden: bodyTitle instanceof HTMLElement && bodyTitle.hidden,
+          actionGeometry: actions.map((button) => { const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, visible: visible(button) }; }),
+          topbarGeometry: topbarRect ? { left: topbarRect.left, right: topbarRect.right, top: topbarRect.top, bottom: topbarRect.bottom, width: topbarRect.width, height: topbarRect.height } : null,
+          duplicateTitles: duplicateTitles.length,
           bodyReturn,
+          frozenHeaderHidden: frozenHeader instanceof HTMLElement && frozenHeader.hidden && Boolean(frozenRect && frozenRect.height === 0),
           width: window.innerWidth,
         };
       })()`);
-      if (!layout || layout.topbars !== 1 || layout.shellTitles !== 1 || layout.width !== width ||
-        layout.actions.join('|') !== `${returnLabel}|保存当前维度` || !layout.actionsFit || !layout.bodyTitleHidden || layout.bodyReturn) {
+      const topbarFits = layout?.topbarGeometry && layout.topbarGeometry.left >= 0 && layout.topbarGeometry.right <= width && layout.topbarGeometry.width > 0 && layout.topbarGeometry.height > 0;
+      const actionsFit = layout?.actionGeometry?.every((action) => action.visible && action.left >= 0 && action.right <= width && action.top >= layout.topbarGeometry.top && action.bottom <= layout.topbarGeometry.bottom);
+      if (!layout || layout.topbars !== 1 || layout.shellTitles !== 1 || layout.shellTitle !== title || layout.width !== width ||
+        layout.actions.join('|') !== `${returnLabel}|保存当前维度` || !topbarFits || !actionsFit || layout.duplicateTitles !== 0 || layout.bodyReturn || !layout.frozenHeaderHidden) {
         throw new Error(`${kind} editor header layout invalid at ${width}: ${JSON.stringify(layout)}`);
       }
     }

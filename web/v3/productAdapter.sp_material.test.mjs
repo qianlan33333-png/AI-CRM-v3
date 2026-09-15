@@ -47,6 +47,8 @@ await waitFor(() => document.querySelectorAll('.admin-topbar [data-page-header-a
 assert.deepEqual([...document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button')].map((button) => button.textContent.trim()), ['返回周期商品管理', '保存当前维度'], 'new periodic product retains the existing commands in the shared header');
 const newPeriodicTitle = [...document.querySelectorAll('#stage h2')].find((heading) => heading.textContent.trim() === '创建周期商品');
 assert.ok(newPeriodicTitle?.hidden, 'new periodic body summary must not repeat the shell title');
+const periodicFrozenHeader = document.getElementById('stage').firstElementChild.firstElementChild;
+assert.ok(periodicFrozenHeader?.hidden && periodicFrozenHeader.dataset.v3ProductFrozenHeader === 'hidden', 'new periodic editor must hide the frozen 52px donor header after the SSR shell renders');
 await waitFor(() => document.getElementById('spfDurationDays'), 'new periodic product must require a service duration before create');
 const duration = document.getElementById('spfDurationDays');
 assert.equal(duration.value, '', 'new periodic product must not invent a service duration');
@@ -142,6 +144,8 @@ assert.equal(reopened.window.document.querySelectorAll('.admin-topbar .admin-pag
 assert.deepEqual([...reopened.window.document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button')].map((button) => button.textContent.trim()), ['返回周期商品管理', '保存当前维度'], 'periodic topbar retains the existing commands in their original order');
 const periodicEditorTitle = [...reopened.window.document.querySelectorAll('#stage h2')].find((heading) => heading.textContent.trim() === '编辑周期商品');
 assert.ok(periodicEditorTitle?.hidden, 'periodic body summary must not repeat the shell header title');
+const reopenedFrozenHeader = reopened.window.document.getElementById('stage').firstElementChild.firstElementChild;
+assert.ok(reopenedFrozenHeader?.hidden && reopenedFrozenHeader.dataset.v3ProductFrozenHeader === 'hidden', 'periodic editor must hide the frozen 52px donor header after the SSR shell renders');
 assert.equal([...reopened.window.document.querySelectorAll('#stage button')].some((button) => button.textContent.trim() === '返回周期商品管理'), false, 'periodic body summary must not retain a second return control');
 assert.equal(reopened.window.document.querySelector('[data-product-purchase-enabled]').checked, true, 'reopening must retain the saved action switch');
 assert.equal(reopened.window.document.querySelector('input[name="spfPurchaseActionMode"][value="redirect"]').checked, true, 'reopening must retain redirect mode');
