@@ -6,7 +6,7 @@ type TrendPoint = { date: string; gross: Money[]; order_count: number };
 type Todo = { code: string; count: number; href: string };
 type Overview = {
   range: { period: Period; timezone: string; start: string; end: string };
-  paid: Section & { gross: Money[]; order_count: number; distinct_canonical_payers: number; missing_payer_count?: number; missing_confirmation_evidence_count?: number; missing_confirmation_evidence_amount?: Money[]; trend: TrendPoint[] };
+  paid: Section & { gross: Money[]; order_count: number; distinct_canonical_payers?: number; missing_payer_count?: number; missing_confirmation_evidence_count?: number; missing_confirmation_evidence_amount?: Money[]; trend: TrendPoint[] };
   customers: Section & { new_canonical_customers: number; historical_excluded: number; unknown_source_count?: number };
   refunds: Section & { completed_amount: Money[]; completed_count: number; missing_completion_evidence_count?: number; net_amount: Money[] | null };
   distribution: Section & { period_paid_sales_minor: number; period_initial_commission_minor: number; period_commission_count: number; current_unsettled_minor: number; current_settled_minor: number; currency: string };
@@ -28,6 +28,7 @@ const reasonMessages: Record<string, string> = {
   customer_creation_source_unknown: '部分客户来源待核实。',
   customer_provenance_aggregate_timeout: '客户来源读取超时，可稍后重试。',
   payment_aggregate_timeout: '已确认支付读取超时，可稍后重试。',
+  canonical_payer_unavailable: '付款客户归并关系暂时无法核实，人数未显示。',
   refund_aggregate_timeout: '退款数据读取超时，可稍后重试。',
   distribution_aggregate_timeout: '分销数据读取超时，可稍后重试。',
   distribution_todo_aggregate_timeout: '待处理事项读取超时，可稍后重试。',
@@ -52,7 +53,8 @@ function isTrend(value: unknown): value is TrendPoint {
 function isPaid(value: unknown): value is Overview['paid'] {
   if (!isRecord(value)) return false;
   const record = value;
-  return isSection(value) && isMoneyList(record.gross) && isSafeCount(record.order_count) && isSafeCount(record.distinct_canonical_payers)
+  return isSection(value) && isMoneyList(record.gross) && isSafeCount(record.order_count)
+    && (record.distinct_canonical_payers === undefined ? record.status !== 'ready' && record.status !== 'zero' : isSafeCount(record.distinct_canonical_payers))
     && (record.missing_payer_count === undefined || isSafeCount(record.missing_payer_count))
     && (record.missing_confirmation_evidence_count === undefined || isSafeCount(record.missing_confirmation_evidence_count))
     && (record.missing_confirmation_evidence_amount === undefined || isMoneyList(record.missing_confirmation_evidence_amount))
@@ -104,7 +106,7 @@ function amounts(values: Money[] | null | undefined, section: Section, confirmed
 function minorAmount(value: number, currency: string, section: Section): string {
   return unavailable(section) || (section.status === 'data_missing' && section.reason_code === 'distribution_not_configured') ? '—' : amount({ amount_minor: value, currency });
 }
-function integer(value: number, section: Section): string { return unavailable(section) ? '—' : new Intl.NumberFormat('zh-CN').format(value); }
+function integer(value: number | undefined, section: Section): string { return unavailable(section) || !isSafeCount(value) ? '—' : new Intl.NumberFormat('zh-CN').format(value); }
 function timestamp(value: string): string {
   const date = new Date(value); if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);

@@ -43,6 +43,8 @@ const dom = new JSDOM('<!doctype html><main id="overview-admin-root"></main>', {
       if (scenario === 'negative') return reply(overview(url.searchParams.get('period'), { amount: 500, refund: 1200 }));
       if (scenario === 'refund-zero') return reply(overview(url.searchParams.get('period'), { refund: 0 }));
       if (scenario === 'trend-missing') { const body = overview(url.searchParams.get('period')); body.paid.status = 'data_missing'; body.paid.reason_code = 'paid_confirmation_time_missing'; body.paid.trend = []; return reply(body); }
+      if (scenario === 'canonical-payer-unavailable') { const body = overview(url.searchParams.get('period')); body.paid.status = 'data_missing'; body.paid.reason_code = 'canonical_payer_unavailable'; delete body.paid.distinct_canonical_payers; return reply(body); }
+      if (scenario === 'payment-timeout') { const body = overview(url.searchParams.get('period')); body.paid.status = 'failed'; body.paid.reason_code = 'payment_aggregate_timeout'; delete body.paid.distinct_canonical_payers; return reply(body); }
       if (scenario === 'distribution-not-configured') { const body = overview(url.searchParams.get('period')); body.distribution.status = 'data_missing'; body.distribution.reason_code = 'distribution_not_configured'; body.distribution.period_paid_sales_minor = 0; body.distribution.period_initial_commission_minor = 0; body.distribution.current_unsettled_minor = 0; body.distribution.current_settled_minor = 0; body.todos.status = 'data_missing'; body.todos.reason_code = 'distribution_not_configured'; body.todos.items = []; return reply(body); }
       if (scenario === 'long-custom') { const body = overview('custom'); body.range = { period: 'custom', timezone: 'Asia/Shanghai', start: '2026-01-01T16:00:00Z', end: '2026-02-03T16:00:00Z' }; return reply(body); }
       return reply(overview(url.searchParams.get('period'), { amount: scenario === 'seven' ? 20000 : 12500 }));
@@ -82,6 +84,17 @@ scenario = 'trend-missing';
 await waitFor(() => dom.window.document.body.textContent.includes('部分历史支付缺少确认时间'), 'missing payment evidence did not render');
 assert.ok(dom.window.document.body.textContent.includes('暂无可定位到日期的支付记录，仍有数据待核实'), 'missing payment evidence must not be shown as a confirmed zero');
 assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 0, 'data-missing payment trends must not infer zero-value dates');
+
+scenario = 'canonical-payer-unavailable';
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
+await waitFor(() => dom.window.document.body.textContent.includes('付款客户归并关系暂时无法核实'), 'unknown canonical payer count did not expose its reason');
+const payerMetric = [...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付客户'));
+assert.equal(payerMetric?.querySelector('strong')?.textContent, '—', 'omitted canonical payer count must not render as zero');
+
+scenario = 'payment-timeout';
+[...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 7 天').click();
+await waitFor(() => dom.window.document.body.textContent.includes('已确认支付读取超时'), 'payment timeout did not expose its reason');
+assert.equal([...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付客户'))?.querySelector('strong')?.textContent, '—', 'timed-out omitted payer count must not render as zero');
 
 scenario = 'distribution-not-configured';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
