@@ -67,7 +67,7 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	// Linux CI is the release gate. A developer may explicitly run the same
 	// trusted fixture on Darwin to diagnose a browser-only regression; the
 	// opt-in never turns an unavailable local DevTools session into a pass.
-	if goruntime.GOOS == "darwin" && os.Getenv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM") != "1" {
+	if goruntime.GOOS == "darwin" && !platformconfig.ProductExternalPushDarwinChromiumDiagnosticAllowed() {
 		t.Skip("Chromium CDP journey requires Linux CI; the PostgreSQL Composition preflight runs separately")
 	}
 	if !platformconfig.ChromiumJourneyRequired() {
