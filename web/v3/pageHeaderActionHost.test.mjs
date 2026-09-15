@@ -9,17 +9,17 @@ const bundle = await build({
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 0)); }
 async function settleMutations() { await settle(); await settle(); }
 
-const tags = new JSDOM(`<!doctype html><body data-page="tags"><header class="admin-topbar"><div class="admin-topbar-head"><h1>企微标签管理</h1></div></header><main id="stage"><div style="height:52px">客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section></main></body>`, { runScripts: 'outside-only' });
+const tags = new JSDOM(`<!doctype html><body data-page="tags"><header class="admin-topbar"><div class="admin-topbar-head"><h1>企微标签管理</h1></div></header><main id="stage"><div style="display:contents"><div style="height:52px">客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section></div></main></body>`, { runScripts: 'outside-only' });
 try {
   tags.window.eval(bundle.outputFiles[0].text);
   await settle();
   const topbar = tags.window.document.querySelector('.admin-topbar');
   assert.equal(topbar.querySelectorAll('h1').length, 1, 'tag page retains the one shell title');
   assert.deepEqual([...topbar.querySelectorAll('[data-page-header-actions="wecom-tags"] button')].map((node) => node.textContent), ['同步企微标签', '新增标签组', '新增标签'], 'tag actions move into the topbar');
-  assert.equal(tags.window.document.querySelector('#stage > div').hidden, true, 'tag donor title row is visually hidden after shell title is enabled');
+  assert.equal(tags.window.document.querySelector('#stage > div > div').hidden, true, 'tag donor title row is visually hidden after shell title is enabled');
   assert.equal(tags.window.document.querySelector('#stage section button'), null, 'tag card no longer contains duplicated actions');
   const firstCreate = topbar.querySelector('[data-page-header-actions="wecom-tags"] button:last-child');
-  tags.window.document.querySelector('#stage').innerHTML = '<div style="height:52px">客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section>';
+  tags.window.document.querySelector('#stage').innerHTML = '<div style="display:contents"><div style="height:52px">客户管理后台 / 运营 / 企微标签管理</div><section><div><button>同步企微标签</button><button>新增标签组</button><button>新增标签</button></div></section></div>';
   await settleMutations();
   const refreshedCreate = topbar.querySelector('[data-page-header-actions="wecom-tags"] button:last-child');
   assert.notEqual(refreshedCreate, firstCreate, 'a donor redraw replaces stale header controls with the current original nodes');

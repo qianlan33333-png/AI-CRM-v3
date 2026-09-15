@@ -30,8 +30,14 @@ function mountTagActions(previous: Mounted | undefined): Mounted | undefined {
   // The frozen document owns this former local title row. The V3 shell now
   // supplies the one visible page title, so hide only the 52px donor title
   // row—not a wrapping workspace that happens to contain the same text.
-  const localTitle = Array.from(stage.children).find((element) =>
-    element instanceof HTMLElement && element.style.height === '52px' && element.textContent?.includes('企微标签管理'),
+  const localTitle = Array.from(stage.querySelectorAll<HTMLElement>('div')).find((element) =>
+    // The shared runtime adds a display:contents container before rendering
+    // the frozen fragment. Unit fixtures may mount the fragment directly, so
+    // accept either one or two levels below #stage, but never inspect a
+    // deeper card heading with the same text.
+    (element.parentElement === stage || element.parentElement?.parentElement === stage)
+      && element.style.height === '52px'
+      && element.textContent?.includes('企微标签管理'),
   );
   if (localTitle instanceof HTMLElement) {
     localTitle.dataset.pageHeaderDonorTitle = 'tags';
