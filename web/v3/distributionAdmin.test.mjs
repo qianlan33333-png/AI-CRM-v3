@@ -23,7 +23,7 @@ const pendingLists = [];
 const pendingOrderDetails = [];
 let holdDisable = false;
 const pendingDisables = [];
-const dom = new JSDOM('<!doctype html><main id="distribution-admin-root"></main>', { url: 'https://crm.example/admin/distribution', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
+const dom = new JSDOM('<!doctype html><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">分销管理</h1></div></header><main id="distribution-admin-root"></main>', { url: 'https://crm.example/admin/distribution', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
   window.Response = Response; window.Headers = Headers; Object.defineProperty(window.crypto, 'randomUUID', { value: globalThis.crypto.randomUUID.bind(globalThis.crypto) }); window.prompt = () => prompts.shift() || '';
 	window.HTMLDialogElement.prototype.showModal = function showModal() { this.open = true; }; window.HTMLDialogElement.prototype.close = function close() { this.open = false; this.dispatchEvent(new window.Event('close')); };
   window.fetch = async (input, init = {}) => { const url = new URL(String(input), window.location.href); calls.push({ path: url.pathname, search: url.search, method: init.method || 'GET', body: init.body || '', idempotencyKey: new Headers(init.headers).get('Idempotency-Key') || '' });
@@ -60,12 +60,23 @@ const dom = new JSDOM('<!doctype html><main id="distribution-admin-root"></main>
 } });
 dom.window.eval(bundle); await waitFor(() => dom.window.document.body.textContent.includes('未设置昵称'), 'distributor list did not render nickname fallback');
 await waitFor(() => dom.window.document.querySelector('.distribution-summary')?.textContent.includes('¥12.00'), 'ready distribution overview did not render');
+assert.equal(dom.window.document.querySelectorAll('.admin-topbar .admin-page-title').length, 1, 'the shell keeps the only distribution page title');
+assert.equal(dom.window.document.querySelectorAll('#distribution-admin-root h1').length, 0, 'the distribution body must not render a duplicate page title');
+const headerActions = dom.window.document.querySelector('[data-page-header-actions="distribution-admin"]');
+assert.ok(headerActions, 'distribution actions mount in the existing shell topbar');
+assert.deepEqual([...headerActions.querySelectorAll('a,button')].map((action) => action.textContent), ['打开申请页', '复制申请链接', '申请二维码'], 'all distribution actions remain available in the topbar');
 let summaryText = dom.window.document.querySelector('.distribution-summary')?.textContent || '';
 assert.equal(summaryText.includes('¥0.00'), true, 'an actual ready-state zero must render as zero');
 assert.equal(summaryText.includes('系统分账成功确认'), true, 'settlement wording must distinguish system confirmation from bank arrival');
 const exceptionSummary = [...dom.window.document.querySelectorAll('.distribution-summary-card')].find((card) => card.textContent.includes('待处理异常'));
 assert.equal(exceptionSummary?.textContent.includes('2'), true, 'distribution exception count must use its stable todo code');
 assert.equal(exceptionSummary?.textContent.includes('99'), false, 'an unrelated first todo must not be shown as a distribution exception');
+const stableHeaderAction = [...headerActions.querySelectorAll('button')].find((action) => action.textContent === '复制申请链接');
+stableHeaderAction.focus();
+dom.window.document.querySelector('[data-distribution-summary-period="7d"]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+await waitFor(() => dom.window.document.querySelector('[data-distribution-summary-period="7d"]')?.getAttribute('aria-pressed') === 'true', 'summary redraw did not complete');
+assert.equal(dom.window.document.activeElement, stableHeaderAction, 'content redraw must preserve the stable topbar action focus');
+assert.equal(dom.window.document.querySelector('[data-page-header-actions="distribution-admin"] button:nth-of-type(1)'), stableHeaderAction, 'content redraw must not replace the header action node');
 overviewMode = 'zero';
 dom.window.document.querySelector('[data-distribution-summary-period="today"]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
 await waitFor(() => dom.window.document.querySelector('.distribution-summary')?.textContent.includes('当前口径内未形成'), 'zero overview did not explain the selected-period absence');

@@ -1,5 +1,6 @@
 import { openDetailDrawer } from './shared/ui/detailDrawer';
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 import { renderQr } from '../src/admin/sections/qr';
 import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionSettlementStatusLabel } from './distributionPresentation';
 
@@ -20,7 +21,6 @@ class RequestError extends Error {
 const root = document.getElementById('distribution-admin-root');
 if (!root) throw new Error('分销管理容器缺失');
 const distributionRoot: HTMLElement = root;
-const headHost = document.createElement('section');
 const summaryHost = document.createElement('section');
 const tabsHost = document.createElement('section');
 const filterHost = document.createElement('section');
@@ -521,26 +521,19 @@ function filterControl(value = tab): HTMLElement {
 
 function ensurePage(): void {
   if (pageMounted) return;
-  distributionRoot.replaceChildren(headHost, summaryHost, tabsHost, filterHost, tableHost, paginationHost, messageHost);
+  distributionRoot.replaceChildren(summaryHost, tabsHost, filterHost, tableHost, paginationHost, messageHost);
+  // The shell title is the page’s only title. Mount its actions once so table,
+  // filter and summary redraws preserve header focus and an in-flight command.
+  mountPageHeaderActions('distribution-admin', [
+    { label: '打开申请页', href: '/distribution', target: '_blank', variant: 'secondary' },
+    { label: '复制申请链接', onClick: () => copyApplicationLink() },
+    { label: '申请二维码', onClick: () => showApplicationEntry() },
+  ]);
   pageMounted = true;
 }
 
 function render(): void {
   ensurePage();
-  const head = document.createElement('header');
-  head.className = 'distribution-head';
-  head.innerHTML = '<div><h1>分销管理</h1><p>管理分销员，查看推广订单、佣金和结算记录。</p></div>';
-  const actions = document.createElement('div');
-  actions.className = 'admin-toolbar';
-  const open = document.createElement('a');
-  open.href = '/distribution';
-  open.target = '_blank';
-  open.rel = 'noopener';
-  open.className = 'admin-button admin-button--secondary';
-  open.textContent = '打开申请页';
-  actions.append(open, button('复制申请链接', () => copyApplicationLink()), button('申请二维码', () => showApplicationEntry()));
-  head.append(actions);
-  headHost.replaceChildren(head);
   summaryHost.replaceChildren(summary());
   const nav = document.createElement('nav');
   nav.className = 'distribution-tabs';
