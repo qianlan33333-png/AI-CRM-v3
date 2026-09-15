@@ -981,6 +981,13 @@ func QuestionnaireListScreenshotDirectory() string {
 	return os.Getenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR")
 }
 
+// RemainingPagesChromiumScreenshotDirectory returns the optional evidence
+// directory for the final admin/public page Chromium acceptance journey.
+// Callers still require an absolute path before writing local evidence.
+func RemainingPagesChromiumScreenshotDirectory() string {
+	return os.Getenv("AICRM_REMAINING_PAGES_CHROMIUM_SCREENSHOT_DIR")
+}
+
 // NamedDatabaseURL is restricted to explicit target and read-only source roles
 // used by controlled offline migrations. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment

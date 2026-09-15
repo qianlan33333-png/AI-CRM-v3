@@ -656,6 +656,17 @@ func TestQuestionnaireListScreenshotDirectoryUsesConfigurationBoundary(t *testin
 	}
 }
 
+func TestRemainingPagesChromiumScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_REMAINING_PAGES_CHROMIUM_SCREENSHOT_DIR", "")
+	if value := RemainingPagesChromiumScreenshotDirectory(); value != "" {
+		t.Fatalf("missing remaining-page screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_REMAINING_PAGES_CHROMIUM_SCREENSHOT_DIR", "/tmp/aicrm-remaining-pages-evidence")
+	if value := RemainingPagesChromiumScreenshotDirectory(); value != "/tmp/aicrm-remaining-pages-evidence" {
+		t.Fatalf("remaining-page screenshot directory=%q", value)
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	allowed := map[string]string{
 		"AICRM_DATABASE_URL":                 "postgres://target@localhost/aicrm",
