@@ -136,6 +136,8 @@ dialog.aicrm-content-composer-mask[data-v3-content-top-layer="1"]::backdrop {
 .aicrm-content-presentation__supplements { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .aicrm-content-composer-mask .aicrm-content-presentation__material,
 .aicrm-content-composer-mask .aicrm-content-presentation__supplement { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; align-items: center; padding: 9px; border-radius: 8px; background: #fff; }
+.aicrm-content-composer-mask .aicrm-content-presentation__material--without-thumbnail,
+.aicrm-content-composer-mask .aicrm-content-presentation__supplement--without-thumbnail { grid-template-columns: minmax(0, 1fr); }
 .aicrm-content-composer-mask .aicrm-content-presentation__visual { inline-size: 48px; block-size: 48px; min-inline-size: 48px; min-block-size: 48px; }
 .aicrm-content-composer-mask .aicrm-content-presentation__material img,
 .aicrm-content-composer-mask .aicrm-content-presentation__supplement img,
