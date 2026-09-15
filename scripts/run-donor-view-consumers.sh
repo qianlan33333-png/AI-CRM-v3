@@ -66,6 +66,7 @@ run_frontend_and_stage_checks() {
   node --test internal/webshell/chromium_launch.test.mjs
   node internal/webshell/owner_handoff_host.test.mjs
   node scripts/build-v3-host-adapters.mjs
+  node --test web/v3/publicCommerceHost.test.mjs
   node scripts/groupops-host-adapter-e2e.mjs
   node web/v3/shared/ui/selectionSession.test.mjs
   node web/v3/shared/ui/selectionDialog.test.mjs
