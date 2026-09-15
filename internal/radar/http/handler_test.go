@@ -167,7 +167,7 @@ func TestPublicViewerCSPAllowsOnlySameOriginEventTracking(t *testing.T) {
 	if policy != wantPolicy {
 		t.Fatalf("viewer CSP=%q want=%q", policy, wantPolicy)
 	}
-	if !strings.Contains(response.Body.String(), "/api/public/radar/rd_abcdefghijklmnopqrstuv/events") {
+	if !strings.Contains(response.Body.String(), "'/api/public/radar/'+code+'/events'") {
 		t.Fatalf("viewer no longer contains the existing same-origin tracking endpoint: %s", response.Body.String())
 	}
 }
