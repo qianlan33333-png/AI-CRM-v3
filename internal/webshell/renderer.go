@@ -169,7 +169,11 @@ type GroupOpsAssets struct {
 
 // AutomationAssets are manifest-derived frozen Agent bundle paths. The v3
 // shell supplies only URLs; donor markup remains the extracted template.
-type AutomationAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type AutomationAssets struct {
+	TokensCSS, LabsCSS, AdminJS                                        string
+	PresentationCSS, ContentCSS, SelectionDialogCSS, MaterialPickerCSS string
+	MaterialPickerJS, ContentHostJS                                    string
+}
 
 type SurveyAssets struct {
 	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS, SurveyHostJS string
@@ -604,6 +608,9 @@ func (renderer *Renderer) RenderOwnerHandoff(writer http.ResponseWriter, data Ad
 func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AutomationAssets, createCode string) error {
 	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "agents" && page != "agentEdit") {
 		return errors.New("automation shell assets are required")
+	}
+	if page == "agentEdit" && (assets.PresentationCSS == "" || assets.ContentCSS == "" || assets.SelectionDialogCSS == "" || assets.MaterialPickerCSS == "" || assets.MaterialPickerJS == "" || assets.ContentHostJS == "") {
+		return errors.New("automation content host assets are required")
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false

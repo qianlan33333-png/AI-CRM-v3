@@ -14,7 +14,11 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/donortemplate"
 )
 
-type AgentAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type AgentAssets struct {
+	TokensCSS, LabsCSS, AdminJS                                                          string
+	PresentationCSS, ContentCSS, SelectionDialogCSS, MaterialPickerCSS, MaterialPickerJS string
+	ContentHostJS                                                                        string
+}
 
 // AgentPageBootstrap is v3-owned host data. It deliberately carries only a
 // locally generated create-code suggestion; the frozen donor template and
@@ -58,7 +62,7 @@ func (h *agentUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "automation UI unavailable", 503)
 		return
 	}
-	assets, err := agentAssets(h.dist)
+	assets, err := agentAssets(h.dist, page == "agentEdit")
 	if err != nil {
 		http.Error(w, "automation UI unavailable", 503)
 		return
@@ -125,20 +129,21 @@ func validAgentQuery(page string, r *http.Request) bool {
 	saved, ok := q["saved"]
 	return ok && len(saved) == 1 && saved[0] == "1"
 }
-func agentAssets(dist string) (AgentAssets, error) {
+func agentAssets(dist string, editor bool) (AgentAssets, error) {
 	raw, e := os.ReadFile(filepath.Join(dist, "asset-manifest.json"))
 	if e != nil {
 		return AgentAssets{}, e
 	}
 	var m struct {
-		Entries map[string]string `json:"entries"`
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
 	}
 	if e = json.Unmarshal(raw, &m); e != nil {
 		return AgentAssets{}, e
 	}
 	get := func(n string) (string, error) {
 		v := m.Entries[n]
-		if v == "" || !strings.HasPrefix(v, "assets/") || strings.Contains(v, "..") {
+		if v == "" || !strings.HasPrefix(v, "assets/") || strings.Contains(v, "..") || m.Files[v] == nil {
 			return "", errors.New("automation bundle asset missing")
 		}
 		if _, e = os.Stat(filepath.Join(dist, v)); e != nil {
@@ -158,5 +163,43 @@ func agentAssets(dist string) (AgentAssets, error) {
 	if e != nil {
 		return AgentAssets{}, e
 	}
-	return AgentAssets{t, l, a}, nil
+	assets := AgentAssets{TokensCSS: t, LabsCSS: l, AdminJS: a}
+	if !editor {
+		return assets, nil
+	}
+	for name, target := range map[string]*string{
+		"presentationStyles":      &assets.PresentationCSS,
+		"automationContentStyles": &assets.ContentCSS,
+		"selectionDialogStyles":   &assets.SelectionDialogCSS,
+		"automationContentHost":   &assets.ContentHostJS,
+	} {
+		value, err := get(name)
+		if err != nil {
+			return AgentAssets{}, err
+		}
+		*target = value
+	}
+	materialCSS, err := staticAutomationAsset(dist, m.Files, "assets/standard-components/material_picker.css")
+	if err != nil {
+		return AgentAssets{}, err
+	}
+	materialJS, err := staticAutomationAsset(dist, m.Files, "assets/standard-components/material_picker.js")
+	if err != nil {
+		return AgentAssets{}, err
+	}
+	assets.MaterialPickerCSS, assets.MaterialPickerJS = materialCSS, materialJS
+	if assets.PresentationCSS == "" || assets.ContentCSS == "" || assets.SelectionDialogCSS == "" || assets.ContentHostJS == "" {
+		return AgentAssets{}, errors.New("automation content assets missing")
+	}
+	return assets, nil
+}
+
+func staticAutomationAsset(dist string, files map[string]json.RawMessage, relative string) (string, error) {
+	if !strings.HasPrefix(relative, "assets/") || strings.Contains(relative, "..") || files[relative] == nil {
+		return "", errors.New("automation bundle asset missing")
+	}
+	if _, err := os.Stat(filepath.Join(dist, relative)); err != nil {
+		return "", err
+	}
+	return "/" + relative, nil
 }
