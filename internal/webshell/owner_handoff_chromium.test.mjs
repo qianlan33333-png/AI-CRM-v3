@@ -195,13 +195,16 @@ try {
   const menuBackNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname===menuEntryPath,"new-shell menu return did not complete");
   await cdp.call("Page.navigate",{url:`${baseURL}${menuEntryPath}`});
   await menuBackNav;
-  await waitFor(`Array.from(document.querySelectorAll('a[href="ownerMig.html"]')).some(link => String(link.textContent || '').includes('负责人迁移'))`, "new-shell owner handoff menu link did not render");
-  const ownerMenuNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname==="/admin/ownerMig.html","owner handoff menu navigation did not complete");
-  await evaluate(`document.querySelector('a[href="ownerMig.html"]').click(); true`, "owner_handoff_menu_click");
+  // navigationHost replaces the frozen links asynchronously with their
+  // canonical new-shell targets. Wait for that settled target instead of
+  // observing a legacy node and clicking it after its parent was replaced.
+  await waitFor(`Array.from(document.querySelectorAll('a[href="/admin/owner-migration"]')).some(link => String(link.textContent || '').includes('负责人迁移'))`, "new-shell owner handoff canonical menu link did not render");
+  const ownerMenuNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname==="/admin/owner-migration","owner handoff menu navigation did not complete");
+  await evaluate(`(() => { const link=Array.from(document.querySelectorAll('a[href="/admin/owner-migration"]')).find(item => String(item.textContent || '').includes('负责人迁移')); if (!link) throw new Error('owner handoff canonical menu link is missing'); link.click(); return true; })()`, "owner_handoff_menu_click");
   await ownerMenuNav;
-  await waitFor(`location.pathname === "/admin/ownerMig.html" && document.readyState !== "loading" && Boolean(document.querySelector('[data-owner-handoff-host]')) && Array.from(document.scripts).some(script => String(script.src || '').includes('/static/admin_console/owner_handoff_host.js'))`, "new-shell owner handoff Host document did not finish parsing");
+  await waitFor(`location.pathname === "/admin/owner-migration" && document.readyState !== "loading" && Boolean(document.querySelector('[data-owner-handoff-host]')) && Array.from(document.scripts).some(script => String(script.src || '').includes('/static/admin_console/owner_handoff_host.js'))`, "new-shell owner handoff Host document did not finish parsing");
   const ownerMenuPage=await evaluate(`(() => ({ path: location.pathname, host: Boolean(document.querySelector('[data-owner-handoff-host]')), asset: Array.from(document.scripts).some(script => String(script.src || '').includes('/static/admin_console/owner_handoff_host.js')), retired_template: Boolean(document.querySelector('#ownerMigCsv')) }))()`, "owner_handoff_menu_page");
-  if (ownerMenuPage.path !== "/admin/ownerMig.html" || !ownerMenuPage.host || !ownerMenuPage.asset || ownerMenuPage.retired_template) throw new Error(`new-shell owner menu did not resolve the V3 Host ${JSON.stringify(ownerMenuPage)}`);
+  if (ownerMenuPage.path !== "/admin/owner-migration" || !ownerMenuPage.host || !ownerMenuPage.asset || ownerMenuPage.retired_template) throw new Error(`new-shell owner menu did not resolve the V3 Host ${JSON.stringify(ownerMenuPage)}`);
   await waitFor("(() => { const stage=document.querySelector('[data-owner-handoff-host]'); return ['ready','donor_error','context_error','host_error'].includes(stage?.dataset.ownerHandoffInit || ''); })()", "owner handoff Host did not complete initialization");
   const hostDiagnostic = await evaluate(`(() => {
     const stage=document.querySelector('[data-owner-handoff-host]');
@@ -224,6 +227,14 @@ try {
     return { page_max_width: root ? getComputedStyle(root).maxWidth : '', header_display: header ? getComputedStyle(header).display : '' };
   })()`);
   if (pageStyle.page_max_width !== '1440px' || pageStyle.header_display !== 'flex') throw new Error(`owner handoff frozen-page styles were blocked ${JSON.stringify(pageStyle)}`);
+  // The frozen donor's old menu URL remains a supported compatibility path.
+  // Exercise it after the canonical link has mounted, then run the actual
+  // mutation journey from that alias rather than treating a static href as
+  // proof that the legacy route still resolves to the V3 Host.
+  const ownerAliasNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname==="/admin/ownerMig.html","owner handoff legacy alias navigation did not complete");
+  await cdp.call("Page.navigate",{url:`${baseURL}/admin/ownerMig.html`});
+  await ownerAliasNav;
+  await waitFor(`location.pathname === "/admin/ownerMig.html" && Boolean(document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'))`, "owner handoff legacy alias did not resolve the V3 Host");
   const run=async (mode, scope=requestedScope)=>{
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`);
     await waitFor(staffPickerPresentExpression(sourceUserID),"source picker did not include inactive source");

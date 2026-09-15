@@ -67,6 +67,7 @@
   <link rel="stylesheet" href="{{.TagsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.TagsAssets.LabsCSS}}">
   <script type="module" src="{{.TagsAssets.AdminJS}}"></script>
+  <script type="module" src="{{.TagsAssets.PageHeaderActionHostJS}}"></script>
   <script defer src="/static/admin_console/tag_sync_bridge.js?v=tag-sync-no-status-banner-v4"></script>
   {{end}}
   {{if .Product}}
@@ -124,8 +125,16 @@
   {{if .Automation}}
   <link rel="stylesheet" href="{{.AutomationAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.AutomationAssets.LabsCSS}}">
-  {{if eq .AutomationPage "agentEdit"}}<script defer src="/static/admin_console/automation_create_code_adapter.js?v=automation-create-code-v2"></script>{{end}}
+  {{if eq .AutomationPage "agentEdit"}}
+  <link rel="stylesheet" href="{{.AutomationAssets.PresentationCSS}}">
+  <link rel="stylesheet" href="{{.AutomationAssets.ContentCSS}}">
+  <link rel="stylesheet" href="{{.AutomationAssets.SelectionDialogCSS}}">
+  <link rel="stylesheet" href="{{.AutomationAssets.MaterialPickerCSS}}">
+  <script defer src="/static/admin_console/automation_create_code_adapter.js?v=automation-create-code-v2"></script>
+  <script defer src="{{.AutomationAssets.MaterialPickerJS}}"></script>
+  {{end}}
   <script type="module" src="{{.AutomationAssets.AdminJS}}"></script>
+  {{if eq .AutomationPage "agentEdit"}}<script type="module" src="{{.AutomationAssets.ContentHostJS}}"></script>{{end}}
   {{end}}
   {{if .Survey}}
   {{if eq .SurveyPage "questionnaireDetail"}}
@@ -172,6 +181,7 @@
   <link rel="stylesheet" href="{{.AIAssistantAssets.TokensCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.LabsCSS}}">
   <link rel="stylesheet" href="{{.AIAssistantAssets.GroupCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.MaterialCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ComposerCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ReadonlyCSS}}">
   <script type="module" src="{{.AIAssistantAssets.HostJS}}"></script>
+  <script type="module" src="{{.AIAssistantAssets.PageHeaderActionHostJS}}"></script>
   {{end}}
   {{if .Distribution}}
   <link rel="stylesheet" href="{{.DistributionAssets.CSS}}">

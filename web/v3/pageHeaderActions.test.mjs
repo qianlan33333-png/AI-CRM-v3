@@ -4,7 +4,7 @@ import { JSDOM } from 'jsdom';
 
 const bundle = await build({
   stdin: {
-    contents: "import { mountPageHeaderActions, setPageHeaderActionDisabled } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions; globalThis.setDisabled = setPageHeaderActionDisabled;",
+    contents: "import { mountPageHeaderActions, mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins, setPageHeaderActionDisabled } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions; globalThis.mountElements = mountPageHeaderActionElements; globalThis.hasOrigins = pageHeaderActionElementsHaveConnectedOrigins; globalThis.setDisabled = setPageHeaderActionDisabled;",
     resolveDir: process.cwd(), sourcefile: 'page-header-actions-test-entry.ts',
   }, bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, logLevel: 'warning',
 });
@@ -94,6 +94,62 @@ try {
   topbar.querySelector('[data-page-header-actions="distribution-safe"] button').click();
   assert.equal(rejected, 2, 'a synchronous action failure is also reported and contained');
   rejectedAction();
+  const source = dom.window.document.createElement('div');
+  const original = dom.window.document.createElement('button');
+  original.textContent = '确认并发送';
+  const back = dom.window.document.createElement('a');
+  back.href = '/admin/cloud-orchestrator/plans';
+  back.textContent = '返回一级页';
+  let originalClicks = 0;
+  original.addEventListener('click', () => { originalClicks += 1; });
+  source.append(original, back);
+  dom.window.document.body.append(source);
+  original.focus();
+  const restoreOriginal = dom.window.mountElements('ai-plan-detail', [back, original]);
+  const relocated = topbar.querySelector('[data-page-header-actions="ai-plan-detail"]');
+  assert.deepEqual([...relocated.children].map((node) => node.textContent), ['返回一级页', '确认并发送'], 'existing controls move to the page header in requested order');
+  assert.equal(relocated.querySelector('button'), original, 'existing page control identity is preserved');
+  assert.equal(dom.window.document.activeElement, original, 'a first move from the source preserves focus on that same original control');
+  original.click();
+  assert.equal(originalClicks, 1, 'moved controls retain their existing domain listener');
+  const foreignOwner = dom.window.mountElements('other-owner', [original]);
+  assert.equal(topbar.querySelector('[data-page-header-actions="other-owner"]'), null, 'another owner cannot steal an already-owned original control');
+  foreignOwner();
+  original.disabled = true;
+  assert.equal(relocated.querySelector('button').disabled, true, 'moved controls retain their live disabled state');
+  original.textContent = '发送已锁定';
+  assert.equal(relocated.querySelector('button').textContent, '发送已锁定', 'moved controls retain live donor text updates');
+  original.disabled = false;
+  original.focus();
+  assert.equal(dom.window.document.activeElement, original, 'a moved control can retain header focus');
+  const staleRestore = dom.window.mountElements('ai-plan-detail', [back, original]);
+  assert.equal(topbar.querySelectorAll('[data-page-header-actions="ai-plan-detail"] button').length, 1, 'repeated mounting of the same controls cannot duplicate an action');
+  restoreOriginal();
+  assert.equal(original.parentElement, relocated, 'a stale cleanup cannot restore a replacement owner mount');
+  staleRestore();
+  restoreOriginal();
+  assert.deepEqual([...source.children], [original, back], 'cleanup restores controls to their original source order');
+  assert.equal(dom.window.document.activeElement, original, 'cleanup keeps focus on the original action node');
+  const otherSource = dom.window.document.createElement('div');
+  const other = dom.window.document.createElement('button');
+  other.textContent = '新增标签';
+  otherSource.append(other); dom.window.document.body.append(otherSource);
+  const restoreOther = dom.window.mountElements('wecom-tags', [other]);
+  assert.equal(topbar.querySelector('[data-page-header-actions="wecom-tags"] button'), other, 'a second owner receives only its own original action');
+  assert.equal(topbar.querySelector('[data-page-header-actions="ai-plan-detail"]'), null, 'disposed owner leaves no stale host while another owner stays mounted');
+  restoreOther();
+  assert.equal(other.parentElement, otherSource, 'second owner restores only its own parent reference');
+  const staleSource = dom.window.document.createElement('div');
+  const stale = dom.window.document.createElement('button');
+  stale.textContent = '旧渲染操作';
+  staleSource.append(stale); dom.window.document.body.append(staleSource);
+  dom.window.mountElements('stale-owner', [stale]);
+  assert.equal(dom.window.hasOrigins('stale-owner', [stale]), true, 'a live source marker is observable by the page Host');
+  staleSource.remove();
+  assert.equal(dom.window.hasOrigins('stale-owner', [stale]), false, 'a donor redraw detaches the old source marker before a stale control can be reused');
+  dom.window.mountElements('stale-owner', [stale]);
+  assert.equal(topbar.querySelector('[data-page-header-actions="stale-owner"]'), null, 'a redraw-detached source control cannot be resurrected in the header');
+  assert.equal(stale.isConnected, false, 'a detached donor control remains detached after stale remount is rejected');
   const empty = new JSDOM('<!doctype html><header class="admin-topbar"><div class="admin-topbar-head"></div></header>', { runScripts: 'outside-only' });
   try {
     empty.window.eval(bundle.outputFiles[0].text);
