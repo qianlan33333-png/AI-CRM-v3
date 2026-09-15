@@ -26,6 +26,7 @@
   flex-shrink: 0;
 }
 
+[data-v3-selection-session="material"] .aicrm-material-thumbnail__loading,
 [data-v3-selection-session="material"] .aicrm-material-picker__preview-unavailable {
   display: grid;
   place-items: center;
@@ -36,6 +37,10 @@
   font-size: var(--ui-body, 13px);
   font-weight: 700;
   text-align: center;
+}
+
+[data-v3-selection-session="material"] [data-v3-material-thumbnail] [hidden] {
+  display: none !important;
 }
 
 @media (max-width: 420px) {

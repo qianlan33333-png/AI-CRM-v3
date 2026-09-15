@@ -1,6 +1,7 @@
 // Shared V3 representation of a persisted content package. It owns browser
 // draft normalisation and safe rendering only: callers retain their authorised
 // catalogue reads and every save/send/provider command.
+import { renderMaterialThumbnail } from './materialThumbnailPresentation';
 
 export type ContentMaterialKind = 'image' | 'miniprogram' | 'attachment' | 'group_invite';
 export type ContentMaterialSource = 'media-library';
@@ -332,21 +333,15 @@ export function renderContentPresentation(target: HTMLElement, options: ContentP
     visual.className = 'aicrm-content-presentation__visual';
     const thumbnailURL = controlledThumbnail(record.thumbnailURL);
     if (!thumbnailURL) item.classList.add('aicrm-content-presentation__material--without-thumbnail');
-    if (thumbnailURL) {
-      const preview = document.createElement('img');
-      preview.className = 'aicrm-content-presentation__thumbnail';
-      preview.src = thumbnailURL;
-      preview.alt = '';
-      const fallback = document.createElement('span');
-      fallback.className = 'aicrm-content-presentation__thumbnail-fallback';
-      fallback.hidden = true;
-      fallback.textContent = '缩略图暂不可用';
-      preview.addEventListener('error', () => {
-        preview.hidden = true;
-        fallback.hidden = false;
-      });
-      visual.append(preview, fallback);
-    }
+    if (thumbnailURL) renderMaterialThumbnail(visual, {
+      url: thumbnailURL,
+      imageDisplay: 'block',
+      loadingDisplay: 'grid',
+      fallbackDisplay: 'grid',
+      unavailableLabel: '缩略图暂不可用',
+      imageClassName: 'aicrm-content-presentation__thumbnail',
+      fallbackClassName: 'aicrm-content-presentation__thumbnail-fallback',
+    });
     const details = document.createElement('div');
     details.className = 'aicrm-content-presentation__material-details';
     const label = document.createElement('strong');
@@ -381,16 +376,15 @@ export function renderContentPresentation(target: HTMLElement, options: ContentP
       if (thumbnailURL) {
         const visual = document.createElement('div');
         visual.className = 'aicrm-content-presentation__visual';
-        const image = document.createElement('img');
-        image.className = 'aicrm-content-presentation__thumbnail';
-        image.src = thumbnailURL;
-        image.alt = '';
-        const fallback = document.createElement('span');
-        fallback.className = 'aicrm-content-presentation__thumbnail-fallback';
-        fallback.hidden = true;
-        fallback.textContent = '封面暂不可用';
-        image.addEventListener('error', () => { image.hidden = true; fallback.hidden = false; });
-        visual.append(image, fallback);
+        renderMaterialThumbnail(visual, {
+          url: thumbnailURL,
+          imageDisplay: 'block',
+          loadingDisplay: 'grid',
+          fallbackDisplay: 'grid',
+          unavailableLabel: '封面暂不可用',
+          imageClassName: 'aicrm-content-presentation__thumbnail',
+          fallbackClassName: 'aicrm-content-presentation__thumbnail-fallback',
+        });
         item.append(visual);
       }
       const details = document.createElement('div');
