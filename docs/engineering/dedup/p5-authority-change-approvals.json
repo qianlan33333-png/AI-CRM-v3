@@ -797,6 +797,28 @@
       ],
       "reason": "Rebind the Root-reviewed GroupOps owner-scoped directory query and plan-list bound-group projection to shared-component integration after main 22e24ddc. The active V3 OpenAPI authority remains reviewed and frozen donor payloads remain unchanged.",
       "review_reference": "Root review of PR #300 owner-scoped directory query and PR #313 bound-group projection during shared-component integration, rebased to main 22e24ddc on 2026-09-15"
+    },
+    {
+      "base_commit": "84c34e5ad784d3f4cf20082b6a83d39919bff7e5",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "c16b2a83d75c922ae8ce4befe7a507d9da17d3f8b365c8ba382e906b414943e5",
+          "head_sha256": "1554aac9c7debc7febd892d587d004861cde55ad169cd2ad91871664b1edc46c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "15736e427756d8eb434bf5248077e6b1cad31d47b1b869961565a618fe988db0",
+          "head_sha256": "e099d5889c890e3f432f23066ce06fd82ccf0053001e01d118863d902e664530"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "f87bd7f91619c883671197ee46abe7e4c007e67a9dd2ea538c52013e44c506f1",
+          "head_sha256": "a96cff49116907c17d3697fd73d4ad0e9975c0e48b35143792b27f14f349aa1c"
+        }
+      ],
+      "reason": "Record the Root-reviewed Radar server filtering and visible pagination OpenAPI contract after integrating the shared selection and content components. Frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of Radar list pagination authority hashes rebased to main 84c34e5a on 2026-09-15"
     }
   ]
 }
