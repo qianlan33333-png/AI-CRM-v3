@@ -39,6 +39,8 @@ type groupOpsChromiumFixture struct {
 	ownerStaffID       int64
 	replacementStaffID int64
 	composerImageIDs   [2]int64
+	radarImageID       int64
+	radarAttachmentID  int64
 	radarUploadPath    string
 }
 
@@ -83,7 +85,7 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	}
 	fixture := newGroupOpsChromiumFixture(t)
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
-	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10), "AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS="+strconv.FormatInt(fixture.composerImageIDs[0], 10)+","+strconv.FormatInt(fixture.composerImageIDs[1], 10), "AICRM_GROUPOPS_RADAR_UPLOAD="+fixture.radarUploadPath)
+	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10), "AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS="+strconv.FormatInt(fixture.composerImageIDs[0], 10)+","+strconv.FormatInt(fixture.composerImageIDs[1], 10), "AICRM_GROUPOPS_TEST_RADAR_IMAGE_ID="+strconv.FormatInt(fixture.radarImageID, 10), "AICRM_GROUPOPS_TEST_RADAR_ATTACHMENT_ID="+strconv.FormatInt(fixture.radarAttachmentID, 10), "AICRM_GROUPOPS_RADAR_UPLOAD="+fixture.radarUploadPath)
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "group_ops_chromium: SKIP_DEVTOOLS") {
 		t.Fatalf("Group Ops Chromium DevTools unexpectedly unavailable: %s", strings.TrimSpace(string(output)))
@@ -122,6 +124,10 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	var radarMaterials int
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM radar_links WHERE title='Chromium V3 Radar material' AND content_type='image' AND media_id IS NOT NULL`).Scan(&radarMaterials); err != nil || radarMaterials != 1 {
 		t.Fatalf("browser Radar material persistence count=%d err=%v", radarMaterials, err)
+	}
+	var radarPDFMaterials int
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM radar_links WHERE title='Chromium V3 Radar PDF material' AND content_type='pdf' AND media_id=$1`, fixture.radarAttachmentID).Scan(&radarPDFMaterials); err != nil || radarPDFMaterials != 1 {
+		t.Fatalf("browser Radar PDF persistence count=%d attachment=%d err=%v", radarPDFMaterials, fixture.radarAttachmentID, err)
 	}
 }
 
@@ -189,11 +195,12 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 	if _, err = application.pool.Native().Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES ('chromium-group-1',$1,'Chromium 群一',20,'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',$2,12),('chromium-group-2',$1,'Chromium 群二',18,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',$2,10),('chromium-group-3',$1,'Chromium 群三',16,'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',$2,8)`, actorID, now); err != nil {
 		t.Fatal(err)
 	}
-	composerImageIDs := seedGroupOpsChromiumImages(t, ctx, application)
+	media := seedGroupOpsChromiumImages(t, ctx, application)
+	radarAttachmentID := seedGroupOpsRadarAttachment(t, ctx, application, media.radarImageID)
 	radarUploadPath := seedGroupOpsRadarUploadFile(t)
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID, composerImageIDs: composerImageIDs, radarUploadPath: radarUploadPath}
+	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID, composerImageIDs: media.composerImageIDs, radarImageID: media.radarImageID, radarAttachmentID: radarAttachmentID, radarUploadPath: radarUploadPath}
 }
 
 // seedGroupOpsChromiumImages uses the normal Media tables only. The browser
@@ -201,9 +208,14 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 // writes a Provider resource. The first two IDs are fixed fixture facts used
 // to assert the node's persisted material_plan order after the real composer
 // removes, reopens, and reorders its local draft.
-func seedGroupOpsChromiumImages(t *testing.T, ctx context.Context, application *composedApplication) [2]int64 {
+type groupOpsChromiumMediaFixture struct {
+	composerImageIDs [2]int64
+	radarImageID     int64
+}
+
+func seedGroupOpsChromiumImages(t *testing.T, ctx context.Context, application *composedApplication) groupOpsChromiumMediaFixture {
 	t.Helper()
-	var composer [2]int64
+	var fixture groupOpsChromiumMediaFixture
 	// A complete, visibly colored PNG makes the page-scoped thumbnail endpoint
 	// part of the browser journey; a signature-only byte slice renders broken.
 	canvas := image.NewRGBA(image.Rect(0, 0, 160, 90))
@@ -224,11 +236,38 @@ func seedGroupOpsChromiumImages(t *testing.T, ctx context.Context, application *
 		if err := application.pool.Native().QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'真实素材选择验收','chromium,groupops','chromium-groupops','image/png',$4,160,90,true,1,1) RETURNING id`, digest, "chromium-groupops-"+strconv.Itoa(index+1)+".png", name, len(content)).Scan(&imageID); err != nil {
 			t.Fatal(err)
 		}
-		if index < len(composer) {
-			composer[index] = imageID
+		if index < len(fixture.composerImageIDs) {
+			fixture.composerImageIDs[index] = imageID
+		}
+		if index == 2 {
+			fixture.radarImageID = imageID
 		}
 	}
-	return composer
+	if fixture.radarImageID < 1 {
+		t.Fatal("Group Ops Chromium fixture did not create its Radar image")
+	}
+	return fixture
+}
+
+// seedGroupOpsRadarAttachment deliberately uses the same numeric ID as the
+// image selected by the real Radar journey. Image and attachment IDs belong to
+// different Media owners; switching the form type must clear the image instead
+// of treating the equally numbered PDF as if it were the prior selection.
+func seedGroupOpsRadarAttachment(t *testing.T, ctx context.Context, application *composedApplication, imageID int64) int64 {
+	t.Helper()
+	content := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
+	digestValue := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(digestValue[:])
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'application/pdf',$2,$3)`, digest, len(content), content); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `INSERT INTO media_attachments(id,blob_digest,file_name,name,description,tags,mime_type,byte_size,enabled,created_by,updated_by) OVERRIDING SYSTEM VALUE VALUES($1,$2,'chromium-radar-material.pdf','Chromium 雷达 PDF 素材','与同号图片验证类型边界','[]'::jsonb,'application/pdf',$3,true,1,1)`, imageID, digest, len(content)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.pool.Native().Exec(ctx, `SELECT setval(pg_get_serial_sequence('media_attachments','id'), (SELECT max(id) FROM media_attachments), true)`); err != nil {
+		t.Fatal(err)
+	}
+	return imageID
 }
 
 // seedGroupOpsRadarUploadFile creates one native image input for the actual

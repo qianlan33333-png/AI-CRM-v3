@@ -28,7 +28,7 @@
 
 - 复用 `web/v3/shared/ui/materialPickerAdapter.ts`、`SelectionSession` 与 `selectionDialog`；不新建平行选择器，不改冻结 donor。
 - 每个调用方传入可信的 `selectedRecords` 和 `selectedIds`。商品只接受当前同源 `/api/admin/image-library/{id}/variants/original` URL；任何外域、上传或不可解析的既有 URL 不会被伪造成 `library_id`，而是保留在原产品草稿的相对位置，直到用户用原产品行的移除操作处理它。
-- V3 dialog 返回完整 `{ selected, added, removed }`。商品先验证**全部**选中记录都带有上述可信原图 URL，再原子地写回同一控制器草稿，因此后续分页的合法素材也能应用，而不受冻结 picker 首批目录限制。Radar 只把一条已验证记录注入本次原 callback 的输入；任一校验或 callback 失败都会抛出明确错误，V3 dialog 保持打开和草稿不变。原页面上传、移除及类型切换会同步当前表单素材状态；异步原 picker 读取超时或失败后，其迟到 continuation 不得再打开或应用旧选择器。
+- V3 dialog 返回完整 `{ selected, added, removed }`。商品先验证**全部**选中记录都带有上述可信原图 URL，再原子地写回同一控制器草稿，因此后续分页的合法素材也能应用，而不受冻结 picker 首批目录限制。Radar 只把一条已验证记录注入本次原 callback 的输入；任一校验或 callback 失败都会抛出明确错误，V3 dialog 保持打开和草稿不变。商品的初始素材直读与 Radar 的 `loadDb` 编辑态读取均受 2.5 秒上限保护：每次商品按钮点击对同一页面／kind／原草稿单飞，路由、kind 或原草稿变化会废弃旧结果；Radar 对表单 key、内容类型和实际按钮代次做同样校验。异步旧读取超时、失败或迟到后不得打开或应用任何旧选择器。
 - 商品以整组 URL 一次替换页面草稿，原保存仍以该组值一次写入。Radar 的原 callback 只应用一项。调用方接受成功后 V3 session 才 commit/close；回调抛错、目录失权、取消或刷新失败均不自动重放和不假称回滚。
 - 重新打开应读取调用方当前草稿而非上次 dialog 的缓存；显式移除是临时草稿变化，取消仍恢复此前页面草稿。商品确认后可以移除、重开再加；Radar 继续沿用其页面原有“移除”操作。
 - 所有目录读取继续由页面显式授权：Radar 使用其 `image-library`／`attachment-library` scoped loader；商品保留当前 Media adapter 读取与原 callback 范围。没有全局目录兜底。
@@ -42,14 +42,14 @@ Product Design `index` 路由与前端一致性组件索引要求扩展已验收
 ## GitHub 与仓内参考
 
 - [PR #296](https://github.com/qianlan33333-png/AI-CRM-v3/pull/296) 首次引入 Radar scoped Material session，并在正文明确 Radar 仍是 `selectedIds=[] + onConfirm` 单项桥接；本 PR 正式收敛这个保留缺口。
-- [PR #317](https://github.com/qianlan33333-png/AI-CRM-v3/pull/317) 的共享整合头 `4905b99d83e287fc69188b83e466d34d93072203` 已验证 `onCommit` 成功后才 commit/close 的合同，且 stable Host 的 manifest/chunk 相对路径可在 staged release 中读取。
+- [PR #317](https://github.com/qianlan33333-png/AI-CRM-v3/pull/317) 已合并至 `main` 的 #317（`84c34e5ad784d3f4cf20082b6a83d39919bff7e5`）已验证 `onCommit` 成功后才 commit/close 的合同，且 stable Host 的 manifest/chunk 相对路径可在 staged release 中读取。
 - 冻结 V2 行为参考仅来自 `web/donor-sources/.../controller.ts`：`pickCommerceImages` 对整个 URL 列表做单次草稿替换，`saveCommerceProduct` 统一持久化；`web/src/admin/sections/radar.ts` 明确 Radar 只持有单个 `form.media`。两者皆不修改。
 
 ## 验收
 
 1. 商品普通／周期页：选两项、移除、取消、重新打开回显，保存后请求体和编辑页重读都保留相同原 URL 顺序；当前作用域目录未确认、失权或缺失的素材保持为不可选回显，确认时 dialog 留在当前草稿、页面不改；来自后续已授权分页的素材可以正常确认。
-2. Radar 图片／PDF：确认只更新单个表单草稿，取消不改，未确认/缺行/缺确认按钮失败保留；原上传、移除、类型切换不会令缓存伪造有效记录；保存后从真实 GET/readback 展示保存记录。
-3. 目录分页、搜索、IME composition Enter／Escape、焦点回归、当前 401/403、旧请求迟到、缩略图失败继续复用共享 session 已有回归；新调用方覆盖 `onCommit` 的整组原子回调边界。
+2. Radar 图片／PDF：确认只更新单个表单草稿，取消不改，未确认/缺行/缺确认按钮失败保留；已有图片未打开 picker 就直接切 PDF、且存在同号 PDF 时，旧 ID 必须由原 remove 清除并阻止保存，只有新显式选择可应用；保存后从真实 GET/readback 展示保存记录。
+3. 目录分页、搜索、IME composition Enter／Escape、焦点回归、当前 401/403、旧请求迟到、缩略图失败继续复用共享 session 已有回归；商品额外覆盖双击单飞、预读后路由切换和原移除草稿变化，Radar 覆盖编辑态 `loadDb` 超时与迟到、表单路由切换。新调用方覆盖 `onCommit` 的整组原子回调边界。
 4. 运行 TypeScript、Product/Radar DOM adapter tests、真实 PostgreSQL + Chromium Product/Radar journeys、串行 build/stage release closure。若 Darwin 环境跳过某真实 Chromium journey，报告为跳过并由 Linux CI gate 负责，不把 composition 结果描述为浏览器通过。
 
 不包含素材上传／持久化模型改造、Provider 效果、素材库呈现重构、状态示例页和其他页面的素材接入。

@@ -11,7 +11,9 @@ const replacementStaffID = process.env.AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID;
 const composerImageIDs = String(process.env.AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS || '').split(',').map((value) => Number(value));
 const screenshotDir = process.env.AICRM_GROUPOPS_SCREENSHOT_DIR;
 const radarUploadPath = process.env.AICRM_GROUPOPS_RADAR_UPLOAD;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "") || !radarUploadPath || composerImageIDs.length !== 2 || composerImageIDs.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, plan ID, two composer Media IDs, and a Radar upload file");
+const radarImageID = Number(process.env.AICRM_GROUPOPS_TEST_RADAR_IMAGE_ID);
+const radarAttachmentID = Number(process.env.AICRM_GROUPOPS_TEST_RADAR_ATTACHMENT_ID);
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "") || !radarUploadPath || composerImageIDs.length !== 2 || [...composerImageIDs, radarImageID, radarAttachmentID].some((id) => !Number.isSafeInteger(id) || id < 1) || radarImageID !== radarAttachmentID) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, plan ID, same-ID Radar image/PDF fixture, two composer Media IDs, and a Radar upload file");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const browserBinary = () => {
   const candidates = [process.env.AICRM_CHROMIUM_BINARY, process.env.CHROME_BIN].filter(Boolean);
@@ -250,6 +252,29 @@ try {
   await waitFor(cdp, "location.pathname.endsWith('/admin/radar.html')", "Radar original save did not return to its list");
   const radarReadback = await evaluate(cdp, "fetch('/api/admin/radar-links',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>{const item=(body?.items||[]).find((entry)=>entry?.title==='Chromium V3 Radar material');return Boolean(item&&Number(item.cover_image_id)===" + radarMaterialID + ")})");
   if (!radarReadback) throw new Error('Radar owner save/readback did not retain the V3-confirmed catalog material');
+
+  // Reopen the saved image in a fresh owner form without ever opening its V3
+  // picker. The PDF fixture intentionally has the same numeric ID as the
+  // image: a type switch must remove the image rather than reinterpreting it
+  // as a selected PDF. Only an explicit PDF picker choice may populate the
+  // original form before its normal save and API readback.
+  const imageRadarLinkID = await evaluate(cdp, "fetch('/api/admin/radar-links',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Number((body?.items||[]).find((entry)=>entry?.title==='Chromium V3 Radar material')?.link_id||0))");
+  if (!Number.isSafeInteger(imageRadarLinkID) || imageRadarLinkID < 1) throw new Error('Radar image save did not expose an editable owner record');
+  await cdp.call('Page.navigate', { url: `${baseURL}/admin/radarForm.html?id=${imageRadarLinkID}` });
+  await waitFor(cdp, "document.querySelector('#typeCards .type-card.on')?.dataset.t==='image' && document.querySelector('#mediaPicked')?.hidden===false && document.querySelector('#mediaName')?.textContent?.includes('Chromium 雷达素材一')", 'saved Radar image did not reopen through its actual owner form');
+  await evaluate(cdp, "document.querySelector('#typeCards .type-card[data-t=\"pdf\"]')?.click(); true");
+  await waitFor(cdp, "document.querySelector('#typeCards .type-card.on')?.dataset.t==='pdf' && document.querySelector('#mediaPicked')?.hidden===true", 'Radar image-to-PDF type switch retained the same-numbered image as a PDF draft');
+  await evaluate(cdp, "document.querySelector('#btnPick')?.click(); true");
+  await waitFor(cdp, "Array.from(document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-key]')).some((row)=>String(row.textContent||'').includes('Chromium 雷达 PDF 素材'))", 'Radar PDF picker did not load the authorised same-numbered attachment');
+  const selectedPDFID = await evaluate(cdp, "(()=>{const row=Array.from(document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-key]')).find((item)=>String(item.textContent||'').includes('Chromium 雷达 PDF 素材'));if(!(row instanceof HTMLElement))return 0;row.click();return Number((row.dataset.v3MaterialKey||'').split(':').at(-1)||0)})()");
+  if (selectedPDFID !== radarAttachmentID || selectedPDFID !== radarImageID) throw new Error(`Radar PDF picker selected unexpected typed Media ID ${selectedPDFID}; expected same-numbered attachment ${radarAttachmentID}`);
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-confirm]')?.click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && document.querySelector('#typeCards .type-card.on')?.dataset.t==='pdf' && document.querySelector('#mediaName')?.textContent?.includes('Chromium 雷达 PDF 素材')", 'explicit Radar PDF confirmation did not update the actual owner form');
+  if (screenshotDir) { await fs.mkdir(screenshotDir, { recursive: true }); const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, 'radar-pdf-owner-confirmed.png'); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
+  await evaluate(cdp, "(()=>{const name=document.querySelector('#fName');const url=document.querySelector('#fUrl');if(!(name instanceof HTMLInputElement)||!(url instanceof HTMLInputElement))return false;name.value='Chromium V3 Radar PDF material';url.value='https://example.com/chromium-v3-radar-pdf-material';document.querySelector('#fSave')?.click();return true})()");
+  await waitFor(cdp, "location.pathname.endsWith('/admin/radar.html')", 'Radar PDF save did not return to its list');
+  const radarPDFReadback = await evaluate(cdp, "fetch('/api/admin/radar-links',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>{const item=(body?.items||[]).find((entry)=>entry?.title==='Chromium V3 Radar PDF material');return {linkID:Number(item?.link_id||0), cover:item?.cover_image_id, attachment:Number(item?.attachment_id||0)}})");
+  if (!radarPDFReadback || !Number.isSafeInteger(radarPDFReadback.linkID) || radarPDFReadback.cover != null || radarPDFReadback.attachment !== radarAttachmentID) throw new Error(`Radar PDF GET readback did not retain target type/media ID: ${JSON.stringify(radarPDFReadback)}`);
 
   const groupsPath = "/admin/automation-conversion/group-ops/groups/ui";
   await cdp.call("Page.navigate", { url: `${baseURL}${groupsPath}` });

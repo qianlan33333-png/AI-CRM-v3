@@ -3,7 +3,7 @@ import { api } from '../src/shared/api/client';
 import { emptyAdminDb, radarPageDto, type AdminReadContext } from '../src/api/admin';
 import { getRadarLink } from '../src/api/generated/p4-radar/p4-radar';
 import type { RadarLink as ApiRadarLink } from '../src/api/generated/health.schemas';
-import type { AttachItem, ImageItem, RadarMedia } from '../src/shared/api/types';
+import type { AdminDb, AttachItem, ImageItem, RadarMedia } from '../src/shared/api/types';
 import { rememberActionInputs, runAction } from './actionFeedback';
 import { apiRequestOptions, request as authenticatedRequest, unwrapGenerated } from '../src/api/transport';
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
@@ -127,6 +127,15 @@ const replayingFrozenRadarPicker = new WeakSet<HTMLElement>();
 let radarPickerOpening = false;
 const radarMetadataReadTimeoutMilliseconds = 2500;
 
+type RadarPickerContext = {
+  button: HTMLButtonElement;
+  key: string;
+  type: 'image' | 'attachment';
+  generation: number;
+};
+let radarPickerGeneration = 0;
+let activeRadarPicker: RadarPickerContext | undefined;
+
 function pendingRadarMaterial(type: 'image' | 'attachment', libraryID: number, name: string, subtitle: string, reason = '素材状态待当前目录确认'): MaterialItem {
   return {
     type, library_id: libraryID, title: name || `已选${type === 'image' ? '图片' : 'PDF'}素材 ${libraryID}`,
@@ -152,8 +161,42 @@ function radarHelp(message: string): void {
   help.setAttribute('role', 'alert');
 }
 
-async function initialRadarSelection(type: 'image' | 'attachment'): Promise<MaterialItem | undefined> {
-  const key = radarFormKey();
+function radarPickerContextIsCurrent(context: RadarPickerContext): boolean {
+  return activeRadarPicker?.generation === context.generation
+    && radarPickerGeneration === context.generation
+    && document.body.dataset.page === 'radarForm'
+    && document.contains(context.button)
+    && radarFormKey() === context.key
+    && radarPickerType() === context.type;
+}
+
+function loadInitialRadarDb(id: string): Promise<AdminDb> {
+  // api.loadDb does not expose an AbortSignal. Race the owner read against a
+  // bounded deadline and keep handlers attached to the late promise, so an old
+  // edit response can never continue into V3 dialog construction.
+  return new Promise<AdminDb>((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('当前雷达草稿读取超时；请重试。'));
+    }, radarMetadataReadTimeoutMilliseconds);
+    void api.loadDb({ page: 'radarForm', id }).then((db) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(db);
+    }, (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function initialRadarSelection(context: RadarPickerContext): Promise<MaterialItem | undefined> {
+  const { key, type } = context;
   if (radarSelectionByForm.has(key)) {
     const tracked = radarSelectionByForm.get(key);
     if (!tracked) return undefined;
@@ -163,21 +206,24 @@ async function initialRadarSelection(type: 'image' | 'attachment'): Promise<Mate
     // permission since the previous dialog.
     if (tracked.type !== type) return undefined;
     const verified = await verifiedRadarMaterial(type, tracked.library_id, String(tracked.title || ''), String(tracked.subtitle || ''));
+    if (!radarPickerContextIsCurrent(context)) return undefined;
     radarSelectionByForm.set(key, verified);
     return verified;
   }
   const id = new URLSearchParams(location.search).get('id');
   if (!id || !/^[1-9]\d*$/.test(id)) {
-    radarSelectionByForm.set(key, undefined);
+    if (radarPickerContextIsCurrent(context)) radarSelectionByForm.set(key, undefined);
     return undefined;
   }
-  const db = await api.loadDb({ page: 'radarForm', id });
+  const db = await loadInitialRadarDb(id);
+  if (!radarPickerContextIsCurrent(context)) return undefined;
   const link = db.radarLinks.find((item) => item.id === Number(id));
   const expected = type === 'image' ? 'image' : 'pdf';
   const libraryID = Number(link?.media_item_id);
   const selected = link?.target_type === expected && Number.isSafeInteger(libraryID) && libraryID > 0
     ? await verifiedRadarMaterial(type, libraryID, link.file_name_snapshot || `已选${type === 'image' ? '图片' : 'PDF'}素材 ${libraryID}`, '当前雷达草稿')
     : undefined;
+  if (!radarPickerContextIsCurrent(context)) return undefined;
   radarSelectionByForm.set(key, selected);
   return selected;
 }
@@ -208,6 +254,7 @@ async function verifiedRadarMaterial(type: 'image' | 'attachment', libraryID: nu
 }
 
 function rememberRadarOriginalUpload(type: 'image' | 'attachment', media: RadarMedia): void {
+  radarPickerGeneration += 1;
   if (document.body.dataset.page !== 'radarForm') return;
   const libraryID = Number(media.id);
   if (!Number.isSafeInteger(libraryID) || libraryID < 1) return;
@@ -220,11 +267,15 @@ function observeOriginalRadarDraft(): void {
   document.addEventListener('click', (event) => {
     const target = event.target as Element | null;
     if (target?.closest('#mediaRemove')) {
+      radarPickerGeneration += 1;
       radarSelectionByForm.set(radarFormKey(), undefined);
       return;
     }
     const typeCard = target?.closest<HTMLElement>('#typeCards .type-card');
     if (!typeCard) return;
+    // A type-card switch is an owner-draft change even before the frozen
+    // handler redraws. Invalidate a pending pre-open immediately.
+    radarPickerGeneration += 1;
     // This capture listener runs before the frozen card handler.  Read the
     // actual owner form's current type and visible media rather than relying on
     // a V3 picker cache: an edit can switch type before the picker ever opens.
@@ -233,7 +284,13 @@ function observeOriginalRadarDraft(): void {
     const key = radarFormKey();
     window.setTimeout(() => {
       const nextType = radarPickerType();
-      if (!previousType || !nextType || previousType === nextType || !hadFrozenMedia) return;
+      if (!previousType || !nextType || previousType === nextType) return;
+      // A cached V3 selection is also owner-draft state. Clear it even when a
+      // frozen renderer has already hidden the old media before this deferred
+      // observer runs; otherwise a same-numbered item could be replayed under
+      // the new Media type.
+      radarSelectionByForm.set(key, undefined);
+      if (!hadFrozenMedia) return;
       // Image and attachment IDs belong to distinct Media domains. A numeric
       // collision may name two unrelated records, so never relabel an image as
       // an attachment (or the reverse). The frozen form intentionally keeps
@@ -241,7 +298,6 @@ function observeOriginalRadarDraft(): void {
       // and make the new type an explicit re-selection.
       radarTypeSwitchInvalidatedForms.add(key);
       document.getElementById('mediaRemove')?.click();
-      radarSelectionByForm.set(key, undefined);
       radarHelp('内容类型已切换，请按当前类型重新选择素材。');
     }, 0);
   }, true);
@@ -277,7 +333,30 @@ function radarLegacyAttachment(item: MaterialItem): AttachItem {
   return { resourceId: String(item.library_id), name: item.title || `PDF 素材 ${item.library_id}`, type: item.mime_type || 'application/pdf', size: '', tags: '', uploadedAt: '', enabled: true };
 }
 
-async function applyRadarSelectionThroughFrozenForm(button: HTMLElement, type: 'image' | 'attachment', selected: MaterialItem): Promise<void> {
+function radarCallbackDb(db: AdminDb, type: 'image' | 'attachment', selected: MaterialItem): AdminDb {
+  return {
+    ...db,
+    rows: {
+      ...db.rows,
+      images: type === 'image' ? [...db.rows.images.filter((item) => item.resourceId !== String(selected.library_id)), radarLegacyImage(selected)] : db.rows.images,
+      attachItems: type === 'attachment' ? [...db.rows.attachItems.filter((item) => item.resourceId !== String(selected.library_id)), radarLegacyAttachment(selected)] : db.rows.attachItems,
+    },
+  };
+}
+
+function isFrozenRadarGenericReadNotFound(error: unknown): boolean {
+  const status = Number((error as { status?: unknown } | undefined)?.status);
+  return status === 404 || /HTTP\s*404/.test(error instanceof Error ? error.message : String(error));
+}
+
+function radarCallbackReadContext(context: RadarPickerContext): AdminReadContext {
+  const id = context.key.slice(context.key.lastIndexOf(':') + 1);
+  return id === 'new' ? { page: 'radarForm' } : { page: 'radarForm', id };
+}
+
+async function applyRadarSelectionThroughFrozenForm(context: RadarPickerContext, selected: MaterialItem): Promise<void> {
+  const { button, type } = context;
+  if (!radarPickerContextIsCurrent(context)) throw new Error('雷达页面、内容类型或原始素材草稿已改变；未改动当前雷达草稿。');
   if (!Number.isSafeInteger(selected.library_id) || selected.library_id < 1) throw new Error('所选素材缺少有效服务端 ID；未改动当前雷达草稿。');
   if (selected.metadata.authorized !== true) throw new Error(`素材「${selected.title}」尚未在当前授权目录确认；请刷新或搜索后再确认。`);
   let restore: (() => void) | undefined;
@@ -290,16 +369,21 @@ async function applyRadarSelectionThroughFrozenForm(button: HTMLElement, type: '
     return operation();
   };
   await new Promise<void>((resolve, reject) => {
+    const stale = (node?: HTMLElement) => {
+      node?.querySelector<HTMLElement>('[data-pk="cancel"]')?.click();
+      complete(() => reject(new Error('雷达页面、内容类型或原始素材草稿已改变；未改动当前雷达草稿。')));
+    };
     const timer = window.setTimeout(() => complete(() => reject(new Error('雷达表单未返回素材选择回调；未改动当前草稿。'))), 3000);
     const observer = new MutationObserver((records) => {
       for (const record of records) for (const node of record.addedNodes) {
         if (!(node instanceof HTMLElement) || !node.classList.contains('pk-mask')) continue;
+        if (!radarPickerContextIsCurrent(context)) { stale(node); return; }
         node.style.setProperty('display', 'none', 'important');
         node.setAttribute('aria-hidden', 'true');
         const row = Array.from(node.querySelectorAll<HTMLElement>('[data-pk-id]')).find((candidate) => candidate.dataset.pkId === String(selected.library_id));
         if (!row) {
           node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click();
-          complete(() => reject(new Error('素材目录未返回当前选择；未改动当前雷达草稿。')));
+          complete(() => reject(new Error('素材目录未返回当前选择；未改动当前草稿。')));
           return;
         }
         const confirm = node.querySelector<HTMLElement>('[data-pk="ok"]');
@@ -308,7 +392,9 @@ async function applyRadarSelectionThroughFrozenForm(button: HTMLElement, type: '
           complete(() => reject(new Error('雷达表单未提供素材确认操作；未改动当前草稿。')));
           return;
         }
+        if (!radarPickerContextIsCurrent(context)) { stale(node); return; }
         row.click();
+        if (!radarPickerContextIsCurrent(context)) { stale(node); return; }
         confirm.click();
         window.setTimeout(() => complete(resolve), 0);
         return;
@@ -320,32 +406,40 @@ async function applyRadarSelectionThroughFrozenForm(button: HTMLElement, type: '
       observer.disconnect();
       api.loadDb = originalLoadDb;
     };
-    api.loadDb = async (context) => {
-      const bridgeRead = !claimed && context === undefined;
+    api.loadDb = async (readContext) => {
+      // Different frozen bundle revisions call loadDb() or loadDb({}). Both
+      // mean the popup is asking for its unscoped picker directory.
+      const bridgeRead = !claimed && (!readContext || Object.keys(readContext).length === 0);
       if (bridgeRead) claimed = true;
       let db;
       try {
-        db = await originalLoadDb(context);
+        // The frozen popup asks for an unscoped db. The V3 bridge must retain
+        // the current Radar page scope so exact reads use the supported owner
+        // route rather than a retired broad fallback.
+        db = await originalLoadDb(bridgeRead ? radarCallbackReadContext(context) : readContext);
       } catch (error) {
-        if (bridgeRead) {
+        if (bridgeRead && isFrozenRadarGenericReadNotFound(error) && radarPickerContextIsCurrent(context)) {
+          // This callback already has one exact V3-authorised record. A generic
+          // frozen directory read is not an authority requirement for applying
+          // that one record, and #323 intentionally does not expose a broad
+          // fallback list for exact Radar pages. Supply only the proven item.
+          db = emptyAdminDb();
+        } else if (bridgeRead) {
           complete(() => reject(error));
           // The frozen click handler does not catch openPicker rejections.
           // Keep its stale continuation pending after reporting the scoped V3
           // failure, so it cannot later open or apply a legacy picker.
           return await new Promise<never>(() => {});
+        } else {
+          throw error;
         }
-        throw error;
       }
-      if (bridgeRead && !active) return await new Promise<never>(() => {});
+      if (bridgeRead && (!active || !radarPickerContextIsCurrent(context))) {
+        if (active) stale();
+        return await new Promise<never>(() => {});
+      }
       if (!bridgeRead) return db;
-      return {
-        ...db,
-        rows: {
-          ...db.rows,
-          images: type === 'image' ? [...db.rows.images.filter((item) => item.resourceId !== String(selected.library_id)), radarLegacyImage(selected)] : db.rows.images,
-          attachItems: type === 'attachment' ? [...db.rows.attachItems.filter((item) => item.resourceId !== String(selected.library_id)), radarLegacyAttachment(selected)] : db.rows.attachItems,
-        },
-      };
+      return radarCallbackDb(db!, type, selected);
     };
     observer.observe(document.body, { childList: true, subtree: true });
     replayingFrozenRadarPicker.add(button);
@@ -365,16 +459,20 @@ function relayRadarMaterialSelection(): void {
     event.stopImmediatePropagation();
     if (document.querySelector('[data-v3-selection-session="material"]') || radarPickerOpening) return;
     radarPickerOpening = true;
+    const context: RadarPickerContext = { button, type, key: radarFormKey(), generation: ++radarPickerGeneration };
+    activeRadarPicker = context;
     const originalText = button.textContent;
+    let opened = false;
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
     button.textContent = '正在确认当前素材…';
     void (async () => {
       await radarMaterialAdapterReady;
+      if (!radarPickerContextIsCurrent(context)) return;
       const picker = (window as MaterialPickerWindow).AICRMMaterialPicker;
       if (!picker) throw new Error('素材选择组件尚未就绪，请稍后重试。');
-      const key = radarFormKey();
-      const initial = await initialRadarSelection(type);
+      const initial = await initialRadarSelection(context);
+      if (!radarPickerContextIsCurrent(context)) return;
       const selectedRecords = initial && initial.type === type ? [initial] : [];
       button.disabled = false;
       button.removeAttribute('aria-busy');
@@ -384,30 +482,37 @@ function relayRadarMaterialSelection(): void {
         selectedIds: selectedRecords.map((item) => item.library_id), selectedRecords, limit: 1,
         ...(type === 'attachment' ? { allowedMimeTypes: ['application/pdf'] } : {}),
         async onCommit(result) {
-          if (radarPickerType() !== type) throw new Error('内容类型已改变；请取消后按当前类型重新选择素材。');
+          if (!radarPickerContextIsCurrent(context)) throw new Error('雷达页面、内容类型或原始素材草稿已改变；请取消后重新打开选择器。');
           if (result.selected.length > 1) throw new Error('内容雷达一次只能选择一项素材；未改动当前草稿。');
           const next = result.selected[0];
-          const previous = radarSelectionByForm.get(key);
+          const previous = radarSelectionByForm.get(context.key);
           if (!next) {
             if (previous) document.getElementById('mediaRemove')?.click();
-            radarSelectionByForm.set(key, undefined);
+            radarSelectionByForm.set(context.key, undefined);
             return;
           }
           if (next.type !== type) throw new Error('素材类型与当前内容类型不匹配；未改动当前雷达草稿。');
           if (type === 'attachment' && next.mime_type !== 'application/pdf') throw new Error('雷达 PDF 仅支持 application/pdf 素材；未改动当前草稿。');
           if (next.metadata.authorized !== true) throw new Error(`素材「${next.title}」尚未在当前授权目录确认；请刷新或搜索后再确认。`);
           if (previous?.library_id === next.library_id && previous.type === next.type) {
-            radarSelectionByForm.set(key, next);
+            radarSelectionByForm.set(context.key, next);
             return;
           }
-          await applyRadarSelectionThroughFrozenForm(button, type, next);
-          radarTypeSwitchInvalidatedForms.delete(key);
-          radarSelectionByForm.set(key, next);
+          await applyRadarSelectionThroughFrozenForm(context, next);
+          if (!radarPickerContextIsCurrent(context)) throw new Error('雷达页面或内容类型已改变；未改动后续选择状态。');
+          radarTypeSwitchInvalidatedForms.delete(context.key);
+          radarSelectionByForm.set(context.key, next);
         },
-        onCancel() { /* cancelling never invokes the frozen caller */ },
+        onCancel() {
+          if (activeRadarPicker?.generation === context.generation) activeRadarPicker = undefined;
+        },
       });
-    })().catch((error) => radarHelp(error instanceof Error ? error.message : '素材选择暂时不可用，请稍后重试。')).finally(() => {
+      opened = true;
+    })().catch((error) => {
+      if (radarPickerContextIsCurrent(context)) radarHelp(error instanceof Error ? error.message : '素材选择暂时不可用，请稍后重试。');
+    }).finally(() => {
       radarPickerOpening = false;
+      if (!opened && activeRadarPicker?.generation === context.generation) activeRadarPicker = undefined;
       if (!document.querySelector('[data-v3-selection-session="material"]')) {
         button.disabled = false;
         button.removeAttribute('aria-busy');
