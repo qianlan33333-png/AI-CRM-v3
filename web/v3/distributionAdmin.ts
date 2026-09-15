@@ -808,7 +808,7 @@ async function setDistributor(id: number, version: number, operation: 'disable' 
   if (operation === 'disable') {
     const result = await confirmAction(`confirm:distributor:disable:${id}:${version}`, 'distributors', String(id), version, {
       title: '停用分销员',
-      description: '停用后该分销员不能继续推广。请填写原因，系统会记录审计。',
+      description: `即将停用分销员 ID ${id}。停用后该分销员不能继续推广。请填写原因，系统会记录审计。`,
       confirmLabel: '确认停用',
       tone: 'danger',
       fields: [{ name: 'reason', label: '停用原因', placeholder: '请输入停用原因', required: true, kind: 'textarea' }],
@@ -836,7 +836,7 @@ function amount(value: string | null): number | undefined {
 async function recovery(id: string, version: number): Promise<void> {
   const result = await confirmAction(`confirm:recovery:${id}:${version}`, 'exceptions', id, version, {
     title: '登记追回',
-    description: '金额单位为分。请核对金额和凭证参考后再登记；此操作不会声明已完成微信分账。',
+    description: `即将为异常编号 ${id} 登记追回。金额单位为分。请核对金额和凭证参考后再登记；此操作不会声明已完成微信分账。`,
     confirmLabel: '确认登记追回',
     tone: 'danger',
     fields: [
@@ -857,7 +857,7 @@ async function recovery(id: string, version: number): Promise<void> {
 async function liability(id: string, version: number): Promise<void> {
   const result = await confirmAction(`confirm:liability:${id}:${version}`, 'exceptions', id, version, {
     title: '登记商户承担',
-    description: '金额单位为分。请核对金额和承担原因后再登记。',
+    description: `即将为异常编号 ${id} 登记商户承担。金额单位为分。请核对金额和承担原因后再登记。`,
     confirmLabel: '确认登记商户承担',
     tone: 'danger',
     fields: [

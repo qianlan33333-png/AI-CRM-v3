@@ -302,6 +302,7 @@ const writesBeforeCancelledDisable = calls.filter((call) => call.method !== 'GET
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '停用').click();
 await waitFor(() => confirmations.length === 1, 'disable must open one shared confirmation');
 assert.match(confirmations[0].options.title, /停用分销员/, 'disable uses the shared confirmation contract');
+assert.match(confirmations[0].options.description, /分销员 ID 9/, 'disable confirmation identifies its frozen distributor target');
 resolveConfirmation({ confirmed: false });
 await delay();
 assert.equal(calls.filter((call) => call.method !== 'GET').length, writesBeforeCancelledDisable, 'cancelled disable must not write');
@@ -340,6 +341,7 @@ assert.match(dom.window.document.body.textContent, /系统分账成功确认\s+�
 failExceptions = true;
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记追回').click();
 await waitFor(() => confirmations.length === 1, 'recovery must open confirmation before transport');
+assert.match(confirmations[0].options.description, /异常编号 x1/, 'recovery confirmation identifies its frozen exception target');
 resolveConfirmation({ confirmed: true, values: { amount_minor: '12', evidence_reference: 'receipt-1' } });
 await waitFor(() => calls.some((call) => call.path.endsWith('/recoveries')), 'recovery did not call real endpoint');
 const recoveryCalls = calls.filter((call) => call.path.endsWith('/recoveries'));
@@ -356,6 +358,7 @@ const retriedRecoveryCalls = calls.filter((call) => call.path.endsWith('/recover
 assert.equal(retriedRecoveryCalls[1].idempotencyKey, retriedRecoveryCalls[0].idempotencyKey, 'unknown recovery retry must reuse the original idempotency key');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '登记商户承担').click();
 await waitFor(() => confirmations.length === 1, 'liability must open confirmation before transport');
+assert.match(confirmations[0].options.description, /异常编号 x1/, 'liability confirmation identifies its frozen exception target');
 resolveConfirmation({ confirmed: true, values: { amount_minor: '8', reason: '商户承担原因' } });
 await waitFor(() => calls.some((call) => call.path.endsWith('/merchant-liabilities')), 'merchant liability did not call real endpoint');
 assert.deepEqual(JSON.parse(calls.find((call) => call.path.endsWith('/merchant-liabilities')).body), { version: 4, amount_minor: 8, reason: '商户承担原因' }, 'merchant liability must carry only frozen amount and reason');
