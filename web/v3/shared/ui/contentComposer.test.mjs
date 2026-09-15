@@ -31,6 +31,7 @@ assert.equal(requests, 0);
 assert.match(mask.textContent, /历史变量/);
 assert.match(mask.textContent, /当前场景未声明可用变量/);
 assert.match(mask.textContent, /确认仅更新当前页面草稿，实际发送由计划执行触发/);
+assert.equal(mask.querySelector('[data-v3-composer-confirm]').textContent, '确认内容', 'generic callers retain the existing confirmation label by default');
 assert.equal(mask.textContent.includes('页面保存前不会发送内容'), false, 'draft confirmation must not imply a page save will send content');
 const text = mask.querySelector('[data-v3-composer-text]');
 text.focus();
@@ -82,6 +83,22 @@ excelMask.querySelector('[data-v3-composer-text]').dispatchEvent(new Event('inpu
 excelMask.querySelector('[data-v3-composer-confirm]').click();
 await flush();
 assert.equal(excelDraft.package.content_text, '更新后的 Excel 话术', 'text-only confirmation returns only a caller-owned local draft');
+let finishSave;
+mod.openContentComposer({
+  title: '保存话术', value: { content_text: '草稿' }, materialKinds: [],
+  readyHint: '确认后将保存草稿。', confirmLabel: '保存草稿', confirmingHint: '正在保存草稿…',
+  onConfirm: () => new Promise((resolve) => { finishSave = resolve; }),
+});
+await flush();
+const saveMask = document.querySelector('[data-v3-content-composer]');
+assert.equal(saveMask.querySelector('[data-v3-composer-confirm]').textContent, '保存草稿', 'callers may name their own confirmed command');
+assert.match(saveMask.textContent, /确认后将保存草稿/);
+saveMask.querySelector('[data-v3-composer-confirm]').click();
+await flush();
+assert.match(saveMask.textContent, /正在保存草稿/);
+finishSave();
+await flush();
+assert.equal(document.querySelector('[data-v3-content-composer]'), null, 'caller-specific pending wording does not alter the local-draft lifecycle');
 trigger.focus();
 mod.openReadonlyContentPresentation({ title: '已保存群运营内容', value: committed.package, selectedRecords: committed.selectedRecords, materialOrder: 'caller_persisted' });
 await flush();
