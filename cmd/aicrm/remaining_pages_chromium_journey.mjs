@@ -63,13 +63,17 @@ try {
   for (const width of [1280, 1440]) {
     await resize(width); await visit("/admin/message-archive");
     await waitFor(cdp, "document.querySelector('[data-message-archive-entry]')", "message archive entry did not mount");
-    assert.equal(await evaluate(cdp, "document.querySelector('[data-message-archive-entry] a')?.getAttribute('href')"), "/admin/customers", "archive entry must keep customer selection action");
+    assert.equal(await evaluate(cdp, "document.querySelectorAll('.admin-page-title').length"), 1, "archive entry must keep one shared page title");
+    assert.equal(await evaluate(cdp, "document.querySelectorAll('[data-message-archive-entry] h2').length"), 0, "archive entry must not duplicate the shared title");
+    assert.equal(await evaluate(cdp, "document.querySelector('.admin-topbar a[href=\"/admin/customers\"]')?.textContent?.trim()"), "选择客户", "archive entry must keep customer selection in the shared header");
     assert.match(await evaluate(cdp, "document.querySelector('[data-message-archive-entry]')?.textContent || ''"), /先从现有客户目录选择客户/, "archive entry must not invent a global list");
     await noOverflow(`archive entry ${width}`); await capture(`archive-entry-${width}.png`);
   }
   for (const width of [1280, 1440]) {
     await resize(width); await visit(`/admin/message-archive/customers/${customerID}`);
     await waitFor(cdp, "document.querySelector('[data-message-archive-root]') && document.querySelector('#archive-message-list article')", "message archive customer detail did not load fixture message");
+    assert.equal(await evaluate(cdp, "document.querySelectorAll('.admin-page-title').length"), 1, "archive detail must keep one shared page title");
+    assert.equal(await evaluate(cdp, "document.querySelectorAll('[data-message-archive-root] h2').length"), 0, "archive detail must not duplicate the shared title");
     assert.match(await evaluate(cdp, "document.querySelector('#archive-message-list')?.textContent || ''"), /存档浏览器夹具消息/, "archive detail must render protected local message");
     if (width === 1440) { await evaluate(cdp, "document.querySelector('input[name=q]').value='存档浏览器';document.querySelector('#archive-search-form').requestSubmit();true"); await waitFor(cdp, "document.querySelector('#archive-message-list article')", "message archive explicit search lost result"); }
     await noOverflow(`archive detail ${width}`); await capture(`archive-detail-${width}.png`);
@@ -106,6 +110,7 @@ try {
   for (const width of [375, 390, 430]) {
     await resize(width); await visit(`/shared/service-period-member-grid#${encodeURIComponent(gridToken)}`);
     await waitFor(cdp, "document.querySelector('#spGridBody tr[data-record-id]')", `member grid public share did not load at ${width}`);
+    await waitFor(cdp, "document.querySelector('#spResultSummary')?.textContent?.trim() === '已加载 1 行'", `member grid unknown total must show its loaded row at ${width}`);
     assert.equal(await evaluate(cdp, `document.body.textContent.includes(${JSON.stringify(gridToken)})`), false, "member-grid token must not render into page text");
     await noOverflow(`member grid ${width}`); await capture(`member-grid-${width}.png`);
   }
