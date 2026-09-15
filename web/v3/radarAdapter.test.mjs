@@ -301,4 +301,3 @@ async function assertScopedCallbackFallback(status, applies) {
 await assertScopedCallbackFallback(404, true);
 await assertScopedCallbackFallback(403, false);
 console.log('radar edit existing image direct PDF switch: PASS');
-
