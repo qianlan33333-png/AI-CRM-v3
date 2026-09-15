@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const bundle = await build({ stdin: { contents: "import './web/v3/orderAdapter'; import {AdminController} from './web/src/admin/controller'; window.OrderControllerFixture = AdminController;", resolveDir: root, loader: 'ts' }, bundle: true, format: 'iife', write: false, platform: 'browser', logLevel: 'silent' });
+const bundle = await build({ stdin: { contents: "import './web/v3/orderAdapter'; import {AdminController} from './web/src/admin/controller'; import {api} from './web/src/shared/api/client'; window.OrderControllerFixture = AdminController; window.OrderAdapterApi = api;", resolveDir: root, loader: 'ts' }, bundle: true, format: 'iife', write: false, platform: 'browser', logLevel: 'silent' });
 const host = bundle.outputFiles[0].text;
 const pause = () => new Promise((resolve) => setTimeout(resolve, 15));
 const refundActorBinding = 'b'.repeat(64);
@@ -38,7 +38,7 @@ const dom = new JSDOM(`<!doctype html><body>
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
       calls.push(url);
-      return new Response(JSON.stringify({ items: [{ created_at: '2026-09-08T00:00:00Z', payer_name: '付款人姓名', payer_id: 'customer:123', provider_label: '微信支付', currency: 'CNY' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [{ id: 101, merchant_order_no: 'merchant-1', detail_url: '/admin/orderDetail.html?id=merchant-1&provider=wechat', provider: 'wechat', distribution_read_state: 'available', distribution: [], created_at: '2026-09-08T00:00:00Z', payer_name: '付款人姓名', payer_id: 'customer:123', provider_label: '微信支付', currency: 'CNY' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
   },
 });
@@ -70,9 +70,22 @@ try {
   document.querySelector('button').click(); await pause();
   assert.match(document.body.textContent, /筛选暂不支持导出/, 'identity-filtered result sets must not silently export all orders');
   document.getElementById('orderMobile').value = '138 0013 8000';
-  await dom.window.fetch('/api/admin/orders?limit=50&offset=0');
+  const directListResponse = await dom.window.fetch('/api/admin/orders?limit=50&offset=0');
   assert.equal(calls.at(-1).searchParams.get('phone'), '13800138000', 'phone searches must stay server-side and preserve paging');
+  assert.equal((await directListResponse.json()).items[0].currency, 'CNY', 'direct API consumers retain the canonical currency code');
   assert.equal(calls.at(-1).searchParams.get('external_userid'), null, 'phone and external-contact filters are mutually exclusive');
+
+  // The public response remains canonical. The frozen order DTO receives its
+  // payment-channel label only after this exact loadDb call has completed.
+  const renderedDb = await dom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  assert.equal(renderedDb.rows.orders[0].pay, '微信支付', 'the frozen DTO payment column receives the provider label after projection');
+  assert.ok(!JSON.stringify(renderedDb.rows.orders).includes('aicrm-order-v3:'), 'the DTO carries no serialised correlation field');
+  controller.db = renderedDb;
+  const renderedValues = controller.renderVals();
+  assert.equal(renderedValues.rows.orders[0].pay, '微信支付', 'the exact loadDb association survives the frozen controller object-spread path');
+  document.querySelector('tbody tr').append(document.createElement('span')); await pause();
+  assert.match(document.querySelector('tbody td:nth-child(2)').textContent, /非分销订单/, 'the actual loadDb-to-renderVals path activates the matching distribution summary');
+  assert.ok(!document.body.textContent.includes('aicrm-order-v3:'), 'the full renderer path never exposes a correlation marker');
 
   document.getElementById('orderMobile').value = 'external-contact-fixture';
   await dom.window.fetch('/api/admin/orders?limit=50&offset=50');
@@ -83,6 +96,188 @@ try {
 }
 
 console.log('order Host identity query and presentation journey: PASS');
+
+const collisionReference = 'merchant-provider-collision';
+const collisionDom = new JSDOM(`<!doctype html><body>
+  <table><thead><tr><th>创建时间</th><th>微信 / 平台单号</th><th>付款人 / 客户身份</th><th>商品</th><th>金额</th><th>状态</th><th>支付来源</th><th>操作</th></tr></thead><tbody>
+    <tr><td>2026-09-15T00:00:00Z</td><td><div>${collisionReference}</div></td><td><div>买家甲</div><div>customer:1</div></td><td>成功商品</td><td>1.00</td><td><span>paid</span></td><td>微信支付</td><td><a>查看详情</a></td></tr>
+    <tr><td>2026-09-15T00:01:00Z</td><td><div>${collisionReference}</div></td><td><div>买家乙</div><div>customer:2</div></td><td>待核验商品</td><td>1.00</td><td><span>paid</span></td><td>支付宝</td><td><a>查看详情</a></td></tr>
+  </tbody></table>
+</body>`, {
+  url: 'https://test.invalid/admin/orders', runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname !== '/api/admin/orders') return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [
+        { id: 701, merchant_order_no: collisionReference, detail_url: `/admin/orderDetail.html?id=${collisionReference}&provider=wechat`, provider: 'wechat', provider_label: '微信支付', currency: 'CNY', distribution_read_state: 'available', distribution: [{ distributor_display_name: '分销员成功', has_commission: true, current_payable_minor: 100, currency: 'CNY' }] },
+        { id: 702, merchant_order_no: collisionReference, detail_url: `/admin/orderDetail.html?id=${collisionReference}&provider=alipay`, provider: 'alipay', provider_label: '支付宝', currency: 'CNY', distribution_read_state: 'available', distribution: [] },
+      ] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  collisionDom.window.eval(host);
+  const collisionController = new collisionDom.window.OrderControllerFixture({ mode: 'http' }, 'orders');
+  collisionController.db = await collisionDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  collisionController.renderVals();
+  collisionDom.window.document.querySelector('tbody tr').append(collisionDom.window.document.createElement('span'));
+  await pause();
+  const rows = Array.from(collisionDom.window.document.querySelectorAll('tbody tr'));
+  assert.match(rows[0].textContent, /分销：分销员成功 · 佣金总额 ¥1\.00/, 'provider-scoped successful row labels the preserved commission total rather than an unpaid balance');
+  assert.match(rows[1].textContent, /非分销订单/, 'same merchant reference from another provider cannot borrow a distribution summary');
+  assert.equal(new URL(rows[0].dataset.orderDetailUrl).searchParams.get('provider'), 'wechat', 'row detail URL preserves server-owned WeChat provider');
+  assert.equal(new URL(rows[1].dataset.orderDetailUrl).searchParams.get('provider'), 'alipay', 'row detail URL preserves server-owned Alipay provider');
+} finally {
+  collisionDom.window.close();
+}
+
+const mixedDistributionDom = new JSDOM(`<!doctype html><body>
+  <table><thead><tr><th>创建时间</th><th>微信 / 平台单号</th><th>付款人 / 客户身份</th><th>商品</th><th>金额</th><th>状态</th><th>支付来源</th><th>操作</th></tr></thead><tbody>
+    <tr><td>2026-09-15T00:02:00Z</td><td><div>merchant-mixed-distribution</div></td><td><div>买家丙</div><div>customer:3</div></td><td>混合归因商品</td><td>3.00</td><td><span>paid</span></td><td>微信支付</td><td><a>查看详情</a></td></tr>
+  </tbody></table>
+</body>`, {
+  url: 'https://test.invalid/admin/orders', runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async () => new Response(JSON.stringify({ items: [{
+      id: 703, merchant_order_no: 'merchant-mixed-distribution', detail_url: '/admin/orderDetail.html?id=merchant-mixed-distribution&provider=wechat', provider: 'wechat', provider_label: '微信支付', currency: 'CNY', distribution_read_state: 'available', distribution: [
+        { distributor_display_name: '分销员成功', has_commission: true, current_payable_minor: 100, currency: 'CNY' },
+        { distributor_display_name: '分销员待形成', has_commission: false, current_payable_minor: null, currency: 'CNY' },
+        { distributor_display_name: '分销员金额待确认', has_commission: true, current_payable_minor: null, currency: 'CNY' },
+      ],
+    }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  },
+});
+try {
+  mixedDistributionDom.window.eval(host);
+  const mixedController = new mixedDistributionDom.window.OrderControllerFixture({ mode: 'http' }, 'orders');
+  mixedController.db = await mixedDistributionDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  mixedController.renderVals();
+  mixedDistributionDom.window.document.querySelector('tbody tr').append(mixedDistributionDom.window.document.createElement('span'));
+  await pause();
+  const summary = mixedDistributionDom.window.document.querySelector('tbody tr').textContent;
+  assert.match(summary, /2项已形成 \/ 1项待形成/, 'a partially formed order must preserve both formed and pending attribution lines');
+  assert.match(summary, /佣金总额 ¥1\.00（另有金额待确认）/, 'unknown commission-total data must not be rendered as a real zero amount');
+  assert.doesNotMatch(summary, /已归因 · 未形成佣金/, 'a pending line must not hide the formed commission summary for the same order');
+} finally {
+  mixedDistributionDom.window.close();
+}
+
+let resolveEarlierList;
+const listRaceDom = new JSDOM(`<!doctype html><body>
+  <div id="stage"></div><table><thead><tr><th>创建时间</th><th>微信 / 平台单号</th><th>付款人 / 客户身份</th><th>商品</th><th>金额</th><th>状态</th><th>支付来源</th><th>操作</th></tr></thead><tbody>
+  <tr><td>2026-09-15T00:01:00Z</td><td><div>${collisionReference}</div></td><td><div>买家乙</div><div>customer:2</div></td><td>待核验商品</td><td>1.00</td><td><span>paid</span></td><td>支付宝</td><td><a>查看详情</a></td></tr>
+  </tbody></table>
+</body>`, {
+  url: 'https://test.invalid/admin/orders', runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    let orderRequestCount = 0;
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      const wechatResponse = () => new Response(JSON.stringify({ items: [{ id: 801, created_at: '2026-09-15T00:00:00Z', merchant_order_no: collisionReference, detail_url: `/admin/orderDetail.html?id=${collisionReference}&provider=wechat`, provider: 'wechat', provider_label: '微信支付', payer_name: '买家甲', payer_id: 'customer:1', product_name: '成功商品', amount_yuan: '1.00', status: 'paid', currency: 'CNY', distribution_read_state: 'available', distribution: [{ distributor_display_name: '分销员成功', has_commission: true, current_payable_minor: 100, currency: 'CNY' }] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      const alipayResponse = () => new Response(JSON.stringify({ items: [{ id: 802, created_at: '2026-09-15T00:01:00Z', merchant_order_no: collisionReference, detail_url: `/admin/orderDetail.html?id=${collisionReference}&provider=alipay`, provider: 'alipay', provider_label: '支付宝', payer_name: '买家乙', payer_id: 'customer:2', product_name: '待核验商品', amount_yuan: '1.00', status: 'paid', currency: 'CNY', distribution_read_state: 'available', distribution: [] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/orders' && ++orderRequestCount === 1) return new Promise((resolve) => { resolveEarlierList = () => resolve(wechatResponse()); });
+      return alipayResponse();
+    };
+  },
+});
+try {
+  listRaceDom.window.eval(host);
+  const earlier = listRaceDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  await pause();
+  assert.equal(typeof resolveEarlierList, 'function', 'the earlier page has claimed its own list request before the later page starts');
+  const rawReader = await listRaceDom.window.fetch('/api/admin/orders?raw-reader=1');
+  assert.equal((await rawReader.json()).items[0].currency, 'CNY', 'an unrelated raw reader keeps canonical JSON and cannot claim the pending page association');
+  const laterDb = await listRaceDom.window.OrderAdapterApi.loadDb({ page: 'orders' });
+  const controller = new listRaceDom.window.OrderControllerFixture({ mode: 'http' }, 'orders');
+  controller.db = laterDb;
+  const firstValues = controller.renderVals();
+  assert.equal(firstValues.rows.orders[0].pay, '支付宝', 'the later load binds its own server provider label after the frozen controller projection');
+  assert.ok(Object.getOwnPropertySymbols(firstValues.rows.orders[0]).length > 0, 'the exact record association survives the donor object-spread renderer');
+  assert.ok(!JSON.stringify(laterDb.rows.orders).includes('aicrm-order-v3:'), 'the later DTO has no serialised opaque correlation data');
+  listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
+  await pause();
+  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'the later provider response activates its own rendered row');
+  assert.ok(!listRaceDom.window.document.body.textContent.includes('aicrm-order-v3:'), 'the opaque association never reaches DOM text');
+  resolveEarlierList();
+  const earlierDb = await earlier;
+  assert.equal(earlierDb.rows.orders[0].pay, '微信支付', 'the delayed page keeps its own provider label rather than adopting the later response');
+  controller.renderVals();
+  listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
+  await pause();
+  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'a delayed response cannot replace the later rendered provider row');
+  assert.ok(!listRaceDom.window.document.body.textContent.includes('分销员成功'), 'a delayed WeChat response never leaks into the rendered Alipay row');
+  controller.db.rows.orders = [{ time: '2026-09-15T00:01:00Z', no: collisionReference, plat: '支付宝', payer: '买家乙', uid: 'customer:2', product: '待核验商品', amount: '1.00', status: 'paid', pay: '支付宝', tone: 'ok' }];
+  controller.renderVals();
+  listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
+  await pause();
+  assert.ok(!listRaceDom.window.document.querySelector('tbody tr').textContent.includes('分销：'), 'a missing renderer association clears the prior selection instead of retaining stale distribution facts');
+  assert.equal(listRaceDom.window.document.querySelector('tbody tr').dataset.orderDetailUrl, undefined, 'a missing renderer association also removes the stale provider detail URL');
+} finally {
+  listRaceDom.window.close();
+}
+
+const scopedDetailCalls = [];
+const scopedDetailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
+  <div><span>${collisionReference}</span><span>paid</span></div>
+  <div><div><h2>订单详情</h2></div><div></div></div>
+  <div><div><h2>事件时间线</h2></div><div></div></div>
+  <div><div><h2>申请退款</h2></div><div></div></div>
+</body>`, {
+  url: `https://test.invalid/admin/orderDetail.html?id=${collisionReference}&provider=alipay`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      scopedDetailCalls.push(url);
+      if (url.pathname === `/api/admin/orders/${collisionReference}`) return new Response(JSON.stringify({ record_origin: 'native', merchant_order_no: collisionReference, provider: 'alipay', product_name: '待核验商品', amount_yuan: '1.00', refundable_amount_total: 0, created_at: '2026-09-15T00:01:00Z', status: 'paid', distribution_read_state: 'available', distribution: [{ item_line: 1, product_name: '待核验商品', distributor_display_name: '分销员待核验', rate_basis_points: 1000, wait_days: 7, policy_version: 1, has_commission: true, initial_minor: 100, current_payable_minor: 100, paid_minor: 0, currency: 'CNY', status: 'exception', hold_reason: '', cancel_reason: '', exception_reason: 'unmapped_engine_reason', due_at: '2026-09-22T00:01:00Z', settlement_confirmed_at: null, adjustments: [], settlements: [{ reference: 'dstl_unknown', amount_minor: 100, currency: 'CNY', state: 'outcome_unknown', settlement_confirmed_at: null }], exceptions: [] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+	scopedDetailDom.window.eval(host);
+	await new Promise((resolve) => setTimeout(resolve, 60));
+  const orderRead = scopedDetailCalls.find((url) => url.pathname === `/api/admin/orders/${collisionReference}`);
+  assert.equal(orderRead?.searchParams.get('provider'), 'alipay', 'detail read forwards the server-owned provider rather than inferring it from a duplicate merchant number');
+  const body = scopedDetailDom.window.document.body.textContent;
+  assert.match(body, /分销员待核验/, 'provider-scoped detail shows the selected provider order');
+  assert.match(body, /原因待确认/, 'unknown distribution reason code has a safe Chinese pending label');
+  assert.ok(!body.includes('unmapped_engine_reason'), 'unknown distribution reason code is never exposed directly');
+} finally {
+  scopedDetailDom.window.close();
+}
+
+const invalidProviderCalls = [];
+const invalidProviderDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
+  <div><div><h2>订单详情</h2></div><div></div></div>
+</body>`, {
+  url: `https://test.invalid/admin/orderDetail.html?id=${collisionReference}&provider=manual-invalid`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      invalidProviderCalls.push(new URL(typeof input === 'string' ? input : input.url, window.location.href));
+      return new Response(JSON.stringify({ merchant_order_no: collisionReference }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  invalidProviderDom.window.eval(host);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(invalidProviderCalls.length, 0, 'an invalid provider query must not fall back to a legacy detail read');
+  assert.match(invalidProviderDom.window.document.body.textContent, /订单定位信息无效/, 'an invalid provider query has a staff-readable fail-closed state');
+} finally {
+  invalidProviderDom.window.close();
+}
 
 const detailCalls = [];
 const detailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
@@ -102,6 +297,7 @@ const detailDom = new JSDOM(`<!doctype html><body data-page="orderDetail">
         record_origin: 'native', merchant_order_no: 'M-ORDER-TEST-0001', provider: 'wechat',
         transaction_id: '4200000000000000000000000000', payer_name: '测试买家', payer_id: 'customer:101', payer_phone_masked: '138****0000',
         product_name: '测试商品', amount_yuan: '20.00', refundable_amount_total: 2000, created_at: '2026-09-30T16:01:02Z', status: 'paid',
+        distribution_read_state: 'available', distribution: [{ item_line: 1, product_name: '测试商品', distributor_display_name: '分销员甲', rate_basis_points: 1234, wait_days: 7, policy_version: 3, has_commission: true, initial_minor: 246, current_payable_minor: 222, paid_minor: 100, currency: 'CNY', status: 'exception', hold_reason: '退款复核中', cancel_reason: '', exception_reason: '部分退款待处理', due_at: '2026-10-07T16:01:02Z', settlement_confirmed_at: '2026-10-08T16:01:02Z', adjustments: [{ kind: 'buyer_refund', delta_minor: -24, resulting_payable_minor: 222, reason: '部分退款', occurred_at: '2026-10-02T16:01:02Z' }], settlements: [{ reference: 'dstl_1', amount_minor: 100, currency: 'CNY', state: 'receiver_succeeded', settlement_confirmed_at: '2026-10-08T16:01:02Z' }, { reference: 'dstl_2', amount_minor: 22, currency: 'CNY', state: 'receiver_succeeded', settlement_confirmed_at: null }], exceptions: [{ kind: 'buyer_refund_after_paid', status: 'open', amount_minor: 100, reason: '退款后待处理', evidence_reference: 'refund_1' }] }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage([
         { refund_no: 'RF-TEST-1', refund_amount_total: 2000, status: 'completed', reason: '测试退款', created_at: '2026-10-01T00:01:02+08:00' },
@@ -133,6 +329,15 @@ try {
   assert.match(detailDom.window.document.body.textContent, /支付信息/, 'payment facts belong in their own partition');
   assert.match(detailDom.window.document.body.textContent, /买家信息/, 'buyer facts belong in their own partition');
   assert.match(detailDom.window.document.body.textContent, /商品与金额/, 'item and amount facts belong in their own partition');
+  assert.match(detailDom.window.document.body.textContent, /分销信息/, 'detail must include the Distribution-owned item snapshot section');
+  assert.match(detailDom.window.document.body.textContent, /冻结佣金比例12.34%/, 'detail must use the frozen attribution ratio, not current product policy');
+  assert.match(detailDom.window.document.body.textContent, /退款复核等待7 天/, 'detail must show the frozen refund-review wait days');
+  assert.match(detailDom.window.document.body.textContent, /当前佣金总额（含已分账）¥2\.22/, 'the preserved current payable field is labeled as a total, never inferred as an unpaid balance');
+  assert.match(detailDom.window.document.body.textContent, /分账成功确认时间2026-10-09 00:01:02/, 'detail labels audit fact as system split confirmation, not bank arrival');
+  assert.match(detailDom.window.document.body.textContent, /买家退款调整/, 'partial refund adjustment evidence remains visible');
+  assert.match(detailDom.window.document.body.textContent, /退款后已分账/, 'exception evidence remains visible');
+  assert.match(detailDom.window.document.body.textContent, /分账记录 dstl_1.*分账成功确认时间\s*2026-10-09 00:01:02/, 'each settlement must use its own audit confirmation time');
+  assert.match(detailDom.window.document.body.textContent, /分账记录 dstl_2.*分账成功确认时间\s*未记录/, 'a settlement without an audit fact must not borrow created or updated time');
   assert.match(detailDom.window.document.body.textContent, /CID-101/, 'customer information must expose a business-facing canonical customer number');
   assert.ok(!detailDom.window.document.body.textContent.includes('customer:101'), 'the internal canonical key must not be shown directly');
   assert.match(detailDom.window.document.body.textContent, /4200000000000000000000000000/, 'the true provider transaction identifier remains available for confirmation');
@@ -829,6 +1034,35 @@ try {
   assert.ok(Array.from(networkDom.window.document.querySelectorAll('button')).some((button) => button.textContent === '读取当前订单退款记录'), 'network failure keeps the scoped readback recovery control');
 } finally {
   networkDom.window.close();
+}
+
+
+const attributedUnpaidOrderNo = 'M-DISTRIBUTION-UNPAID';
+const attributedUnpaidDom = new JSDOM(refundDetailHTML(attributedUnpaidOrderNo), {
+  url: `https://test.invalid/admin/orderDetail.html?id=${attributedUnpaidOrderNo}`, runScripts: 'outside-only', pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    browserRuntime(window);
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof window.URL ? input.toString() : input.url, window.location.href);
+      if (url.pathname === `/api/admin/orders/${attributedUnpaidOrderNo}`) return new Response(JSON.stringify({ ...nativeOrderFixture(attributedUnpaidOrderNo), distribution_read_state: 'available', distribution: [{ item_line: 2, product_name: '待付款归因商品', distributor_display_name: '分销员乙', rate_basis_points: 2345, wait_days: 9, policy_version: 4, has_commission: false, initial_minor: 0, current_payable_minor: 0, paid_minor: 0, currency: 'CNY', status: '', hold_reason: '', cancel_reason: '', exception_reason: '', due_at: null, settlement_confirmed_at: null, adjustments: [], settlements: [], exceptions: [] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/refunds') return new Response(JSON.stringify(scopedRefundPage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  },
+});
+try {
+  attributedUnpaidDom.window.eval(host);
+  await pause();
+  await attributedUnpaidDom.window.fetch('/api/admin/refunds');
+  await pause();
+  const body = attributedUnpaidDom.window.document.body.textContent;
+  assert.match(body, /分销员乙/, 'unpaid attribution keeps its distributor display name');
+  assert.match(body, /冻结佣金比例23.45%/, 'unpaid attribution keeps its frozen policy snapshot');
+  assert.match(body, /退款复核等待9 天/, 'unpaid attribution keeps its frozen wait days');
+  assert.match(body, /已归因 · 未形成佣金/, 'unpaid attribution is distinct from a zero commission or non-distribution order');
+} finally {
+  attributedUnpaidDom.window.close();
 }
 
 console.log('order refund idempotency, exact readback, and unavailable-state journeys: PASS');

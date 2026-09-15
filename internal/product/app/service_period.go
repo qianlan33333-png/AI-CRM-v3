@@ -278,7 +278,7 @@ func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Cont
 			PriceMinor:            normalized.PriceMinor,
 			Currency:              normalized.Currency,
 			StockQuantity:         normalized.StockQuantity,
-			Images:                append([]string(nil), normalized.Images...),
+			Images:                append([]string{}, normalized.Images...),
 			LegacyAdminProjection: projection,
 			Actor:                 normalized.Actor,
 			IdempotencyKey:        normalized.IdempotencyKey,
@@ -800,7 +800,10 @@ func validServicePeriodSnapshot(product productport.ServicePeriodProduct) bool {
 }
 
 func normalizeServicePeriodCreate(command productport.CreateServicePeriodProductCommand) (productport.CreateServicePeriodProductCommand, [32]byte, error) {
-	command.Images = append([]string(nil), command.Images...)
+	// A decoded [] is meaningful to the Product store: it must persist as the
+	// JSON array [], while nil would become JSON null and fail products_images_shape.
+	// Keep the empty-array shape through the service-period command boundary.
+	command.Images = append([]string{}, command.Images...)
 	command.ProductCode = strings.TrimSpace(command.ProductCode)
 	command.Name = strings.TrimSpace(command.Name)
 	command.Description = strings.TrimSpace(command.Description)

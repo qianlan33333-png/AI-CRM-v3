@@ -23,7 +23,7 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
   window.fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href); const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     calls.push({ path: url.pathname, method, body: typeof init.body === 'string' ? init.body : '' }); const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
-    if (url.pathname === '/api/admin/service-period-products' && method === 'POST') return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: ['/api/admin/image-library/39/variants/original'], admin_projection: projection, version: 1 } }, 201);
+    if (url.pathname === '/api/admin/service-period-products' && method === 'POST') return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: ['/api/admin/image-library/39/variants/original'], admin_projection: projection, distribution_policy: { enabled: true, commission_rate_basis_points: 2345, wait_days: 9, version: 1 }, version: 1 } }, 201);
     if (url.pathname === '/api/admin/service-period-products/201/external-push') return json({ product_id: 201, product_kind: 'service_period', enabled: false, configuration_reference: '', updated_at: '2026-09-08T00:00:00Z' });
     if (url.pathname === '/api/admin/service-period-products/201') {
       if (method === 'PUT') { assert.equal(JSON.parse(init.body).duration_days, 90, 'preserve persisted duration required by backend'); assert.equal(JSON.parse(init.body).expected_version, version); version += 1; }
@@ -42,6 +42,15 @@ const fixtureFetch = dom.window.fetch;
 dom.window.eval(materialPicker); dom.window.eval(host);  dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 const document = dom.window.document;
 await waitFor(() => document.getElementById('spfName'), 'frozen periodic form did not mount');
+await waitFor(() => document.getElementById('spfDurationDays'), 'new periodic product must require a service duration before create');
+const duration = document.getElementById('spfDurationDays');
+assert.equal(duration.value, '', 'new periodic product must not invent a service duration');
+await waitFor(() => document.querySelector('[data-distribution-policy]'), 'new periodic product must render editable distribution controls in sale information');
+const newPolicy = document.querySelector('[data-distribution-policy]');
+assert.equal(newPolicy.parentElement.id, 'sp-sale', 'new periodic distribution controls belong only to sale information');
+assert.equal(newPolicy.querySelector('[data-distribution-policy-enabled]').checked, false, 'new periodic product defaults distribution to disabled');
+assert.equal(newPolicy.querySelector('[data-distribution-policy-rate]').value, '0.00', 'new periodic product defaults commission rate');
+assert.equal(newPolicy.querySelector('[data-distribution-policy-wait-days]').value, '7', 'new periodic product defaults refund-review wait days');
 await waitFor(() => document.querySelector('#sp-wecom [data-product-tag-open]') && document.querySelector('#sp-action [data-product-purchase-enabled]'), 'periodic action and tag controls must mount');
 document.getElementById('spfName').value = '切换保留';
 for (const id of ['sp-sale', 'sp-media', 'sp-action', 'sp-wecom', 'sp-push']) {
@@ -69,13 +78,32 @@ assert.equal(document.querySelector('#sp-media img'), null, 'periodic cancel cha
 open.click(); await waitFor(() => document.querySelector('[data-picker-id="39"]'), 'original picker did not reopen after cancel'); document.querySelector('[data-picker-id="39"]').click();
 await waitFor(() => [...document.querySelectorAll('#sp-media img')].some((image) => image.src.includes('/39/variants/thumb_320')), 'periodic frozen form did not receive original material');
 for (const [id, value] of [['spfName', '周期素材'], ['spfCode', 'sp-media'], ['spfPrice', '0.02'], ['spfStock', '1']]) document.getElementById(id).value = value;
+const durationBeforeCreate = document.getElementById('spfDurationDays');
+durationBeforeCreate.value = '90'; durationBeforeCreate.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+const policyBeforeCreate = document.querySelector('[data-distribution-policy]');
+policyBeforeCreate.querySelector('[data-distribution-policy-enabled]').checked = true;
+policyBeforeCreate.querySelector('[data-distribution-policy-enabled]').dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+policyBeforeCreate.querySelector('[data-distribution-policy-rate]').value = '23.45';
+policyBeforeCreate.querySelector('[data-distribution-policy-rate]').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+policyBeforeCreate.querySelector('[data-distribution-policy-wait-days]').value = '9';
+policyBeforeCreate.querySelector('[data-distribution-policy-wait-days]').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+assert.equal(document.querySelector('[data-distribution-policy-rate]').value, '23.45', 'new periodic product must retain the edited commission before create');
+assert.equal(document.querySelector('[data-distribution-policy-wait-days]').value, '9', 'new periodic product must retain the edited wait days before create');
+assert.equal(document.querySelector('[data-distribution-policy-enabled]').checked, true, 'new periodic product must retain the selected state before create');
 const save = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存当前维度'); save.click();
 await waitFor(() => calls.some((call) => call.path === '/api/admin/service-period-products' && call.method === 'POST'), 'periodic frozen save did not write');
 const body = JSON.parse(calls.find((call) => call.path === '/api/admin/service-period-products' && call.method === 'POST').body);
 assert.deepEqual(body.images, ['/api/admin/image-library/39/variants/original'], 'periodic save lost original selected URL');
+assert.equal(body.duration_days, 90, 'periodic product create must use the explicit service duration');
+assert.deepEqual(body.distribution_policy, { enabled: true, commission_rate_basis_points: 2345, wait_days: 9, version: 0 }, 'periodic product create must atomically carry the edited distribution policy');
 await wait(300);
 assert.equal(new URL(dom.window.location.href).pathname, '/admin/spProductForm.html', 'save must stay in the periodic editor');
 assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '201', 'create must retain the returned ID for subsequent dimension saves');
+const policyAfterCreate = document.querySelector('[data-distribution-policy]');
+assert.equal(policyAfterCreate.dataset.distributionPolicyVersion, '1', 'new periodic product must read back the server policy revision after receiving an ID');
+assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-enabled]').checked, true, 'new periodic product readback must retain the selected distribution state');
+assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-rate]').value, '23.45', 'new periodic product readback must retain the edited commission rate');
+assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-wait-days]').value, '9', 'new periodic product readback must retain the edited wait days');
 document.querySelector('a[href="#sp-action"]').click();
 assert.equal(document.querySelector('a[href="#sp-action"]').getAttribute('aria-current'), 'step', 'saved editor must still switch dimensions');
 save.click();

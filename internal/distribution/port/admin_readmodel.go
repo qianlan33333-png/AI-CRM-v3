@@ -46,9 +46,9 @@ type AdminCommissionAdjustment struct {
 	OccurredAt                            time.Time
 }
 type AdminSettlement struct {
-	ID, AmountMinor                          int64
-	Reference, Currency, State               string
-	ProviderDeadlineAt, CreatedAt, UpdatedAt *time.Time
+	ID, AmountMinor                                                 int64
+	Reference, Currency, State                                      string
+	ProviderDeadlineAt, SettlementConfirmedAt, CreatedAt, UpdatedAt *time.Time
 }
 
 // AdminCommissionDetail is the full, frozen money fact for one attributed
@@ -123,6 +123,52 @@ type AdminDistributionDetailReadModel interface {
 	ListAdminOrdersByDistributor(context.Context, int64, string, int32) (AdminPage[AdminOrder], error)
 	ReadAdminOrderDetail(context.Context, int64) (AdminOrderDetail, error)
 	ReadAdminExceptionDetail(context.Context, int64) (AdminException, error)
+}
+
+// OrderDistributionAdjustment and OrderDistributionSettlement are the safe
+// evidence Order may present. They deliberately omit Provider payloads and
+// receiver identifiers.
+type OrderDistributionAdjustment struct {
+	Kind, Reason                      string
+	DeltaMinor, ResultingPayableMinor int64
+	OccurredAt                        time.Time
+}
+type OrderDistributionSettlement struct {
+	Reference, Currency, State                                      string
+	AmountMinor                                                     int64
+	ProviderDeadlineAt, SettlementConfirmedAt, CreatedAt, UpdatedAt *time.Time
+}
+type OrderDistributionException struct {
+	Kind, Status, Reason, EvidenceReference string
+	AmountMinor                             int64
+	CreatedAt, UpdatedAt                    time.Time
+}
+
+// OrderDistributionLine is the immutable distribution snapshot associated
+// with one Order-owned item. It is a read model only: Order authorizes access
+// to its own records, while Distribution owns the facts and tables behind it.
+type OrderDistributionLine struct {
+	OrderID, AttributionID, CommissionID                        int64
+	ItemLine                                                    int32
+	ProductName                                                 string
+	DistributorCustomerID                                       customerdomain.CustomerID
+	DistributorDisplayName                                      string
+	RateBasisPoints, WaitDays                                   int32
+	PolicyVersion                                               int64
+	InitialMinor, CurrentPayableMinor, PaidMinor                int64
+	Currency, Status, HoldReason, CancelReason, ExceptionReason string
+	HasCommission                                               bool
+	DueAt, SettlementConfirmedAt                                *time.Time
+	Adjustments                                                 []OrderDistributionAdjustment
+	Settlements                                                 []OrderDistributionSettlement
+	Exceptions                                                  []OrderDistributionException
+}
+
+// OrderDistributionReader batches by canonical Order ID. In particular it is
+// not the attribution-detail reader: callers must not guess attribution IDs
+// from an Order ID or scan the administrator distribution list.
+type OrderDistributionReader interface {
+	ReadOrderDistribution(context.Context, []int64) (map[int64][]OrderDistributionLine, error)
 }
 type AdminDistributionService interface {
 	AdminDistributionReadModel

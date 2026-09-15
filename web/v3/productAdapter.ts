@@ -107,7 +107,7 @@ function stableProductSaveKeys(input: Parameters<typeof api.saveProduct>[0]): { 
   // One click and its recovery retry must keep their original keys.  The
   // key is intentionally held only in this page runtime: it never enters a
   // URL, log, or persisted product field.
-  const key = JSON.stringify([input, input.id ? openedProductPayloads.get(input.id)?.version : undefined]);
+  const key = JSON.stringify([input, input.id ? openedProductPayloads.get(input.id)?.version ?? periodicSnapshots.get(input.id)?.version : undefined]);
   let saved = productSaveKeys.get(key);
   if (!saved) {
     saved = { subjectKey: newIdempotencyKey('product-save'), externalPushKey: newIdempotencyKey('product-external-push') };
@@ -211,13 +211,32 @@ function distributionPolicy(raw: unknown): DistributionPolicy {
   return { enabled, commissionRateBasisPoints: rate, waitDays: days, version };
 }
 
-function currentDistributionPolicy(): DistributionPolicy {
+function productSaleDimension(): string | undefined {
+  const prefix = productPrefix();
+  return prefix === 'pf' ? 'product-sale' : prefix === 'spf' ? 'sp-sale' : undefined;
+}
+
+function distributionPolicyDimensionSelected(): boolean {
+  const sale = productSaleDimension();
+  if (!sale) return false;
+  const nav = document.querySelector<HTMLAnchorElement>(`a[href="#${sale}"]`)?.parentElement;
+  // The frozen new-product form reaches its default sale panel before the
+  // Host's dimension observer records a selection. That initial state is
+  // still sale information; later tab clicks always set this dataset.
+  return !nav?.dataset.productDimension || nav.dataset.productDimension === sale;
+}
+
+function currentDistributionPolicy(): DistributionPolicy | undefined {
+  // Policy is deliberately part of the sale dimension only. The frozen form
+  // sends one Product command for every dimension, but the Product contract
+  // treats an omitted policy as "leave the saved policy unchanged".
+  if (!distributionPolicyDimensionSelected()) return undefined;
   const host = document.querySelector<HTMLElement>('[data-distribution-policy]');
   // A new product genuinely has no stored policy. An existing editor without
   // its authoritative product payload is still loading (or failed), and must
   // never overwrite the saved policy with the new-product default on save.
   if (!host) {
-    if (productEditorRoute()) throw new Error('分销设置尚未加载，未提交保存。');
+    if (!newProductEditor()) throw new Error('分销设置尚未加载，未提交保存。');
     return defaultDistributionPolicy();
   }
   const enabled = host.querySelector<HTMLInputElement>('[data-distribution-policy-enabled]')?.checked === true;
@@ -236,6 +255,12 @@ function currentDistributionPolicy(): DistributionPolicy {
   return { enabled, commissionRateBasisPoints: basisPoints, waitDays, version };
 }
 
+function newProductEditor(): boolean {
+  const prefix = productPrefix();
+  if (!prefix) return false;
+  try { return !new URLSearchParams(location.search).has('id'); } catch { return false; }
+}
+
 function editorDistributionPolicy(): DistributionPolicy {
   const route = productEditorRoute();
   if (!route) return defaultDistributionPolicy();
@@ -245,18 +270,20 @@ function editorDistributionPolicy(): DistributionPolicy {
 }
 
 function mountDistributionPolicyControls(): void {
+  if (typeof document === 'undefined' || !document.documentElement) return;
   const route = productEditorRoute();
-  if (!route || document.querySelector('[data-distribution-policy]')) return;
-  const prefix = route.prefix;
-  const snapshot = prefix === 'pf' ? openedProductPayloads.get(route.id) : periodicSnapshots.get(route.id);
+  if (document.querySelector('[data-distribution-policy]')) return;
+  const prefix = route?.prefix || productPrefix();
+  if (!prefix || (!route && !newProductEditor())) return;
+  const snapshot = route ? prefix === 'pf' ? openedProductPayloads.get(route.id) : periodicSnapshots.get(route.id) : undefined;
   // The observer can fire while a frozen donor form is still loading. Wait for
   // its authoritative snapshot hook instead of mutating the DOM with an error,
   // which would trigger the observer again and fabricate a draft policy.
-  if (!snapshot) return;
-  const anchor = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-action');
+  if (route && !snapshot) return;
+  const anchor = document.getElementById(prefix === 'pf' ? 'product-sale' : 'sp-sale');
   if (!anchor) return;
   let policy: DistributionPolicy;
-  try { policy = distributionPolicy(snapshot.distribution_policy); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
+  try { policy = route ? distributionPolicy(snapshot?.distribution_policy) : defaultDistributionPolicy(); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
   const host = document.createElement('section');
   host.className = 'product-distribution-policy';
   host.dataset.distributionPolicy = '';
@@ -284,48 +311,48 @@ function mountDistributionPolicyControls(): void {
   const policyFields = host.querySelector<HTMLElement>('[data-distribution-policy-fields]')!;
   const update = () => { policyFields.classList.toggle('is-disabled', !enabled.checked); };
   enabled.addEventListener('change', update); update();
-  // This is a public application entry, not a promotion credential. It is
-  // intentionally derived only from the already persisted policy snapshot:
-  // ticking the checkbox must never claim that an unsaved policy is live.
-  if (policy.enabled) {
-    const application = document.createElement('div');
-    application.dataset.distributionApplicationEntry = '';
-    application.className = 'product-distribution-policy__application';
-    const title = document.createElement('strong');
-    title.className = 'product-distribution-policy__application-title';
-    title.textContent = '分销员申请入口';
-    const note = document.createElement('p');
-    note.className = 'product-distribution-policy__application-hint';
-    note.textContent = '分享给想申请推广的人。申请、购买资格和微信收款准备均以分销中心的服务端状态为准。';
-    const url = new URL('/distribution', location.origin);
-    url.searchParams.set('product_id', String(route.id));
-    url.searchParams.set('product_type', route.prefix === 'pf' ? 'standard_product' : 'service_period');
-    const link = document.createElement('input');
-    link.readOnly = true;
-    link.value = url.toString();
-    link.dataset.distributionApplicationLink = '';
-    link.className = 'product-distribution-policy__application-link';
-    const qr = document.createElement('div');
-    qr.dataset.distributionApplicationQR = '';
-    qr.className = 'product-distribution-policy__qr';
-    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'product-distribution-policy__copy'; copy.textContent = '复制申请链接';
-    copy.addEventListener('click', async () => {
-      if (!navigator.clipboard?.writeText) { link.focus(); link.select(); showMessage('当前环境不支持自动复制，请复制申请链接。'); return; }
-      try { await navigator.clipboard.writeText(url.toString()); showMessage('分销员申请链接已复制。', true); }
-      catch { link.focus(); link.select(); showMessage('未能自动复制，请复制申请链接。'); }
-    });
-    const linkRow = document.createElement('div'); linkRow.className = 'product-distribution-policy__application-row'; linkRow.append(link, copy);
-    application.append(title, note, linkRow, qr);
-    renderQr(qr, url.toString(), '分销员申请入口');
-    host.append(application);
-  } else {
-    const note = document.createElement('p');
-    note.dataset.distributionApplicationPending = '';
-    note.className = 'product-distribution-policy__pending';
-    note.textContent = '保存并启用分销后，才会生成可分享的分销员申请入口。';
-    host.append(note);
-  }
-  anchor.parentElement?.insertBefore(host, anchor);
+  // Product editing owns policy only. Distributor application, link copying,
+  // and QR entry points belong to the public Distribution centre.
+  anchor.firstElementChild?.after(host);
+}
+
+function syncDistributionPolicyControls(raw: unknown, submitted: DistributionPolicy): void {
+  if (typeof document === 'undefined' || !document.documentElement) return;
+  const host = document.querySelector<HTMLElement>('[data-distribution-policy]');
+  if (!host || raw === undefined || raw === null) return;
+  let policy: DistributionPolicy;
+  try { policy = distributionPolicy(raw); } catch (error) { showMessage(error instanceof Error ? error.message : '分销设置读取失败'); return; }
+  const enabled = host.querySelector<HTMLInputElement>('[data-distribution-policy-enabled]');
+  const rate = host.querySelector<HTMLInputElement>('[data-distribution-policy-rate]');
+  const days = host.querySelector<HTMLInputElement>('[data-distribution-policy-wait-days]');
+  if (!enabled || !rate || !days) return;
+  const currentRate = Number(rate.value);
+  const currentDays = Number(days.value);
+  const currentMatchesSubmission = enabled.checked === submitted.enabled && Number.isFinite(currentRate) &&
+    Math.round(currentRate * 100) === submitted.commissionRateBasisPoints && Number.isSafeInteger(currentDays) &&
+    currentDays === submitted.waitDays && Number(host.dataset.distributionPolicyVersion || '0') === submitted.version;
+  host.dataset.distributionPolicyVersion = String(policy.version);
+  // A user may continue editing while the Product command is in flight. Do
+  // not replace that later sale draft with the response for an earlier save;
+  // only advance its base version for the next explicit save.
+  if (!currentMatchesSubmission) return;
+  enabled.checked = policy.enabled;
+  rate.value = (policy.commissionRateBasisPoints / 100).toFixed(2);
+  days.value = String(policy.waitDays);
+  host.querySelector<HTMLElement>('[data-distribution-policy-fields]')?.classList.toggle('is-disabled', !policy.enabled);
+}
+
+function mountNewServicePeriodDuration(): void {
+  if (typeof document === 'undefined' || !document.documentElement || !newProductEditor() || productPrefix() !== 'spf' || document.getElementById('spfDurationDays')) return;
+  const sale = document.getElementById('sp-sale');
+  const fields = Array.from(sale?.children || []).find((node) => node instanceof HTMLElement && node.style.display === 'grid' && node.style.gridTemplateColumns) as HTMLElement | undefined;
+  if (!fields) return;
+  const field = document.createElement('label');
+  field.style.cssText = 'display:grid;gap:6px'; field.textContent = '服务周期（天）';
+  const input = document.createElement('input');
+  input.id = 'spfDurationDays'; input.type = 'number'; input.min = '1'; input.step = '1'; input.inputMode = 'numeric'; input.required = true;
+  input.style.cssText = 'width:100%;min-height:36px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;padding:8px 10px;font-size:13px;box-sizing:border-box';
+  field.append(input); fields.append(field);
 }
 
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -346,7 +373,8 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
 
   let nextInit = init;
   if (context && method !== 'GET' && method !== 'HEAD') {
-    const isSubject = url.pathname === '/api/v1/products' || url.pathname === `/api/v1/products/${context.productID}`;
+    const isSubject = url.pathname === '/api/v1/products' || url.pathname === `/api/v1/products/${context.productID}` ||
+      url.pathname === '/api/admin/service-period-products' || url.pathname === `/api/admin/service-period-products/${context.productID}`;
     const isExternalPush = /\/api\/admin\/wechat-pay\/products\/\d+\/external-push$/.test(url.pathname);
     if (isSubject || isExternalPush) {
       const headers = new Headers(request?.headers);
@@ -364,8 +392,22 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     const body = JSON.parse(String(nextInit?.body || '{}'));
     nextInit = { ...nextInit, body: JSON.stringify({ ...body, duration_days: duration, expected_version: prior?.version }) };
   }
+  if (periodicCollection && method === 'POST') {
+    const input = document.getElementById('spfDurationDays') as HTMLInputElement | null;
+    const duration = Number(input?.value);
+    if (!Number.isSafeInteger(duration) || duration < 1) throw new Error('请填写正整数服务周期天数。');
+    const body = JSON.parse(String(nextInit?.body || '{}'));
+    nextInit = { ...nextInit, body: JSON.stringify({ ...body, duration_days: duration }) };
+  }
   if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
   if (isDistributionProductSubjectWrite(url, method)) nextInit = adaptDistributionPolicyWrite(nextInit);
+  let submittedDistributionPolicy: DistributionPolicy | undefined;
+  if (isDistributionProductSubjectWrite(url, method) && typeof nextInit?.body === 'string') {
+    try {
+      const body = object(JSON.parse(nextInit.body));
+      if (Object.prototype.hasOwnProperty.call(body, 'distribution_policy')) submittedDistributionPolicy = distributionPolicy(body.distribution_policy);
+    } catch { /* the Product API validates malformed JSON */ }
+  }
   const response = await donorFetch(input, nextInit);
   if ((periodicMatch && (method === 'GET' || method === 'PUT')) || (periodicCollection && method === 'POST')) {
     if (response.ok) {
@@ -378,6 +420,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
         // from the still-editable donor form.
         if (method === 'POST' || method === 'PUT' || !periodicSnapshots.has(id)) periodicSnapshots.set(id, product);
         mountDistributionPolicyControls();
+        if (submittedDistributionPolicy) syncDistributionPolicyControls(product.distribution_policy, submittedDistributionPolicy);
         const action = object(product.admin_projection);
         purchaseActionByProduct.set(id, {
           enabled: action.purchase_action_enabled === true,
@@ -392,6 +435,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     const id = Number(url.pathname.split('/').pop());
     if (Number(saved.id) === id && Number.isSafeInteger(Number(saved.version))) {
       openedProductPayloads.set(id, saved);
+      if (submittedDistributionPolicy) syncDistributionPolicyControls(saved.distribution_policy, submittedDistributionPolicy);
       if (context?.productID === id) { context.createdProductID = id; context.createdProduct = saved; }
     }
   }
@@ -403,6 +447,8 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
       if (Number.isSafeInteger(id) && id > 0) {
         context.createdProductID = id;
         context.createdProduct = created;
+        openedProductPayloads.set(id, created);
+        if (submittedDistributionPolicy) syncDistributionPolicyControls(created.distribution_policy, submittedDistributionPolicy);
       }
     } catch {
       // The frozen DTO parser will surface the malformed create response.
@@ -470,6 +516,30 @@ api.saveProduct = (input) => {
     } finally {
       productSaveContext = undefined;
     }
+  })();
+  void productSaveInFlight.then(
+    () => { productSaveInFlight = undefined; },
+    () => { productSaveInFlight = undefined; },
+  );
+  return productSaveInFlight;
+};
+
+const donorSaveServiceProduct = api.saveServiceProduct.bind(api);
+api.saveServiceProduct = (input) => {
+  if (productSaveInFlight) return productSaveInFlight;
+  const keys = stableProductSaveKeys(input);
+  const productID = input.id;
+  const context: ProductSaveContext = {
+    productID,
+    opened: productID ? periodicSnapshots.get(productID) : undefined,
+    subjectKey: keys.subjectKey,
+    externalPushKey: keys.externalPushKey,
+    externalPushAttempted: false,
+  };
+  productSaveInFlight = (async () => {
+    productSaveContext = context;
+    try { return await donorSaveServiceProduct(input); }
+    finally { productSaveContext = undefined; }
   })();
   void productSaveInFlight.then(
     () => { productSaveInFlight = undefined; },
@@ -1201,19 +1271,10 @@ function productTagCatalogLoadFailure(response: Response): Error {
   return error;
 }
 
-function installProductPickerStyles(): void {
-  if (document.getElementById('product-picker-styles')) return;
-  const style = document.createElement('style');
-  style.id = 'product-picker-styles';
-  style.textContent = `[data-product-standard-tag-picker] input[type=checkbox]{appearance:none;position:relative;width:42px;height:24px;border:0;border-radius:20px;background:#cbd5e1;cursor:pointer;flex-shrink:0}[data-product-tag-enabled]:before{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:white;transition:transform .15s}[data-product-standard-tag-picker] input:checked{background:#3370ff}[data-product-tag-enabled:checked]:before{transform:translateX(18px)}[data-product-tag-summary]{line-height:1.8;padding:12px;background:#f7f9fc;border-radius:8px}`;
-  document.head.appendChild(style);
-}
-
 function mountProductTagPicker(): void {
   if (typeof document === 'undefined' || !document.body) return;
   const prefix = document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
   if (!prefix) return;
-  installProductPickerStyles();
   if (prefix === 'spf') mountPeriodicTagDimension();
   const input = document.getElementById(`${prefix}WecomTagging`) as HTMLTextAreaElement | null;
   const panel = document.getElementById(prefix === 'pf' ? 'product-wecom' : 'sp-wecom');
@@ -1226,8 +1287,8 @@ function mountProductTagPicker(): void {
   if (!selected.length) for (const raw of list(state.tag_ids)) { const record = unresolvedTagRecord(tagSource, String(raw || '').trim()); if (record) selected.push(record); }
   const host = document.createElement('section');
   host.dataset.productStandardTagPicker = '';
-  host.style.cssText = 'display:grid;gap:10px;padding:12px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
-  host.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" role="switch" data-product-tag-enabled> 启用购买后企微标签</label><button type="button" data-product-tag-open style="height:30px;padding:0 12px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;cursor:pointer">选择标签</button></div><div data-product-tag-summary style="font-size:12px;color:#646A73"></div><p data-product-tag-error style="margin:0;font-size:12px;color:#D83931" hidden></p>';
+  host.className = 'product-standard-tag-picker';
+  host.innerHTML = '<div class="product-standard-tag-picker__controls" data-product-tag-controls><label class="product-standard-tag-picker__label"><input type="checkbox" role="switch" data-product-tag-enabled> 启用购买后企微标签</label><button class="product-standard-tag-picker__button" type="button" data-product-tag-open>选择标签</button></div><div data-product-tag-summary></div><p class="product-standard-tag-picker__error" data-product-tag-error hidden></p>';
   panel.querySelector('div[style*="display:grid"]')?.append(host);
   const enabled = host.querySelector<HTMLInputElement>('[data-product-tag-enabled]')!;
   const summary = host.querySelector<HTMLElement>('[data-product-tag-summary]')!;
@@ -1373,6 +1434,7 @@ function adaptDistributionPolicyWrite(init: RequestInit | undefined): RequestIni
   let body: RecordValue;
   try { body = object(JSON.parse(init.body)); } catch { throw new Error('商品保存请求无效，未提交分销设置。'); }
   const policy = currentDistributionPolicy();
+  if (!policy) return init;
   body.distribution_policy = {
     enabled: policy.enabled,
     commission_rate_basis_points: policy.commissionRateBasisPoints,
@@ -1390,7 +1452,8 @@ function distributionPolicyWritePath(url: URL, method: string): boolean {
 // policy injection lives at this tracked Host seam.  Install it only while the
 // one normal Product save runs: this preserves the Product owner's single
 // command/UoW and avoids changing an immutable donor API source.
-async function saveWithDistributionPolicy<T>(policy: DistributionPolicy, save: () => Promise<T>): Promise<T> {
+async function saveWithDistributionPolicy<T>(policy: DistributionPolicy | undefined, save: () => Promise<T>): Promise<T> {
+  if (!policy) return save();
   const prior = globalThis.fetch;
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : undefined;
@@ -1426,6 +1489,9 @@ mountPurchaseActionControls();
 const distributionPolicyObserver = new MutationObserver(mountDistributionPolicyControls);
 distributionPolicyObserver.observe(document, { childList: true, subtree: true });
 mountDistributionPolicyControls();
+const servicePeriodDurationObserver = new MutationObserver(mountNewServicePeriodDuration);
+servicePeriodDurationObserver.observe(document, { childList: true, subtree: true });
+mountNewServicePeriodDuration();
 
 type ProductMaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: { type: 'image'; title: string; selectedIds: number[]; limit: number; onConfirm(item: MaterialPickerItem): void; onCancel(): void }): void } };
 let pendingProductMaterialObserver: MutationObserver | undefined;

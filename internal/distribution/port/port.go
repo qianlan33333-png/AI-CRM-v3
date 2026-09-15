@@ -163,11 +163,11 @@ type Earnings struct {
 }
 
 type CommissionListItem struct {
-	CommissionID, OrderReference, ProductName         string
-	InitialMinor, CurrentPayableMinor, PaidMinor      int64
-	Status, HoldReason, CancelReason, ExceptionReason string
-	PaidConfirmedAt, DueAt, PaidAt, CreatedAt         time.Time
-	Currency                                          string
+	CommissionID, OrderReference, ProductName                        string
+	InitialMinor, CurrentPayableMinor, PaidMinor                     int64
+	Status, HoldReason, CancelReason, ExceptionReason                string
+	PaidConfirmedAt, DueAt, SettlementConfirmedAt, PaidAt, CreatedAt time.Time
+	Currency                                                         string
 }
 
 type CommissionPage struct {

@@ -885,6 +885,138 @@
       ],
       "reason": "Integrate the Root-reviewed admin overview API canonical-payer contract with current main shared-component, GroupOps search, and Radar contract authority. Canonical source metadata is regenerated from the merged V3 OpenAPI payload; frozen donors remain unchanged.",
       "review_reference": "Root instruction to integrate PR #293 with main 0e73d42c on 2026-09-15; normal PR review and complete CI remain required"
+    },
+    {
+      "base_commit": "c45b9c7c3bc709919af883e2bc11acb1f46cf1eb",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b7553012d12adfcb9b424d3980167b69e9e3515d9f8f7128b63f99e13cb279eb",
+          "head_sha256": "98a99fc57ab24ccc03ac469372d597eda64f1a8ae4ab99eaed75e61e8ad03e5c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "021866a04c93fe46f5e7ebb2ba8bcdd0e93a41c109012b798f891b11d9095e02",
+          "head_sha256": "e8fc80b382b9ee861e6ebd2b6472cc06207b2eb2217310ee69685f5f692c7cd2"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "5d310bfb95ec614c28df656f147425355451ba2ae8680e2667d7e167416802f9",
+          "head_sha256": "e3771c115c04bd40a84acf882c2c3ff5ab3185a300349576ae0ee611024d1835"
+        }
+      ],
+      "reason": "Record the Root-reviewed provider-scoped Order Distribution read contract in the active V3 OpenAPI authority; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of the approved order distribution read contract and active V3 OpenAPI synchronization"
+    },
+    {
+      "base_commit": "3eda04cbd56d7bfdf44ba2a15d573ee29703926a",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b7553012d12adfcb9b424d3980167b69e9e3515d9f8f7128b63f99e13cb279eb",
+          "head_sha256": "98a99fc57ab24ccc03ac469372d597eda64f1a8ae4ab99eaed75e61e8ad03e5c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "021866a04c93fe46f5e7ebb2ba8bcdd0e93a41c109012b798f891b11d9095e02",
+          "head_sha256": "e8fc80b382b9ee861e6ebd2b6472cc06207b2eb2217310ee69685f5f692c7cd2"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "5d310bfb95ec614c28df656f147425355451ba2ae8680e2667d7e167416802f9",
+          "head_sha256": "e3771c115c04bd40a84acf882c2c3ff5ab3185a300349576ae0ee611024d1835"
+        }
+      ],
+      "reason": "Rebind the Root-reviewed provider-scoped Order Distribution read contract after rebasing its active V3 OpenAPI authority onto the current verified main; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of the approved order distribution read contract and current-main source-authority synchronization"
+    },
+    {
+      "base_commit": "9de7c37312f08e531ecaf1956b874a9e5c745511",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b7553012d12adfcb9b424d3980167b69e9e3515d9f8f7128b63f99e13cb279eb",
+          "head_sha256": "98a99fc57ab24ccc03ac469372d597eda64f1a8ae4ab99eaed75e61e8ad03e5c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "021866a04c93fe46f5e7ebb2ba8bcdd0e93a41c109012b798f891b11d9095e02",
+          "head_sha256": "e8fc80b382b9ee861e6ebd2b6472cc06207b2eb2217310ee69685f5f692c7cd2"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "5d310bfb95ec614c28df656f147425355451ba2ae8680e2667d7e167416802f9",
+          "head_sha256": "e3771c115c04bd40a84acf882c2c3ff5ab3185a300349576ae0ee611024d1835"
+        }
+      ],
+      "reason": "Rebind the Root-reviewed provider-scoped Order Distribution read contract after merging the current verified main; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of the approved order distribution read contract and current-main source-authority synchronization"
+    },
+    {
+      "base_commit": "179d3f5447f8fe46e00d741fdd91a9422d1b76d0",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b9214cb231f65a7b6cb67286631f1fd379827ad46750a7f98ede4bd3cd7e666e",
+          "head_sha256": "9128622d96247f9fe8f217bcbbe3852bc27053baa12761504c0f8bc72de74116"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "ae4a00225aeb39f5ec6cb06df38ac1f3b12c987132f7b78f6decf86c1ac93c7a",
+          "head_sha256": "15c926457becf78d984077bbc14773aedac1f80972cd51871c8a9cff302a79d6"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "64caee6a45cd6ba5350c43aea7b98aa6061bfbb660673f5599c4df6210ff0a65",
+          "head_sha256": "bb00cef1e8c2f4050bd1ea366551c21f93f35171c4df2090f41d00bef95409ee"
+        }
+      ],
+      "reason": "Rebind the Root-reviewed provider-scoped Order Distribution contract with the current main GroupOps OpenAPI authority; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of the Order Distribution repair and current-main source-authority synchronization on 2026-09-15"
+    },
+    {
+      "base_commit": "0e73d42c433892a1f5088eea08d3a079c1c98455",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "1554aac9c7debc7febd892d587d004861cde55ad169cd2ad91871664b1edc46c",
+          "head_sha256": "bb60098a47488012a76275bafc458ca033a30d50ece5e7139f67622590a396a4"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "e099d5889c890e3f432f23066ce06fd82ccf0053001e01d118863d902e664530",
+          "head_sha256": "06fdec32c7d0be91106a5dfeea0cac69a17e2f4fa927c97c16dfeb09e55f9d07"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "a96cff49116907c17d3697fd73d4ad0e9975c0e48b35143792b27f14f349aa1c",
+          "head_sha256": "0f1c71988ccf577c82100b5edcb18482ea3fbc795cd12fd4bb46b8eba4082697"
+        }
+      ],
+      "reason": "Integrate the Root-reviewed provider-scoped Order Distribution read contract with current main shared-component, GroupOps search, and Radar contract authority. Canonical source metadata is regenerated from the merged V3 OpenAPI payload; frozen donors remain unchanged.",
+      "review_reference": "Root instruction to integrate PR #301 with main 0e73d42c on 2026-09-15; normal PR review and complete CI remain required"
+    },
+    {
+      "base_commit": "cbbca8c64e59b9ad5e1d58026d8cb01c9314bb0e",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "4ac96d0938989e65f49485e1c46b9634c4b94918ae82b15c9e6c9b14fa615d53",
+          "head_sha256": "7e1c5bceab7b2712a046bfaf800bbe60fa3435e0ad8c48c481c8a4de046939ef"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "7e14ad4394f7d2221b7bf70389bfb0bde3ff15d9f66a929efc6cfdf96e56f405",
+          "head_sha256": "08728066d69901700adba3cd840f47c9685519c0965cdada498ea0050f28a445"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "ed4ae5d827614fc75fa0297a0ca20bbee9102a3fb31c5cadc072b78b2e7fb381",
+          "head_sha256": "ecbf82f478da8a808425dd5ac70b983ebaccae8d7be561e46f236083bfa08663"
+        }
+      ],
+      "reason": "Integrate the Root-reviewed provider-scoped Order Distribution read contract with current main Overview canonical-payer, shared-component, GroupOps search, and Radar contract authority. Canonical source metadata is regenerated from the merged V3 OpenAPI payload; frozen donors remain unchanged.",
+      "review_reference": "Root instruction to integrate PR #301 with main cbbca8c6 on 2026-09-15; normal PR review and complete CI remain required"
     }
   ]
 }
