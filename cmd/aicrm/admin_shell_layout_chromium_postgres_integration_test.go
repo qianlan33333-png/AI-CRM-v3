@@ -147,8 +147,8 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		// document loads; do not mistake the deliberate 303 for a missing Host.
 		{path: "/admin/api-docs", canonicalPath: "/admin/apidocs.html", marker: `openPlatformHost-`, expectTopbar: false},
 		// Canonical detail/form aliases must keep the same owning Host and layout.
-		{path: "/admin/productForm.html?id=" + strconv.FormatInt(fixture.productID, 10), marker: `data-page="productForm"`, expectTopbar: false},
-		{path: "/admin/spProductForm.html?id=" + strconv.FormatInt(fixture.serviceProductID, 10), marker: `data-page="spProductForm"`, expectTopbar: false},
+		{path: "/admin/productForm.html?id=" + strconv.FormatInt(fixture.productID, 10), marker: `data-page="productForm"`, expectTopbar: true},
+		{path: "/admin/spProductForm.html?id=" + strconv.FormatInt(fixture.serviceProductID, 10), marker: `data-page="spProductForm"`, expectTopbar: true},
 	} {
 		response := authenticatedAdminGet(t, fixture.application.handler, session, route.path)
 		if route.canonicalPath != "" {
