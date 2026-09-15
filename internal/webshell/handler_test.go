@@ -20,7 +20,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		t.Fatalf("group count=%d, want 7", len(ADMIN_NAV_GROUPS))
 	}
 	wantTitles := []string{"总览", "客户", "运营", "交易", "分销", "内容素材", "系统设置"}
-	wantCounts := []int{1, 3, 6, 4, 1, 5, 3}
+	wantCounts := []int{1, 3, 6, 4, 1, 3, 3}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
 			t.Fatalf("group %d=%+v, want title=%q count=%d", index, group, wantTitles[index], wantCounts[index])
@@ -67,6 +67,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		"automation_agents":       {"/admin/automation-agents", "/admin/agentEdit.html"},
 		"questionnaires":          {"/admin/questionnaires", "/admin/questionnaireDetail.html"},
 		"radar_links":             {"/admin/radar-links", "/admin/radarDetail.html"},
+		"image_library":           {"/admin/materials", "/admin/image-library", "/admin/miniprogram-library", "/admin/attachment-library", "/admin/images.html", "/admin/mpLib.html", "/admin/attach.html"},
 		"owner_migration":         {"/admin/owner-migration", "/admin/ownerMig.html"},
 		"config":                  {"/admin/config", "/admin/configDetail.html"},
 		"api_docs":                {"/admin/api-docs", "/admin/apidocs.html"},
@@ -553,6 +554,7 @@ func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing
 		AdminJS:                  "/media-assets/admin.js",
 		MaterialSaveHostJS:       "/media-assets/material-save-host.js",
 		ImageLibraryFilterHostJS: "/media-assets/image-library-filter-host.js",
+		MaterialLibraryHostJS:    "/media-assets/material-library-host.js",
 	}
 	response := httptest.NewRecorder()
 	err = renderer.RenderMedia(
@@ -571,16 +573,33 @@ func TestRenderImageLibraryUsesTheSourceOwnedHostAndKeepsMaterialSave(t *testing
 	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `data-page="images"`) || !strings.Contains(body, `data-image-library-v3-root`) || strings.Contains(body, `<template id="tpl">`) || strings.Contains(body, `src="/media-assets/admin.js"`) || hostAt < 0 || materialAt < 0 || !(materialAt < hostAt) {
 		t.Fatalf("image library shell mismatch host=%d material=%d body=%q", hostAt, materialAt, body)
 	}
-	if err = renderer.RenderMedia(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"), "images", "", MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err == nil {
+	if err = renderer.RenderMedia(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/image-library", nil), "图片素材库", "", "api.admin_image_library_workspace"), "images", "", MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, MaterialLibraryHostJS: assets.MaterialLibraryHostJS}); err == nil {
 		t.Fatal("image library shell accepted a missing filter Host asset")
 	}
 	attachmentResponse := httptest.NewRecorder()
-	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", `<section data-page="attach"></section>`, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS}); err != nil {
+	attachmentTemplate := `<template data-sc-for="{{ rows.attachItems }}" data-as="a"><tr style="{{ a.rowStyle }}"><td>{{ a.name }}</td></tr></template>`
+	if err = renderer.RenderMedia(attachmentResponse, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/attachment-library", nil), "附件素材库", "", "api.admin_attachment_library_workspace"), "attach", attachmentTemplate, MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, MaterialSaveHostJS: assets.MaterialSaveHostJS, MaterialLibraryHostJS: assets.MaterialLibraryHostJS}); err != nil {
 		t.Fatal(err)
 	}
 	attachmentBody := attachmentResponse.Body.String()
-	if strings.Contains(attachmentBody, "image-library-filter-host.js") || !strings.Contains(attachmentBody, `src="/media-assets/admin.js"`) || !strings.Contains(attachmentBody, `src="/media-assets/material-save-host.js"`) {
+	if strings.Contains(attachmentBody, "image-library-filter-host.js") || !strings.Contains(attachmentBody, `src="/media-assets/admin.js"`) || !strings.Contains(attachmentBody, `src="/media-assets/material-save-host.js"`) || !strings.Contains(attachmentBody, `data-material-library-id="{{ a.resourceId }}"`) {
 		t.Fatal("source-owned image Host leaked or frozen attachment runtime was removed")
+	}
+}
+
+func TestMaterialTemplateIdentitySeamsUseControllerResourceIDs(t *testing.T) {
+	attachment := `<template data-sc-for="{{ rows.attachItems }}" data-as="a"><tr style="{{ a.rowStyle }}"><td>{{ a.name }}</td></tr></template>`
+	withAttachmentID, err := materialTemplateIdentitySeams("attach", attachment)
+	if err != nil || !strings.Contains(withAttachmentID, `data-material-library-id="{{ a.resourceId }}"`) || strings.Count(withAttachmentID, `data-material-library-id=`) != 1 {
+		t.Fatalf("attachment identity seam err=%v template=%q", err, withAttachmentID)
+	}
+	mini := `<template data-sc-for="{{ rows.mpItems }}" data-as="m"><div style="background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden">{{ m.name }}</div></template>`
+	withMiniID, err := materialTemplateIdentitySeams("mpLib", mini)
+	if err != nil || !strings.Contains(withMiniID, `data-material-library-id="{{ m.resourceId }}"`) || strings.Count(withMiniID, `data-material-library-id=`) != 1 {
+		t.Fatalf("mini-program identity seam err=%v template=%q", err, withMiniID)
+	}
+	if _, err = materialTemplateIdentitySeams("attach", strings.Replace(attachment, `</template>`, `<tr style="{{ a.rowStyle }}"></tr></template>`, 1)); err == nil {
+		t.Fatal("ambiguous attachment donor row must fail closed")
 	}
 }
 
