@@ -945,7 +945,8 @@
   }
 
   function renderList(total, queueCount) {
-    const boundCount = state.plans.reduce((sum, plan) => sum + Number(plan.bound_group_count || 0), 0);
+    const boundCountKnown = state.plans.every((plan) => Number.isSafeInteger(plan.bound_group_count) && plan.bound_group_count >= 0);
+    const boundCount = boundCountKnown ? state.plans.reduce((sum, plan) => sum + plan.bound_group_count, 0) : null;
     const reachKnown = state.plans.length > 0 && state.plans.every((plan) => plan.today_estimated_reach !== null && plan.today_estimated_reach !== undefined && Number.isFinite(Number(plan.today_estimated_reach)));
     const reach = reachKnown ? state.plans.reduce((sum, plan) => sum + Number(plan.today_estimated_reach), 0) : null;
     const rows = state.plans
@@ -982,7 +983,7 @@
       <div class="group-ops__notice${state.noticeIsError ? " group-ops__notice--error" : ""}"${state.noticeIsError ? ' role="alert"' : ""} ${state.notice ? "" : "hidden"}>${escapeHtml(state.notice)}${state.planReadbackPending ? ` ${actionButton("重新读取最新配置", "reload-plan-detail", "", state.savingPlan)}` : ""}</div>
       <section class="group-ops__metric-grid">
         ${metricCard("运营计划", formatNumber(total))}
-        ${metricCard("已绑定群", formatNumber(boundCount))}
+        ${metricCard(boundCountKnown ? "已绑定群" : "已绑定群（暂不可用）", formatNumber(boundCount))}
         ${metricCard("今日预估", formatNumber(reach))}
         ${metricCard("通知排队队列", formatNumber(queueCount))}
       </section>

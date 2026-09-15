@@ -5901,11 +5901,24 @@ components:
         profile_read_state: {type: string, enum: [ready, unavailable], description: "`unavailable` records a failed directory-profile read."}
         profile_read_error_code: {type: string, maxLength: 64, pattern: "^$|^[a-z0-9_]{1,64}$"}
     GroupOpsPlanListItem:
-      allOf:
-        - {$ref: "#/components/schemas/GroupOpsPlan"}
-        - type: object
-          required: [queue_count]
-          properties: {queue_count: {type: integer, minimum: 0}}
+      # Do not use allOf with GroupOpsPlan here: GroupOpsPlan is intentionally
+      # closed, so JSON Schema would reject this list projection's counters.
+      type: object
+      additionalProperties: false
+      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at, owner, queue_count, bound_group_count]
+      properties:
+        plan_type: {type: string, enum: [standard, webhook]}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        name: {type: string, minLength: 1, maxLength: 128}
+        status: {$ref: "#/components/schemas/GroupOpsPlanStatus"}
+        revision: {type: integer, format: int64, minimum: 1}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        owner: {$ref: "#/components/schemas/GroupOpsPlanOwner"}
+        queue_count: {type: integer, minimum: 0}
+        bound_group_count: {type: integer, minimum: 0, description: "Persisted Group Ops asset bindings for this plan, including references absent from the current directory and archived plans."}
     GroupOpsMember:
       type: object
       additionalProperties: false
