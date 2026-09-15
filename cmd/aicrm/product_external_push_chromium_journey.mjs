@@ -232,6 +232,45 @@ try {
     return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} binding=${page?.businessBinding === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
   };
 
+  const assertProductEditorHeader = async (kind, title, returnLabel) => {
+    for (const width of [1280, 1440]) {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      const layout = await evaluate(cdp, `(() => {
+        const visible = (node) => {
+          if (!(node instanceof HTMLElement) || node.hidden) return false;
+          const style = getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const topbar = document.querySelector('.admin-topbar');
+        const topbarRect = topbar?.getBoundingClientRect();
+        const actions = Array.from(topbar?.querySelectorAll('[data-page-header-actions="product-editor"] button') || []);
+        const duplicateTitles = Array.from(document.querySelectorAll('#stage *')).filter((node) => node.children.length === 0 && node.textContent?.trim() === ${JSON.stringify(title)} && visible(node));
+        const bodyReturn = Array.from(document.querySelectorAll('#stage button')).some((button) => button.textContent?.trim() === ${JSON.stringify(returnLabel)} && visible(button));
+        const frozenHeader = document.querySelector('#stage [data-v3-product-frozen-header="hidden"]');
+        const frozenRect = frozenHeader?.getBoundingClientRect();
+        return {
+          topbars: document.querySelectorAll('.admin-topbar').length,
+          shellTitles: topbar?.querySelectorAll('.admin-page-title').length || 0,
+          shellTitle: topbar?.querySelector('.admin-page-title')?.textContent?.trim(),
+          actions: actions.map((button) => button.textContent?.trim()),
+          actionGeometry: actions.map((button) => { const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, visible: visible(button) }; }),
+          topbarGeometry: topbarRect ? { left: topbarRect.left, right: topbarRect.right, top: topbarRect.top, bottom: topbarRect.bottom, width: topbarRect.width, height: topbarRect.height } : null,
+          duplicateTitles: duplicateTitles.length,
+          bodyReturn,
+          frozenHeaderHidden: frozenHeader instanceof HTMLElement && frozenHeader.hidden && Boolean(frozenRect && frozenRect.height === 0),
+          width: window.innerWidth,
+        };
+      })()`);
+      const topbarFits = layout?.topbarGeometry && layout.topbarGeometry.left >= 0 && layout.topbarGeometry.right <= width && layout.topbarGeometry.width > 0 && layout.topbarGeometry.height > 0;
+      const actionsFit = layout?.actionGeometry?.every((action) => action.visible && action.left >= 0 && action.right <= width && action.top >= layout.topbarGeometry.top && action.bottom <= layout.topbarGeometry.bottom);
+      if (!layout || layout.topbars !== 1 || layout.shellTitles !== 1 || layout.shellTitle !== title || layout.width !== width ||
+        layout.actions.join('|') !== `${returnLabel}|保存当前维度` || !topbarFits || !actionsFit || layout.duplicateTitles !== 0 || layout.bodyReturn || !layout.frozenHeaderHidden) {
+        throw new Error(`${kind} editor header layout invalid at ${width}: ${JSON.stringify(layout)}`);
+      }
+    }
+  };
+
   const productPath = "/admin/wechat-pay/productForm.html?id=" + productID;
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(productPath) });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
@@ -247,6 +286,7 @@ try {
   if (!await evaluate(cdp, `(() => { const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '=')); return hasCookie('aicrm_admin_csrf') && hasCookie('aicrm_csrf'); })()`)) {
     throw new Error("product Host did not receive CSRF session bridge " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('ordinary', '编辑普通商品', '返回商品管理');
   // The list Host owns the lifecycle buttons. Exercise the real browser
   // session, CSRF header and CAS endpoint once in each direction before the
   // form journey, leaving the seeded fixture enabled for its remaining steps.
@@ -410,6 +450,7 @@ try {
   } catch (_) {
     throw new Error("service-period product Host did not render " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('service-period', '编辑周期商品', '返回周期商品管理');
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "service-period product configuration did not load");
   } catch (_) {
