@@ -549,6 +549,8 @@ for (const spec of [
   [...dom.window.document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "重试读取刷新状态").click();
   await waitFor(() => dom.window.document.querySelector("#material-refresh-panel")?.textContent?.includes("cover.png"), "material preparation contract did not render after manual retry");
   const panelText = dom.window.document.querySelector("#material-refresh-panel")?.textContent || "";
+  const refreshDetails = dom.window.document.querySelector("[data-material-refresh-details]");
+  if (!(refreshDetails instanceof dom.window.HTMLDetailsElement) || refreshDetails.open || !refreshDetails.querySelector("summary")?.textContent?.includes("查看刷新明细")) fail("material refresh starts with a duplicate per-source table instead of a collapsed disclosure");
   if (
     panelText.includes("成功 0") ||
     !panelText.includes("结果待核实 · 凭据已过期") ||

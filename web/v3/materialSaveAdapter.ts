@@ -826,10 +826,22 @@ class MaterialRefreshPanel {
     next.textContent = `下次运行：${materialNextRun(this.nextRefreshAt)}`;
     this.root.append(next);
 
+    // Refresh information supplements a material library; it is not a second
+    // material index. Keep the current run and the authorized refresh action
+    // visible, while making per-source diagnostics an explicit disclosure so
+    // a page never presents the same catalogue twice on first render.
+    const details = document.createElement('details');
+    details.dataset.materialRefreshDetails = 'true';
+    details.style.cssText = 'margin-top:10px;border-top:1px solid #EFF0F1;padding-top:10px';
+    const summary = document.createElement('summary');
+    summary.textContent = `查看刷新明细（${this.items.length} 项${this.failures.length ? `，${this.failures.length} 项需处理` : ''}）`;
+    summary.style.cssText = 'cursor:pointer;color:#245BDB;font-size:12px;line-height:20px';
+    details.append(summary);
+
     if (this.failures.length) {
       const missing = document.createElement('section');
       missing.dataset.materialSourceFailures = 'true';
-      missing.style.cssText = 'margin:0 0 10px;padding:10px 12px;border:1px solid #FDA29B;border-radius:6px;background:#FFFBFA;color:#B42318;font-size:12px';
+      missing.style.cssText = 'margin:10px 0 0;padding:10px 12px;border:1px solid #FDA29B;border-radius:6px;background:#FFFBFA;color:#B42318;font-size:12px';
       const title = document.createElement('strong');
       title.textContent = '需要补传的原文件';
       missing.append(title);
@@ -854,18 +866,19 @@ class MaterialRefreshPanel {
         list.append(entry);
       });
       missing.append(list);
-      this.root.append(missing);
+      details.append(missing);
     }
 
     if (!this.items.length) {
       const empty = document.createElement('p');
       empty.textContent = '当前没有启用的图片、附件或小程序封面。';
-      empty.style.cssText = 'margin:0;color:#646A73;font-size:12px';
-      this.root.append(empty);
+      empty.style.cssText = 'margin:10px 0 0;color:#646A73;font-size:12px';
+      details.append(empty);
+      this.root.append(details);
       return;
     }
     const table = document.createElement('table');
-    table.style.cssText = 'border-collapse:collapse;width:100%;font-size:12px';
+    table.style.cssText = 'margin-top:10px;border-collapse:collapse;width:100%;font-size:12px';
     const head = document.createElement('tr');
     ['素材', '类型', '刷新 / 凭据', '最近成功刷新', '到期时间', '当日进度', '失败原因', '操作'].forEach((label) => {
       const cell = document.createElement('th');
@@ -875,7 +888,8 @@ class MaterialRefreshPanel {
     });
     table.append(head);
     this.items.forEach((item) => table.append(this.itemRow(item)));
-    this.root.append(table);
+    details.append(table);
+    this.root.append(details);
   }
 
   private roundProgress(round: RefreshRoundProjection): string {
