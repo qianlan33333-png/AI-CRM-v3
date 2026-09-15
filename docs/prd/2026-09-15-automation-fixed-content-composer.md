@@ -92,6 +92,6 @@
 3. 确认一次只发送固定内容 PUT；重复点击不重复命令；失败、409 active、403、404 均保留恰当草稿或只读事实。PUT 2xx 后 GET 失败时关闭已接受的草稿、显示明确读回失败，并且“重试读取”不发送第二次 PUT。
 4. 成功 PUT 后验证 Agent `DraftVersion` 增加、`PublishedVersion` 不变，Prompt 和 `LegacyConfiguration` 与保存前一致；GET 读回内容被同一 renderer 呈现。
 5. 非 `fixed_script`、active 与 archived 状态不能通过 UI 绕过 Owner 边界。
-6. 定向 Node/TypeScript/manifest、冻结 Agent runtime Journey、真实 PostgreSQL + 独立 Chromium 页面验收；检查 1280/1440 与 360/420。截图只证明本地页面/服务端读回，不证明发布或 Provider 送达。
+6. 定向 Node/TypeScript/manifest、冻结 Agent runtime Journey、真实 PostgreSQL + 独立 Chromium 页面验收；1280/1440 检查后台完整页面，360/420 只检查共享编辑器与固定内容局部容器。后台移动壳属于后续统一壳专项，不能以本页截图宣称完成。截图只证明本地页面/服务端读回，不证明发布或 Provider 送达。
 
 本 PR 不改变 Automation Owner、OpenAPI、Media 写入、发布、执行、外部效果、OneID、Prompt 语义或数据迁移。Draft PR 必须明确依赖共享整合 #317，且只声明本页真实接入。
