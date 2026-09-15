@@ -66,12 +66,17 @@ async function stopBrowser(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 async function captureOverview(cdp, name, width) {
-  if (!screenshotDirectory) return;
   await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
   await delay(80);
+  if (!screenshotDirectory) return;
   const image = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
   await fs.mkdir(screenshotDirectory, { recursive: true });
   await fs.writeFile(path.join(screenshotDirectory, name), Buffer.from(image.data, "base64"));
+}
+async function assertDrawerGeometry(cdp, expectedViewport) {
+  const geometry = JSON.parse(await evaluate(cdp, "(() => { const drawer=document.querySelector('.shared-detail-drawer'); const panel=drawer?.querySelector('.shared-detail-drawer__panel'); const rect=(node)=>{const box=node?.getBoundingClientRect();return box?{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}:null}; const style=drawer?getComputedStyle(drawer):null; return JSON.stringify({viewport:window.innerWidth,clientWidth:document.documentElement.clientWidth,drawer:rect(drawer),panel:rect(panel),open:drawer?.open===true,display:style?.display||'',position:style?.position||'',marginRight:Number.parseFloat(style?.marginRight||'0'),drawerStyleLoaded:[...document.styleSheets].some(sheet=>String(sheet.href||'').includes('sharedDetailDrawerStyles-'))}); })()") || "{}");
+  const rightGap = geometry.clientWidth - geometry.drawer?.right;
+  if (geometry.viewport !== expectedViewport || !geometry.open || !geometry.drawerStyleLoaded || geometry.display !== 'block' || geometry.position !== 'fixed' || !geometry.drawer || !geometry.panel || geometry.clientWidth <= 0 || geometry.drawer.left < 0 || geometry.drawer.right > geometry.clientWidth + 1 || Math.abs(rightGap - geometry.marginRight) > 1 || geometry.marginRight !== 16 || geometry.drawer.width < 400 || geometry.drawer.width > 640 || geometry.panel.left < geometry.drawer.left || geometry.panel.right > geometry.drawer.right + 1) throw new Error(`paid-record drawer did not use the shared right-side geometry: ${JSON.stringify(geometry)}`);
 }
 async function selectOverviewPeriod(cdp, label, period) {
   const encodedLabel = JSON.stringify(label);
@@ -88,12 +93,14 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
   cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
   const assetResponses = new Map();
+  const orderDetailResponses = [];
   cdp.on("Network.responseReceived", (params) => {
     try {
       const responseURL = new URL(String(params.response?.url || ""));
       if (responseURL.origin !== new URL(baseURL).origin) return;
-      const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
+      const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|sharedDetailDrawerStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
       if (match) assetResponses.set(match[1], Number(params.response?.status) || 0);
+      if (responseURL.pathname === "/api/admin/orders/M-OVERVIEW-BROWSER") orderDetailResponses.push({ provider: responseURL.searchParams.get("provider"), status: Number(params.response?.status) || 0 });
     } catch (_) {}
   });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
@@ -106,7 +113,7 @@ try {
     const diagnostics = await evaluate(cdp, "JSON.stringify({root:document.querySelector('#overview-admin-root')?.outerHTML||'',scripts:[...document.scripts].map((script)=>script.src),text:document.body.textContent.slice(0,1200)})");
     throw new Error(`${error.message}: ${diagnostics}`);
   }
-  for (const asset of ["overviewAdmin", "overviewStyles"]) {
+  for (const asset of ["overviewAdmin", "overviewStyles", "sharedDetailDrawerStyles"]) {
     if (assetResponses.get(asset) !== 200) throw new Error(`staged overview asset ${asset} HTTP status=${assetResponses.get(asset) || 0}`);
   }
   const overviewDOM = await evaluate(cdp, "JSON.stringify({primary:[...document.querySelectorAll('.overview-metrics--primary .overview-metric')].map((node)=>node.textContent),secondary:[...document.querySelectorAll('.overview-metrics--secondary .overview-metric')].map((node)=>node.textContent),today:performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/overview?period=today')),nav:[...document.querySelectorAll('.admin-nav-section-title')].map((node)=>node.textContent),topbars:document.querySelectorAll('header.admin-topbar').length,titles:document.querySelectorAll('.admin-topbar .admin-page-title').length,headerActions:[...document.querySelectorAll('.admin-topbar [data-page-header-actions=\"overview-range\"] [data-page-header-action]')].map((node)=>({label:node.textContent?.trim(),pressed:node.getAttribute('aria-pressed')})),bodyRangeControls:document.querySelectorAll('#overview-admin-root [data-overview-period]').length,repeatedHeading:document.body.textContent.includes('统计口径以各项数据的确认时间为准') || Boolean(document.querySelector('#overview-admin-root .overview-toolbar'))})");
@@ -133,6 +140,26 @@ try {
   await evaluate(cdp, "(() => { const form=document.querySelector('[data-overview-custom]'); const from=form?.querySelector('[name=from]'); const to=form?.querySelector('[name=to]'); if (!form || !from || !to) return false; from.value='2000-01-01'; to.value='2000-01-02'; form.requestSubmit(); return true; })()");
   await waitFor(cdp, "performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/overview?period=custom&from=2000-01-01&to=2000-01-02'))", "applying a custom range did not use the existing overview read request");
   await waitFor(cdp, "document.querySelector('#overview-admin-root .overview-snapshot')?.textContent?.includes('统计区间：自定义区间') && document.querySelector('[data-page-header-actions=\"overview-range\"] [data-page-header-action=\"period-custom\"]')?.getAttribute('aria-pressed') === 'true'", "the applied custom range did not preserve its existing readback and header state");
+  await selectOverviewPeriod(cdp, "今日", "today");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-overview-paid-records]'))", "today range did not restore its ready payment action");
+  const paidRecordsOpened = await evaluate(cdp, "(() => { const button=document.querySelector('[data-overview-paid-records]'); if (!button) return false; button.click(); return true; })()");
+  if (!paidRecordsOpened) throw new Error("overview paid-record action is unavailable for a ready payment section");
+  await waitFor(cdp, "document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]')", "paid-record drawer did not form the provider-scoped order detail link");
+  await captureOverview(cdp, "overview-paid-records-1280.png", 1280);
+  await assertDrawerGeometry(cdp, 1280);
+  await captureOverview(cdp, "overview-paid-records-1440.png", 1440);
+  await assertDrawerGeometry(cdp, 1440);
+  const openedOrder = await evaluate(cdp, "(() => { const link=document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]'); if (!link) return false; link.click(); return true; })()");
+  if (!openedOrder) throw new Error("paid-record drawer link disappeared before navigation");
+  try {
+    await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/orders/M-OVERVIEW-BROWSER?provider=wechat'))", "provider-scoped order detail did not request its exact Order API URL");
+  } catch (error) {
+    const diagnostics = await evaluate(cdp, "JSON.stringify({location:location.href,resources:performance.getEntriesByType('resource').map((entry)=>String(entry.name)),body:document.body.textContent.slice(-1200),scripts:[...document.scripts].map((script)=>script.src)})");
+    throw new Error(`${error.message}: ${diagnostics}`);
+  }
+  if (!orderDetailResponses.some((value) => value.provider === "wechat" && value.status === 200)) throw new Error(`provider-scoped Order detail response missing: ${JSON.stringify(orderDetailResponses)}`);
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin` });
+  await waitFor(cdp, "Boolean(document.querySelector('#overview-admin-root .overview-metrics--primary')) && document.body.textContent.includes('已确认支付')", "overview did not return after paid-record detail navigation");
   await selectOverviewPeriod(cdp, "近 7 天", "7d");
   const sevenDayDOM = await evaluate(cdp, "JSON.stringify({columns:document.querySelectorAll('.overview-chart__column').length,bars:document.querySelectorAll('.overview-chart__bar').length,details:document.querySelector('.overview-trend-details')?.open})");
   const sevenDay = JSON.parse(sevenDayDOM || "{}");

@@ -65,11 +65,15 @@ func DistOverviewAdminAssets(distRoot string) (OverviewAssets, bool) {
 	if !ok {
 		return OverviewAssets{}, false
 	}
+	drawerCSS, ok := asset("sharedDetailDrawerStyles", ".css")
+	if !ok {
+		return OverviewAssets{}, false
+	}
 	js, ok := asset("overviewAdmin", ".js")
 	if !ok {
 		return OverviewAssets{}, false
 	}
-	return OverviewAssets{CSS: css, AdminJS: js}, true
+	return OverviewAssets{CSS: css, DetailDrawerCSS: drawerCSS, AdminJS: js}, true
 }
 
 // DistComponentStatesAssets resolves the complete V3-owned style and Host

@@ -192,6 +192,7 @@
   {{end}}
   {{if .Overview}}
   <link rel="stylesheet" href="{{.OverviewAssets.CSS}}">
+  <link rel="stylesheet" href="{{.OverviewAssets.DetailDrawerCSS}}">
   <script type="module" src="{{.OverviewAssets.AdminJS}}"></script>
   {{end}}
   {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}

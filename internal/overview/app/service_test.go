@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -25,13 +26,22 @@ func (stub overviewCustomerStub) ReadNewCustomerOverview(context.Context, custom
 }
 
 type overviewPaymentStub struct {
-	paid          paymentport.PaidOverview
-	paidErr       error
-	refunds       paymentport.RefundOverview
-	refundErr     error
-	blockPaid     bool
-	refundReady   chan<- struct{}
-	refundRelease <-chan struct{}
+	paid            paymentport.PaidOverview
+	paidErr         error
+	paidRecords     paymentport.PaidOverviewRecordPage
+	paidRecordsErr  error
+	paidRecordsCall *overviewPaidRecordsCall
+	refunds         paymentport.RefundOverview
+	refundErr       error
+	blockPaid       bool
+	refundReady     chan<- struct{}
+	refundRelease   <-chan struct{}
+}
+
+type overviewPaidRecordsCall struct {
+	window paymentport.OverviewWindow
+	cursor *paymentport.PaidOverviewRecordCursor
+	limit  int
 }
 
 func (stub overviewPaymentStub) ReadPaidOverview(ctx context.Context, _ paymentport.OverviewWindow) (paymentport.PaidOverview, error) {
@@ -40,6 +50,18 @@ func (stub overviewPaymentStub) ReadPaidOverview(ctx context.Context, _ paymentp
 		return paymentport.PaidOverview{}, ctx.Err()
 	}
 	return stub.paid, stub.paidErr
+}
+
+func (stub overviewPaymentStub) ReadPaidOverviewRecords(_ context.Context, window paymentport.OverviewWindow, cursor *paymentport.PaidOverviewRecordCursor, limit int) (paymentport.PaidOverviewRecordPage, error) {
+	if stub.paidRecordsCall != nil {
+		stub.paidRecordsCall.window = window
+		stub.paidRecordsCall.limit = limit
+		if cursor != nil {
+			copy := *cursor
+			stub.paidRecordsCall.cursor = &copy
+		}
+	}
+	return stub.paidRecords, stub.paidRecordsErr
 }
 
 func (stub overviewPaymentStub) ReadRefundOverview(context.Context, paymentport.OverviewWindow) (paymentport.RefundOverview, error) {
@@ -149,6 +171,30 @@ func TestPaidAndNetExposeKnownSubsetWhenHistoryConfirmationIsMissing(t *testing.
 	}
 	if response.Refunds.Status != StatusDataMissing || response.Refunds.ReasonCode != "net_paid_confirmation_time_missing" || len(response.Refunds.NetAmount) != 1 || response.Refunds.NetAmount[0].AmountMinor != 100 {
 		t.Fatalf("net known subset response=%+v", response.Refunds)
+	}
+}
+
+func TestReadPaidRecordsUsesPaymentWindowAndNeverReturnsPartialPage(t *testing.T) {
+	call := &overviewPaidRecordsCall{}
+	cursor := &paymentport.PaidOverviewRecordCursor{PaidConfirmedAt: time.Date(2026, 9, 15, 1, 0, 0, 0, time.UTC), PaymentID: 44}
+	service, err := NewServiceWithTimeout(
+		overviewCustomerStub{},
+		overviewPaymentStub{paidRecords: paymentport.PaidOverviewRecordPage{Items: []paymentport.PaidOverviewRecord{{Provider: "wechat_pay", OrderReference: "M-paid-record", AmountMinor: 120, Currency: "CNY", PaidConfirmedAt: cursor.PaidConfirmedAt}}}, paidRecordsCall: call},
+		overviewDistributionStub{},
+		time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := PaidRecordsQuery{Range: overviewQuery().Range, Cursor: cursor}
+	response, err := service.ReadPaidRecords(context.Background(), query)
+	if err != nil || call.limit != PaidRecordsPageSize || call.cursor == nil || call.cursor.PaymentID != cursor.PaymentID || !call.window.Start.Equal(query.Range.Start) || !call.window.End.Equal(query.Range.End) || len(response.Items) != 1 || response.Items[0].OrderReference != "M-paid-record" {
+		t.Fatalf("response=%+v call=%+v err=%v", response, call, err)
+	}
+	service.payments = overviewPaymentStub{paidRecords: paymentport.PaidOverviewRecordPage{Items: response.Items}, paidRecordsErr: errors.New("payment unavailable")}
+	failed, readErr := service.ReadPaidRecords(context.Background(), PaidRecordsQuery{Range: overviewQuery().Range})
+	if readErr == nil || len(failed.Items) != 0 || failed.NextCursor != nil {
+		t.Fatalf("failed page=%+v err=%v", failed, readErr)
 	}
 }
 
