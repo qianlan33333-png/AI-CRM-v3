@@ -1,6 +1,7 @@
 import { openDetailDrawer } from './shared/ui/detailDrawer';
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
 import { renderQr } from '../src/admin/sections/qr';
+import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionSettlementStatusLabel } from './distributionPresentation';
 
 export {};
 
@@ -11,6 +12,10 @@ type SummaryStatus = 'ready' | 'zero' | 'data_missing' | 'failed';
 type PageState = { rows: Row[]; cursor: string; loading: boolean; failure: string; draftFilter: string; committedFilter: string };
 type FilterControl = { element: HTMLElement; input: HTMLInputElement };
 type LoadResult = 'applied' | 'failed' | 'stale';
+
+class RequestError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
 
 const root = document.getElementById('distribution-admin-root');
 if (!root) throw new Error('分销管理容器缺失');
@@ -60,10 +65,6 @@ const rateText = (value: unknown): string => {
 };
 const policyText = (version: unknown, rate: unknown, waitDays: unknown): string => `版本 ${numericText(version)} · ${rateText(rate)} · ${numericText(waitDays, ' 天')}`;
 const qualifyLabel = (value: unknown): string => ({ eligible: '资格有效', ineligible: '未满足购买资格', suspended: '退款核验中', identity_conflict: '身份关联待核验', evidence_unavailable: '购买凭证待核验' } as Row)[text(value, '')] as string || '资格待确认';
-const commissionLabel = (value: unknown): string => ({ pending: '待结算', held: '暂缓结算', settling: '结算处理中', paid: '系统分账成功确认', cancelled: '已取消', exception: '异常待处理', zero_commission: '零佣金成交' } as Row)[text(value, '')] as string || '状态待确认';
-const settlementLabel = (value: unknown): string => ({ planned: '待提交', accepted: '已受理', attempted: '处理中', outcome_unknown: '结果待核验', receiver_succeeded: '系统分账成功确认', cancelled: '已取消', exception: '异常待处理' } as Row)[text(value, '')] as string || '状态待确认';
-const adjustmentLabel = (value: unknown): string => ({ buyer_refund: '买家退款调整', qualification_hold: '资格暂缓', qualification_revoke: '资格撤销', qualification_restore: '资格恢复', manual_recovery: '人工追回登记', merchant_liability: '商户承担登记' } as Row)[text(value, '')] as string || '调整待确认';
-const exceptionLabel = (value: unknown): string => ({ settlement_unknown: '结算结果待核验', settlement_not_paid: '分账未到账', settlement_deadline: '结算时限异常', settlement_deadline_imminent: '结算时限提醒', receiver_unavailable: '收款准备未完成', qualification_revoked_after_paid: '资格变化后已付', buyer_refund_after_paid: '退款后已付', unfreeze_final_failed: '解冻失败', merchant_liability: '商户承担', recovery: '追回登记' } as Row)[text(value, '')] as string || '异常待确认';
 const reasonLabel = (value: unknown): string => ({ buyer_refund: '买家退款', buyer_refund_after_paid: '买家退款后已存在已付金额', qualification_refund_evidence_pending: '退款凭证待核验', refund_outcome_pending: '退款结果待核验', settlement_outcome_unknown: '结算结果待核验', split_deadline_within_24h: '结算时限不足 24 小时', payment_receiver_account_abnormal: '接收方账户异常，请核验微信账户状态', payment_receiver_relation_removed: '接收方分账关系已解除，请完成关系核验', payment_receiver_high_risk: '接收方被风控限制，请联系商家核验', payment_receiver_real_name_unverified: '接收方未完成实名认证，请完成后再核验', payment_merchant_permission_revoked: '商户分账权限已解除，请在商户平台核验', payment_receiver_receipt_limit: '接收方收款额度已达上限，请核验额度', payment_payer_account_abnormal: '付款方账户异常，请核验付款方状态', payment_invalid_split_request: '分账请求被拒绝，请核验订单与接收方参数', manual_recovery: '已登记人工追回', merchant_liability: '已登记商户承担' } as Row)[text(value, '')] as string || '原因待确认';
 const displayName = (value: unknown): string => text(value, '').trim() || '未设置昵称';
 const receiverStatusLabel = (ready: unknown, reason: unknown, label: unknown): string => text(label, '').trim() || (() => {
@@ -121,7 +122,7 @@ async function request(path: string, init: RequestInit = {}, scope = ''): Promis
     throw new Error('网络不可用，未确认任何分销操作。');
   }
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(errText(response.status, payload));
+  if (!response.ok) throw new RequestError(response.status, errText(response.status, payload));
   return payload;
 }
 
@@ -159,16 +160,35 @@ function fact(label: string, value: string): HTMLElement {
   return element;
 }
 
-function drawer(title: string): HTMLElement {
+function drawer(title: string, target: Tab): HTMLElement {
   const body = document.createElement('section');
   body.className = 'distribution-detail-body';
   body.textContent = '正在读取服务端明细…';
-  openDetailDrawer(title, body);
+  const dialog = openDetailDrawer(title, body);
+  activeDetailBodies.set(body, target);
+  dialog.addEventListener('close', () => activeDetailBodies.delete(body), { once: true });
   return body;
 }
 
 function failed(body: HTMLElement, error: unknown): void {
   body.replaceChildren(Object.assign(document.createElement('p'), { className: 'distribution-error', textContent: error instanceof Error ? error.message : '明细读取失败。' }));
+}
+
+function detailCanRender(body: HTMLElement, generation: number, requestAccessGeneration: number): boolean {
+  return body.isConnected && generation === detailGeneration && requestAccessGeneration === accessGeneration;
+}
+
+function handleDetailFailure(body: HTMLElement, target: Tab, error: unknown, generation: number, requestAccessGeneration: number): void {
+  if (!detailCanRender(body, generation, requestAccessGeneration)) return;
+  if (accessFailure(error, 401)) {
+    invalidateSession();
+    return;
+  }
+  if (accessFailure(error, 403)) {
+    revokeListAccess(target, error.message);
+    return;
+  }
+  failed(body, error);
 }
 
 function timeText(value: unknown): string {
@@ -239,14 +259,58 @@ const pageStates: Record<Tab, PageState> = {
   exceptions: { rows: [], cursor: '', loading: false, failure: '', draftFilter: '', committedFilter: '' },
 };
 const filterControls: Partial<Record<Tab, FilterControl>> = {};
-let listGeneration = 0;
+const listGenerations: Record<Tab, number> = { distributors: 0, orders: 0, exceptions: 0 };
 let summaryPeriod: SummaryPeriod = '7d';
 let overview: Row | undefined;
 let overviewFailure = '';
 let overviewLoading = false;
 let overviewGeneration = 0;
+let accessGeneration = 0;
+let detailGeneration = 0;
+const activeDetailBodies = new Map<HTMLElement, Tab>();
 
 function pageState(value = tab): PageState { return pageStates[value]; }
+
+function accessFailure(error: unknown, status: number): error is RequestError {
+  return error instanceof RequestError && error.status === status;
+}
+
+function resetPageForAccess(target: Tab, message: string): void {
+  ++listGenerations[target];
+  const state = pageState(target);
+  state.rows = [];
+  state.cursor = '';
+  state.loading = false;
+  state.failure = message;
+  state.draftFilter = '';
+  state.committedFilter = '';
+}
+
+function invalidateSession(message = '登录已失效，请重新登录后再读取。'): void {
+  ++accessGeneration;
+  ++detailGeneration;
+  ++overviewGeneration;
+  overview = undefined;
+  overviewLoading = false;
+  overviewFailure = message;
+  for (const target of ['distributors', 'orders', 'exceptions'] as const) resetPageForAccess(target, message);
+  for (const body of activeDetailBodies.keys()) failed(body, new Error(message));
+  render();
+  notice(message, true);
+}
+
+function revokeListAccess(target: Tab, message = '当前管理员无权查看此记录。'): void {
+  ++detailGeneration;
+  resetPageForAccess(target, message);
+  for (const [body, detailTarget] of activeDetailBodies) if (detailTarget === target) failed(body, new Error(message));
+  if (target === tab) render();
+  notice(message, true);
+}
+
+function transientReadFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : '分销管理读取失败。';
+  return `读取未更新：${message}`;
+}
 
 function summaryStatus(section: Row): SummaryStatus | undefined {
   const status = optionalText(section.status);
@@ -354,21 +418,26 @@ function summary(): HTMLElement {
 
 async function loadOverview(): Promise<void> {
   const generation = ++overviewGeneration;
+  const requestAccessGeneration = accessGeneration;
   overview = undefined;
   overviewFailure = '';
   overviewLoading = true;
   render();
   try {
     const response = overviewResponse(await request(`/api/admin/overview?period=${summaryPeriod}`));
-    if (generation !== overviewGeneration) return;
+    if (generation !== overviewGeneration || requestAccessGeneration !== accessGeneration) return;
     overview = response;
   } catch (error) {
-    if (generation !== overviewGeneration) return;
+    if (generation !== overviewGeneration || requestAccessGeneration !== accessGeneration) return;
+    if (accessFailure(error, 401)) {
+      invalidateSession();
+      return;
+    }
     const message = error instanceof Error ? error.message : '分销汇总读取失败。';
     overview = { distribution: { status: 'failed', reason_code: 'distribution_summary_unavailable' }, todos: { status: 'failed', reason_code: 'distribution_summary_unavailable', items: [] } };
     overviewFailure = `汇总读取失败：${message}`;
   } finally {
-    if (generation !== overviewGeneration) return;
+    if (generation !== overviewGeneration || requestAccessGeneration !== accessGeneration) return;
     overviewLoading = false;
     render();
   }
@@ -376,7 +445,8 @@ async function loadOverview(): Promise<void> {
 
 async function load(next = '', target: Tab = tab): Promise<LoadResult> {
   if (target !== tab) return 'stale';
-  const generation = ++listGeneration;
+  const targetGeneration = ++listGenerations[target];
+  const requestAccessGeneration = accessGeneration;
   const state = pageState(target);
   state.loading = true;
   state.failure = '';
@@ -385,7 +455,7 @@ async function load(next = '', target: Tab = tab): Promise<LoadResult> {
   try {
     const payload = obj(await request(`/api/admin/distribution/${target}${next ? `?cursor=${encodeURIComponent(next)}` : ''}`));
     if (!Array.isArray(payload.items)) throw new Error('分销管理列表响应无效');
-    if (generation !== listGeneration || target !== tab) return 'stale';
+    if (targetGeneration !== listGenerations[target] || requestAccessGeneration !== accessGeneration || target !== tab) return 'stale';
     state.rows = payload.items.map(obj);
     state.cursor = text(payload.next_cursor, '');
     state.loading = false;
@@ -393,9 +463,17 @@ async function load(next = '', target: Tab = tab): Promise<LoadResult> {
     notice('');
     return 'applied';
   } catch (error) {
-    if (generation !== listGeneration || target !== tab) return 'stale';
+    if (targetGeneration !== listGenerations[target] || requestAccessGeneration !== accessGeneration || target !== tab) return 'stale';
+    if (accessFailure(error, 401)) {
+      invalidateSession();
+      return 'stale';
+    }
+    if (accessFailure(error, 403)) {
+      revokeListAccess(target, error.message);
+      return 'failed';
+    }
     state.loading = false;
-    state.failure = error instanceof Error ? error.message : '分销管理读取失败';
+    state.failure = transientReadFailure(error);
     render();
     notice(state.failure, true);
     return 'failed';
@@ -494,7 +572,7 @@ function table(headers: string[], body: string): HTMLElement {
 function distributors(): HTMLElement {
   const shown = currentPageRows();
   const state = pageState();
-  const empty = state.loading ? '正在读取分销员记录…' : state.committedFilter ? '当前已加载页没有匹配记录。' : state.failure ? '分销员记录读取失败，请重试。' : '暂无分销员记录。完成微信可信登录、同意协议并注册后，记录会出现在这里。';
+  const empty = state.loading ? '正在读取分销员记录…' : state.committedFilter ? '当前已加载页没有匹配记录。' : state.failure || '暂无分销员记录。完成微信可信登录、同意协议并注册后，记录会出现在这里。';
   const body = shown.map((row) => `<tr><td>${esc(displayName(row.display_name))}</td><td>${esc(row.agreement_version)}</td><td>${row.enabled === true ? '启用' : row.enabled === false ? '停用' : '待确认'}</td><td>${esc(receiverStatusLabel(row.receiver_ready, row.receiver_status, row.receiver_status_label))}</td><td>${esc(timeText(row.registered_at))}</td><td><span data-actions="${integer(row.id) || ''}" data-version="${integer(row.version) || ''}"></span></td></tr>`).join('') || `<tr><td colspan="6">${empty}</td></tr>`;
   const view = table(['用户昵称', '协议', '状态', '收款状态', '注册时间', '操作'], body);
   for (const holder of view.querySelectorAll<HTMLElement>('[data-actions]')) {
@@ -510,7 +588,7 @@ function distributors(): HTMLElement {
 function orders(): HTMLElement {
   const shown = currentPageRows();
   const state = pageState();
-  const empty = state.loading ? '正在读取归因订单…' : state.committedFilter ? '当前已加载页没有匹配记录。' : state.failure ? '归因订单读取失败，请重试。' : '暂无归因订单记录。';
+  const empty = state.loading ? '正在读取归因订单…' : state.committedFilter ? '当前已加载页没有匹配记录。' : state.failure || '暂无归因订单记录。';
   const body = shown.map((row) => `<tr><td>${esc(row.order_reference)}</td><td>${esc(row.product_name)}</td><td>${esc(displayName(row.distributor_display_name))}</td><td>${esc(qualifyLabel(row.qualification_state))}</td><td>${esc(row.qualification_evidence_reference)}</td><td>${esc(policyText(row.policy_version, row.rate_basis_points, row.wait_days))}</td><td>${esc(money(row.paid_minor, row.currency))}</td><td><span data-order="${integer(row.attribution_id) || ''}"></span></td></tr>`).join('') || `<tr><td colspan="8">${empty}</td></tr>`;
   const view = table(['订单', '商品', '分销员', '推广资格', '购买凭证', '佣金政策', '商品实付', '详情'], body);
   for (const holder of view.querySelectorAll<HTMLElement>('[data-order]')) {
@@ -523,8 +601,8 @@ function orders(): HTMLElement {
 function exceptions(): HTMLElement {
   const shown = currentPageRows();
   const state = pageState();
-  const empty = state.loading ? '正在读取异常记录…' : state.committedFilter ? '当前已加载页没有匹配记录。' : state.failure ? '异常记录读取失败，请重试。' : '暂无异常记录。';
-  const body = shown.map((row) => `<tr><td>${esc(idText(row.exception_id))}</td><td>${esc(displayName(row.distributor_display_name))}</td><td>${esc(row.order_reference)}</td><td>${esc(exceptionLabel(row.kind))}</td><td>尚欠 ${esc(money(row.unpaid_due_minor, row.currency))}<br>系统分账成功确认 ${esc(money(row.already_paid_minor, row.currency))}</td><td>${esc(reasonLabel(row.reason))}</td><td><span data-exception="${esc(idText(row.exception_id))}" data-version="${integer(row.version) || ''}" data-reconcile="${String(row.can_reconcile === true)}" data-recovery="${String(row.can_record_recovery === true)}" data-liability="${String(row.can_record_merchant_liability === true)}"></span></td></tr>`).join('') || `<tr><td colspan="7">${empty}</td></tr>`;
+  const empty = state.loading ? '正在读取异常记录…' : state.committedFilter ? '当前已加载页没有匹配记录。' : state.failure || '暂无异常记录。';
+  const body = shown.map((row) => `<tr><td>${esc(idText(row.exception_id))}</td><td>${esc(displayName(row.distributor_display_name))}</td><td>${esc(row.order_reference)}</td><td>${esc(distributionExceptionLabel(row.kind))}</td><td>尚欠 ${esc(money(row.unpaid_due_minor, row.currency))}<br>系统分账成功确认 ${esc(money(row.already_paid_minor, row.currency))}</td><td>${esc(reasonLabel(row.reason))}</td><td><span data-exception="${esc(idText(row.exception_id))}" data-version="${integer(row.version) || ''}" data-reconcile="${String(row.can_reconcile === true)}" data-recovery="${String(row.can_record_recovery === true)}" data-liability="${String(row.can_record_merchant_liability === true)}"></span></td></tr>`).join('') || `<tr><td colspan="7">${empty}</td></tr>`;
   const view = table(['异常', '分销员', '订单', '类型', '资金事实', '原因', '人工处理'], body);
   for (const holder of view.querySelectorAll<HTMLElement>('[data-exception]')) {
     const id = holder.dataset.exception || '';
@@ -585,9 +663,12 @@ function distributorOrdersList(distributorID: number, first: Row): HTMLElement {
 }
 
 async function showDistributor(id: number): Promise<void> {
-  const body = drawer('分销员详情');
+  const body = drawer('分销员详情', 'distributors');
+  const generation = ++detailGeneration;
+  const requestAccessGeneration = accessGeneration;
   try {
     const [detail, orderPage] = await Promise.all([request(`/api/admin/distribution/distributors/${id}`), request(`/api/admin/distribution/distributors/${id}/orders?limit=10`)]);
+    if (!detailCanRender(body, generation, requestAccessGeneration)) return;
     const response = obj(detail);
     const distributor = obj(response.distributor);
     const earnings = obj(response.earnings);
@@ -599,49 +680,55 @@ async function showDistributor(id: number): Promise<void> {
       fact('推广成交', money(earnings.gross_paid_sales_minor, earnings.currency)), fact('累计退款', money(earnings.successful_refunds_minor, earnings.currency)), fact('初始佣金', money(earnings.initial_commission_minor, earnings.currency)), fact('佣金调整', money(earnings.commission_adjustments_minor, earnings.currency)), fact('当前待付', money(earnings.unsettled_payable_minor, earnings.currency)), fact('系统分账成功确认', money(earnings.paid_commission_minor, earnings.currency)), fact('已追回', money(earnings.recovered_minor, earnings.currency)),
     );
     body.replaceChildren(grid, distributorOrdersList(id, orders));
-  } catch (error) { failed(body, error); }
+  } catch (error) { handleDetailFailure(body, 'distributors', error, generation, requestAccessGeneration); }
 }
 
 async function showOrder(id: number): Promise<void> {
-  const body = drawer('推广订单详情');
+  const body = drawer('推广订单详情', 'orders');
+  const generation = ++detailGeneration;
+  const requestAccessGeneration = accessGeneration;
   try {
     const response = obj(await request(`/api/admin/distribution/orders/${id}`));
+    if (!detailCanRender(body, generation, requestAccessGeneration)) return;
     const order = obj(response.order);
     const commission = obj(response.commission);
     const commissionCurrency = commission.currency;
     const grid = document.createElement('div');
     grid.className = 'distribution-detail-grid';
     grid.append(fact('订单', text(order.order_reference)), fact('商品', text(order.product_name)), fact('分销员', displayName(order.distributor_display_name)), fact('推广资格', qualifyLabel(order.qualification_state)), fact('购买凭证', text(order.qualification_evidence_reference)), fact('佣金政策', policyText(order.policy_version, order.rate_basis_points, order.wait_days)), fact('商品实付', money(order.paid_minor, order.currency)));
-    if (Object.keys(commission).length) grid.append(fact('佣金状态', commissionLabel(commission.status)), fact('初始佣金', money(commission.initial_minor, commission.currency)), fact('累计退款', money(commission.successful_refund_minor, commission.currency)), fact('当前应付', money(commission.current_payable_minor, commission.currency)), fact('系统分账成功确认', money(commission.paid_minor, commission.currency)), fact('订单支付确认', timeText(commission.paid_confirmed_at)), fact('预计结算时间', timeText(commission.due_at)));
+    if (Object.keys(commission).length) grid.append(fact('佣金状态', distributionCommissionStatusLabel(commission.status)), fact('初始佣金', money(commission.initial_minor, commission.currency)), fact('累计退款', money(commission.successful_refund_minor, commission.currency)), fact('当前应付', money(commission.current_payable_minor, commission.currency)), fact('系统分账成功确认', money(commission.paid_minor, commission.currency)), fact('订单支付确认', timeText(commission.paid_confirmed_at)), fact('预计结算时间', timeText(commission.due_at)));
     const adjustments = Array.isArray(response.adjustments) ? response.adjustments.map(obj) : [];
     const settlements = Array.isArray(response.settlements) ? response.settlements.map(obj) : [];
     const exceptions = Array.isArray(response.exceptions) ? response.exceptions.map(obj) : [];
     body.replaceChildren(
       grid,
-      recordList('退款与资格调整', adjustments, (item) => record([['类型', adjustmentLabel(item.kind)], ['变动金额', money(item.delta_minor, commissionCurrency)], ['调整后应付', money(item.resulting_payable_minor, commissionCurrency)], ['原因', reasonLabel(item.reason)], ['凭证参考', text(item.source_reference)], ['发生时间', timeText(item.occurred_at)]])),
+      recordList('退款与资格调整', adjustments, (item) => record([['类型', distributionAdjustmentLabel(item.kind)], ['变动金额', money(item.delta_minor, commissionCurrency)], ['调整后应付', money(item.resulting_payable_minor, commissionCurrency)], ['原因', reasonLabel(item.reason)], ['凭证参考', text(item.source_reference)], ['发生时间', timeText(item.occurred_at)]])),
       recordList('结算记录', settlements, (item) => {
-        const facts: [string, string][] = [['结算单', text(item.reference)], ['金额', money(item.amount_minor, item.currency)], ['状态', settlementLabel(item.state)], ['最晚结算时间', timeText(item.provider_deadline_at)], ['创建时间', timeText(item.created_at)], ['记录更新时间', timeText(item.updated_at)]];
+        const facts: [string, string][] = [['结算单', text(item.reference)], ['金额', money(item.amount_minor, item.currency)], ['状态', distributionSettlementStatusLabel(item.state)], ['最晚结算时间', timeText(item.provider_deadline_at)], ['创建时间', timeText(item.created_at)], ['记录更新时间', timeText(item.updated_at)]];
         if (item.state === 'receiver_succeeded') facts.splice(4, 0, ['系统分账成功时间', timeText(item.settlement_confirmed_at) === '—' ? '未记录' : timeText(item.settlement_confirmed_at)]);
         return record(facts);
       }),
-      recordList('关联异常', exceptions, (item) => record([['异常', idText(item.exception_id)], ['类型', exceptionLabel(item.kind)], ['金额', money(item.amount_minor, item.currency)], ['原因', reasonLabel(item.reason)], ['更新时间', timeText(item.updated_at)]], () => showException(idText(item.exception_id)))),
+      recordList('关联异常', exceptions, (item) => record([['异常', idText(item.exception_id)], ['类型', distributionExceptionLabel(item.kind)], ['金额', money(item.amount_minor, item.currency)], ['原因', reasonLabel(item.reason)], ['更新时间', timeText(item.updated_at)]], () => showException(idText(item.exception_id)))),
     );
-  } catch (error) { failed(body, error); }
+  } catch (error) { handleDetailFailure(body, 'orders', error, generation, requestAccessGeneration); }
 }
 
 async function showException(id: string): Promise<void> {
-  const body = drawer('异常详情');
+  const body = drawer('异常详情', 'exceptions');
+  const generation = ++detailGeneration;
+  const requestAccessGeneration = accessGeneration;
   try {
     const response = obj(await request(`/api/admin/distribution/exceptions/${encodeURIComponent(id)}`));
+    if (!detailCanRender(body, generation, requestAccessGeneration)) return;
     const grid = document.createElement('div');
     grid.className = 'distribution-detail-grid';
     const status = text(response.status);
     grid.append(
-      fact('异常', idText(response.exception_id)), fact('分销员', displayName(response.distributor_display_name)), fact('订单', text(response.order_reference)), fact('类型', exceptionLabel(response.kind)), fact('状态', status === 'open' ? '待处理' : status === 'resolved' ? '已处理' : status === 'recovery_recorded' ? '已登记追回' : status === 'merchant_liability_recorded' ? '已登记商户承担' : '状态待确认'), fact('尚欠应付', money(response.unpaid_due_minor, response.currency)), fact('系统分账成功确认', money(response.already_paid_minor, response.currency)), fact('原因', reasonLabel(response.reason)), fact('凭证参考', text(response.evidence_reference)), fact('处理来源', actorScopeLabel(response.actor_scope)), fact('创建时间', timeText(response.created_at)), fact('更新时间', timeText(response.updated_at)),
+      fact('异常', idText(response.exception_id)), fact('分销员', displayName(response.distributor_display_name)), fact('订单', text(response.order_reference)), fact('类型', distributionExceptionLabel(response.kind)), fact('状态', status === 'open' ? '待处理' : status === 'resolved' ? '已处理' : status === 'recovery_recorded' ? '已登记追回' : status === 'merchant_liability_recorded' ? '已登记商户承担' : '状态待确认'), fact('尚欠应付', money(response.unpaid_due_minor, response.currency)), fact('系统分账成功确认', money(response.already_paid_minor, response.currency)), fact('原因', reasonLabel(response.reason)), fact('凭证参考', text(response.evidence_reference)), fact('处理来源', actorScopeLabel(response.actor_scope)), fact('创建时间', timeText(response.created_at)), fact('更新时间', timeText(response.updated_at)),
     );
     const audit = Array.isArray(response.audit) ? response.audit.map(obj) : [];
     body.replaceChildren(grid, recordList('处理审计', audit, (item) => record([['处理', auditEventLabel(item.event_type)], ['处理来源', actorScopeLabel(item.actor_scope)], ['金额', money(item.amount_minor, response.currency)], ['原因', reasonLabel(item.reason)], ['凭证参考', text(item.evidence_reference)], ['处理时间', timeText(item.occurred_at)]])));
-  } catch (error) { failed(body, error); }
+  } catch (error) { handleDetailFailure(body, 'exceptions', error, generation, requestAccessGeneration); }
 }
 
 async function mutate(scope: string, path: string, body: string): Promise<void> {
