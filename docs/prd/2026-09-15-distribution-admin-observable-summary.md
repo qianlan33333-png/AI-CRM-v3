@@ -28,5 +28,5 @@
 ## 验收
 
 - Host DOM 测试覆盖已付确认、零值未形成、`data_missing`、读取失败、IME／Enter／按钮提交的当前页筛选、概览与标签请求竞态、空值金额／时间／策略、结算审计确认时间、异常反馈，以及唯一 shell 标题、顶栏申请动作和筛选重绘后焦点保持。
-- 认证 PostgreSQL Chromium 读取真实 `/api/admin/overview` 和分销表格，在 1280、1440、360、420 宽度检查布局；不因列表筛选产生跨页请求，也不发起 Provider 或新的业务写入。
+- 认证 PostgreSQL Chromium 读取真实 `/api/admin/overview` 和分销表格，在后台 1280、1440 宽度检查布局；窄屏和公开分销页由各自终端的验收覆盖。本页不因列表筛选产生跨页请求，也不发起 Provider 或新的业务写入。
 - manifest、stage 与资源闭包继续由既有 distribution admin entry 管理。
