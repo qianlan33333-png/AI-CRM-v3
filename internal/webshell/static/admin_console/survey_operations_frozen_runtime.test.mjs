@@ -3,11 +3,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildTestBrowserBundle } from "../../../../web/scripts/test-browser-bundle.mjs";
+import { build } from 'esbuild';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const host = fs.readFileSync(path.join(root, "internal/webshell/static/admin_console/survey_operations.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "web/dist/admin/questionnaireOps.html"), "utf8");
 const bundle = await buildTestBrowserBundle(path.join(root, "web/src/admin/main.ts"));
+const committedSearch = (await build({
+  stdin: { contents: "import { installCommittedTextSearch } from './web/v3/shared/ui/committedTextSearch'; installCommittedTextSearch();", resolveDir: root, sourcefile: 'survey-operations-committed-search.ts' },
+  bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, minify: true, logLevel: 'warning',
+})).outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
+const enter = (window, input, properties = {}) => { const event = new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }); Object.entries(properties).forEach(([name, value]) => Object.defineProperty(event, name, { value })); input.dispatchEvent(event); return event; };
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
@@ -64,6 +70,7 @@ dom.window.fetch = async (url, options = {}) => {
 // V3-owned Host. The controller sees the guarded empty legacy log projection;
 // the Host then renders the real Survey records in the original log card.
 dom.window.eval(bundle);
+dom.window.eval(committedSearch);
 dom.window.eval(host);
 dom.window.document.dispatchEvent(new dom.window.Event("DOMContentLoaded"));
 await wait(150);
@@ -89,6 +96,27 @@ if (testPosts !== 2 || !originalTest.textContent.includes("受控外推测试已
 document.querySelector('[data-survey-log-scope="global"]').click();
 await wait(10);
 if (!logCard.textContent.includes("已收到处理结果") || !logCard.textContent.includes("处理结果待确认（不会自动重复发送）") || !logCard.textContent.includes("历史记录：状态待确认") || !logCard.textContent.includes("外部处理结果待核对") || !logCard.textContent.includes("2026-09-05 08:00:00") || logCard.textContent.includes("provider_pending") || logCard.textContent.includes("provider_outcome_unknown") || logCard.textContent.includes("2026-09-05T00:00:00Z")) throw new Error("actual log card did not localize effect states and timestamps");
+
+const beforeLocalSearchHTTP = httpCalls.length;
+let logSearch = logCard.querySelector('input[data-survey-log-search]');
+if (!logSearch) throw new Error('actual V3 log search seam did not render');
+logSearch.value = 'unmapped'; logSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+if (!logCard.textContent.includes('questionnaire-test-executed') || httpCalls.length !== beforeLocalSearchHTTP) throw new Error('draft survey search filtered local rows or issued a request before Enter');
+logSearch.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }));
+const surveyCandidateEnter = enter(dom.window, logSearch, { isComposing: true, keyCode: 229 });
+if (surveyCandidateEnter.defaultPrevented || httpCalls.length !== beforeLocalSearchHTTP || !logCard.textContent.includes('questionnaire-test-executed')) throw new Error('survey IME candidate Enter submitted the local filter');
+logSearch.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true })); await wait(5);
+enter(dom.window, logSearch); await wait(10);
+if (!logCard.textContent.includes('questionnaire-test-unmapped') || logCard.textContent.includes('questionnaire-test-executed') || httpCalls.length !== beforeLocalSearchHTTP) throw new Error('ordinary Enter did not apply the actual local survey log filter without a Provider request');
+logSearch = logCard.querySelector('input[data-survey-log-search]'); logSearch.value = 'unknown'; logSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+document.querySelector('[data-survey-log-scope="current"]').click(); await wait(5);
+logSearch = logCard.querySelector('input[data-survey-log-search]');
+if (logSearch.value !== 'unknown' || !logCard.textContent.includes('没有匹配的测试记录。')) throw new Error('survey scope change did not preserve the newer draft while filtering with the committed query');
+document.querySelector('[data-survey-log-scope="global"]').click(); await wait(5);
+logSearch = logCard.querySelector('input[data-survey-log-search]');
+if (logSearch.value !== 'unknown' || !logCard.textContent.includes('questionnaire-test-unmapped')) throw new Error('survey global scope did not retain the committed query and newer draft separately');
+logSearch.value = ''; logSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, logSearch); await wait(5);
+if (!logCard.textContent.includes('questionnaire-test-executed') || !logCard.textContent.includes('questionnaire-test-unmapped') || httpCalls.length !== beforeLocalSearchHTTP) throw new Error('empty Enter did not restore all already-loaded survey log rows locally');
 
 const pushTab = [...document.querySelectorAll("button")].find(button => button.textContent.includes('外部推送') && !button.textContent.includes('保存'));
 if (!pushTab) throw new Error('compiled external push tab missing');
