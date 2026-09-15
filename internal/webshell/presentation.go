@@ -13,10 +13,12 @@ import (
 // PresentationAssets is browser presentation only, shared by server-rendered
 // pages and generated documents. It introduces no domain/API dependencies.
 type PresentationAssets struct {
-	Script              string
-	Styles              []string
-	AdminDateTimeScript string
-	SelectionDialogCSS  string
+	Script                   string
+	Styles                   []string
+	AdminDateTimeScript      string
+	SelectionDialogCSS       string
+	ConfirmationDialogCSS    string
+	ConfirmationDialogScript string
 }
 
 var emptyPresentationStage = regexp.MustCompile(`(<main\b[^>]*\bid="stage"[^>]*>)\s*(</main>)`)
@@ -77,6 +79,18 @@ func presentationFunctions(distDir string) (template.FuncMap, error) {
 					return nil, err
 				}
 				assets.SelectionDialogCSS = selectionDialogCSS
+			}
+			if manifest.Entries["confirmationDialogHost"] != "" || manifest.Entries["confirmationDialogStyles"] != "" {
+				confirmationDialogCSS, err := validEntry("confirmationDialogStyles")
+				if err != nil {
+					return nil, err
+				}
+				confirmationDialogScript, err := validEntry("confirmationDialogHost")
+				if err != nil {
+					return nil, err
+				}
+				assets.ConfirmationDialogCSS = confirmationDialogCSS
+				assets.ConfirmationDialogScript = confirmationDialogScript
 			}
 		}
 	}
