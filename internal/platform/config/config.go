@@ -931,6 +931,13 @@ func ComponentStatesScreenshotDirectory() string {
 	return os.Getenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR")
 }
 
+// AutomationFixedContentScreenshotDirectory returns the optional evidence
+// directory for the fixed-script content Chromium journey. The test validates
+// that a supplied path is absolute before it writes rendered screenshots.
+func AutomationFixedContentScreenshotDirectory() string {
+	return os.Getenv("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR")
+}
+
 // AudienceConfirmationScreenshotDirectory returns the optional evidence
 // directory for the Audience confirmation Chromium journey. The test validates
 // filesystem constraints before it writes rendered screenshots.

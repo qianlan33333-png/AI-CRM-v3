@@ -76,7 +76,7 @@ func TestPostgreSQLAutomationFixedContentChromiumJourney(t *testing.T) {
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	screenshots := t.TempDir()
-	if configured := os.Getenv("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR"); configured != "" {
+	if configured := platformconfig.AutomationFixedContentScreenshotDirectory(); configured != "" {
 		if !filepath.IsAbs(configured) {
 			t.Fatal("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR must be absolute")
 		}
