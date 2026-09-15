@@ -333,18 +333,26 @@ console.log('material library presentation: PASS');
 }
 
 {
-  let requestURL;
+  let requestURL; let retryCalls = 0;
   const dom = domFor('mpLib', `
     <div style="height:52px"><button>新建小程序卡片</button></div>
-    <section><input id="fMpQuery"><button id="mpSearch">查询</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="51"><div><div style="height:112px"></div><div><div>第二页同名卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div><div><span>51–51 / 共 51 条</span><button id="mpPrevious">上一页</button><button id="mpNext">下一页</button></div></section>`, async (input) => {
+    <section><input id="fMpQuery"><button id="mpSearch">查询</button><button id="mpRetry">重试当前页</button><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))"><div data-material-library-id="51"><div><div style="height:112px"></div><div><div>第二页同名卡片</div><div>● 可用</div><div>已启用</div><div><button>编辑</button><button>删除</button></div></div></div></div></div><div><span>51–51 / 共 51 条</span><button id="mpPrevious">上一页</button><button id="mpNext">下一页</button></div></section>`, async (input) => {
     requestURL = new URL(typeof input === 'string' ? input : input.url, 'https://test.invalid');
     return response({ ok: true, items: [{ id: 51, name: '第二页同名卡片', appid: 'wx-page-51', pagepath: 'pages/page-51', page_path: 'pages/page-51', title: '第二页', thumb_image_url: '', thumb_image_base64: '', thumb_media_id: '', enabled: true, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z', created_by: 1, updated_by: 1, version: 1 }], miniprograms: [], total: 51, limit: 50, offset: 50, local_only: true, provider_call_executed: false, real_external_call_executed: false });
   });
   try {
+    dom.window.document.querySelector('#mpRetry').addEventListener('click', () => { retryCalls += 1; });
     dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
     await settle();
     assert.equal(requestURL.searchParams.get('offset'), '50', 'mini-program metadata reads the visible donor page offset instead of assuming page zero');
     assert.equal(requestURL.searchParams.get('limit'), '50', 'mini-program metadata keeps the frozen controller page size');
     assert.match(dom.window.document.body.textContent, /wx-page-51/, 'the second page row joins its own stable resource ID');
+    const input = dom.window.document.querySelector('#fMpQuery');
+    input.value = '新的输入法草稿'; input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    dom.window.document.querySelector('#mpRetry').click();
+    await settle();
+    assert.equal(retryCalls, 1, 'second-page retry invokes the frozen owner retry exactly once');
+    assert.equal(requestURL.searchParams.get('offset'), '50', 'second-page retry retains the owner page offset instead of searching from page zero');
+    assert.equal(requestURL.searchParams.get('q'), null, 'second-page retry ignores a newer uncommitted IME draft');
   } finally { dom.window.close(); }
 }

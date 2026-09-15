@@ -8,7 +8,6 @@ import {
 import {
   committedTextSearchValue,
   installCommittedTextSearch,
-  replayCommittedTextSearch,
   resetCommittedTextSearch,
 } from './shared/ui/committedTextSearch';
 import { formatShanghaiDateTime } from './adminDateTime';
@@ -260,11 +259,13 @@ class FrozenMaterialPresentation {
       });
     });
     install('#mpRetry', 'materialLibraryRetry', () => {
-      // Retry deliberately replays the last committed value without
-      // submitting a newer draft still held by an IME/text control.
+      // Retry belongs to the frozen owner and must retain its page offset.
+      // Do not replay Enter here: doing so would turn a retry into a new
+      // search (offset zero) and invoke both owner callbacks.
       this.listSignature = '';
-      replayCommittedTextSearch(input);
-      this.readVisibleMiniProgramPage();
+      this.metadataQuery = '';
+      this.metadataLoaded = false;
+      queueMicrotask(() => this.readVisibleMiniProgramPage());
     });
     for (const control of this.stage.querySelectorAll<HTMLButtonElement>('#mpPrevious, #mpNext')) {
       if (control.dataset.materialLibraryPagination === 'true') continue;
