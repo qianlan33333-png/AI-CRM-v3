@@ -7,6 +7,10 @@ import { buildTestBrowserBundle } from "../../../../web/scripts/test-browser-bun
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(here, "../../../..");
 const script = fs.readFileSync(path.join(here, "admin_customers.js"), "utf8");
+const customerDetailTemplate = fs.readFileSync(path.join(repository, "internal", "webshell", "templates", "admin_customers.html"), "utf8");
+if (!customerDetailTemplate.includes('class="customer-tag-draft-selectors"') || !customerDetailTemplate.includes('class="customer-tag-draft-actions"')) throw new Error("customer tag confirmation must remain on its own form action row");
+if (script.includes("企业微信机器人")) throw new Error("unverified customer contact type must remain pending rather than receiving an invented label");
+if (!script.includes('cache: "no-store"') || !script.includes('}, 30000);')) throw new Error("authorized phone display must remain no-store and clear after 30 seconds");
 const standardHost = await buildTestBrowserBundle(path.join(repository, "web", "v3", "standardComponentsHost.ts"));
 const standardTagPickerArtifact = path.join(repository, "web", "dist", "assets", "standard-components", "wecom_tag_picker.js");
 let standardTagPicker;
@@ -38,6 +42,7 @@ dom.window.AdminFmt = { localTime: (value) => value === "2026-09-05T00:00:00Z" ?
 const tagCalls = [];
 const pickerCalls = [];
 let tagPreviewUnavailable = false;
+let customerListReads = 0;
 dom.window.AICRMStandardComponents = { ready: () => Promise.resolve(), readyFor: readyForTags };
 dom.window.AICRMTagPicker = {
   createCatalogPageLoader: (source, reader) => async ({ signal }) => {
@@ -56,6 +61,7 @@ dom.window.fetch = async (input, options = {}) => {
   if (url.pathname === "/api/v1/customers/42/tag-commands") return { ok: true, status: 200, json: async () => ({ items: [{ id: 7, state: "executed", lines: [{ customer_id: 42, state: "executed" }] }] }) };
   if (url.pathname === "/api/admin/customers/42/tags") return { ok: true, status: 200, json: async () => ({ items: [{ name: "标签九", group_name: "分组", status: "active" }] }) };
   if (url.pathname !== "/api/admin/customers") throw new Error("unexpected request: " + url.pathname);
+  customerListReads += 1;
   return { ok: true, status: 200, json: async () => ({ items: [{ customer_id: 42, display_name: "测试客户", oneid: "cus_42", phone_masked: "138****0000", last_synced_at: "2026-09-05T00:00:00Z" }], total: 1, total_is_estimate: false }) };
 };
 dom.window.eval(script);
@@ -65,6 +71,27 @@ const links = [...dom.window.document.querySelectorAll("#customer-list-body a")]
 if (!dom.window.document.querySelector("#customer-list-body")?.textContent.includes("2026-09-05 08:00:00")) throw new Error("customer timestamp did not use exact Shanghai seconds");
 if (!links.some((link) => link.textContent === "查看档案" && link.getAttribute("href") === "/admin/customers/42")) throw new Error("existing customer profile entry was not preserved");
 if (!links.some((link) => link.textContent === "会话存档" && link.getAttribute("href") === "/admin/message-archive/customers/42")) throw new Error("selected canonical customer did not receive a message archive entry");
+const searchInput = dom.window.document.querySelector('#customer-list-filters [name="keyword"]');
+searchInput.value = "候选客户";
+searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: true }));
+await new Promise((resolve) => setTimeout(resolve, 20));
+if (customerListReads !== 1) throw new Error("IME candidate Enter submitted the customer search");
+searchInput.dispatchEvent(new dom.window.CompositionEvent("compositionstart", { bubbles: true }));
+searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, keyCode: 229 }));
+await new Promise((resolve) => setTimeout(resolve, 20));
+if (customerListReads !== 1) throw new Error("Safari IME candidate Enter submitted the customer search");
+searchInput.dispatchEvent(new dom.window.CompositionEvent("compositionend", { bubbles: true }));
+searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, keyCode: 229 }));
+await new Promise((resolve) => setTimeout(resolve, 20));
+if (customerListReads !== 1) throw new Error("legacy IME keyCode 229 submitted the customer search");
+searchInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: false }));
+await new Promise((resolve) => setTimeout(resolve, 20));
+if (customerListReads !== 2) throw new Error("committed Enter did not submit the customer search");
+for (const control of [dom.window.document.querySelector('#customer-list-refresh'), dom.window.document.querySelector('#customer-list-clear'), dom.window.document.querySelector('#customer-list-filters select[name="status"]')]) {
+  const enter = new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  control.dispatchEvent(enter);
+  if (enter.defaultPrevented) throw new Error("customer text-search Enter guard intercepted a native control");
+}
 const checkbox = dom.window.document.querySelector('input[type="checkbox"]');
 checkbox.checked = true;
 checkbox.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -346,14 +373,14 @@ await waitForTagRetryState(
   "tag asset failure did not expose a retry action",
 );
 const retry = tagRetryDom.window.document.querySelector("[data-customer-tag-loader-retry]");
-if (!retry || !tagRetryDom.window.document.querySelector("[role=alert]")?.textContent.includes("标签选择暂时不可用") || !tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled) throw new Error("tag asset failure did not expose a local retry state");
+if (!retry || !tagRetryDom.window.document.querySelector("[role=alert]")?.textContent.includes("标签目录暂不可用") || !tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled) throw new Error("tag asset failure did not expose a local retry state");
 retry.click();
 retry.click();
 await waitForTagRetryState(
-  () => tagAssetAttempts === 2 && tagCatalogReads === 2 && !tagRetryDom.window.document.querySelector("[data-customer-tag-loader-error]") && !tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled,
+  () => tagAssetAttempts === 2 && tagCatalogReads === 1 && !tagRetryDom.window.document.querySelector("[data-customer-tag-loader-error]") && !tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled,
   "tag asset retry did not complete the V3 selector recovery",
 );
-if (tagAssetAttempts !== 2 || tagCatalogReads !== 2 || tagCommandCalls !== 0) throw new Error("tag asset retry did not remain a single-flight GET/asset-only recovery");
+if (tagAssetAttempts !== 2 || tagCatalogReads !== 1 || tagCommandCalls !== 0) throw new Error("tag asset retry did not remain a single-flight GET/asset-only recovery");
 if (tagRetryDom.window.document.querySelector("[data-customer-tag-loader-error]") || tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled) throw new Error("successful tag retry did not clear the local error and restore the native control");
 if ([...tagRetryDom.window.document.querySelectorAll("button")].filter((button) => button.textContent === "选择标签").length !== 2) throw new Error("tag retry duplicated picker buttons");
 if (typeof tagRetryDom.window.AICRMTagPicker?.open !== "function") throw new Error("tag retry did not restore the V3 tag picker adapter");
@@ -390,18 +417,24 @@ detailDom.window.fetch = async (input) => {
   if (url.pathname === "/api/admin/wecom/tags") return { ok: true, status: 200, json: async () => ({ read_model_status: "ready", groups: [{ group_id: 1, group_name: "分组" }], items: [{ id: 9, group_id: 1, group_name: "分组", tag_name: "标签九" }], count: 1, total_tags: 1, tag_limit: 1000 }) };
   if (url.pathname !== "/api/admin/customers/42/360") throw new Error("unexpected detail request: " + url.pathname);
   return { ok: true, status: 200, json: async () => ({
-    profile: { status: "ready", data: { customer_id: 42, display_name: "测试客户", oneid: "cus_42", status: "active", last_synced_at: "2026-09-05T00:00:00Z" } },
+    profile: { status: "ready", data: { customer_id: 42, display_name: "测试客户", oneid: "cus_42", status: "active", contact_type: 1, last_synced_at: "2026-09-05T00:00:00Z" } },
     identity_summary: { status: "ready", data: { identities: [], phones: [] } },
     order_summary: { status: "ready", data: { total: 1, paid: 1, refunded: 0, failed: 0, recent: [{ id: 71, merchant_order_no: "MO-71", status: "paid" }] } },
-    questionnaire_summary: { status: "ready", data: { total: 0, recent: [] } },
+    questionnaire_summary: { status: "ready", data: { total: 2, recent: [{ id: 81, title: "首份问卷", assessment_label: "已完成", submitted_at: "2026-09-05T00:00:00Z" }, { id: 82, title: "后续问卷", score: 0, submitted_at: "2026-09-05T00:00:00Z" }] } },
     risk: { status: "ready", data: { level: "low", reasons: [] } },
-    recent_touchpoints: { status: "ready", data: [] },
+    recent_touchpoints: { status: "ready", data: [{ id: 91, title: "首次触达", source_domain: "customer", occurred_at: "2026-09-05T00:00:00Z" }, { id: 92, title: "后续触达", source_domain: "order", occurred_at: "2026-09-05T00:00:00Z" }, { id: 93, title: "历史触点", source_domain: "legacy_import", occurred_at: "2026-09-05T00:00:00Z" }] },
   }) };
 };
 detailDom.window.eval(script);
 await new Promise((resolve) => setTimeout(resolve, 20));
 const detailText = detailDom.window.document.getElementById("customer-360-main")?.textContent || "";
-if (!detailText.includes("MO-71 · 已支付") || detailText.includes("MO-71 · paid")) throw new Error(`recent order status leaked a machine value: ${detailText}`);
+if (!detailText.includes("订单总数1") || !detailText.includes("退款相关0") || !detailText.includes("MO-71") || !detailText.includes("已支付") || detailText.includes("paid")) throw new Error(`customer record table did not retain known facts without a machine status: ${detailText}`);
+const detailMetaText = detailDom.window.document.getElementById("customer-profile-meta")?.textContent || "";
+if (!detailMetaText.includes("客户类型微信用户") || detailMetaText.includes("客户类型1")) throw new Error(`customer contact type was not rendered as an Owner-defined business label: ${detailMetaText}`);
+if (!detailText.includes("待确认")) throw new Error(`missing order time was presented as a known value: ${detailText}`);
+if (!detailText.includes("首份问卷") || !detailText.includes("后续问卷") || !detailText.includes("评分 0")) throw new Error(`questionnaire records were truncated or an actual zero score was hidden: ${detailText}`);
+const touchpointText = detailDom.window.document.getElementById("customer-360-sidebar")?.textContent || "";
+if (!touchpointText.includes("首次触达") || !touchpointText.includes("后续触达") || !touchpointText.includes("历史触点") || !touchpointText.includes("客户档案") || !touchpointText.includes("交易") || !touchpointText.includes("其他（legacy_import）")) throw new Error(`approved touchpoint records were truncated or source labels leaked: ${touchpointText}`);
 const detailTagForm = detailDom.window.document.getElementById("customer-tag-single");
 const detailTagButton = [...detailTagForm.querySelectorAll("button")].find((button) => button.textContent === "选择标签");
 if (!detailTagButton) throw new Error("customer detail did not mount the V3 tag picker entry");
