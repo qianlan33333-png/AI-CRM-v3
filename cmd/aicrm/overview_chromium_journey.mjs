@@ -93,7 +93,7 @@ try {
     try {
       const responseURL = new URL(String(params.response?.url || ""));
       if (responseURL.origin !== new URL(baseURL).origin) return;
-      const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
+      const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|sharedDetailDrawerStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
       if (match) assetResponses.set(match[1], Number(params.response?.status) || 0);
       if (responseURL.pathname === "/api/admin/orders/M-OVERVIEW-BROWSER") orderDetailResponses.push({ provider: responseURL.searchParams.get("provider"), status: Number(params.response?.status) || 0 });
     } catch (_) {}
@@ -108,7 +108,7 @@ try {
     const diagnostics = await evaluate(cdp, "JSON.stringify({root:document.querySelector('#overview-admin-root')?.outerHTML||'',scripts:[...document.scripts].map((script)=>script.src),text:document.body.textContent.slice(0,1200)})");
     throw new Error(`${error.message}: ${diagnostics}`);
   }
-  for (const asset of ["overviewAdmin", "overviewStyles"]) {
+  for (const asset of ["overviewAdmin", "overviewStyles", "sharedDetailDrawerStyles"]) {
     if (assetResponses.get(asset) !== 200) throw new Error(`staged overview asset ${asset} HTTP status=${assetResponses.get(asset) || 0}`);
   }
   const overviewDOM = await evaluate(cdp, "JSON.stringify({primary:[...document.querySelectorAll('.overview-metrics--primary .overview-metric')].map((node)=>node.textContent),secondary:[...document.querySelectorAll('.overview-metrics--secondary .overview-metric')].map((node)=>node.textContent),today:performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/overview?period=today')),nav:[...document.querySelectorAll('.admin-nav-section-title')].map((node)=>node.textContent)})");
@@ -121,6 +121,8 @@ try {
   const paidRecordsOpened = await evaluate(cdp, "(() => { const button=document.querySelector('[data-overview-paid-records]'); if (!button) return false; button.click(); return true; })()");
   if (!paidRecordsOpened) throw new Error("overview paid-record action is unavailable for a ready payment section");
   await waitFor(cdp, "document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]')", "paid-record drawer did not form the provider-scoped order detail link");
+  const drawerGeometry = JSON.parse(await evaluate(cdp, "(() => { const drawer=document.querySelector('.shared-detail-drawer'); const panel=drawer?.querySelector('.shared-detail-drawer__panel'); const rect=(node)=>{const box=node?.getBoundingClientRect();return box?{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}:null}; return JSON.stringify({viewport:window.innerWidth,drawer:rect(drawer),panel:rect(panel),open:drawer?.open===true,display:drawer?getComputedStyle(drawer).display:'',position:drawer?getComputedStyle(drawer).position:'',drawerStyleLoaded:[...document.styleSheets].some(sheet=>String(sheet.href||'').includes('sharedDetailDrawerStyles-'))}); })()") || "{}");
+  if (!drawerGeometry.open || !drawerGeometry.drawerStyleLoaded || drawerGeometry.display !== 'block' || !drawerGeometry.drawer || !drawerGeometry.panel || drawerGeometry.drawer.left <= drawerGeometry.viewport / 2 || drawerGeometry.drawer.right > drawerGeometry.viewport + 1 || drawerGeometry.drawer.width < 400 || drawerGeometry.drawer.width > 640 || drawerGeometry.panel.left < drawerGeometry.drawer.left || drawerGeometry.panel.right > drawerGeometry.drawer.right + 1) throw new Error(`paid-record drawer did not use the shared right-side geometry: ${JSON.stringify(drawerGeometry)}`);
   await captureOverview(cdp, "overview-paid-records-1280.png", 1280);
   await captureOverview(cdp, "overview-paid-records-1440.png", 1440);
   const openedOrder = await evaluate(cdp, "(() => { const link=document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]'); if (!link) return false; link.click(); return true; })()");

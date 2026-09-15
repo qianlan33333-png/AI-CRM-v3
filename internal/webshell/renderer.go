@@ -206,7 +206,7 @@ type ComponentStatesAssets struct {
 // OverviewAssets is the V3-owned stylesheet and Host module for the read-only
 // operating overview. The shell receives only manifest-derived URLs; all
 // business facts remain in the authorized overview HTTP endpoint.
-type OverviewAssets struct{ CSS, AdminJS string }
+type OverviewAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -319,7 +319,7 @@ func (renderer *Renderer) RenderComponentStates(writer http.ResponseWriter, data
 // shell. The Host independently fetches the already-authorized read-only API;
 // this package never receives or resolves operating facts.
 func (renderer *Renderer) RenderOverview(writer http.ResponseWriter, data AdminPageData, assets OverviewAssets) error {
-	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" {
+	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.DetailDrawerCSS == "" || assets.AdminJS == "" {
 		return errors.New("overview shell assets are required")
 	}
 	normalizeAdminPage(&data)
