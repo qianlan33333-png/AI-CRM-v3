@@ -1557,7 +1557,9 @@ function productImageOriginalURL(value: unknown, expectedID?: number): string | 
   }
 }
 
-function productInitialMaterial(url: string): ProductMaterial | undefined {
+const productMetadataReadTimeoutMilliseconds = 2500;
+
+function productInitialMaterial(url: string, unavailableReason = '素材状态待当前目录确认'): ProductMaterial | undefined {
   const originalURL = productImageOriginalURL(url);
   if (!originalURL) return undefined;
   const id = Number(/^\/api\/admin\/image-library\/([1-9]\d*)\//.exec(originalURL)?.[1]);
@@ -1566,7 +1568,7 @@ function productInitialMaterial(url: string): ProductMaterial | undefined {
     title: `已选图片素材 ${id}`,
     subtitle: '当前商品草稿，等待当前素材目录确认', thumbnail_url: originalURL.replace('/variants/original', '/variants/thumb_320'),
     enabled: false, selectable: false, mime_type: '', metadata: { original_url: originalURL, authorized: false },
-    unavailable_reason: '素材状态待当前目录确认',
+    unavailable_reason: unavailableReason,
   };
 }
 
@@ -1593,14 +1595,21 @@ function productMaterialRecord(raw: RecordValue): ProductMaterial | undefined {
 async function verifiedProductInitialMaterial(url: string): Promise<ProductMaterial | undefined> {
   const pending = productInitialMaterial(url);
   if (!pending) return undefined;
+  // The current frozen product draft can contain a few library originals.  A
+  // direct record read proves those IDs for this scope, but may not keep a
+  // click waiting indefinitely or outlive the page which started it.
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), productMetadataReadTimeoutMilliseconds);
   try {
-    const response = await donorFetch(new URL(`/api/admin/image-library/${pending.library_id}`, location.origin), { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    const response = await donorFetch(new URL(`/api/admin/image-library/${pending.library_id}`, location.origin), { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: controller.signal });
     if (!response.ok) return pending;
     const payload = object(await response.json().catch(() => ({})));
     const material = productMaterialRecord(object(payload.item ?? payload.image));
     return material?.library_id === pending.library_id ? material : pending;
   } catch {
-    return pending;
+    return productInitialMaterial(url, controller.signal.aborted ? '初始素材目录确认超时；请重试。' : '素材状态待当前目录确认') || pending;
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 
@@ -1777,24 +1786,81 @@ function describeProductPicker(): void {
   if (hint) hint.textContent = '素材库图片仅在确认后应用；上传或外部图片请在页面原图列表中管理。';
 }
 
+type ProductPickerContext = {
+  controller: ProductController;
+  kind: 'product' | 'service';
+  page: string;
+  locationKey: string;
+  draft: string[];
+  draftKey: string;
+};
+
+type ProductPickerPreopen = ProductPickerContext & { generation: number };
+let productPickerGeneration = 0;
+let productPickerPreopen: ProductPickerPreopen | undefined;
+
+function productPickerDraftKey(urls: readonly string[]): string {
+  return JSON.stringify(urls);
+}
+
+function productPickerContext(controller: ProductController, kind: 'product' | 'service'): ProductPickerContext | undefined {
+  const expectedPage = kind === 'product' ? 'productForm' : 'spProductForm';
+  const expectedPrefix = kind === 'product' ? 'pf' : 'spf';
+  if (controller.page !== expectedPage || productPrefix() !== expectedPrefix) return undefined;
+  let locationKey: string;
+  try { locationKey = `${location.pathname}${location.search}`; } catch { return undefined; }
+  const draft = [...controller.currentCommerceImageUrls(kind)];
+  return { controller, kind, page: controller.page, locationKey, draft, draftKey: productPickerDraftKey(draft) };
+}
+
+function productPickerContextIsCurrent(context: ProductPickerContext): boolean {
+  const current = productPickerContext(context.controller, context.kind);
+  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.draftKey === context.draftKey);
+}
+
+function productPickerPreopenIsCurrent(preopen: ProductPickerPreopen): boolean {
+  return productPickerPreopen?.generation === preopen.generation && productPickerContextIsCurrent(preopen);
+}
+
 productController.pickCommerceImages = function (kind) {
   const controller = this;
+  const context = productPickerContext(controller, kind);
+  if (!context) {
+    showMessage('当前商品页面已切换，未打开素材选择器。');
+    return;
+  }
+  // A second click for this exact owner draft joins the same bounded read.
+  // A changed page, kind, or draft invalidates the old generation before the
+  // new owner starts its own read, so the late old result cannot open a dialog.
+  if (productPickerPreopen) {
+    const active = productPickerPreopen;
+    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.draftKey === context.draftKey;
+    if (sameOwnerDraft) return;
+    productPickerPreopen = undefined;
+  }
+  const preopen: ProductPickerPreopen = { ...context, generation: ++productPickerGeneration };
+  productPickerPreopen = preopen;
   void productMaterialAdapterReady.then(async () => {
+    if (!productPickerPreopenIsCurrent(preopen)) return;
     const picker = (window as ProductMaterialPickerWindow).AICRMMaterialPicker;
     if (!picker) throw new Error('页面素材选择组件尚未就绪，请稍后重试。');
-    const current = controller.currentCommerceImageUrls(kind);
-    const selectedRecords = (await Promise.all(current.map(verifiedProductInitialMaterial))).flatMap((record) => record ? [record] : []);
+    const selectedRecords = (await Promise.all(preopen.draft.map(verifiedProductInitialMaterial))).flatMap((record) => record ? [record] : []);
+    if (!productPickerPreopenIsCurrent(preopen)) return;
     const selectedIds = [...new Set(selectedRecords.map((item) => item.library_id))];
-    const protectedCount = current.length - selectedRecords.length;
+    const protectedCount = preopen.draft.length - selectedRecords.length;
     const availableSlots = 10 - protectedCount;
     if (availableSlots < 1) {
       throw new Error('当前商品已有 10 张非素材库图片；请先用页面中的移除按钮释放名额。');
     }
+    // Pre-open singleflight ends only after the original host and its draft are
+    // proven current. The dialog keeps its own temporary selection afterwards.
+    if (productPickerPreopen?.generation === preopen.generation) productPickerPreopen = undefined;
     picker.open({
       type: 'image', title: kind === 'product' ? '选择商品页面素材' : '选择周期商品页面素材',
       selectedIds, selectedRecords, limit: availableSlots,
       async onCommit(result) {
-        const urls = mergeProtectedProductURLs(current, result.selected);
+        if (!productPickerContextIsCurrent(preopen)) throw new Error('商品页面或原始素材草稿已改变；请取消后重新打开选择器。');
+        const urls = mergeProtectedProductURLs(preopen.draft, result.selected);
         if (urls.length > 10) throw new Error('页面素材最多 10 张；未改动当前商品草稿。');
         controller.setCommerceImageUrls(kind, urls);
       },
@@ -1805,6 +1871,8 @@ productController.pickCommerceImages = function (kind) {
     // The frozen controller has not touched its draft yet. Report a scoped
     // failure instead of opening its older picker with a partial callback.
     showMessage(error instanceof Error ? error.message : '页面素材选择器暂时不可用，请稍后重试。');
+  }).finally(() => {
+    if (productPickerPreopen?.generation === preopen.generation) productPickerPreopen = undefined;
   });
 };
 const donorGotoProduct = productController.goto;

@@ -103,6 +103,7 @@ assert.ok(document.querySelector('[data-v3-material-key$=":1"]'), 'the image lib
 document.querySelector('[data-v3-material-key$=":1"]').click();
 document.querySelector('[data-v3-picker-confirm]').click();
 await waitFor(() => document.querySelector('#mediaName')?.textContent === '直播预告主视觉.png', 'a newly selected image must apply only through the original frozen callback');
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]') === null, 'the original callback must settle before changing the frozen Radar type');
 document.querySelector('[data-t="pdf"]').click();
 await wait(20);
 assert.equal(document.querySelector('#mediaPicked').hidden, true, 'switching back to PDF must clear the image draft rather than relabel the same numeric ID as an attachment');
@@ -144,6 +145,16 @@ editDom.window.eval(picker);
 editDom.window.eval(host);
 const editDocument = editDom.window.document;
 await waitFor(() => editDocument.querySelector('#mediaPicked')?.hidden === false && editDocument.querySelector('[data-t="image"]')?.classList.contains('on'), 'the actual frozen edit form must render its persisted image before V3 opens');
+// An edit form requires an owner load before V3 can validate its initial
+// material. Leaving this form while that read is pending must not open the old
+// dialog when the response arrives.
+editDocument.querySelector('#btnPick').click();
+assert.equal(editDocument.querySelector('#btnPick').disabled, true, 'the real frozen trigger is locked during its bounded V3 pre-open');
+editDom.window.history.replaceState(null, '', '/admin/radarForm.html?id=100');
+await wait(180);
+assert.equal(editDocument.querySelector('[data-v3-selection-session="material"]'), null, 'a late prior Radar edit read may not open a picker after the form route changes');
+assert.equal(editDocument.querySelector('#btnPick').disabled, false, 'the stale pre-open releases the former frozen trigger without mutating its draft');
+editDom.window.history.replaceState(null, '', '/admin/radarForm.html?id=99');
 editDocument.querySelector('[data-t="pdf"]').click();
 await waitFor(() => editDocument.querySelector('#mediaPicked')?.hidden === true, 'an edit form type switch must clear its frozen image media even without a prior V3 dialog');
 assert.match(editDocument.querySelector('#mediaHelp').textContent, /重新选择素材/, 'the edit form explains the required explicit replacement');
@@ -155,5 +166,72 @@ assert.match(editDocument.querySelector('[data-v3-picker-selected]').textContent
 assert.ok(editDocument.querySelector('[data-v3-material-key$=":1"]'), 'the separately authorised attachment #1 remains available for an explicit new choice');
 editDocument.querySelector('[data-v3-picker-cancel]').click();
 editDom.window.close();
+
+// The frozen AdminApi read itself has no AbortSignal. Delay that actual mock
+// owner read past the V3 2.5s deadline; its eventual success must remain
+// ignored and may not resurrect a legacy or V3 picker.
+const timeoutDom = new JSDOM(`<!doctype html><body data-page="radarForm"><main id="stage"></main></body>`, {
+  url: 'https://test.invalid/admin/radarForm.html?id=99', runScripts: 'dangerously', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.Response = Response; window.Headers = Headers;
+    window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+    window.__AICRM_TEST_MOCK__ = true;
+    window.sessionStorage.setItem('aicrm.mock.db.v4', JSON.stringify(editedDB));
+    window.fetch = async (input) => {
+      const url = new URL(String(input), window.location.href);
+      const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/image-library/1') return reply({ item: { id: 1, name: '直播预告主视觉.png', enabled: true, mime_type: 'image/png' } });
+      return reply({ code: 'unexpected_timeout_radar_request' }, 500);
+    };
+  },
+});
+timeoutDom.window.eval(picker);
+timeoutDom.window.eval(host);
+const timeoutDocument = timeoutDom.window.document;
+await waitFor(() => timeoutDocument.querySelector('#mediaPicked')?.hidden === false, 'the delayed-read fixture must mount the actual existing Radar form first');
+const nativeTimeout = timeoutDom.window.setTimeout.bind(timeoutDom.window);
+timeoutDom.window.setTimeout = (handler, milliseconds, ...args) => nativeTimeout(handler, milliseconds === 120 ? 3000 : milliseconds, ...args);
+timeoutDocument.querySelector('#btnPick').click();
+await wait(2600);
+assert.equal(timeoutDocument.querySelector('[data-v3-selection-session="material"]'), null, 'a bounded Radar pre-open reports timeout instead of opening an unverified edit picker');
+assert.equal(timeoutDocument.querySelector('#btnPick').disabled, false, 'a timed-out owner read leaves the original Radar form retryable');
+assert.match(timeoutDocument.querySelector('#mediaHelp').textContent, /读取超时/, 'the original form explains the bounded-read failure');
+await wait(600);
+assert.equal(timeoutDocument.querySelector('[data-v3-selection-session="material"]'), null, 'the late owner read remains ignored after the timeout');
+timeoutDom.window.close();
+
+// The later frozen picker callback has a second asynchronous owner read. A
+// type switch during that read must cancel the bridge before its row/confirm
+// click can change the original form.
+const applyRaceDom = new JSDOM(`<!doctype html><body data-page="radarForm"><main id="stage"></main></body>`, {
+  url: 'https://test.invalid/admin/radarForm.html', runScripts: 'dangerously', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.Response = Response; window.Headers = Headers;
+    window.AICRMStandardComponents = { ready: () => Promise.resolve() };
+    window.__AICRM_TEST_MOCK__ = true;
+    window.fetch = async (input) => {
+      const url = new URL(String(input), window.location.href);
+      const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/image-library') return reply({ items: [{ id: 1, name: '桥接竞态图片', enabled: true, mime_type: 'image/png' }], has_more: false });
+      return reply({ code: 'unexpected_apply_race_radar_request' }, 500);
+    };
+  },
+});
+applyRaceDom.window.eval(picker);
+applyRaceDom.window.eval(host);
+const applyRaceDocument = applyRaceDom.window.document;
+await waitFor(() => applyRaceDocument.querySelector('#btnPick'), 'the frozen Radar form must mount before exercising its callback bridge race');
+applyRaceDocument.querySelector('[data-t="image"]').click();
+applyRaceDocument.querySelector('#btnPick').click();
+await waitFor(() => applyRaceDocument.querySelector('[data-v3-material-key$=":1"]'), 'the V3 image picker must reach the real callback bridge test');
+applyRaceDocument.querySelector('[data-v3-material-key$=":1"]').click();
+applyRaceDocument.querySelector('[data-v3-picker-confirm]').click();
+applyRaceDocument.querySelector('[data-t="pdf"]').click();
+await wait(180);
+assert.equal(applyRaceDocument.querySelector('#mediaPicked').hidden, true, 'a type change during the frozen picker read may not write its old image into the Radar draft');
+assert.equal(applyRaceDocument.querySelector('.pk-mask'), null, 'a stale frozen callback read may not surface its legacy picker');
+assert.ok(applyRaceDocument.querySelector('[data-v3-selection-session="material"]'), 'the V3 dialog retains its temporary draft after the stale owner callback is rejected');
+applyRaceDocument.querySelector('[data-v3-picker-cancel]').click();
+applyRaceDom.window.close();
 console.log('radar edit existing image direct PDF switch: PASS');
 

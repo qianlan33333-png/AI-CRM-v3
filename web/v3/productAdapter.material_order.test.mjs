@@ -24,7 +24,28 @@ const absolute39 = 'https://test.invalid/api/admin/image-library/39/variants/ori
 const opaqueUpload = 'https://uploads.example.invalid/products/original-current.png';
 const initial = { id: 101, product_code: 'order-preserving-product', name: '顺序保留商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [absolute39, opaqueUpload, '/api/admin/image-library/38/variants/original'], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z' };
 let saved;
+let holdProductMetadata = false;
+const heldProductMetadata = [];
+let productMetadataCalls = 0;
 const diagnostics = [];
+function deferredProductMetadata(body, init, json) {
+  productMetadataCalls += 1;
+  if (!holdProductMetadata) return json(body);
+  return new Promise((resolve, reject) => {
+    const signal = init?.signal;
+    const abort = () => reject(new DOMException('aborted', 'AbortError'));
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener('abort', abort, { once: true });
+    heldProductMetadata.push(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve(json(body));
+    });
+  });
+}
+function releaseHeldProductMetadata() {
+  const pending = heldProductMetadata.splice(0);
+  pending.forEach((release) => release());
+}
 const dom = new JSDOM(page, {
   url: 'https://test.invalid/admin/productForm.html?id=101', runScripts: 'outside-only', pretendToBeVisual: true,
   virtualConsole: (() => { const console = new VirtualConsole(); console.on('jsdomError', (error) => diagnostics.push(String(error.stack || error.message))); return console; })(),
@@ -45,9 +66,9 @@ const dom = new JSDOM(page, {
       if (url.pathname === '/api/v1/products/101/local-entitlements') return json({ items: [] });
       if (url.pathname === '/api/v1/products' && method === 'GET') return json({ items: [initial], next_cursor: '' });
       if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return json({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', updated_at: '' });
-      if (url.pathname === '/api/admin/image-library/38') return json({ item: { id: 38, name: '待移除素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });
-      if (url.pathname === '/api/admin/image-library/39') return json({ item: { id: 39, name: '保留字面 URL 素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true } });
-      if (url.pathname === '/api/admin/image-library/40') return json({ item: { id: 40, name: '后续新增素材', original_url: '/api/admin/image-library/40/variants/original', thumb_320_url: '/api/admin/image-library/40/variants/thumb_320', enabled: true } });
+      if (url.pathname === '/api/admin/image-library/38') return deferredProductMetadata({ item: { id: 38, name: '待移除素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } }, init, json);
+      if (url.pathname === '/api/admin/image-library/39') return deferredProductMetadata({ item: { id: 39, name: '保留字面 URL 素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true } }, init, json);
+      if (url.pathname === '/api/admin/image-library/40') return deferredProductMetadata({ item: { id: 40, name: '后续新增素材', original_url: '/api/admin/image-library/40/variants/original', thumb_320_url: '/api/admin/image-library/40/variants/thumb_320', enabled: true } }, init, json);
       if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return json({ items: [{ id: 38, name: '待移除素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true }], has_more: true, next_offset: 1 });
       if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '1') return json({ items: [{ id: 39, name: '保留字面 URL 素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], has_more: true, next_offset: 2 });
       if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '2') return json({ items: [{ id: 40, name: '后续新增素材', original_url: '/api/admin/image-library/40/variants/original', thumb_320_url: '/api/admin/image-library/40/variants/thumb_320', enabled: true }], has_more: false });
@@ -85,5 +106,35 @@ assert.deepEqual(saved.images, [absolute39, opaqueUpload, '/api/admin/image-libr
 open.click();
 await waitFor(() => document.querySelector('[data-v3-picker-selected]')?.textContent.includes('保留字面 URL 素材') && document.querySelector('[data-v3-picker-selected]')?.textContent.includes('后续新增素材'), 'reopen must read the owner draft after save rather than a stale dialog cache');
 document.querySelector('[data-v3-picker-cancel]').click();
+
+// Direct-record verification is an owner pre-open. A second click joins the
+// first flight; once the product route changes, neither delayed result may open
+// a dialog for the former page.
+holdProductMetadata = true;
+const beforeDuplicate = productMetadataCalls;
+open.click();
+open.click();
+await waitFor(() => heldProductMetadata.length === 2, 'the current two library records must begin one shared pre-open read');
+assert.equal(productMetadataCalls - beforeDuplicate, 2, 'double-clicking the real owner button must not duplicate metadata reads or dialogs');
+dom.window.history.replaceState(null, '', '/admin/productForm.html?id=202');
+releaseHeldProductMetadata();
+holdProductMetadata = false;
+await wait(30);
+assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null, 'a late prior-product pre-open may not open a picker after the route changes');
+
+// The current owner draft can also change through its original remove control
+// while metadata is in flight. It must win over the old selectedRecords input.
+dom.window.history.replaceState(null, '', '/admin/productForm.html?id=101');
+holdProductMetadata = true;
+open.click();
+await waitFor(() => heldProductMetadata.length === 2, 'a fresh current-page pre-open must read the two recognised records');
+const ownerRemove = [...document.querySelectorAll('#product-media button')].find((button) => button.textContent.trim() === '移除');
+assert.ok(ownerRemove, 'the frozen product form exposes its original draft removal control');
+ownerRemove.click();
+releaseHeldProductMetadata();
+holdProductMetadata = false;
+await wait(30);
+assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null, 'a delayed pre-open may not overwrite or open against a changed original product draft');
+assert.equal([...document.querySelectorAll('#product-media button')].filter((button) => button.textContent.trim() === '移除').length, 2, 'the original owner removal remains applied while V3 discards the stale pre-open');
 dom.window.close();
 console.log('product material owner URL ordering and opaque-draft preservation: PASS');
