@@ -42,6 +42,38 @@ func TestPostgreSQLAdminOverviewCompositionPreflight(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLAdminOverviewPaidRecordsCompositionUsesPaidConfirmationFact(t *testing.T) {
+	fixture := newAdminOverviewFixture(t)
+	response := overviewAuthenticatedGET(t, fixture.application.handler, fixture.session, "/api/admin/overview/paid-records?period=7d")
+	var body struct {
+		Range struct {
+			Timezone string `json:"timezone"`
+		} `json:"range"`
+		Items []struct {
+			Provider        string    `json:"provider"`
+			OrderReference  string    `json:"order_reference"`
+			PayerCustomerID *int64    `json:"payer_customer_id"`
+			AmountMinor     int64     `json:"amount_minor"`
+			Currency        string    `json:"currency"`
+			PaidConfirmedAt time.Time `json:"paid_confirmed_at"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, item := range body.Items {
+		if item.Provider != "wechat_pay" || item.OrderReference == "" || item.PayerCustomerID == nil || item.AmountMinor < 1 || item.Currency != "CNY" || item.PaidConfirmedAt.IsZero() {
+			t.Fatalf("invalid paid record %+v", item)
+		}
+		total += item.AmountMinor
+	}
+	if response.Code != http.StatusOK || body.Range.Timezone != "Asia/Shanghai" || len(body.Items) != 3 || total != 2400 || body.NextCursor != "" || strings.Contains(response.Body.String(), "payment_id") || strings.Contains(response.Body.String(), "provider_transaction") {
+		t.Fatalf("paid records status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1")
@@ -392,6 +424,10 @@ func (store mergeAfterPaidOverviewStore) ReadPaidOverview(ctx context.Context, w
 
 func (store mergeAfterPaidOverviewStore) ReadPaidOverviewPayerPage(ctx context.Context, window paymentport.OverviewWindow, after customerdomain.CustomerID, limit int) (paymentport.PaidOverviewPayerPage, error) {
 	return store.repository.ReadPaidOverviewPayerPage(ctx, window, after, limit)
+}
+
+func (store mergeAfterPaidOverviewStore) ReadPaidOverviewRecords(ctx context.Context, window paymentport.OverviewWindow, after *paymentport.PaidOverviewRecordCursor, limit int) (paymentport.PaidOverviewRecordPage, error) {
+	return store.repository.ReadPaidOverviewRecords(ctx, window, after, limit)
 }
 
 func (store mergeAfterPaidOverviewStore) ReadRefundOverview(ctx context.Context, window paymentport.OverviewWindow) (paymentport.RefundOverview, error) {

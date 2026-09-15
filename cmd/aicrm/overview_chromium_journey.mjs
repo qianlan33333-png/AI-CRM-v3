@@ -88,12 +88,14 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
   cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
   const assetResponses = new Map();
+  const orderDetailResponses = [];
   cdp.on("Network.responseReceived", (params) => {
     try {
       const responseURL = new URL(String(params.response?.url || ""));
       if (responseURL.origin !== new URL(baseURL).origin) return;
       const match = responseURL.pathname.match(/^\/assets\/(overviewAdmin|overviewStyles|navigationHost)-[A-Za-z0-9_-]+\.(?:js|css)$/);
       if (match) assetResponses.set(match[1], Number(params.response?.status) || 0);
+      if (responseURL.pathname === "/api/admin/orders/M-OVERVIEW-BROWSER") orderDetailResponses.push({ provider: responseURL.searchParams.get("provider"), status: Number(params.response?.status) || 0 });
     } catch (_) {}
   });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
@@ -116,6 +118,17 @@ try {
   if (todayChartGeometry.height < 100 || todayChartGeometry.width < 20 || todayChartGeometry.plotHeight < 100) throw new Error(`today overview chart bar is not visibly rendered: ${JSON.stringify(todayChartGeometry)}`);
   await captureOverview(cdp, "overview-today-1280.png", 1280);
   await captureOverview(cdp, "overview-today-1440.png", 1440);
+  const paidRecordsOpened = await evaluate(cdp, "(() => { const button=document.querySelector('[data-overview-paid-records]'); if (!button) return false; button.click(); return true; })()");
+  if (!paidRecordsOpened) throw new Error("overview paid-record action is unavailable for a ready payment section");
+  await waitFor(cdp, "document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]')", "paid-record drawer did not form the provider-scoped order detail link");
+  await captureOverview(cdp, "overview-paid-records-1280.png", 1280);
+  await captureOverview(cdp, "overview-paid-records-1440.png", 1440);
+  const openedOrder = await evaluate(cdp, "(() => { const link=document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]'); if (!link) return false; link.click(); return true; })()");
+  if (!openedOrder) throw new Error("paid-record drawer link disappeared before navigation");
+  await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/orders/M-OVERVIEW-BROWSER?provider=wechat'))", "provider-scoped order detail did not request its exact Order API URL");
+  if (!orderDetailResponses.some((value) => value.provider === "wechat" && value.status === 200)) throw new Error(`provider-scoped Order detail response missing: ${JSON.stringify(orderDetailResponses)}`);
+  await cdp.call("Page.navigate", { url: `${baseURL}/admin` });
+  await waitFor(cdp, "Boolean(document.querySelector('#overview-admin-root .overview-metrics--primary')) && document.body.textContent.includes('已确认支付')", "overview did not return after paid-record detail navigation");
   await selectOverviewPeriod(cdp, "近 7 天", "7d");
   const sevenDayDOM = await evaluate(cdp, "JSON.stringify({columns:document.querySelectorAll('.overview-chart__column').length,bars:document.querySelectorAll('.overview-chart__bar').length,details:document.querySelector('.overview-trend-details')?.open})");
   const sevenDay = JSON.parse(sevenDayDOM || "{}");
