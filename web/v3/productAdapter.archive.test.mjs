@@ -244,6 +244,20 @@ console.log('product and service-period delete DOM lifecycle: PASS');
     await waitFor(() => lifecycleCalls.length === 1, 'reordered list did not issue its original lifecycle command');
     assert.deepEqual(lifecycleCalls, ['/api/admin/wechat-pay/products/501/disable'], 'a reordered read must not retarget the retained action to product B');
 
+    // A queued projection can update before an old render is mounted again.
+    // Deliberately retain A/B DOM rows while the current projection is B/A:
+    // the first button must refuse, never turn A into a write for B.
+    controller.db.rows.products = [first, second];
+    lifecycle.window.ProductMountFixture(lifecycle.window.document.getElementById('stage'), transform(readFileSync(path.join(root, 'web/src/admin/templates/products.html'), 'utf8')), controller);
+    const mismatchedA = await action('原始商品 A');
+    assert.equal(mismatchedA.disabled, false, 'the mismatched source action remains an actual enabled action');
+    let mismatchedActionClicked = false;
+    mismatchedA.addEventListener('click', () => { mismatchedActionClicked = true; });
+    mismatchedA.click();
+    await pause(20);
+    assert.equal(mismatchedActionClicked, true, 'the mismatched source action must receive a real click');
+    assert.equal(lifecycleCalls.length, 1, 'a mismatched initial row binding must not issue a lifecycle write');
+
     const removedB = await action('原始商品 B');
     rawProducts = [raw(501, 3)];
     await api.loadDb({ page: 'products' });

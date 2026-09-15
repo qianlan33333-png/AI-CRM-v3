@@ -139,7 +139,7 @@ function productLifecycleKey(productID: number, version: number, enabled: boolea
   return key;
 }
 
-type ProductArchiveRow = { resourceId?: number; version?: number; name?: string; status?: string; updated?: string };
+type ProductArchiveRow = { resourceId?: number; version?: number; name?: string; status?: string; updated?: string; toggle?: (event: Event) => void };
 type ProductArchiveController = { init(): Promise<void>; db: { rows: { products: ProductArchiveRow[]; spProducts: ProductArchiveRow[] } } };
 
 async function archiveProduct(controller: ProductArchiveController, kind: 'ordinary' | 'service-period', row: ProductArchiveRow): Promise<void> {
@@ -773,20 +773,20 @@ async function toggleProductLifecycle(button: HTMLButtonElement, product: Produc
   window.setTimeout(() => location.reload(), 550);
 }
 
-document.addEventListener('click', (event) => {
-  if (document.body.dataset.page !== 'products') return;
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  const button = target.closest('button');
-  if (!button || (button.textContent?.trim() !== '启用' && button.textContent?.trim() !== '停用')) return;
-  event.preventDefault();
-  event.stopImmediatePropagation();
+function runProductLifecycleAction(button: HTMLButtonElement, product: ProductProjection): void {
   const context = productLifecycleActionContexts.get(button);
   if (!context || context.page !== 'products' || !context.row.isConnected || !context.container.isConnected) {
     return showMessage('商品操作上下文已失效，请刷新列表后重试；未发送状态变更请求');
   }
-  const product = loadedProducts.find((item) => item.resourceId === context.product.resourceId);
-  if (!product || product.version !== context.product.version || product.lifecycle !== context.product.lifecycle) {
+  // The frozen template binds the handler supplied by renderVals to this exact
+  // row. The presentation pass may only use its index to retain the source
+  // row/container while it rehomes the existing button. Never let a later
+  // projection turn that button into a command for another Product.
+  if (context.product.resourceId !== product.resourceId || context.product.version !== product.version || context.product.lifecycle !== product.lifecycle) {
+    return showMessage('商品列表已更新，请刷新后重试；未发送状态变更请求');
+  }
+  const current = loadedProducts.find((item) => item.resourceId === product.resourceId);
+  if (!current || current.version !== product.version || current.lifecycle !== product.lifecycle) {
     return showMessage('商品列表已更新，请刷新后重试；未发送状态变更请求');
   }
   void toggleProductLifecycle(button, product).catch((error) => {
@@ -794,7 +794,14 @@ document.addEventListener('click', (event) => {
     button.textContent = product.lifecycle === 'enabled' ? '停用' : '启用';
     showMessage(error instanceof Error ? error.message : '商品状态变更失败');
   });
-}, true);
+}
+
+function lifecycleProjection(row: ProductArchiveRow): ProductProjection | undefined {
+  const product = row as ProductProjection;
+  if (!Number.isSafeInteger(product.resourceId) || product.resourceId < 1 || !Number.isSafeInteger(product.version) || product.version < 1) return undefined;
+  if (product.lifecycle !== 'draft' && product.lifecycle !== 'enabled' && product.lifecycle !== 'disabled') return undefined;
+  return product;
+}
 
 type ExternalPushPage = {
   productID: number;
@@ -2361,9 +2368,23 @@ productController.renderVals = function renderProductListWithArchiveActions() {
     ...values,
     rows: {
       ...values.rows,
-      products: this.page === 'products' ? ordinaryRows.map((row) => ({
+      products: this.page === 'products' ? ordinaryRows.map((row) => {
+        const product = lifecycleProjection(row);
+        return {
         ...row,
         updated: typeof row.updated === 'string' ? formatShanghaiDateTime(row.updated) : row.updated,
+        // The donor runtime gives this exact renderVals handler the action
+        // element as currentTarget. Keep Product identity and version in the
+        // closure created for this row; menu presentation must not infer a
+        // subject from a later list position.
+        toggle: product ? (event: Event) => {
+          const button = event.currentTarget instanceof HTMLButtonElement
+            ? event.currentTarget
+            : event.target instanceof HTMLButtonElement ? event.target : undefined;
+          if (!(button instanceof HTMLButtonElement)) return;
+          event.preventDefault();
+          runProductLifecycleAction(button, product);
+        } : row.toggle,
         del: () => confirmBox(
           '删除商品',
           `确认删除“${row.name || '未命名商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买；已支付订单、权益和审计记录会保留。`,
@@ -2371,7 +2392,8 @@ productController.renderVals = function renderProductListWithArchiveActions() {
 		  true,
 		  () => { void archiveProduct(this, 'ordinary', row).catch((error) => showMessage(error instanceof Error ? error.message : '商品删除失败')); },
         ),
-      })) : ordinaryRows,
+      };
+      }) : ordinaryRows,
       spProducts: this.page === 'spProducts' ? serviceRows.map((row) => ({
         ...row,
         status: row.status === 'enabled' ? '已启用' : row.status === 'disabled' ? '已停用' : row.status === 'draft' ? '草稿' : row.status,
