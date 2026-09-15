@@ -931,6 +931,13 @@ func ComponentStatesScreenshotDirectory() string {
 	return os.Getenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR")
 }
 
+// PublicCommerceScreenshotDirectory returns the optional evidence directory
+// for the public product and payment Chromium journey. The test validates that
+// a supplied path is absolute before it writes local screenshots.
+func PublicCommerceScreenshotDirectory() string {
+	return os.Getenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR")
+}
+
 // NamedDatabaseURL is restricted to explicit target and read-only source roles
 // used by controlled offline migrations. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment
