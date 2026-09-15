@@ -3365,11 +3365,11 @@ for (const [scenario, expectedSignatureReads] of [['sdk_cache', 0], ['sdk_cache_
   input(dom, d.querySelector('[data-profile-field="industry"]'), '教育');
   // Request capture precedes the asynchronous error response and Host render.
   // Assert the completed conflict state rather than racing response handling.
-  await waitFor(() => dom.window.__sidebarTest.profileBodies.length === 1 && d.querySelector('#toast')?.textContent.includes('conflict'));
+  await waitFor(() => dom.window.__sidebarTest.profileBodies.length === 1 && d.querySelector('#toast')?.textContent.includes('客户资料已更新'));
   ok('画像陈旧 CAS 冲突不会伪造已保存，也不会覆盖本地版本',
     dom.window.__sidebarTest.profileBodies.length === 1 &&
     dom.window.__sidebarTest.profileBodies[0].expected_profile_version === 0 &&
-    d.querySelector('#toast')?.textContent.includes('conflict') && !d.querySelector('#toast')?.textContent.includes('已保存'));
+    d.querySelector('#toast')?.textContent.includes('客户资料已更新') && !d.querySelector('#toast')?.textContent.includes('已保存'));
   dom.window.close();
 }
 {

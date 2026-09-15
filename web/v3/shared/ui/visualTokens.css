@@ -27,3 +27,30 @@
   --v3-ui-radius-lg: var(--radius-lg, 10px);
   --v3-ui-shadow: 0 12px 28px rgb(31 35 41 / 8%);
 }
+
+/* The embedded WeCom sidebar has its own document shell, but it consumes the
+   same V3 semantic vocabulary. Keep the aliases at the sidebar surface so no
+   administration selectors or chrome are introduced into the WebView. */
+body[data-ui-surface="sidebar"] {
+  --v3-ui-canvas: #f5f6f7;
+  --v3-ui-panel: #fff;
+  --v3-ui-panel-soft: #f8f9fb;
+  --v3-ui-text: #1f2329;
+  --v3-ui-muted: #646a73;
+  --v3-ui-muted-soft: #8f959e;
+  --v3-ui-line: #dee0e3;
+  --v3-ui-line-strong: #c4c7cc;
+  --v3-ui-primary: #3370ff;
+  --v3-ui-primary-strong: #245bdb;
+  --v3-ui-primary-soft: #eff4ff;
+  --v3-ui-success: #2ea121;
+  --v3-ui-success-soft: #ebf9ec;
+  --v3-ui-warning: #d9730d;
+  --v3-ui-warning-soft: #fff6e9;
+  --v3-ui-danger: #d83931;
+  --v3-ui-danger-soft: #fff5f5;
+  --v3-ui-radius-sm: 6px;
+  --v3-ui-radius-md: 8px;
+  --v3-ui-radius-lg: 10px;
+  --v3-ui-shadow: 0 8px 20px rgb(31 35 41 / 7%);
+}

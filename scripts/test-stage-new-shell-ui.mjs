@@ -42,7 +42,7 @@ assert.equal(sourceManifest.files?.[navigationHost]?.entry_point, 'web/v3/naviga
 const entryKeys = [
   'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
-  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost',
+  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'sidebarPresentationStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost',
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
   'publicCommerceHost', 'publicCommerceStyles',
   'navigationHost', 'overviewAdmin', 'overviewStyles',
@@ -113,11 +113,15 @@ assert.equal(sourceManifest.files?.[sidebarHost]?.entry_point, 'web/v3/sidebar/m
 const sidebarOverlay = sourceManifest.entries?.sidebarStandardOverlay;
 const sidebarImageResourceLoader = sourceManifest.entries?.sidebarImageResourceLoader;
 const sidebarStandardStyles = sourceManifest.entries?.sidebarStandardStyles;
+const sidebarPresentationStyles = sourceManifest.entries?.sidebarPresentationStyles;
+const sidebarVisualTokens = sourceManifest.entries?.sharedVisualTokens;
 assert.equal(sourceManifest.files?.[sidebarHost]?.entry_point, 'web/v3/sidebar/main.ts', 'sidebar Host must be the V3 trusted bridge entry');
 assert.equal(sourceManifest.files?.[sidebarOverlay]?.entry_point, 'web/dist/sidebar/sidebar_workbench_v3_overlay.js', 'sidebar release manifest must contain the generated dd8 overlay');
 assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.entry_point, 'web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js', 'sidebar release manifest must contain the audited standard image loader');
 assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.sha256, '38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d', 'sidebar image loader must retain its audited dd8 bytes');
 assert.equal(sourceManifest.files?.[sidebarStandardStyles]?.entry_point, 'internal/webshell/static/sidebar_workbench/sidebar_workbench.css', 'sidebar release manifest must contain the standard stylesheet');
+assert.equal(sourceManifest.files?.[sidebarPresentationStyles]?.entry_point, 'web/v3/sidebar/presentation.css', 'sidebar release manifest must contain the V3 presentation stylesheet');
+assert.equal(sourceManifest.files?.[sidebarVisualTokens]?.entry_point, 'web/v3/shared/ui/visualTokens.css', 'sidebar release manifest must contain shared visual tokens');
 const sidebarHTML = fs.readFileSync(path.join(stage, 'sidebar', 'index.html'), 'utf8');
 const sidebarScripts = [...sidebarHTML.matchAll(/<script(?:(?:\s+type="module")|(?:\s+async))*\s+src="([^"]+)"><\/script>/g)].map((match) => match[1]);
 assert.deepEqual(sidebarScripts, [`../${surfaceFeedbackHost}`, weComJSSDK, `../${sidebarImageResourceLoader}`, `../${sidebarHost}`], 'staged sidebar document must preserve feedback, JSSDK, standard image loader, and V3 Host order');
@@ -125,6 +129,8 @@ assert.ok(sidebarHTML.includes('data-ui-surface="sidebar"'), 'staged sidebar doc
 assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), 'staged sidebar document does not load surface feedback styles');
 assert.ok(sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`), 'staged sidebar document must pass the hashed dd8 overlay only to the V3 Host');
 assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${sidebarStandardStyles}">`), 'staged sidebar document must load the hashed standard stylesheet');
+assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${sidebarVisualTokens}">`), 'staged sidebar document must load shared visual tokens');
+assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${sidebarPresentationStyles}">`), 'staged sidebar document must load the V3 presentation stylesheet');
 assert.ok(!sidebarHTML.includes('https://res.wx.qq.com/open/js/jweixin-1.6.0.js'), 'staged sidebar document still loads the generic JSSDK that blocks agentConfig');
 assert.equal(stagedManifest.entries?.h5, sourceManifest.entries?.h5, 'previous Survey stage was removed');
 assert.ok(fs.existsSync(path.join(stage, 'h5', 'index.html')), 'previous Survey public stage was removed');
@@ -177,7 +183,7 @@ try {
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-survey-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   const before = fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json'));
   const requiredAssets = [
-    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet'], ['selectionDialogStyles', 'selection dialog stylesheet'], ['confirmationDialogHost', 'confirmation dialog Host'], ['confirmationDialogStyles', 'confirmation dialog stylesheet'], ['sharedVisualTokens', 'shared visual tokens'], ['componentStatesStyles', 'component state stylesheet'], ['componentStatesHost', 'component state Host'], ['publicCommerceHost', 'public commerce Host'], ['publicCommerceStyles', 'public commerce stylesheet'], ['navigationHost', 'shared navigation Host'], ['overviewAdmin', 'overview Host'], ['overviewStyles', 'overview stylesheet']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
+    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet'], ['sidebarPresentationStyles', 'sidebar presentation stylesheet'], ['selectionDialogStyles', 'selection dialog stylesheet'], ['confirmationDialogHost', 'confirmation dialog Host'], ['confirmationDialogStyles', 'confirmation dialog stylesheet'], ['sharedVisualTokens', 'shared visual tokens'], ['componentStatesStyles', 'component state stylesheet'], ['componentStatesHost', 'component state Host'], ['publicCommerceHost', 'public commerce Host'], ['publicCommerceStyles', 'public commerce stylesheet'], ['navigationHost', 'shared navigation Host'], ['overviewAdmin', 'overview Host'], ['overviewStyles', 'overview stylesheet']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
     ...['assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'].map((relative) => ({ relative, label: `passive standard asset ${relative}`, entry: false })),
   ];
   for (const { relative: missing, label, entry } of requiredAssets) {
