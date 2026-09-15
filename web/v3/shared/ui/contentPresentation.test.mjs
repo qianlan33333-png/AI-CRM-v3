@@ -60,7 +60,9 @@ assert.equal(noThumbnailMaterial.classList.contains('aicrm-content-presentation_
 assert.equal(noThumbnailMaterial.querySelector('.aicrm-content-presentation__visual'), null, 'a material without a thumbnail does not reserve a visual cell');
 assert.equal(thumbnailMaterial.classList.contains('aicrm-content-presentation__material--without-thumbnail'), false, 'an actual controlled thumbnail retains its visual column');
 const thumbnail = thumbnailMaterial.querySelector('img');
+assert.equal(thumbnailMaterial.querySelector('.aicrm-content-presentation__visual').dataset.materialThumbnailState, 'loading', 'content uses the shared loading state before a controlled thumbnail settles');
 thumbnail.dispatchEvent(new Event('error'));
+assert.equal(thumbnailMaterial.querySelector('.aicrm-content-presentation__visual').dataset.materialThumbnailState, 'error', 'content uses the shared error state after a thumbnail failure');
 assert.equal(target.textContent.includes('缩略图暂不可用'), true, 'a controlled thumbnail has an explicit local fallback');
 assert.equal(thumbnailMaterial.classList.contains('aicrm-content-presentation__material--without-thumbnail'), false, 'a failed thumbnail keeps the visual column for its explicit fallback');
 mod.renderContentPresentation(target, { mode: 'preview', package: { content_text: ' 前后空白 ' }, normalizeText: preserveText });

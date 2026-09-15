@@ -186,6 +186,12 @@ assert.ok(dom.window.document.body.textContent.includes("默认启用素材"), "
 assert.ok(dom.window.document.body.textContent.includes("已启用"), "enabled image did not render a Chinese status");
 assert.ok(dom.window.document.body.textContent.includes("2026-09-12 08:00:00"), "image time did not render in Asia/Shanghai YYYY-MM-DD HH:mm:ss form");
 assert.ok(!dom.window.document.body.textContent.includes("2026-09-12T00:00:00Z"), "raw ISO time leaked into the image workspace");
+const initialThumbnail = dom.window.document.querySelector('[data-image-library-thumbnail="true"]');
+const initialImage = initialThumbnail?.querySelector('img');
+assert.equal(initialThumbnail?.dataset.materialThumbnailState, "loading", "source-owned card exposes the shared thumbnail loading state");
+initialImage?.dispatchEvent(new dom.window.Event('error'));
+assert.equal(initialThumbnail?.dataset.materialThumbnailState, "error", "a source-owned card keeps the shared thumbnail error state");
+assert.match(initialThumbnail?.textContent || "", /图片预览暂不可用/, "image card error has a visible fallback");
 
 let current = controls();
 current.input.value = "旧";
