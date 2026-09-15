@@ -12,6 +12,7 @@ import { downloadQr, renderQr } from '../src/admin/sections/qr';
 import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
+import { mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins } from './shared/ui/pageHeaderActions';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -1418,6 +1419,79 @@ function productPrefix(): 'pf' | 'spf' | '' {
   if (typeof document === 'undefined' || !document.body) return '';
   return document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
 }
+
+// The frozen editors already own their return/save controls. Relocate those
+// exact nodes into the one shell header so their existing callback, busy state,
+// and validation behaviour stay intact; dimension-local saves remain in place.
+type ProductEditorHeaderActions = {
+  title: HTMLHeadingElement;
+  source: HTMLElement;
+  elements: readonly HTMLButtonElement[];
+  cleanup: () => void;
+};
+
+const productEditorHeaderOwner = 'product-editor';
+let mountedProductEditorHeaderActions: ProductEditorHeaderActions | undefined;
+
+function productEditorHeaderActionSource(): { title: HTMLHeadingElement; source: HTMLElement; elements: readonly HTMLButtonElement[] } | undefined {
+  // JSDOM can flush a queued donor mutation after its Window closes; a disposed
+  // document has no editor and must not keep the test/browser lifecycle alive.
+  if (typeof document === 'undefined' || !document.documentElement || !document.defaultView) return undefined;
+  const route = productEditorRoute();
+  const stage = document.getElementById('stage');
+  if (!route || !stage) return undefined;
+  const editorTitle = route.prefix === 'pf' ? '编辑普通商品' : '编辑周期商品';
+  const title = Array.from(stage.querySelectorAll<HTMLHeadingElement>('h2'))
+    .find((candidate) => candidate.textContent?.trim() === editorTitle);
+  const headerRow = title?.parentElement?.parentElement;
+  if (!title || !headerRow) return undefined;
+  const returnLabel = route.prefix === 'pf' ? '返回商品管理' : '返回周期商品管理';
+  const returnControl = Array.from(headerRow.querySelectorAll<HTMLButtonElement>('button'))
+    .find((candidate) => candidate.textContent?.trim() === returnLabel);
+  const saveControl = Array.from(headerRow.querySelectorAll<HTMLButtonElement>('button'))
+    .find((candidate) => candidate.textContent?.trim() === '保存当前维度');
+  const source = returnControl?.parentElement;
+  if (!returnControl || !saveControl || !(source instanceof HTMLElement) || !source.contains(saveControl)) return undefined;
+  return { title, source, elements: [returnControl, saveControl] };
+}
+
+function clearProductEditorHeaderActions(): void {
+  const mounted = mountedProductEditorHeaderActions;
+  if (!mounted) return;
+  mounted.cleanup();
+  mounted.source.hidden = false;
+  mounted.title.hidden = false;
+  mounted.title.removeAttribute('aria-hidden');
+  mountedProductEditorHeaderActions = undefined;
+}
+
+function mountProductEditorHeaderActions(): void {
+  if (typeof document === 'undefined' || !document.documentElement || !document.defaultView) return;
+  const source = productEditorHeaderActionSource();
+  if (!source || !document.querySelector('.admin-topbar')) {
+    if (mountedProductEditorHeaderActions && !pageHeaderActionElementsHaveConnectedOrigins(productEditorHeaderOwner, mountedProductEditorHeaderActions.elements)) {
+      clearProductEditorHeaderActions();
+    }
+    return;
+  }
+  const current = mountedProductEditorHeaderActions;
+  if (current?.title === source.title && current.source === source.source &&
+    pageHeaderActionElementsHaveConnectedOrigins(productEditorHeaderOwner, current.elements)) return;
+  clearProductEditorHeaderActions();
+  const cleanup = mountPageHeaderActionElements(productEditorHeaderOwner, source.elements);
+  if (!source.elements.every((element) => element.dataset.pageHeaderActionElement === productEditorHeaderOwner)) return;
+  // The shell title is the page's single visible title. Keep the frozen product
+  // summary metrics and the per-dimension commands below it unchanged.
+  source.title.hidden = true;
+  source.title.setAttribute('aria-hidden', 'true');
+  source.source.hidden = true;
+  mountedProductEditorHeaderActions = { ...source, cleanup };
+}
+
+const productEditorHeaderActionObserver = new MutationObserver(mountProductEditorHeaderActions);
+productEditorHeaderActionObserver.observe(document, { childList: true, subtree: true });
+mountProductEditorHeaderActions();
+window.addEventListener('pagehide', () => productEditorHeaderActionObserver.disconnect(), { once: true });
 
 function productActionState(prefix: string): PurchaseActionDOM {
   const route = productEditorRoute();

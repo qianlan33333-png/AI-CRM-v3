@@ -129,8 +129,15 @@ const reopened = new JSDOM(page, { url: 'https://test.invalid/admin/service-peri
     return fixtureFetch(input, init);
   };
 } });
+reopened.window.document.body.insertAdjacentHTML('afterbegin', '<header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">周期商品管理</h1></div></header>');
 reopened.window.eval(host);  reopened.window.document.dispatchEvent(new reopened.window.Event('DOMContentLoaded'));
 await waitFor(() => reopened.window.document.querySelector('[data-product-purchase-enabled]'), 'saved periodic action controls did not reopen');
+await waitFor(() => reopened.window.document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button').length === 2, 'periodic topbar must receive the existing return and save controls');
+assert.equal(reopened.window.document.querySelectorAll('.admin-topbar .admin-page-title').length, 1, 'periodic editor retains the shell title as the only header title');
+assert.deepEqual([...reopened.window.document.querySelectorAll('.admin-topbar [data-page-header-actions="product-editor"] button')].map((button) => button.textContent.trim()), ['返回周期商品管理', '保存当前维度'], 'periodic topbar retains the existing commands in their original order');
+const periodicEditorTitle = [...reopened.window.document.querySelectorAll('#stage h2')].find((heading) => heading.textContent.trim() === '编辑周期商品');
+assert.ok(periodicEditorTitle?.hidden, 'periodic body summary must not repeat the shell header title');
+assert.equal([...reopened.window.document.querySelectorAll('#stage button')].some((button) => button.textContent.trim() === '返回周期商品管理'), false, 'periodic body summary must not retain a second return control');
 assert.equal(reopened.window.document.querySelector('[data-product-purchase-enabled]').checked, true, 'reopening must retain the saved action switch');
 assert.equal(reopened.window.document.querySelector('input[name="spfPurchaseActionMode"][value="redirect"]').checked, true, 'reopening must retain redirect mode');
 assert.equal(reopened.window.document.querySelector('[data-product-tag-enabled]').checked, false, 'saved disabled tags must not be silently enabled from nonempty selections');

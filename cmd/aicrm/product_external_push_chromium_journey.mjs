@@ -215,6 +215,31 @@ try {
     return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} binding=${page?.businessBinding === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
   };
 
+  const assertProductEditorHeader = async (kind, title, returnLabel) => {
+    for (const width of [1280, 1440]) {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      const layout = await evaluate(cdp, `(() => {
+        const topbar = document.querySelector('.admin-topbar');
+        const actions = Array.from(topbar?.querySelectorAll('[data-page-header-actions="product-editor"] button') || []);
+        const bodyTitle = Array.from(document.querySelectorAll('#stage h2')).find((node) => node.textContent?.trim() === ${JSON.stringify(title)});
+        const bodyReturn = Array.from(document.querySelectorAll('#stage button')).some((button) => button.textContent?.trim() === ${JSON.stringify(returnLabel)});
+        return {
+          topbars: document.querySelectorAll('.admin-topbar').length,
+          shellTitles: topbar?.querySelectorAll('.admin-page-title').length || 0,
+          actions: actions.map((button) => button.textContent?.trim()),
+          actionsFit: actions.every((button) => button.getBoundingClientRect().right <= window.innerWidth),
+          bodyTitleHidden: bodyTitle instanceof HTMLElement && bodyTitle.hidden,
+          bodyReturn,
+          width: window.innerWidth,
+        };
+      })()`);
+      if (!layout || layout.topbars !== 1 || layout.shellTitles !== 1 || layout.width !== width ||
+        layout.actions.join('|') !== `${returnLabel}|保存当前维度` || !layout.actionsFit || !layout.bodyTitleHidden || layout.bodyReturn) {
+        throw new Error(`${kind} editor header layout invalid at ${width}: ${JSON.stringify(layout)}`);
+      }
+    }
+  };
+
   const productPath = "/admin/wechat-pay/productForm.html?id=" + productID;
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(productPath) });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
@@ -230,6 +255,7 @@ try {
   if (!await evaluate(cdp, `(() => { const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '=')); return hasCookie('aicrm_admin_csrf') && hasCookie('aicrm_csrf'); })()`)) {
     throw new Error("product Host did not receive CSRF session bridge " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('ordinary', '编辑普通商品', '返回商品管理');
   // The list Host owns the lifecycle buttons. Exercise the real browser
   // session, CSRF header and CAS endpoint once in each direction before the
   // form journey, leaving the seeded fixture enabled for its remaining steps.
@@ -319,6 +345,7 @@ try {
   } catch (_) {
     throw new Error("service-period product Host did not render " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('service-period', '编辑周期商品', '返回周期商品管理');
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "service-period product configuration did not load");
   } catch (_) {
