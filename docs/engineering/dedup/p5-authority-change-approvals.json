@@ -665,6 +665,28 @@
       ],
       "reason": "Add the root-approved read-only admin operating overview contract while preserving the independently merged audience Webhook and migration-role contracts; frozen donors remain unchanged.",
       "review_reference": "Root review of the approved operating overview data-source, authorization and missing-evidence contract on 2026-09-15"
+    },
+    {
+      "base_commit": "de567042885a364adc36037b20fa733ea8a02e82",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "0eea111c7d7e65253cb34372be0141589f7a9b6979d54d6c492800087e8d46f3",
+          "head_sha256": "6256bd8590a537f33aca33199092e7014f9eb730999ee96940a035c99db6debf"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "2bb2bfa46734773568cd34b30c5860d706b1475b52b4ced03ad4bd7dd3aefa76",
+          "head_sha256": "4c097fdd45e6644b061505a399284c4b2ec578b0ca3ff470b1d078c24e3ce478"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "12e221c3f0d06018d90124400fd1383690be90d833bdf65970f19d90ebfb63db",
+          "head_sha256": "129ffb73f31e196c850638222008cd90f5d18c62e3d097ebf69a0f75e2094fc8"
+        }
+      ],
+      "reason": "Record the Root-reviewed canonical payer-count availability contract: a completed overview omits the count rather than reporting zero when its bounded current-root read cannot complete; frozen donors remain unchanged.",
+      "review_reference": "Root review of the canonical payer read design, API contract and #299 consumer behavior on 2026-09-15; final PR review remains required"
     }
   ]
 }
