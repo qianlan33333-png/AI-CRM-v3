@@ -122,20 +122,31 @@ try {
     submission_count: 0, answer_display_mode: 'after_submit', assessment_config: {}, slug: 'directory-questionnaire',
     questions: [], score_rules: [], version: 1,
   };
-  let directoryMode = 'empty';
+  let directoryMode = '503';
+  let resolveStaleRead;
   dom.window.fetch = async (url) => {
     if (new URL(String(url), dom.window.location.href).pathname !== '/api/admin/questionnaires') throw new Error(`unexpected directory request: ${url}`);
     if (directoryMode === '503') return new Response(JSON.stringify({ code: 'temporary_failure' }), { status: 503 });
+    if (directoryMode === '401') return new Response(JSON.stringify({ code: 'unauthenticated' }), { status: 401 });
     if (directoryMode === '403') return new Response(JSON.stringify({ code: 'forbidden' }), { status: 403 });
+    if (directoryMode === 'malformed') return new Response(JSON.stringify({ items: {} }), { status: 200 });
+    if (directoryMode === 'stale') return new Promise(resolve => { resolveStaleRead = resolve; });
     return new Response(JSON.stringify({ items: directoryMode === 'empty' ? [] : [listItem] }), { status: 200 });
   };
   const readController = new dom.window.SurveyControllerFixture(dom.window.SurveyApiFixture, 'questionnaires');
-  await readController.init();
   dom.window.SurveyMountFixture(dom.window.document.getElementById('stage'), transform(readFileSync(path.join(root, 'web/src/admin/templates/questionnaires.html'), 'utf8')), readController);
+  await assert.rejects(() => readController.init());
   await pause();
-  assert.equal(dom.window.document.querySelector('[data-surface-table-read-state="empty"]')?.textContent, '当前暂无问卷，可通过右上角创建新问卷。', 'a confirmed empty directory renders the shared empty state');
+  const initialFailure = dom.window.document.querySelector('[data-surface-table-read-state="error"]');
+  assert.match(initialFailure?.textContent || '', /问卷列表暂时无法读取/, 'a fresh 503 renders a recoverable state rather than an empty directory');
+  directoryMode = 'empty';
+  initialFailure.querySelector('button').click();
+  await pause();
+  await pause();
+  assert.equal(dom.window.document.querySelector('[data-surface-table-read-state="empty"]')?.textContent, '当前暂无问卷，可通过右上角创建新问卷。', 'initial failure retry reuses the directory reader and recovers to the confirmed empty state');
 
   directoryMode = 'one';
+  await readController.init();
   await readController.init();
   readController.state.questionnaireQuery = 'absent';
   readController.__render();
@@ -145,6 +156,15 @@ try {
   readController.state.questionnaireQuery = '';
   readController.__render();
   await pause();
+  directoryMode = 'malformed';
+  await assert.rejects(() => readController.init());
+  await pause();
+  assert.match(dom.window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent || '', /暂时无法读取/, 'malformed 2xx cannot be normalized into an empty directory');
+  directoryMode = 'one';
+  dom.window.document.querySelector('[data-surface-table-read-state="error"] button').click();
+  await pause();
+  await pause();
+
   directoryMode = '503';
   await assert.rejects(() => readController.init());
   await pause();
@@ -164,6 +184,23 @@ try {
   assert.match(forbidden?.textContent || '', /没有查看问卷列表的权限/, '403 clears stale directory data and explains the access boundary');
   assert.equal(forbidden.querySelector('button'), null, 'authorization failure does not offer a retry against an unchanged access boundary');
   assert.equal([...dom.window.document.querySelectorAll('tbody tr')].filter(row => !row.dataset.surfaceTableReadState).length, 0, '403 removes prior authorized rows');
+
+  directoryMode = 'one';
+  await readController.init();
+  directoryMode = '401';
+  await assert.rejects(() => readController.init());
+  await pause();
+  assert.match(dom.window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent || '', /登录状态已失效/, '401 clears loaded rows with its distinct authentication message');
+
+  directoryMode = 'stale';
+  const staleRead = readController.init();
+  directoryMode = 'one';
+  await readController.init();
+  resolveStaleRead(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+  await assert.rejects(() => staleRead);
+  await pause();
+  assert.equal(dom.window.document.querySelector('[data-surface-table-read-state]'), null, 'a late stale read cannot overwrite the latest successful directory state');
+  assert.ok([...dom.window.document.querySelectorAll('tbody tr')].some(row => row.textContent.includes('directory-questionnaire')), 'the latest directory result remains visible after a stale response resolves');
 } finally {
   dom.window.close();
 }

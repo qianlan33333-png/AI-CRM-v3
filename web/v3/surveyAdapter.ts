@@ -5,8 +5,10 @@
 // the exact body and idempotency key rather than asking the server to delete
 // whatever version happens to be current later.
 
-import { request } from '../src/api/transport';
+import { apiRequestOptions, request, unwrapGenerated } from '../src/api/transport';
 import { api } from '../src/shared/api/client';
+import { emptyAdminDb, questionnairePageDto } from '../src/api/admin';
+import { listLegacyQuestionnaires } from '../src/api/generated/p4-survey-compat/p4-survey-compat';
 import { confirmBox, toast } from '../src/shared/ui/feedback';
 import { renderTableReadState } from './shared/ui/tableReadState';
 
@@ -27,6 +29,7 @@ type SurveyListController = {
   state?: { questionnaireQuery?: unknown; questionnaireStatus?: unknown };
   init(): Promise<void>;
   renderVals(): Record<string, unknown>;
+  __render?: () => void;
 };
 type ArchiveIntent = { expectedVersion: number; key: string; body: string };
 
@@ -43,6 +46,14 @@ class SurveyReadSupersededError extends Error {
 }
 
 const donorLoadDb = api.loadDb.bind(api);
+
+async function readQuestionnaireDirectory() {
+  const data = unwrapGenerated(await listLegacyQuestionnaires({ limit: 50, offset: 0 }, apiRequestOptions()));
+  if (!data || !Array.isArray(data.items)) throw new Error('问卷目录响应不完整');
+  const db = emptyAdminDb();
+  db.rows.questionnaires = data.items.map(questionnairePageDto);
+  return db;
+}
 let surveyReadGeneration = 0;
 let activeSurveyReadGeneration = 0;
 let surveyHasSuccessfulRead = false;
@@ -160,9 +171,10 @@ api.loadDb = async context => {
   const generation = ++surveyReadGeneration;
   activeSurveyReadGeneration = generation;
   try {
-    const db = await donorLoadDb(context);
+    // Validate the exact generated DTO before the frozen aggregate reader can
+    // normalize a malformed 2xx list into an indistinguishable empty array.
+    const db = await readQuestionnaireDirectory();
     if (generation !== activeSurveyReadGeneration) throw new SurveyReadSupersededError();
-    if (!Array.isArray(db?.rows?.questionnaires)) throw new Error('问卷目录响应不完整');
     recordSurveyReadSuccess();
     return db;
   } catch (error) {
@@ -237,6 +249,20 @@ void (async () => {
   // @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
   const { AdminController } = await import('../src/admin/controller');
   const controller = AdminController.prototype as unknown as SurveyListController;
+  const donorInit = controller.init;
+  controller.init = async function initSurveyListWithReadState() {
+    try {
+      return await donorInit.call(this);
+    } catch (error) {
+      if (this.page !== 'questionnaires') throw error;
+      lastSurveyListController = this;
+      if (surveyAuthorizationRevoked) this.db.rows.questionnaires = [];
+      const filters = currentSurveyFilters(this);
+      renderSurveyReadState(this, surveyAuthorizationRevoked ? [] : lastVisibleSurveyRows, filters.query, filters.status);
+      this.__render?.();
+      throw error;
+    }
+  };
   const donorRenderVals = controller.renderVals;
   controller.renderVals = function renderSurveyListWithArchiveAction() {
     if (this.page !== 'questionnaires') return donorRenderVals.call(this);
