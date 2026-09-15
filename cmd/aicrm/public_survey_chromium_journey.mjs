@@ -129,5 +129,8 @@ try {
   throw error;
 } finally {
   await closeBrowser(browser);
-  try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 }); } catch (error) { if (!failed) throw error; }
+  // Chromium can finish a late profile write after its root process exits. Retry
+  // only this temporary-profile removal; a successful journey still reports an
+  // actual cleanup failure once the bounded retry window is exhausted.
+  try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch (error) { if (!failed) throw error; }
 }
