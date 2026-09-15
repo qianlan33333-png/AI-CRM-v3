@@ -5,14 +5,18 @@ import { createFieldMappingEditor, type FieldMapping, type MappingField, type Ma
 import { api } from '../src/shared/api/client';
 // @ts-ignore Byte-frozen controller; navigation is adapted only at the Host.
 import { AdminController } from '../src/admin/controller';
-import { apiRequestOptions } from '../src/api/transport';
+import { apiRequestOptions, request } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
 import { emptyAdminDb, productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr, renderQr } from '../src/admin/sections/qr';
 import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
+import { mountTableActionMenu, type TableActionMenu } from './shared/ui/tableActionMenu';
+import { mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins } from './shared/ui/pageHeaderActions';
+import { formatShanghaiDateTime } from './adminDateTime';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord } from './shared/ui/materialPickerAdapter';
+import { renderMaterialThumbnail } from './shared/ui/materialThumbnailPresentation';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -92,6 +96,8 @@ let loadedProducts: ProductProjection[] = [];
 const openedProductPayloads = new Map<number, RecordValue>();
 const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
 const productLifecycleKeys = new Map<string, string>();
+type ProductLifecycleActionContext = { product: ProductProjection; row: HTMLTableRowElement; container: HTMLElement; page: 'products' };
+const productLifecycleActionContexts = new WeakMap<HTMLButtonElement, ProductLifecycleActionContext>();
 type ProductArchiveIntent = { key: string; body: string };
 const productArchiveIntents = new Map<string, ProductArchiveIntent>();
 
@@ -133,7 +139,7 @@ function productLifecycleKey(productID: number, version: number, enabled: boolea
   return key;
 }
 
-type ProductArchiveRow = { resourceId?: number; version?: number; name?: string };
+type ProductArchiveRow = { resourceId?: number; version?: number; name?: string; status?: string; updated?: string; toggle?: (event: Event) => void };
 type ProductArchiveController = { init(): Promise<void>; db: { rows: { products: ProductArchiveRow[]; spProducts: ProductArchiveRow[] } } };
 
 async function archiveProduct(controller: ProductArchiveController, kind: 'ordinary' | 'service-period', row: ProductArchiveRow): Promise<void> {
@@ -767,24 +773,36 @@ async function toggleProductLifecycle(button: HTMLButtonElement, product: Produc
   window.setTimeout(() => location.reload(), 550);
 }
 
-document.addEventListener('click', (event) => {
-  if (document.body.dataset.page !== 'products') return;
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  const button = target.closest('button');
-  if (!button || (button.textContent?.trim() !== '启用' && button.textContent?.trim() !== '停用')) return;
-  const row = button.closest('tbody tr');
-  const index = Array.from(row?.parentElement?.querySelectorAll(':scope > tr') || []).indexOf(row as HTMLTableRowElement);
-  const product = loadedProducts[index];
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  if (!product) return showMessage('商品缺少服务端 ID，未发送状态变更请求');
+function runProductLifecycleAction(button: HTMLButtonElement, product: ProductProjection): void {
+  const context = productLifecycleActionContexts.get(button);
+  if (!context || context.page !== 'products' || !context.row.isConnected || !context.container.isConnected) {
+    return showMessage('商品操作上下文已失效，请刷新列表后重试；未发送状态变更请求');
+  }
+  // The frozen template binds the handler supplied by renderVals to this exact
+  // row. The presentation pass may only use its index to retain the source
+  // row/container while it rehomes the existing button. Never let a later
+  // projection turn that button into a command for another Product.
+  if (context.product.resourceId !== product.resourceId || context.product.version !== product.version || context.product.lifecycle !== product.lifecycle) {
+    return showMessage('商品列表已更新，请刷新后重试；未发送状态变更请求');
+  }
+  const current = loadedProducts.find((item) => item.resourceId === product.resourceId);
+  if (!current || current.version !== product.version || current.lifecycle !== product.lifecycle) {
+    return showMessage('商品列表已更新，请刷新后重试；未发送状态变更请求');
+  }
   void toggleProductLifecycle(button, product).catch((error) => {
     button.disabled = false;
     button.textContent = product.lifecycle === 'enabled' ? '停用' : '启用';
     showMessage(error instanceof Error ? error.message : '商品状态变更失败');
   });
-}, true);
+}
+
+function lifecycleProjection(row: ProductArchiveRow): ProductProjection | undefined {
+  const product = row as ProductProjection;
+  const version = product.version;
+  if (!Number.isSafeInteger(product.resourceId) || product.resourceId < 1 || typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) return undefined;
+  if (product.lifecycle !== 'draft' && product.lifecycle !== 'enabled' && product.lifecycle !== 'disabled') return undefined;
+  return product;
+}
 
 type ExternalPushPage = {
   productID: number;
@@ -1364,8 +1382,35 @@ function mountProductTagPicker(): void {
   });
 }
 
-const productStandardObserver = new MutationObserver(mountProductTagPicker);
-productStandardObserver.observe(document, { childList: true, subtree: true });
+// JSDOM does not emit pagehide when a test Window is closed. All Product Host
+// observers therefore own their teardown and also fail closed if a queued
+// mutation is delivered after its document has been destroyed.
+function productDocumentIsActive(): boolean {
+  try {
+    return document.defaultView === window && document.documentElement !== null && document.body !== null;
+  } catch {
+    return false;
+  }
+}
+
+function observeProductDocument(callback: () => void): MutationObserver {
+  let observer: MutationObserver;
+  const run = (): void => {
+    if (!productDocumentIsActive()) {
+      observer.disconnect();
+      return;
+    }
+    callback();
+  };
+  observer = new MutationObserver(run);
+  observer.observe(document, { childList: true, subtree: true });
+  const dispose = (): void => observer.disconnect();
+  window.addEventListener('pagehide', dispose, { once: true });
+  window.addEventListener('unload', dispose, { once: true });
+  return observer;
+}
+
+const productStandardObserver = observeProductDocument(mountProductTagPicker);
 mountProductTagPicker();
 
 type PurchaseActionMode = '' | 'qr' | 'redirect';
@@ -1376,6 +1421,93 @@ function productPrefix(): 'pf' | 'spf' | '' {
   if (typeof document === 'undefined' || !document.body) return '';
   return document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
 }
+
+// The frozen editors already own their return/save controls. Relocate those
+// exact nodes into the one shell header so their existing callback, busy state,
+// and validation behaviour stay intact; dimension-local saves remain in place.
+type ProductEditorHeaderActions = {
+  title: HTMLHeadingElement;
+  source: HTMLElement;
+  frozenHeader?: HTMLElement;
+  elements: readonly HTMLButtonElement[];
+  cleanup: () => void;
+};
+
+const productEditorHeaderOwner = 'product-editor';
+let mountedProductEditorHeaderActions: ProductEditorHeaderActions | undefined;
+
+function productEditorHeaderActionSource(): { title: HTMLHeadingElement; source: HTMLElement; frozenHeader?: HTMLElement; elements: readonly HTMLButtonElement[] } | undefined {
+  // JSDOM can flush a queued donor mutation after its Window closes; a disposed
+  // document has no editor and must not keep the test/browser lifecycle alive.
+  if (typeof document === 'undefined' || !document.documentElement || !document.defaultView) return undefined;
+  const prefix = productPrefix();
+  const stage = document.getElementById('stage');
+  if (!prefix || !stage) return undefined;
+  const editorTitles = prefix === 'pf' ? ['编辑普通商品', '创建普通商品'] : ['编辑周期商品', '创建周期商品'];
+  const title = Array.from(stage.querySelectorAll<HTMLHeadingElement>('h2'))
+    .find((candidate) => editorTitles.includes(candidate.textContent?.trim() || ''));
+  const headerRow = title?.parentElement?.parentElement;
+  if (!title || !headerRow) return undefined;
+  const returnLabel = prefix === 'pf' ? '返回商品管理' : '返回周期商品管理';
+  const returnControl = Array.from(headerRow.querySelectorAll<HTMLButtonElement>('button'))
+    .find((candidate) => candidate.textContent?.trim() === returnLabel);
+  const saveControl = Array.from(headerRow.querySelectorAll<HTMLButtonElement>('button'))
+    .find((candidate) => candidate.textContent?.trim() === '保存当前维度');
+  const source = returnControl?.parentElement;
+  if (!returnControl || !saveControl || !(source instanceof HTMLElement) || !source.contains(saveControl)) return undefined;
+  const summaryCard = headerRow.parentElement;
+  const donorWorkspace = summaryCard?.parentElement;
+  const frozenHeader = donorWorkspace?.previousElementSibling;
+  // This exact sibling is the frozen 52px donor header. Mark it only after
+  // checking its structural contract; normal Product content is never hidden.
+  const duplicateHeader = frozenHeader instanceof HTMLElement && frozenHeader.style.height === '52px' &&
+    frozenHeader.style.display === 'flex' && frozenHeader.querySelector('a') ? frozenHeader : undefined;
+  return { title, source, frozenHeader: duplicateHeader, elements: [returnControl, saveControl] };
+}
+
+function clearProductEditorHeaderActions(): void {
+  const mounted = mountedProductEditorHeaderActions;
+  if (!mounted) return;
+  mounted.cleanup();
+  mounted.source.hidden = false;
+  if (mounted.frozenHeader) {
+    mounted.frozenHeader.hidden = false;
+    delete mounted.frozenHeader.dataset.v3ProductFrozenHeader;
+  }
+  mounted.title.hidden = false;
+  mounted.title.removeAttribute('aria-hidden');
+  mountedProductEditorHeaderActions = undefined;
+}
+
+function mountProductEditorHeaderActions(): void {
+  if (typeof document === 'undefined' || !document.documentElement || !document.defaultView) return;
+  const source = productEditorHeaderActionSource();
+  if (!source || !document.querySelector('.admin-topbar')) {
+    if (mountedProductEditorHeaderActions && !pageHeaderActionElementsHaveConnectedOrigins(productEditorHeaderOwner, mountedProductEditorHeaderActions.elements)) {
+      clearProductEditorHeaderActions();
+    }
+    return;
+  }
+  const current = mountedProductEditorHeaderActions;
+  if (current?.title === source.title && current.source === source.source &&
+    pageHeaderActionElementsHaveConnectedOrigins(productEditorHeaderOwner, current.elements)) return;
+  clearProductEditorHeaderActions();
+  const cleanup = mountPageHeaderActionElements(productEditorHeaderOwner, source.elements);
+  if (!source.elements.every((element) => element.dataset.pageHeaderActionElement === productEditorHeaderOwner)) return;
+  // The shell title is the page's single visible title. Keep the frozen product
+  // summary metrics and the per-dimension commands below it unchanged.
+  source.title.hidden = true;
+  source.title.setAttribute('aria-hidden', 'true');
+  source.source.hidden = true;
+  if (source.frozenHeader) {
+    source.frozenHeader.hidden = true;
+    source.frozenHeader.dataset.v3ProductFrozenHeader = 'hidden';
+  }
+  mountedProductEditorHeaderActions = { ...source, cleanup };
+}
+
+const productEditorHeaderActionObserver = observeProductDocument(mountProductEditorHeaderActions);
+mountProductEditorHeaderActions();
 
 function productActionState(prefix: string): PurchaseActionDOM {
   const route = productEditorRoute();
@@ -1525,14 +1657,11 @@ function mountPurchaseActionControls(): void {
   purchaseActionControls(prefix);
 }
 
-const purchaseActionObserver = new MutationObserver(mountPurchaseActionControls);
-purchaseActionObserver.observe(document, { childList: true, subtree: true });
+const purchaseActionObserver = observeProductDocument(mountPurchaseActionControls);
 mountPurchaseActionControls();
-const distributionPolicyObserver = new MutationObserver(mountDistributionPolicyControls);
-distributionPolicyObserver.observe(document, { childList: true, subtree: true });
+const distributionPolicyObserver = observeProductDocument(mountDistributionPolicyControls);
 mountDistributionPolicyControls();
-const servicePeriodDurationObserver = new MutationObserver(mountNewServicePeriodDuration);
-servicePeriodDurationObserver.observe(document, { childList: true, subtree: true });
+const servicePeriodDurationObserver = observeProductDocument(mountNewServicePeriodDuration);
 mountNewServicePeriodDuration();
 
 type ProductMaterial = MaterialPickerRecord & { metadata: RecordValue };
@@ -1702,8 +1831,7 @@ function mountProductDimensions(): void {
   }
   select(nav.dataset.productDimension || first);
 }
-const productDimensionsObserver = new MutationObserver(mountProductDimensions);
-productDimensionsObserver.observe(document, { childList: true, subtree: true });
+const productDimensionsObserver = observeProductDocument(mountProductDimensions);
 mountProductDimensions();
 
 // A successful dimension save updates this editor rather than invoking the
@@ -1743,8 +1871,18 @@ type ProductController = {
   currentCommerceImageUrls(kind: 'product' | 'service'): string[];
   setCommerceImageUrls(kind: 'product' | 'service', urls: string[]): void;
   pickCommerceImages(kind: 'product' | 'service'): void;
+  removeCommerceImage(kind: 'product' | 'service', url: string): void;
+  uploadCommerceImage(kind: 'product' | 'service', event: Event): void;
 };
 const productController = AdminController.prototype as unknown as ProductController;
+// The frozen controller is a prototype. Track the live editor instance before
+// it mounts so V3 presentation work never reads or writes prototype state.
+let activeProductMaterialController: ProductController | undefined;
+const donorProductInit = productController.init;
+productController.init = async function () {
+  activeProductMaterialController = this;
+  return donorProductInit.call(this);
+};
 const donorProductQuery = productController.qs;
 productController.qs = function () {
   const query = donorProductQuery.call(this);
@@ -1791,6 +1929,7 @@ type ProductPickerContext = {
   kind: 'product' | 'service';
   page: string;
   locationKey: string;
+  dimension: string;
   draft: string[];
   draftKey: string;
 };
@@ -1810,17 +1949,358 @@ function productPickerContext(controller: ProductController, kind: 'product' | '
   let locationKey: string;
   try { locationKey = `${location.pathname}${location.search}`; } catch { return undefined; }
   const draft = [...controller.currentCommerceImageUrls(kind)];
-  return { controller, kind, page: controller.page, locationKey, draft, draftKey: productPickerDraftKey(draft) };
+  return {
+    controller, kind, page: controller.page, locationKey,
+    dimension: activeProductDimension(expectedPrefix),
+    draft, draftKey: productPickerDraftKey(draft),
+  };
 }
 
 function productPickerContextIsCurrent(context: ProductPickerContext): boolean {
   const current = productPickerContext(context.controller, context.kind);
-  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.draftKey === context.draftKey);
+  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.dimension === context.dimension && current.draftKey === context.draftKey);
 }
 
 function productPickerPreopenIsCurrent(preopen: ProductPickerPreopen): boolean {
   return productPickerPreopen?.generation === preopen.generation && productPickerContextIsCurrent(preopen);
 }
+
+type ProductMaterialEditorContext = ProductPickerContext & { productID: number; version: number };
+type ProductControllerDraftState = { state?: { pfImageUrls?: string[] | null; spfImageUrls?: string[] | null } };
+
+function activeProductDimension(prefix: 'pf' | 'spf'): string {
+  const first = prefix === 'pf' ? 'product-sale' : 'sp-sale';
+  const nav = document.querySelector<HTMLAnchorElement>(`a[href="#${first}"]`)?.parentElement;
+  return nav?.dataset.productDimension || first;
+}
+
+function productMaterialEditorContext(controller: ProductController, kind: 'product' | 'service'): ProductMaterialEditorContext | undefined {
+  const picker = productPickerContext(controller, kind);
+  const route = productEditorRoute();
+  const prefix = kind === 'product' ? 'pf' : 'spf';
+  if (!picker || !route || route.prefix !== prefix) return undefined;
+  const rows = kind === 'product' ? controller.db.rows.products : controller.db.rows.spProducts;
+  const row = rows.find((item) => item.resourceId === route.id);
+  const version = Number(row?.version);
+  if (!Number.isSafeInteger(version) || version < 0) return undefined;
+  return { ...picker, productID: route.id, version };
+}
+
+function productMaterialEditorContextIsCurrent(context: ProductMaterialEditorContext): boolean {
+  const current = productMaterialEditorContext(context.controller, context.kind);
+  return Boolean(current && current.page === context.page && current.locationKey === context.locationKey && current.productID === context.productID && current.version === context.version && current.dimension === context.dimension);
+}
+
+function productMediaRoot(kind: 'product' | 'service'): HTMLElement | undefined {
+  const root = document.getElementById(kind === 'product' ? 'product-media' : 'sp-media');
+  return root instanceof HTMLElement ? root : undefined;
+}
+
+function productMediaListHost(root: HTMLElement): HTMLElement {
+  const existing = root.querySelector<HTMLElement>(':scope > [data-v3-product-material-list]');
+  if (existing) return existing;
+  const source = Array.from(root.children).find((node): node is HTMLElement => node instanceof HTMLElement && (
+    Boolean(node.querySelector('img')) || node.textContent?.includes('暂无页面素材') === true
+  ));
+  const host = document.createElement('div');
+  host.dataset.v3ProductMaterialList = '';
+  host.style.cssText = 'display:grid;gap:10px';
+  if (source) {
+    source.hidden = true;
+    source.after(host);
+  } else {
+    root.append(host);
+  }
+  return host;
+}
+
+const productMaterialRecordsByOriginalURL = new Map<string, ProductMaterial>();
+
+function rememberProductMaterial(material: ProductMaterial): string {
+  const originalURL = productSelectedURL(material);
+  productMaterialRecordsByOriginalURL.set(originalURL, material);
+  return originalURL;
+}
+
+function productMediaItemLabel(controller: ProductController, url: string): { title: string; thumbnail: string } {
+  const canonical = productImageOriginalURL(url);
+  const typed = canonical ? productMaterialRecordsByOriginalURL.get(canonical) : undefined;
+  const image = controller.db.rows.images.find((item) => item.originalUrl === url || item.originalUrl === canonical);
+  return {
+    title: typed?.title || image?.name || url,
+    thumbnail: typed?.thumbnail_url || image?.thumbnailUrl || canonical?.replace('/variants/original', '/variants/thumb_320') || '',
+  };
+}
+
+function productMediaStableKey(url: string): string {
+  const canonical = productImageOriginalURL(url);
+  const id = canonical ? /^\/api\/admin\/image-library\/([1-9]\d*)\/variants\/original$/.exec(canonical)?.[1] : undefined;
+  return id ? `image:${id}` : `url:${url}`;
+}
+
+function updateProductMaterialDraft(controller: ProductController, kind: 'product' | 'service', urls: readonly string[]): void {
+  const state = controller as unknown as ProductControllerDraftState;
+  if (!state.state) throw new Error('当前商品草稿不可用，请刷新后重试。');
+  if (urls.length > 10) throw new Error('页面素材最多 10 张；未改动当前商品草稿。');
+  if (kind === 'product') state.state.pfImageUrls = [...urls];
+  else state.state.spfImageUrls = [...urls];
+  renderProductMaterialDraft(controller, kind);
+}
+
+function moveProductMaterialDraft(controller: ProductController, kind: 'product' | 'service', from: number, to: number): void {
+  const urls = [...controller.currentCommerceImageUrls(kind)];
+  if (from < 0 || from >= urls.length || to < 0 || to >= urls.length || from === to) return;
+  const [moved] = urls.splice(from, 1);
+  urls.splice(to, 0, moved);
+  updateProductMaterialDraft(controller, kind, urls);
+}
+
+function renderProductMaterialDraft(controller: ProductController, kind: 'product' | 'service'): void {
+  const root = productMediaRoot(kind);
+  if (!root) return;
+  const urls = [...controller.currentCommerceImageUrls(kind)];
+  const host = productMediaListHost(root);
+  const draftKey = productPickerDraftKey(urls);
+  if (host.dataset.productMaterialDraftKey === draftKey) return;
+  const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  const focusRow = focused?.closest<HTMLElement>('[data-v3-product-material-key]');
+  const focusKey = focusRow?.dataset.v3ProductMaterialKey;
+  const focusAction = focused?.dataset.v3ProductMaterialAction;
+  host.dataset.productMaterialDraftKey = draftKey;
+  host.replaceChildren();
+  const count = root.firstElementChild?.querySelector<HTMLElement>('span');
+  if (count) count.textContent = `${urls.length} 张`;
+  const summaryLabel = Array.from(document.querySelectorAll<HTMLElement>('span')).find((label) =>
+    label.textContent?.trim() === '页面素材' && label.parentElement?.querySelector(':scope > strong'),
+  );
+  const summaryCount = summaryLabel?.parentElement?.querySelector<HTMLElement>(':scope > strong');
+  if (summaryCount) summaryCount.textContent = String(urls.length);
+  const persistenceHint = Array.from(root.querySelectorAll<HTMLElement>('div')).find((node) =>
+    node.children.length === 0 && node.textContent?.includes('保存后写入 V2 product_images') === true,
+  );
+  if (persistenceHint) persistenceHint.textContent = '保存后按当前顺序展示。';
+  if (!urls.length) {
+    const empty = document.createElement('div');
+    empty.textContent = '暂无页面素材，请上传图片或从素材库选择';
+    empty.style.cssText = 'min-height:72px;display:grid;place-items:center;padding:18px;border:1px dashed #D7DBE0;border-radius:10px;background:#FAFBFC;color:#8F959E;font-size:13px';
+    host.append(empty);
+    return;
+  }
+  let dragging = -1;
+  urls.forEach((url, index) => {
+    const label = productMediaItemLabel(controller, url);
+    const row = document.createElement('div');
+    row.draggable = true;
+    row.dataset.v3ProductMaterialKey = productMediaStableKey(url);
+    row.style.cssText = 'display:grid;grid-template-columns:24px 92px minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 12px;border:1px solid #EFF0F1;border-radius:10px;background:#fff';
+    const handle = document.createElement('span');
+    handle.textContent = '⠿'; handle.title = '拖动排序'; handle.setAttribute('aria-hidden', 'true');
+    handle.style.cssText = 'color:#8F959E;font-size:18px;cursor:grab;text-align:center';
+    const preview = document.createElement('div');
+    preview.style.cssText = 'width:92px;height:52px;overflow:hidden;border-radius:6px;background:#F2F3F5';
+    // The shared thumbnail layer owns visible loading/error/no-preview states.
+    // This caller supplies only its already-authorised typed Media URL.
+    renderMaterialThumbnail(preview, {
+      url: label.thumbnail, alt: '', loadingLabel: '加载预览…', unavailableLabel: '预览暂不可用', noURLLabel: '暂无预览',
+      imageDisplay: 'block', loadingDisplay: 'grid', fallbackDisplay: 'grid',
+      imageClassName: 'aicrm-material-thumbnail__image', fallbackClassName: 'aicrm-material-thumbnail__fallback',
+    });
+    const image = preview.querySelector<HTMLElement>('.aicrm-material-thumbnail__image');
+    if (image) {
+      image.style.width = '92px'; image.style.height = '52px'; image.style.objectFit = 'cover';
+      image.style.borderRadius = '6px'; image.style.background = '#F2F3F5';
+    }
+    for (const state of preview.querySelectorAll<HTMLElement>('.aicrm-material-thumbnail__loading,.aicrm-material-thumbnail__fallback')) {
+      state.style.width = '92px'; state.style.height = '52px'; state.style.placeItems = 'center';
+      state.style.padding = '4px'; state.style.boxSizing = 'border-box'; state.style.color = '#667085';
+      state.style.fontSize = '12px'; state.style.textAlign = 'center'; state.style.background = '#F2F3F5';
+    }
+    const copy = document.createElement('div'); copy.style.minWidth = '0';
+    const name = document.createElement('div'); name.textContent = label.title; name.style.cssText = 'font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+    const meta = document.createElement('div'); meta.textContent = `第 ${index + 1} 张 · 拖动或使用排序按钮调整`; meta.style.cssText = 'font-size:12px;color:#8F959E;margin-top:2px';
+    copy.append(name, meta);
+    const actions = document.createElement('div'); actions.style.cssText = 'display:inline-flex;gap:6px;align-items:center';
+    const button = (text: string, title: string, action: string): HTMLButtonElement => {
+      const node = document.createElement('button'); node.type = 'button'; node.textContent = text; node.title = title;
+      node.dataset.v3ProductMaterialAction = action;
+      node.style.cssText = 'height:26px;padding:0 9px;border:1px solid #DEE0E3;border-radius:5px;background:#fff;color:#344054;font-size:12px;cursor:pointer;white-space:nowrap';
+      return node;
+    };
+    const up = button('上移', '上移一位', 'up'); up.disabled = index === 0; if (up.disabled) up.style.cssText += 'opacity:.45;cursor:not-allowed;background:#F7F8FA;color:#98A2B3'; up.onclick = () => moveProductMaterialDraft(controller, kind, index, index - 1);
+    const down = button('下移', '下移一位', 'down'); down.disabled = index === urls.length - 1; if (down.disabled) down.style.cssText += 'opacity:.45;cursor:not-allowed;background:#F7F8FA;color:#98A2B3'; down.onclick = () => moveProductMaterialDraft(controller, kind, index, index + 1);
+    const remove = button('移除', '移除当前素材', 'remove'); remove.style.borderColor = '#FBC4C2'; remove.style.background = '#FFF5F5'; remove.style.color = '#D83931';
+    // Preserve the frozen owner's removal semantics. It resolves the current
+    // draft and invokes the V3 local draft setter above, without a save/write.
+    remove.onclick = () => donorRemoveCommerceImage.call(controller, kind, url);
+    actions.append(up, down, remove);
+    row.append(handle, preview, copy, actions);
+    row.addEventListener('dragstart', (event) => { dragging = index; event.dataTransfer?.setData('text/plain', row.dataset.v3ProductMaterialKey || ''); });
+    row.addEventListener('dragover', (event) => event.preventDefault());
+    row.addEventListener('drop', (event) => { event.preventDefault(); const source = dragging; dragging = -1; moveProductMaterialDraft(controller, kind, source, index); });
+    host.append(row);
+  });
+  if (focusKey && focusAction) {
+    const row = Array.from(host.querySelectorAll<HTMLElement>('[data-v3-product-material-key]'))
+      .find((candidate) => candidate.dataset.v3ProductMaterialKey === focusKey);
+    const actions = row ? Array.from(row.querySelectorAll<HTMLButtonElement>('[data-v3-product-material-action]')) : [];
+    // Moving to either boundary can disable the exact button that initiated
+    // the move. Keep keyboard users on the same row via its next enabled
+    // sorting action, then its remove action when it has no move left.
+    const replacement = actions.find((action) => action.dataset.v3ProductMaterialAction === focusAction && !action.disabled)
+      || actions.find((action) => (action.dataset.v3ProductMaterialAction === 'up' || action.dataset.v3ProductMaterialAction === 'down') && !action.disabled)
+      || actions.find((action) => !action.disabled);
+    replacement?.focus();
+  }
+}
+const donorRemoveCommerceImage = productController.removeCommerceImage;
+productController.setCommerceImageUrls = function (kind, urls) {
+  // setState would rebuild the frozen editor and return its side navigation to
+  // 售卖信息. Keep the same owner draft in memory and redraw only 页面素材.
+  updateProductMaterialDraft(this, kind, urls);
+};
+
+const productMaterialPresentationObserver = observeProductDocument(() => {
+  const controller = activeProductMaterialController;
+  if (!controller) return;
+  const page = document.body?.dataset.page;
+  if (page === 'productForm' && controller.page === page) renderProductMaterialDraft(controller, 'product');
+  if (page === 'spProductForm' && controller.page === page) renderProductMaterialDraft(controller, 'service');
+});
+
+const productUploadIntentKeys = new Map<string, string>();
+const confirmedProductUploadMaterials = new Map<string, ProductMaterial>();
+const productUploadContentDigests = new WeakMap<File, Promise<string>>();
+
+async function productUploadContentDigest(file: File): Promise<string> {
+  const existing = productUploadContentDigests.get(file);
+  if (existing) return existing;
+  const pending = (async () => {
+    const subtle = globalThis.crypto?.subtle;
+    if (!subtle || typeof file.arrayBuffer !== 'function') throw new Error('当前浏览器无法安全校验图片内容；未开始上传。');
+    const bytes = await file.arrayBuffer();
+    const digest = new Uint8Array(await subtle.digest('SHA-256', bytes));
+    return Array.from(digest, (item) => item.toString(16).padStart(2, '0')).join('');
+  })();
+  productUploadContentDigests.set(file, pending);
+  try { return await pending; } catch (error) { productUploadContentDigests.delete(file); throw error; }
+}
+
+async function productUploadIntentFingerprint(context: ProductMaterialEditorContext, file: File): Promise<string> {
+  // The idempotency identity starts with content rather than metadata, then
+  // binds every field sent in this multipart payload. Same bytes under a new
+  // filename or MIME type are a different request body and therefore never
+  // reuse an unknown prior write key.
+  const contentDigest = await productUploadContentDigest(file);
+  return [context.kind, context.productID, context.dimension, contentDigest, file.name, file.type].join('\u001F');
+}
+
+async function productUploadIntent(context: ProductMaterialEditorContext, file: File): Promise<{ fingerprint: string; key: string; confirmed?: ProductMaterial }> {
+  const fingerprint = await productUploadIntentFingerprint(context, file);
+  const confirmed = confirmedProductUploadMaterials.get(fingerprint);
+  if (confirmed) return { fingerprint, key: productUploadIntentKeys.get(fingerprint) || '', confirmed };
+  const known = productUploadIntentKeys.get(fingerprint);
+  if (known) return { fingerprint, key: known };
+  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const key = `product-media-upload-${context.kind}-${suffix}`;
+  productUploadIntentKeys.set(fingerprint, key);
+  return { fingerprint, key };
+}
+
+function productUploadNewDraftSlots(current: readonly string[], intents: readonly { fingerprint: string; confirmed?: ProductMaterial }[]): number {
+  const knownURLs = new Set(current);
+  const pending = new Set<string>();
+  for (const intent of intents) {
+    if (intent.confirmed) {
+      const url = productSelectedURL(intent.confirmed);
+      if (!knownURLs.has(url)) knownURLs.add(url);
+    } else {
+      pending.add(intent.fingerprint);
+    }
+  }
+  return knownURLs.size - current.length + pending.size;
+}
+
+async function uploadProductMaterial(file: File, context: ProductMaterialEditorContext, existingIntent?: { fingerprint: string; key: string; confirmed?: ProductMaterial }): Promise<{ material: ProductMaterial; fingerprint: string; cached: boolean }> {
+  const intent = existingIntent || await productUploadIntent(context, file);
+  if (intent.confirmed) return { material: intent.confirmed, fingerprint: intent.fingerprint, cached: true };
+  const form = new FormData();
+  form.append('image', file);
+  form.append('name', file.name);
+  const response = await request('/api/admin/image-library/upload', { method: 'POST', body: form, headers: { 'Idempotency-Key': intent.key } });
+  const payload = object(await response.json().catch(() => ({})));
+  const material = productMaterialRecord(object(payload.item ?? payload.image));
+  if (!material || !productSelectedURL(material)) throw new Error('图片素材上传完成但未返回可用于当前商品的受控素材记录。');
+  confirmedProductUploadMaterials.set(intent.fingerprint, material);
+  rememberProductMaterial(material);
+  return { material, fingerprint: intent.fingerprint, cached: false };
+}
+type ProductUploadFlight = {
+  controller: ProductController;
+  kind: 'product' | 'service';
+  context: ProductMaterialEditorContext;
+  pending: Promise<void>;
+};
+const productUploadFlights = new Set<ProductUploadFlight>();
+
+function productUploadOwnsCurrentEditor(flight: ProductUploadFlight, context: ProductMaterialEditorContext): boolean {
+  return flight.controller === context.controller && flight.kind === context.kind &&
+    flight.context.page === context.page && flight.context.locationKey === context.locationKey &&
+    flight.context.productID === context.productID && flight.context.version === context.version &&
+    flight.context.dimension === context.dimension;
+}
+
+productController.uploadCommerceImage = function (kind, event) {
+  const input = event.target instanceof HTMLInputElement ? event.target : null;
+  const files = input ? Array.from(input.files || []) : [];
+  if (!input || !files.length) return;
+  input.value = '';
+  const context = productMaterialEditorContext(this, kind);
+  const expectedDimension = kind === 'product' ? 'product-media' : 'sp-media';
+  if (!context || context.dimension !== expectedDimension) {
+    showMessage('当前商品页面素材维度已切换，未上传图片。');
+    return;
+  }
+  // A duplicate event for this same product/version/dimension joins the active
+  // upload. A prior upload from another route remains isolated instead of
+  // blocking the editor that the user has subsequently opened.
+  if ([...productUploadFlights].some((flight) => productUploadOwnsCurrentEditor(flight, context))) return;
+  let flight: ProductUploadFlight;
+  const pending = (async () => {
+    const intents = await Promise.all(files.map((file) => productUploadIntent(context, file)));
+    if (!productMaterialEditorContextIsCurrent(context)) return;
+    const currentAtStart = this.currentCommerceImageUrls(kind);
+    if (currentAtStart.length + productUploadNewDraftSlots(currentAtStart, intents) > 10) {
+      showMessage('页面素材最多 10 张；未开始上传。');
+      return;
+    }
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const uploaded = await uploadProductMaterial(file, context, intents[index]);
+      const material = uploaded.material;
+      if (!productMaterialEditorContextIsCurrent(context)) {
+        showMessage('图片已上传到素材库，但当前商品、版本或页面维度已变化；未加入其它商品草稿。');
+        return;
+      }
+      const url = productSelectedURL(material);
+      const current = this.currentCommerceImageUrls(kind);
+      if (current.includes(url)) continue;
+      // The user may choose another material while an upload is pending. Check
+      // the latest local draft before every append, not only when it began.
+      if (current.length >= 10) {
+        showMessage('页面素材已达到 10 张；图片已上传到素材库，未加入当前商品草稿。');
+        return;
+      }
+      updateProductMaterialDraft(this, kind, [...current, url]);
+      // Render each acknowledged item before the next upload. A later failure
+      // therefore cannot hide, clear, or re-upload an already-successful item.
+      showMessage(`已加入当前商品页面素材：${material.title}`, true);
+    }
+  })().catch((error) => {
+    showMessage(error instanceof Error ? error.message : '图片上传失败；已成功的页面素材仍保留。');
+  }).finally(() => productUploadFlights.delete(flight));
+  flight = { controller: this, kind, context, pending };
+  productUploadFlights.add(flight);
+};
 
 productController.pickCommerceImages = function (kind) {
   const controller = this;
@@ -1834,7 +2314,7 @@ productController.pickCommerceImages = function (kind) {
   // new owner starts its own read, so the late old result cannot open a dialog.
   if (productPickerPreopen) {
     const active = productPickerPreopen;
-    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.draftKey === context.draftKey;
+    const sameOwnerDraft = active.controller === context.controller && active.kind === context.kind && active.page === context.page && active.locationKey === context.locationKey && active.dimension === context.dimension && active.draftKey === context.draftKey;
     if (sameOwnerDraft) return;
     productPickerPreopen = undefined;
   }
@@ -1846,6 +2326,7 @@ productController.pickCommerceImages = function (kind) {
     if (!picker) throw new Error('页面素材选择组件尚未就绪，请稍后重试。');
     const selectedRecords = (await Promise.all(preopen.draft.map(verifiedProductInitialMaterial))).flatMap((record) => record ? [record] : []);
     if (!productPickerPreopenIsCurrent(preopen)) return;
+    selectedRecords.forEach(rememberProductMaterial);
     const selectedIds = [...new Set(selectedRecords.map((item) => item.library_id))];
     const protectedCount = preopen.draft.length - selectedRecords.length;
     const availableSlots = 10 - protectedCount;
@@ -1860,6 +2341,7 @@ productController.pickCommerceImages = function (kind) {
       selectedIds, selectedRecords, limit: availableSlots,
       async onCommit(result) {
         if (!productPickerContextIsCurrent(preopen)) throw new Error('商品页面或原始素材草稿已改变；请取消后重新打开选择器。');
+        result.selected.forEach(rememberProductMaterial);
         const urls = mergeProtectedProductURLs(preopen.draft, result.selected);
         if (urls.length > 10) throw new Error('页面素材最多 10 张；未改动当前商品草稿。');
         controller.setCommerceImageUrls(kind, urls);
@@ -1907,8 +2389,23 @@ productController.renderVals = function renderProductListWithArchiveActions() {
     ...values,
     rows: {
       ...values.rows,
-      products: this.page === 'products' ? ordinaryRows.map((row) => ({
+      products: this.page === 'products' ? ordinaryRows.map((row) => {
+        const product = lifecycleProjection(row);
+        return {
         ...row,
+        updated: typeof row.updated === 'string' ? formatShanghaiDateTime(row.updated) : row.updated,
+        // The donor runtime gives this exact renderVals handler the action
+        // element as currentTarget. Keep Product identity and version in the
+        // closure created for this row; menu presentation must not infer a
+        // subject from a later list position.
+        toggle: product ? (event: Event) => {
+          const button = event.currentTarget instanceof HTMLButtonElement
+            ? event.currentTarget
+            : event.target instanceof HTMLButtonElement ? event.target : undefined;
+          if (!(button instanceof HTMLButtonElement)) return;
+          event.preventDefault();
+          runProductLifecycleAction(button, product);
+        } : row.toggle,
         del: () => confirmBox(
           '删除商品',
           `确认删除“${row.name || '未命名商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买；已支付订单、权益和审计记录会保留。`,
@@ -1916,9 +2413,12 @@ productController.renderVals = function renderProductListWithArchiveActions() {
 		  true,
 		  () => { void archiveProduct(this, 'ordinary', row).catch((error) => showMessage(error instanceof Error ? error.message : '商品删除失败')); },
         ),
-      })) : ordinaryRows,
+      };
+      }) : ordinaryRows,
       spProducts: this.page === 'spProducts' ? serviceRows.map((row) => ({
         ...row,
+        status: row.status === 'enabled' ? '已启用' : row.status === 'disabled' ? '已停用' : row.status === 'draft' ? '草稿' : row.status,
+        updated: typeof row.updated === 'string' ? formatShanghaiDateTime(row.updated) : row.updated,
         archive: () => confirmBox(
           '删除周期商品',
           `确认删除“${row.name || '未命名周期商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买和成员发放；既有成员权益、订单和审计记录会保留。`,
@@ -1931,16 +2431,126 @@ productController.renderVals = function renderProductListWithArchiveActions() {
   };
 };
 
-// The service-period table is a byte-frozen donor template. Reuse its one
-// archive action and only relabel the mounted DOM so the owner sees the same
-// “删除” verb as ordinary products; the owner command remains Archive.
+// The Product list fragments are byte-frozen. This V3 presentation pass keeps
+// their source controls and callbacks, only relocating page-level creation and
+// collapsing overflow actions after the donor has mounted a list row.
+const productListActionMenus = new Map<HTMLElement, TableActionMenu>();
+const productListHeaderCleanups = new Map<'products' | 'spProducts', () => void>();
+const productListHeaderElements = new Map<'products' | 'spProducts', HTMLButtonElement>();
+
+function productListPage(): 'products' | 'spProducts' | undefined {
+  const page = document.body?.dataset.page;
+  return page === 'products' || page === 'spProducts' ? page : undefined;
+}
+
 function relabelServiceProductDeleteAction(): void {
-  if (typeof document === 'undefined' || !document.body || document.body.dataset.page !== 'spProducts') return;
+  if (productListPage() !== 'spProducts') return;
   for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
     if (button.textContent?.trim() === '归档') button.textContent = '删除';
   }
 }
-const serviceProductDeleteLabelObserver = new MutationObserver(relabelServiceProductDeleteAction);
-serviceProductDeleteLabelObserver.observe(document, { childList: true, subtree: true });
-window.addEventListener('pagehide', () => serviceProductDeleteLabelObserver.disconnect(), { once: true });
-relabelServiceProductDeleteAction();
+
+function productListStage(): HTMLElement | undefined {
+  const stage = document.getElementById('stage');
+  return stage instanceof HTMLElement ? stage : undefined;
+}
+
+function removeDonorProductHeading(stage: HTMLElement, title: string): void {
+  const heading = Array.from(stage.querySelectorAll<HTMLElement>('div'))
+    .find((node) => node.children.length === 0 && node.textContent?.trim() === title);
+  // The frozen runtime keeps an otherwise transparent mount container directly
+  // under #stage. Remove the matching header child from that container, never
+  // the container itself or the list that follows it.
+  const contentRoot = stage.firstElementChild instanceof HTMLElement ? stage.firstElementChild : stage;
+  if (!heading || !contentRoot.contains(heading)) return;
+  let donorHeading: HTMLElement = heading;
+  while (donorHeading.parentElement && donorHeading.parentElement !== contentRoot) donorHeading = donorHeading.parentElement;
+  if (donorHeading.parentElement === contentRoot) donorHeading.remove();
+}
+
+function moveProductListCreateAction(page: 'products' | 'spProducts'): void {
+  const stage = productListStage();
+  if (!stage || !document.querySelector('.admin-topbar')) return;
+  const createLabel = page === 'products' ? '创建商品' : '创建周期商品';
+  const title = page === 'products' ? '商品管理' : '周期商品管理';
+  const create = Array.from(stage.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => button.textContent?.trim() === createLabel);
+  const prior = productListHeaderCleanups.get(page);
+  if (!create) {
+    // Moving the existing control triggers this observer too. Its marker still
+    // points at a live donor source, so retain the same header node. A true
+    // donor redraw removes that source; only then can this page clear it.
+    const previous = productListHeaderElements.get(page);
+    if (previous && pageHeaderActionElementsHaveConnectedOrigins(`product-list-${page}`, [previous])) return;
+    prior?.();
+    productListHeaderCleanups.delete(page);
+    productListHeaderElements.delete(page);
+    return;
+  }
+  prior?.();
+  productListHeaderElements.set(page, create);
+  productListHeaderCleanups.set(page, mountPageHeaderActionElements(`product-list-${page}`, [create]));
+  // The V3 shell now owns this page's one title. Remove only the donor's
+  // matching direct stage child after its original create control is retained.
+  removeDonorProductHeading(stage, title);
+}
+
+function mountProductListActionMenus(page: 'products' | 'spProducts'): void {
+  for (const [container, menu] of productListActionMenus) {
+    if (container.isConnected) continue;
+    menu.dispose();
+    productListActionMenus.delete(container);
+  }
+  for (const [index, row] of Array.from(document.querySelectorAll<HTMLTableRowElement>('tbody tr')).entries()) {
+    const container = row.lastElementChild?.querySelector<HTMLElement>(':scope > div');
+    if (!container || productListActionMenus.has(container)) continue;
+    const product = page === 'products' ? loadedProducts[index] : undefined;
+    // Overflow actions are rehomed into a document-level panel. Bind the
+    // original Product projection and its still-mounted source row to every
+    // real lifecycle control, rather than deriving a new target from a later
+    // list order. A detached row/container or stale projection rejects before
+    // any write; the Product owner still enforces its original CAS server-side.
+    if (product) for (const action of container.querySelectorAll<HTMLButtonElement>('button')) {
+      if (action.textContent?.trim() === '启用' || action.textContent?.trim() === '停用') {
+        productLifecycleActionContexts.set(action, { product, row, container, page: 'products' });
+      }
+    }
+    const menu = mountTableActionMenu(container, { owner: `product-${page}-${index}`, primaryCount: 2 });
+    if (menu) productListActionMenus.set(container, menu);
+  }
+}
+
+let productListPresentationQueued = false;
+function presentProductLists(): void {
+  productListPresentationQueued = false;
+  if (!productDocumentIsActive()) return;
+  const page = productListPage();
+  if (!page) return;
+  for (const [mountedPage, cleanup] of productListHeaderCleanups) {
+    if (mountedPage === page) continue;
+    cleanup();
+    productListHeaderCleanups.delete(mountedPage);
+    productListHeaderElements.delete(mountedPage);
+  }
+  relabelServiceProductDeleteAction();
+  moveProductListCreateAction(page);
+  mountProductListActionMenus(page);
+}
+
+function scheduleProductListPresentation(): void {
+  if (productListPresentationQueued) return;
+  productListPresentationQueued = true;
+  queueMicrotask(presentProductLists);
+}
+
+const productListPresentationObserver = observeProductDocument(scheduleProductListPresentation);
+const disposeProductListPresentation = (): void => {
+  for (const menu of productListActionMenus.values()) menu.dispose();
+  productListActionMenus.clear();
+  for (const cleanup of productListHeaderCleanups.values()) cleanup();
+  productListHeaderCleanups.clear();
+  productListHeaderElements.clear();
+};
+window.addEventListener('pagehide', disposeProductListPresentation, { once: true });
+window.addEventListener('unload', disposeProductListPresentation, { once: true });
+scheduleProductListPresentation();

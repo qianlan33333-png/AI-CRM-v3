@@ -73,6 +73,7 @@ run_frontend_and_stage_checks() {
   node web/v3/shared/ui/selectionSession.test.mjs
   node web/v3/shared/ui/selectionDialog.test.mjs
   node web/v3/shared/ui/confirmationDialog.test.mjs
+  node web/v3/shared/ui/tableActionMenu.test.mjs
   node web/v3/shared/ui/materialPickerAdapter.test.mjs
   node --test web/v3/shared/ui/contentPresentation.test.mjs
   node --test web/v3/shared/ui/contentComposer.test.mjs
@@ -90,6 +91,8 @@ run_frontend_and_stage_checks() {
   node web/v3/hxcPresentation.test.mjs
   node web/v3/customerAdapter.test.mjs
   node web/v3/overviewAdmin.test.mjs
+  node web/v3/distributionCenter.test.mjs
+  node web/v3/distributionCenter.lifecycle.test.mjs
   node web/v3/navigationHost.test.mjs
   node web/v3/adminSessionHost.test.mjs
   node web/v3/h5AuthAdapter.test.mjs

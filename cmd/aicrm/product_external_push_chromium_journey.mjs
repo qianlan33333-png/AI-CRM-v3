@@ -12,6 +12,7 @@ const materialFirstID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID;
 const materialLaterID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID;
 const historicalOrderReference = process.env.AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER;
 const exactParams = process.env.AICRM_PRODUCT_PUSH_TEST_PARAMS;
+const screenshotDirectory = process.env.AICRM_PRODUCT_PUSH_SCREENSHOT_DIR;
 // The Product owner derives a stable per-product endpoint reference from the
 // target submitted to its admin command. Browser checks must use the owner's
 // readback value, rather than compare that derived reference to the target.
@@ -25,6 +26,15 @@ if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+async function captureProductMaterialScreens(cdp, prefix) {
+  if (!screenshotDirectory) return;
+  await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
+  for (const width of [1280, 1440]) {
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const image = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    await fs.writeFile(path.join(screenshotDirectory, `${prefix}-${width}.png`), Buffer.from(image.data, 'base64'), { mode: 0o600 });
+  }
+}
 // Do not embed a regular expression in a Runtime.evaluate template string:
 // JavaScript string escaping would turn `\s` into a literal `s`. Cookie order
 // is arbitrary, so split exact names instead of relying on a position-specific
@@ -177,7 +187,7 @@ try {
   cdp.on("Network.requestWillBeSent", (params) => {
     try {
       const pathname = new URL(String(params.request?.url || "")).pathname;
-      if (pathname.includes("products") || pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.includes("service-period-products") || pathname.startsWith("/assets/")) {
+      if (pathname.includes("products") || pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.includes("service-period-products") || pathname.startsWith("/api/admin/image-library") || pathname.startsWith("/assets/")) {
         requests.set(params.requestId, { pathname, method: String(params.request?.method || "GET") });
       }
     } catch (_) {}
@@ -222,6 +232,45 @@ try {
     return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} binding=${page?.businessBinding === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
   };
 
+  const assertProductEditorHeader = async (kind, title, returnLabel) => {
+    for (const width of [1280, 1440]) {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      const layout = await evaluate(cdp, `(() => {
+        const visible = (node) => {
+          if (!(node instanceof HTMLElement) || node.hidden) return false;
+          const style = getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const topbar = document.querySelector('.admin-topbar');
+        const topbarRect = topbar?.getBoundingClientRect();
+        const actions = Array.from(topbar?.querySelectorAll('[data-page-header-actions="product-editor"] button') || []);
+        const duplicateTitles = Array.from(document.querySelectorAll('#stage *')).filter((node) => node.children.length === 0 && node.textContent?.trim() === ${JSON.stringify(title)} && visible(node));
+        const bodyReturn = Array.from(document.querySelectorAll('#stage button')).some((button) => button.textContent?.trim() === ${JSON.stringify(returnLabel)} && visible(button));
+        const frozenHeader = document.querySelector('#stage [data-v3-product-frozen-header="hidden"]');
+        const frozenRect = frozenHeader?.getBoundingClientRect();
+        return {
+          topbars: document.querySelectorAll('.admin-topbar').length,
+          shellTitles: topbar?.querySelectorAll('.admin-page-title').length || 0,
+          shellTitle: topbar?.querySelector('.admin-page-title')?.textContent?.trim(),
+          actions: actions.map((button) => button.textContent?.trim()),
+          actionGeometry: actions.map((button) => { const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, visible: visible(button) }; }),
+          topbarGeometry: topbarRect ? { left: topbarRect.left, right: topbarRect.right, top: topbarRect.top, bottom: topbarRect.bottom, width: topbarRect.width, height: topbarRect.height } : null,
+          duplicateTitles: duplicateTitles.length,
+          bodyReturn,
+          frozenHeaderHidden: frozenHeader instanceof HTMLElement && frozenHeader.hidden && Boolean(frozenRect && frozenRect.height === 0),
+          width: window.innerWidth,
+        };
+      })()`);
+      const topbarFits = layout?.topbarGeometry && layout.topbarGeometry.left >= 0 && layout.topbarGeometry.right <= width && layout.topbarGeometry.width > 0 && layout.topbarGeometry.height > 0;
+      const actionsFit = layout?.actionGeometry?.every((action) => action.visible && action.left >= 0 && action.right <= width && action.top >= layout.topbarGeometry.top && action.bottom <= layout.topbarGeometry.bottom);
+      if (!layout || layout.topbars !== 1 || layout.shellTitles !== 1 || layout.shellTitle !== title || layout.width !== width ||
+        layout.actions.join('|') !== `${returnLabel}|保存当前维度` || !topbarFits || !actionsFit || layout.duplicateTitles !== 0 || layout.bodyReturn || !layout.frozenHeaderHidden) {
+        throw new Error(`${kind} editor header layout invalid at ${width}: ${JSON.stringify(layout)}`);
+      }
+    }
+  };
+
   const productPath = "/admin/wechat-pay/productForm.html?id=" + productID;
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(productPath) });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
@@ -237,18 +286,44 @@ try {
   if (!await evaluate(cdp, `(() => { const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '=')); return hasCookie('aicrm_admin_csrf') && hasCookie('aicrm_csrf'); })()`)) {
     throw new Error("product Host did not receive CSRF session bridge " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('ordinary', '编辑普通商品', '返回商品管理');
   // The list Host owns the lifecycle buttons. Exercise the real browser
   // session, CSRF header and CAS endpoint once in each direction before the
   // form journey, leaving the seeded fixture enabled for its remaining steps.
   const productsPath = "/admin/products.html";
+  const runProductLifecycleAction = async (label) => {
+    const result = await evaluate(cdp, `((label) => {
+      const row = Array.from(document.querySelectorAll('tbody tr')).find((item) => item.textContent.includes('browser-push-product'));
+      if (!row) return { invoked: false };
+      const trigger = row.querySelector('button[data-table-action-menu-trigger]');
+      if (!(trigger instanceof HTMLButtonElement) || trigger.disabled || trigger.getClientRects().length === 0 || getComputedStyle(trigger).visibility === 'hidden') return { invoked: false };
+      const panelID = trigger.getAttribute('aria-controls');
+      const panel = panelID ? document.getElementById(panelID) : null;
+      if (!(panel instanceof HTMLElement)) return { invoked: false };
+      trigger.click();
+      const menuVisible = !panel.hidden && panel.getClientRects().length > 0 && getComputedStyle(panel).display !== 'none' && getComputedStyle(panel).visibility === 'visible';
+      const action = menuVisible ? Array.from(panel.querySelectorAll('button')).find((button) => button.textContent.trim() === label) : undefined;
+      if (!(action instanceof HTMLButtonElement) || action.disabled || action.getClientRects().length === 0 || getComputedStyle(action).visibility === 'hidden') return { invoked: false, menuVisible };
+      action.click();
+      return { invoked: true, menuVisible, panelID };
+    })(${JSON.stringify(label)})`);
+    if (!result?.invoked || !result.menuVisible || typeof result.panelID !== 'string') throw new Error(`product lifecycle ${label} action was not invoked through its visible menu: ${JSON.stringify(result)}`);
+    return result.panelID;
+  };
+  const waitForLifecycleMenuClosed = async (panelID, label) => {
+    const encodedPanelID = JSON.stringify(panelID);
+    await waitFor(cdp, `(() => { const panel = document.getElementById(${encodedPanelID}); return !panel || panel.hidden || panel.getClientRects().length === 0 || getComputedStyle(panel).display === 'none' || getComputedStyle(panel).visibility === 'hidden'; })()`, `product lifecycle ${label} action left its overflow menu open after completion`);
+  };
   await cdp.call("Page.navigate", { url: baseURL + productsPath });
-  await waitFor(cdp, "location.pathname === '/admin/products.html' && Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '停用'))", "product list lifecycle Host did not render the seeded enabled row");
-  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='停用').click(); return true; })()");
+  await waitFor(cdp, "location.pathname === '/admin/products.html' && Array.from(document.querySelectorAll('tbody tr')).some((row) => { const trigger=row.querySelector('button[data-table-action-menu-trigger]'); return row.textContent.includes('browser-push-product') && trigger instanceof HTMLButtonElement && !trigger.disabled && trigger.getClientRects().length > 0 && getComputedStyle(trigger).visibility !== 'hidden' && Boolean(trigger.getAttribute('aria-controls')); })", "product list lifecycle Host did not render the seeded enabled action menu");
+  const disablePanelID = await runProductLifecycleAction('停用');
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已停用')", "product lifecycle disable did not complete through the Host");
+  await waitForLifecycleMenuClosed(disablePanelID, '停用');
   await cdp.call("Page.navigate", { url: baseURL + productsPath });
-  await waitFor(cdp, "Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '启用'))", "product list did not read back the disabled lifecycle");
-  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='启用').click(); return true; })()");
+  await waitFor(cdp, "Array.from(document.querySelectorAll('tbody tr')).some((row) => { const trigger=row.querySelector('button[data-table-action-menu-trigger]'); return row.textContent.includes('browser-push-product') && trigger instanceof HTMLButtonElement && !trigger.disabled && trigger.getClientRects().length > 0 && getComputedStyle(trigger).visibility !== 'hidden' && Boolean(trigger.getAttribute('aria-controls')); })", "product list did not read back the disabled lifecycle action menu");
+  const enablePanelID = await runProductLifecycleAction('启用');
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已启用')", "product lifecycle enable did not complete through the Host");
+  await waitForLifecycleMenuClosed(enablePanelID, '启用');
   await cdp.call("Page.navigate", { url: baseURL + productPath });
   await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html'", "product lifecycle return did not reach frozen product form");
   // Host mounting creates the editor before its configuration GET resolves.
@@ -288,6 +363,34 @@ try {
   await waitFor(cdp, `Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-remove$=":${materialLaterID}"]'))`, 'product material reopening did not reconstruct the owner draft');
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove$=\":" + materialLaterID + "\"]').click(); document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && Array.from(document.querySelectorAll('#product-media img')).some((image)=>image.src.includes('/" + materialLaterID + "/variants/thumb_320'))", 'product material cancellation changed the original draft');
+  // Upload a real PNG through the same current media dimension. The V3 Host
+  // must append the typed Media receipt, leave unsaved form state and the tab
+  // intact, then persist the order only through the explicit owner save.
+  const productUploadPath = path.join(profile, 'chromium-product-upload.png');
+  await fs.writeFile(productUploadPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII=', 'base64'));
+  const productUploadPrepared = await evaluate(cdp, "(()=>{const description=document.querySelector('#pfDescription');if(!(description instanceof HTMLTextAreaElement))return false;description.value='Chromium material draft remains active';return true})()");
+  if (!productUploadPrepared) throw new Error('product material upload input was unavailable');
+  await evaluate(cdp, "(()=>{const input=document.querySelector('#pfImageUpload');if(!(input instanceof HTMLInputElement))return false;window.__productUploadChangeSeen=0;input.addEventListener('change',()=>{window.__productUploadChangeSeen=(window.__productUploadChangeSeen||0)+1},{capture:true});return true})()");
+  const productDOM = await cdp.call('DOM.getDocument', { depth: 2 });
+  const productUploadNode = await cdp.call('DOM.querySelector', { nodeId: productDOM.root.nodeId, selector: '#pfImageUpload' });
+  if (!productUploadNode.nodeId) throw new Error('product material upload source input was unavailable');
+  await cdp.call('DOM.setFileInputFiles', { files: [productUploadPath], nodeId: productUploadNode.nodeId });
+  // DOM.setFileInputFiles dispatches the browser's native change event. The
+  // product host clears the input while its async upload is in flight, so do not
+  // infer whether it started from a later input.files inspection.
+  await delay(250);
+  const earlyProductUploadState = await evaluate(cdp, "(()=>({toast:document.querySelector('#product-v3-toast')?.textContent||'',rows:[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].map(row=>row.dataset.v3ProductMaterialKey)}))()");
+  try {
+    await waitFor(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];const tab=document.querySelector('a[href=\"#product-media\"]');return rows.length===2&&tab?.getAttribute('aria-current')==='step'&&document.querySelector('#pfDescription')?.value==='Chromium material draft remains active'})()", 'product upload reset the current media dimension or did not append its typed receipt');
+  } catch (_) {
+    const uploadState = await evaluate(cdp, "(()=>({rows:[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].map(row=>row.dataset.v3ProductMaterialKey),tab:document.querySelector('a[href=\"#product-media\"]')?.getAttribute('aria-current')||'',description:document.querySelector('#pfDescription')?.value||'',toast:document.querySelector('#product-v3-toast')?.textContent||'',subtle:Boolean(globalThis.crypto&&globalThis.crypto.subtle),inputFiles:document.querySelector('#pfImageUpload')?.files?.length||0,changeSeen:Number(window.__productUploadChangeSeen||0)}))()");
+    throw new Error('product upload reset the current media dimension or did not append its typed receipt ' + JSON.stringify({...uploadState,earlyProductUploadState,responses:responses.slice(-12),runtimeExceptions}));
+  }
+  const uploadedProduct = await evaluate(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];return rows.find(row=>row.dataset.v3ProductMaterialKey!=='image:" + materialLaterID + "')?.dataset.v3ProductMaterialKey||''})()");
+  if (!/^image:[1-9][0-9]*$/.test(uploadedProduct || '')) throw new Error('product upload did not expose a typed Media row');
+  await captureProductMaterialScreens(cdp, 'ordinary-material-draft');
+  const productSortMoved = await evaluate(cdp, "(()=>{const row=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].find(item=>item.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + ");const button=row?.querySelector('[data-v3-product-material-action=\"up\"]');if(!(button instanceof HTMLButtonElement))return false;button.focus();button.click();const active=document.activeElement;return active instanceof HTMLButtonElement&&!active.disabled&&active.closest('[data-v3-product-material-key]')?.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + "})()");
+  if (!productSortMoved) throw new Error('product material sort did not preserve the active row action');
   await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='保存当前维度').click(); true");
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')", 'product material owner save did not complete');
   await waitFor(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Number(body?.revision)===2)", 'product material owner save did not advance the original external-push CAS revision');
@@ -298,7 +401,9 @@ try {
   if (!preservedAfterMaterialSave?.enabled || !preservedAfterMaterialSave?.url || !preservedAfterMaterialSave?.type || !preservedAfterMaterialSave?.params) {
     throw new Error('product material owner save changed an external-push field ' + JSON.stringify(preservedAfterMaterialSave || {}));
   }
-  await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Array.isArray(body?.images)&&body.images.length===1&&body.images[0]==='/api/admin/image-library/" + materialLaterID + "/variants/original')", 'product material owner save/readback did not preserve the later-page URL');
+  const uploadedProductID = Number(String(uploadedProduct).slice('image:'.length));
+  const expectedProductImages = [`/api/admin/image-library/${uploadedProductID}/variants/original`, `/api/admin/image-library/${materialLaterID}/variants/original`];
+  await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>JSON.stringify(body?.images)===" + JSON.stringify(JSON.stringify(expectedProductImages)) + ")",  'product material owner save/readback did not preserve the uploaded typed receipt and chosen order');
   // Field-variable filtering belongs to the mounted V3 mapping editor. It
   // filters locally only after explicit Enter; preview/save remain unchanged.
   const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');const panel=document.querySelector('#product-push');if(!(tab instanceof HTMLAnchorElement)||!(panel instanceof HTMLElement))return false;tab.click();return true})()");
@@ -370,11 +475,25 @@ try {
   } catch (_) {
     throw new Error("service-period product Host did not render " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('service-period', '编辑周期商品', '返回周期商品管理');
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "service-period product configuration did not load");
   } catch (_) {
     throw new Error("service-period product configuration did not load " + await browserSaveDiagnostic());
   }
+  // The service-period editor uses a separate frozen callback. Exercise its
+  // real file input too: the receipt must remain in the active media draft and
+  // must not reset this form before its owner explicitly saves.
+  const serviceMediaOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#sp-media\"]');if(!(tab instanceof HTMLAnchorElement))return false;tab.click();const description=document.querySelector('#spfDescription');if(!(description instanceof HTMLTextAreaElement))return false;description.value='Chromium service material draft remains active';return true})()");
+  if (!serviceMediaOpened) throw new Error('service-period material dimension was unavailable');
+  const serviceUploadPath = path.join(profile, 'chromium-service-upload.png');
+  await fs.writeFile(serviceUploadPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII=', 'base64'));
+  const serviceDOM = await cdp.call('DOM.getDocument', { depth: 2 });
+  const serviceUploadNode = await cdp.call('DOM.querySelector', { nodeId: serviceDOM.root.nodeId, selector: '#spfImageUpload' });
+  if (!serviceUploadNode.nodeId) throw new Error('service-period material upload source input was unavailable');
+  await cdp.call('DOM.setFileInputFiles', { files: [serviceUploadPath], nodeId: serviceUploadNode.nodeId });
+  await waitFor(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];const tab=document.querySelector('a[href=\"#sp-media\"]');return rows.length===1&&tab?.getAttribute('aria-current')==='step'&&document.querySelector('#spfDescription')?.value==='Chromium service material draft remains active'})()", 'service-period upload reset the current media dimension or did not append its typed receipt');
+  await captureProductMaterialScreens(cdp, 'service-material-draft');
   await evaluate(cdp, "(() => { document.querySelector('a[href=\"#sp-push\"]')?.click(); const enabled=document.querySelector('#spfExternalPushEnabled'); const reference=document.querySelector('#spfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-url').value='https://commerce-browser.invalid'; document.querySelector('#product-v3-external-push-type').value='member_renew'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='service browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; (Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')) || document.querySelector('[data-external-push-configuration-save]')).click(); return true; })()");
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '2' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "service-period browser configuration save did not finish");
