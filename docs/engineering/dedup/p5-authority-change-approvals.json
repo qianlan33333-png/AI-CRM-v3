@@ -1215,6 +1215,28 @@
       ],
       "reason": "Rebind the Root-reviewed read-only Overview paid-record drilldown authority diff after the ordered #345, #352, #351 and #343 stack. The endpoint remains within the approved Overview read scope; frozen donors remain unchanged.",
       "review_reference": "Root approval for #347 base 9d310804 authority binding on 2026-09-16; ordinary PR review and required CI remain pending."
+    },
+    {
+      "base_commit": "d8f4a7360567cf9719cc0e513236b354343474d8",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "a759668892f9d92ea21c50b4e1b4f3590cd0a53876aa14ecdf673f76c09a7aea",
+          "head_sha256": "fc3e53eef94e2fdf253aca9975dab9313f4f3f97b47896dd956f92bbea0ac169"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "b946c5d6d2465933e976f57bb92aa6f0665cd95e475eec4dacf78fa1b98309e2",
+          "head_sha256": "10422b165e04f6d146b1eb7b65cd43a17971dc433bd01f15277bccdbc4b20a99"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "250a407959db9d90fa377acb15fe735dcde152a82e8d81099d9669b380fc0c0b",
+          "head_sha256": "9fe52f44a009b49723d95e43a22b9b1b3dfba6040af790377a112c1e5dc93e20"
+        }
+      ],
+      "reason": "Rebind the Root-reviewed read-only Overview paid-record drilldown authority diff after #343 settlement-confirmed read-time landed. The endpoint remains within the approved Overview read scope; frozen donors remain unchanged.",
+      "review_reference": "Root preauthorization for #347 actual main d8f4a736 authority binding on 2026-09-16; ordinary PR review and required CI remain pending."
     }
   ]
 }
