@@ -187,6 +187,27 @@ try {
     return Boolean(root && title?.textContent?.trim() === 'AI-CRM 外部只读 API v1' && management && rows.length === 11);
   })()`, "login did not render the default API document");
   if (resources.has("/api/admin/open-platform/clients") || resources.has("/api/admin/open-platform/routes")) throw new Error("default API document requested caller management data");
+  // Documentation filtering stays as a draft until an ordinary Enter. This is
+  // purely local filtering: it must never open caller-management reads.
+  const docSearchCandidate = await evaluate(cdp, `(() => {
+    const input=document.querySelector('[data-open-platform-doc-search]');
+    if (!(input instanceof HTMLInputElement)) return null;
+    const visible=()=>document.querySelectorAll('.open-platform-doc-section:not([hidden])').length;
+    const before=visible(); input.focus(); input.value='错误码';
+    input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+    input.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
+    input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+    input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
+    const candidate=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter',isComposing:true});
+    Object.defineProperty(candidate,'keyCode',{value:229}); input.dispatchEvent(candidate);
+    return {before,after:visible(),prevented:candidate.defaultPrevented};
+  })()`);
+  if (!docSearchCandidate || docSearchCandidate.prevented || docSearchCandidate.after !== docSearchCandidate.before) throw new Error('Open Platform documentation IME candidate altered the draft filter');
+  await evaluate(cdp, "document.querySelector('[data-open-platform-doc-search]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); true");
+  await waitFor(cdp, "document.querySelectorAll('.open-platform-doc-section:not([hidden])').length===1", "Open Platform documentation ordinary Enter did not apply the draft filter");
+  const docSearchFocus = await evaluate(cdp, "(()=>{const input=document.querySelector('[data-open-platform-doc-search]');return Boolean(input&&document.activeElement===input&&input.value==='错误码')})()");
+  if (!docSearchFocus) throw new Error('Open Platform documentation Enter did not retain query focus');
+  if (resources.has("/api/admin/open-platform/clients") || resources.has("/api/admin/open-platform/routes")) throw new Error("documentation filter unexpectedly requested caller management data");
   const managementOpened = await evaluate(cdp, `(() => {
     const button=document.querySelector('[data-open-platform-docs="v1"] button[data-open-platform-action="密钥管理"]');
     if (!(button instanceof HTMLButtonElement)) return false;

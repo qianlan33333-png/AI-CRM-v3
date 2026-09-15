@@ -103,6 +103,7 @@ try {
   assert.equal(window.__channelSearches || 0, 0, 'IME candidate confirmation must not submit a search');
 
   await pause();
+  channelInput.focus();
   const committedEnter = enter(window, channelInput);
   assert.equal(committedEnter.defaultPrevented, true, 'a deliberate search Enter is consumed before the frozen handler');
   assert.equal(window.__channelSearches, 1, 'two bundles forward one committed channel query exactly once');
@@ -114,6 +115,13 @@ try {
   enter(window, channelInput);
   assert.equal(window.__channelSearches, 2, 'empty Enter explicitly reloads all channel rows');
   assert.equal(window.document.querySelectorAll('[data-channel-row]').length, 2, 'empty Enter restores all channel rows');
+  channelInput = window.document.querySelector('input[aria-label="搜索渠道名称"]');
+  const unrelatedFocus = window.document.createElement('button');
+  unrelatedFocus.type = 'button'; unrelatedFocus.textContent = '保留其他焦点'; window.document.body.append(unrelatedFocus);
+  channelInput.focus(); channelInput.value = 'alpha'; enter(window, channelInput);
+  unrelatedFocus.focus();
+  await pause(20);
+  assert.equal(window.document.activeElement, unrelatedFocus, 'queued search focus repair must not reclaim a user-moved live control');
 
   const group = window.document.querySelector('[data-group-picker-search]');
   const tag = window.document.querySelector('.aicrm-tag-picker [data-role="search"]');

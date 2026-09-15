@@ -68,9 +68,21 @@ function inputFrom(event: Event): HTMLInputElement | null {
 function preserveSelection(input: HTMLInputElement, selector: string): () => void {
   const start = input.selectionStart;
   const end = input.selectionEnd;
+  const ownerDocument = input.ownerDocument;
+  const wasActive = ownerDocument.activeElement === input;
   return () => {
-    const current = input.isConnected ? input : document.querySelector<HTMLInputElement>(selector);
-    if (!current) return;
+    const ownerWindow = ownerDocument.defaultView;
+    // A legacy redraw may replace the input synchronously. A navigation or
+    // dialog close invalidates its document; that owner must not regain focus.
+    if (!ownerWindow || ownerWindow.document !== ownerDocument) return;
+    const current = input.isConnected && input.ownerDocument === ownerDocument
+      ? input
+      : ownerDocument.querySelector<HTMLInputElement>(selector);
+    if (!current?.isConnected) return;
+    const active = ownerDocument.activeElement;
+    // A user who moved to another live control after the handler ran keeps
+    // that focus. Reclaim only the original search focus or a redraw's body.
+    if (!wasActive || (active !== input && active !== ownerDocument.body && active !== ownerDocument.documentElement)) return;
     current.focus({ preventScroll: true });
     if (start !== null && end !== null) {
       const length = current.value.length;
@@ -94,7 +106,10 @@ function forward(input: HTMLInputElement, search: RegisteredSearch): void {
   dispatchLegacySearch(input, search);
   restoreSelection();
   queueMicrotask(restoreSelection);
-  if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(restoreSelection);
+  const ownerWindow = input.ownerDocument.defaultView;
+  if (ownerWindow && ownerWindow.document === input.ownerDocument && typeof ownerWindow.requestAnimationFrame === 'function') {
+    ownerWindow.requestAnimationFrame(restoreSelection);
+  }
 }
 
 function deferCompositionEnd(input: HTMLInputElement): void {

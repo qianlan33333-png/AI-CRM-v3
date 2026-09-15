@@ -20,6 +20,15 @@
     ownerOptions: [],
     createOwner: null,
     groupFilterOwner: null,
+    // Group list text is deliberately two-phase: inputs remain a local draft
+    // until Enter, while other filter changes and refreshes reuse this value.
+    groupKeywordDraft: "",
+    groupKeywordCommitted: "",
+    groupPlanID: "",
+    groupBindStatus: "",
+    groupsReadError: "",
+    groupKeywordComposing: false,
+    pendingGroupsRender: null,
     refreshingOwnerGroups: false,
     notice: "",
     noticeIsError: false,
@@ -38,6 +47,7 @@
     activeDetailPanel: "basic",
   };
   let detailReadGeneration = 0;
+  let groupsReadGeneration = 0;
 
   const routes = {
     list: "/admin/automation-conversion/group-ops/ui",
@@ -313,10 +323,17 @@
     app.querySelectorAll("[data-action]").forEach((element) => {
       element.addEventListener("click", onAction);
     });
-    app.querySelectorAll("[data-filter]").forEach((element) => {
+    app.querySelectorAll("select[data-filter]").forEach((element) => {
       element.addEventListener("change", onFilterChange);
-      element.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") onFilterChange();
+    });
+    app.querySelectorAll('input[name="keyword"][data-filter]').forEach((element) => {
+      element.addEventListener("keydown", onKeywordKeydown);
+      element.addEventListener("compositionstart", () => { state.groupKeywordComposing = true; });
+      element.addEventListener("compositionend", () => {
+        state.groupKeywordComposing = false;
+        // Keep this DOM alive through the IME candidate key that may follow
+        // compositionend. The shared document policy then ignores that key.
+        window.setTimeout(flushPendingGroupsRender, 0);
       });
     });
     app.querySelectorAll("[data-group-picker-search]").forEach((element) => {
@@ -327,8 +344,51 @@
     });
   }
 
-  function onFilterChange() {
-    if (state.mode === "groups") loadGroupsPage();
+  function groupKeywordInput() {
+    return app.querySelector('input[name="keyword"][data-filter]');
+  }
+
+  function captureGroupsDraft() {
+    const input = groupKeywordInput();
+    if (input) state.groupKeywordDraft = input.value || "";
+  }
+
+  function groupsFocusSnapshot() {
+    const input = groupKeywordInput();
+    if (!input || document.activeElement !== input) return null;
+    return {
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+    };
+  }
+
+  function restoreGroupsFocus(snapshot) {
+    if (!snapshot) return;
+    const input = groupKeywordInput();
+    if (!input || !input.isConnected) return;
+    input.focus({ preventScroll: true });
+    const length = input.value.length;
+    if (snapshot.selectionStart !== null && snapshot.selectionEnd !== null) {
+      input.setSelectionRange(Math.min(snapshot.selectionStart, length), Math.min(snapshot.selectionEnd, length));
+    }
+  }
+
+  function onFilterChange(event) {
+    const element = event && event.currentTarget;
+    if (state.mode !== "groups" || !element) return;
+    captureGroupsDraft();
+    if (element.name === "plan_id") state.groupPlanID = element.value || "";
+    if (element.name === "bind_status") state.groupBindStatus = element.value || "";
+    loadGroupsPage();
+  }
+
+  function onKeywordKeydown(event) {
+    if (state.mode !== "groups" || event.key !== "Enter") return;
+    if (event.isComposing || event.keyCode === 229) return;
+    const input = event.currentTarget;
+    state.groupKeywordDraft = input.value || "";
+    state.groupKeywordCommitted = state.groupKeywordDraft;
+    loadGroupsPage();
   }
 
   function currentFormValue(name) {
@@ -1411,37 +1471,62 @@
 
   function groupsQueryParams() {
     const params = new URLSearchParams();
-    const keyword = currentFormValue("keyword");
-    const owner = currentFormValue("owner_userid");
-    const plan = currentFormValue("plan_id");
-    const bind = currentFormValue("bind_status");
+    const keyword = state.groupKeywordCommitted;
+    const owner = memberStaffId(state.groupFilterOwner);
     if (keyword) params.set("keyword", keyword);
     if (owner) params.set("owner_userid", owner);
-    if (plan) params.set("plan_id", plan);
-    if (bind) params.set("bind_status", bind);
+    if (state.groupPlanID) params.set("plan_id", state.groupPlanID);
+    if (state.groupBindStatus) params.set("bind_status", state.groupBindStatus);
     return params.toString();
   }
 
+  function renderGroupsRead(generation, result) {
+    if (generation !== groupsReadGeneration || state.mode !== "groups") return;
+    if (state.groupKeywordComposing) {
+      state.pendingGroupsRender = { generation, result };
+      return;
+    }
+    const focus = groupsFocusSnapshot();
+    captureGroupsDraft();
+    if (result.kind === "success") {
+      state.groups = normalizeItems(result.groupPayload);
+      state.plans = normalizeItems(result.planPayload);
+      state.ownerOptions = normalizeOwners(result.ownersPayload, null);
+      state.groupsReadError = "";
+    } else {
+      // A failed read leaves the last successful rows in place and explains
+      // that the controls still represent the current draft/committed state.
+      state.groupsReadError = (result.error && result.error.message) || "读取群聊失败，请重试";
+    }
+    renderGroups();
+    restoreGroupsFocus(focus);
+  }
+
+  function flushPendingGroupsRender() {
+    const pending = state.pendingGroupsRender;
+    state.pendingGroupsRender = null;
+    if (pending) renderGroupsRead(pending.generation, pending.result);
+  }
+
   async function loadGroupsPage() {
+    captureGroupsDraft();
+    const generation = ++groupsReadGeneration;
+    const query = groupsQueryParams();
     try {
-      const query = groupsQueryParams();
       const [groupPayload, planPayload, ownersPayload] = await Promise.all([
         requestJson(query ? `${routes.apiGroups}?${query}` : routes.apiGroups),
         state.plans.length ? Promise.resolve({ items: state.plans }) : requestJson(routes.apiPlans),
         requestJson(routes.apiMembers),
       ]);
-      state.groups = normalizeItems(groupPayload);
-      state.plans = normalizeItems(planPayload);
-      state.ownerOptions = normalizeOwners(ownersPayload, null);
-      renderGroups();
+      renderGroupsRead(generation, { kind: "success", groupPayload, planPayload, ownersPayload });
     } catch (error) {
-      renderError(error.message);
+      renderGroupsRead(generation, { kind: "error", error });
     }
   }
 
   function renderPlanFilter() {
     return state.plans
-      .map((plan) => `<option value="${escapeHtml(plan.id)}">${escapeHtml(plan.plan_name)}</option>`)
+      .map((plan) => `<option value="${escapeHtml(plan.id)}"${String(plan.id) === state.groupPlanID ? " selected" : ""}>${escapeHtml(plan.plan_name)}</option>`)
       .join("");
   }
 
@@ -1462,12 +1547,13 @@
       <div class="group-ops__bar">${pageButton("返回列表", routes.list)}</div>
       <section class="group-ops__card">
         <div class="group-ops__filters">
-          <label class="group-ops__field group-ops__field--wide"><span>群名 / 群 ID</span><input name="keyword" data-filter></label>
-          <label class="group-ops__field"><span>群主/管理员</span>${renderMemberField("owner_userid", (state.groupFilterOwner || {}).user_id, "pick-group-filter-owner", state.groupFilterOwner ? "更换成员" : "选择成员")}</label>
+          <label class="group-ops__field group-ops__field--wide"><span>群名 / 群 ID</span><input name="keyword" data-filter value="${escapeHtml(state.groupKeywordDraft)}"></label>
+          <label class="group-ops__field"><span>群主/管理员</span>${renderMemberField("owner_userid", memberStaffId(state.groupFilterOwner), "pick-group-filter-owner", state.groupFilterOwner ? "更换成员" : "选择成员")}</label>
           <div class="group-ops__row-actions">${actionButton("清除成员", "clear-group-filter-owner")}</div>
           <label class="group-ops__field"><span>所属计划</span><select name="plan_id" data-filter><option value="">全部</option>${renderPlanFilter()}</select></label>
-          <label class="group-ops__field"><span>已绑定 / 未绑定</span><select name="bind_status" data-filter><option value="">全部</option><option value="bound">已绑定</option><option value="unbound">未绑定</option></select></label>
+          <label class="group-ops__field"><span>已绑定 / 未绑定</span><select name="bind_status" data-filter><option value=""${state.groupBindStatus === "" ? " selected" : ""}>全部</option><option value="bound"${state.groupBindStatus === "bound" ? " selected" : ""}>已绑定</option><option value="unbound"${state.groupBindStatus === "unbound" ? " selected" : ""}>未绑定</option></select></label>
         </div>
+        ${state.groupsReadError ? `<p class="group-ops__notice group-ops__notice--error" role="alert">${escapeHtml(state.groupsReadError)}</p>` : ""}
       </section>
       <section class="group-ops__card">
         <div class="group-ops__table-wrap">
