@@ -81,6 +81,50 @@ replaceRange("  function safeJsonParse(text) {", "  function queryUrl(baseUrl, p
 
 `, "trusted bridge ownership");
 
+const sidebarContextInvalidationAnchor = "  function endpoint(name) {\n";
+once(sidebarContextInvalidationAnchor, "sidebar context invalidation hook");
+js = js.replace(sidebarContextInvalidationAnchor, `  // The trusted Host owns the signed context. A loss of that context also
+  // invalidates donor-held caches and pending UI work so a late response cannot
+  // repopulate a newly cleared customer surface.
+  function clearV3SensitiveSidebarState() {
+    if (!state.v3TrustedContextRetrying) state.v3TrustedBootGeneration = Number(state.v3TrustedBootGeneration || 0) + 1;
+    state.materialRequestVersion = Number(state.materialRequestVersion || 0) + 1;
+    if (state.materialSearchController) state.materialSearchController.abort();
+    if (state.materialImageController) state.materialImageController.abort();
+    if (state.profileSaveTimer) window.clearTimeout(state.profileSaveTimer);
+    Object.keys(state.periodicRemarkTimers || {}).forEach(function (id) { window.clearTimeout(state.periodicRemarkTimers[id]); });
+    state.profileSaveTimer = null;
+    state.periodicRemarkTimers = {};
+    state.workbench = null;
+    state.loaded = {};
+    state.data = {
+      questionnaires: null,
+      products: null,
+      service_period_products: null,
+      orders: null,
+      periodic_orders: null,
+      coupons: null,
+      materials: {},
+      radar_links: null,
+      timeline: { items: [], total: 0, has_more: false, next_offset: 0 },
+    };
+    state.materialQuery = "";
+    state.materialQuickKeywords = [];
+    state.v3RetainedMaterialResult = null;
+    state.panelCache = {};
+    state.panelRequests = new Map();
+    state.external_userid = "";
+    state.owner_userid = "";
+    state.bind_by_userid = "";
+    state.activeTab = "profile";
+    state.status = WORKBENCH_STATES.context_missing;
+    destroyMaterialResources();
+  }
+  window.addEventListener("aicrm-sidebar-context-invalidated", clearV3SensitiveSidebarState);
+
+  function endpoint(name) {
+`);
+
 // The V3 bridge performs the exact current JSSDK/OAuth/contact sequence. The
 // donor remains responsible only for standard UI state and rendering.
 replaceRange("  async function resolveContextFromQuery() {", "  tabsNode.addEventListener(\"click\", (event) => {", `  async function boot(options) {
@@ -97,8 +141,11 @@ replaceRange("  async function resolveContextFromQuery() {", "  tabsNode.addEven
       if (!bridge) throw new Error("侧边栏可信桥未就绪");
       // A retry explicitly abandons the prior generation before resolving a
       // new WeCom contact. It cannot reuse a token/cache from the old view.
-      if (options && options.forceSidebarOAuth && typeof bridge.retry === "function") await bridge.retry();
-      else await bridge.start();
+      if (options && options.forceSidebarOAuth && typeof bridge.retry === "function") {
+        state.v3TrustedContextRetrying = true;
+        try { await bridge.retry(); }
+        finally { state.v3TrustedContextRetrying = false; }
+      } else await bridge.start();
       if (state.v3TrustedBootGeneration !== generation) return;
       // The overlay never receives or renders an external identifier. This
       // stable local marker keeps its donor cache keys isolated per reload.
@@ -188,6 +235,99 @@ replaceRange("  function renderCoupons() {", "  function materialTypeControls() 
   }
 
 `, "coupon availability render");
+
+// A successful material list is sensitive to the signed customer context. A
+// transient same-context failure must not erase that list or its committed
+// query, while authorization failures must clear it before a retry can begin.
+replaceRange("  function renderMaterialLoadError(type, error) {", "  function destroyMaterialResources() {", `  function isV3AuthorizationFailure(error) {
+    const status = Number(error && error.status);
+    return status === 401 || status === 403;
+  }
+
+  function v3RetainedMaterialEntry() {
+    const retained = state.v3RetainedMaterialResult;
+    if (!retained || retained.key !== materialResultKey(state.materialQuery)) return null;
+    const entry = retained.entry;
+    if (!entry || !Array.isArray(entry.items) || !entry.items.length) return null;
+    return entry;
+  }
+
+  function renderMaterialLoadError(type, error) {
+    destroyMaterialResources();
+    if (isV3AuthorizationFailure(error)) {
+      state.data.materials = {};
+      state.v3RetainedMaterialResult = null;
+      renderRetryPanel("", (error && error.message) || "当前客户上下文已失效，请重新打开侧边栏后重试。");
+      return;
+    }
+    const retained = type === "image" ? v3RetainedMaterialEntry() : null;
+    if (retained) {
+      state.data.materials[materialResultKey(state.materialQuery)] = retained;
+      renderMaterials();
+      const host = content.querySelector(".panel");
+      if (host) {
+        const notice = document.createElement("div");
+        notice.className = "v3-sidebar-retained-error";
+        notice.setAttribute("role", "status");
+        notice.setAttribute("data-v3-sidebar-retained-error", "");
+        notice.append(document.createTextNode(((error && error.message) || "素材读取失败") + "；已保留当前素材。"));
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        const retry = document.createElement("button");
+        retry.className = "btn primary";
+        retry.type = "button";
+        retry.dataset.v3RetryMaterialSearch = "";
+        retry.textContent = "重试";
+        actions.append(retry);
+        notice.append(actions);
+        host.insertBefore(notice, host.firstChild);
+      }
+      return;
+    }
+    content.innerHTML = panel(
+      "素材",
+      materialTypeControls() +
+        materialSearchControls() +
+        '<div class="status error">' + escapeHtml((error && error.message) || "加载失败") + "</div>" +
+        '<div class="row-actions"><button class="btn primary" type="button" data-retry-material-type="' + escapeHtml(type) + '">重试</button></div>'
+    );
+  }
+
+`, "material failure presentation");
+replaceRange("  async function executeMaterialSearch(query, options) {", "  async function switchMaterialType(type) {", `  async function executeMaterialSearch(query, options) {
+    if (state.materialType !== "image") return;
+    destroyMaterialResources();
+    state.materialQuery = String(query || "").trim().slice(0, 100);
+    const requestedQuery = state.materialQuery;
+    const requestVersion = Number(state.materialRequestVersion || 0) + 1;
+    const resultKey = materialResultKey(state.materialQuery);
+    const prior = state.data.materials[resultKey];
+    if (options && options.force) {
+      state.v3RetainedMaterialResult = prior && Array.isArray(prior.items) && prior.items.length
+        ? { key: resultKey, entry: prior }
+        : null;
+      delete state.data.materials[resultKey];
+      clearPanelCache("materials");
+    }
+    content.innerHTML = panel("", materialTypeControls() + materialSearchControls() + '<div class="status">正在搜索图片素材…</div>');
+    try {
+      const applied = await loadMaterials("image");
+      if (!applied || requestVersion !== state.materialRequestVersion || root.dataset.v3SidebarContext === "invalid" || requestedQuery !== state.materialQuery || state.activeTab !== "materials" || state.materialType !== "image") return;
+      if (state.v3RetainedMaterialResult && state.v3RetainedMaterialResult.key === resultKey) state.v3RetainedMaterialResult = null;
+      renderMaterials();
+    } catch (error) {
+      if (requestVersion !== state.materialRequestVersion || root.dataset.v3SidebarContext === "invalid" || state.activeTab !== "materials" || state.materialType !== "image") return;
+      renderMaterialLoadError("image", error);
+    }
+  }
+
+`, "material retained refresh");
+
+// A visible submit is the committed search action. It also provides an
+// explicit same-query refresh without making composition input fetch or redraw.
+const materialSearchSubmit = '    await executeMaterialSearch(input ? input.value : "");\n';
+once(materialSearchSubmit, "committed material search submit");
+js = js.replace(materialSearchSubmit, '    await executeMaterialSearch(input ? input.value : "", { force: true });\n');
 
 // The donor used a single generic "bound" mobile label and made regular-order
 // detail buttons unconditionally clickable. V3 keeps the standard layout but
@@ -467,6 +607,12 @@ replaceRange("    const materialTypeButton = event.target.closest(\"[data-materi
         showToast(error.message || "加载更多失败", "error");
         moreQuestionnairesButton.disabled = false;
       }
+      return;
+    }
+    const retainedMaterialRetryButton = event.target.closest("[data-v3-retry-material-search]");
+    if (retainedMaterialRetryButton) {
+      retainedMaterialRetryButton.disabled = true;
+      await executeMaterialSearch(state.materialQuery, { force: true });
       return;
     }
     const materialTypeButton = event.target.closest("[data-material-type]");
