@@ -54,25 +54,38 @@ assert.match(target.textContent, /当前场景未声明可用变量/);
 assert.match(target.textContent, /素材已归档/);
 assert.equal(target.querySelector('script'), null, 'untrusted content remains text rather than source HTML');
 assert.equal(target.querySelectorAll('[data-content-material-key]').length, 3, 'readonly/preview material order is represented once');
-const thumbnail = target.querySelector('img');
+const noThumbnailMaterial = target.querySelector('[data-content-material-key="media-library:attachment:9"]');
+const thumbnailMaterial = target.querySelector('[data-content-material-key="media-library:image:7"]');
+assert.equal(noThumbnailMaterial.classList.contains('aicrm-content-presentation__material--without-thumbnail'), true, 'a material without a controlled thumbnail declares its single-column layout');
+assert.equal(noThumbnailMaterial.querySelector('.aicrm-content-presentation__visual'), null, 'a material without a thumbnail does not reserve a visual cell');
+assert.equal(thumbnailMaterial.classList.contains('aicrm-content-presentation__material--without-thumbnail'), false, 'an actual controlled thumbnail retains its visual column');
+const thumbnail = thumbnailMaterial.querySelector('img');
 thumbnail.dispatchEvent(new Event('error'));
 assert.equal(target.textContent.includes('缩略图暂不可用'), true, 'a controlled thumbnail has an explicit local fallback');
+assert.equal(thumbnailMaterial.classList.contains('aicrm-content-presentation__material--without-thumbnail'), false, 'a failed thumbnail keeps the visual column for its explicit fallback');
 mod.renderContentPresentation(target, { mode: 'preview', package: { content_text: ' 前后空白 ' }, normalizeText: preserveText });
 assert.equal(target.querySelector('.aicrm-content-presentation__text').textContent, ' 前后空白 ', 'presentation uses the caller policy instead of silently applying the legacy trim default');
 mod.renderContentPresentation(target, {
   mode: 'readonly', package: { content_text: 'Excel 行话术' }, normalizeText: preserveText,
   supplements: [
     { key: 'excel-row-7', kind: 'excel_card', title: '课程标题', description: '路径：pages/course/index', thumbnailURL: '/batch-cover.png' },
+    { key: 'excel-row-8', kind: 'excel_card', title: '无封面课程', description: '路径：pages/course/without-cover' },
     { key: 'excel-row-7', kind: 'excel_card', title: '重复卡片' },
     { key: 'invalid', kind: 'unknown', title: '不应出现' },
   ],
 });
 assert.match(target.textContent, /小程序卡片：课程标题/, 'caller-owned Excel cards use the same preview and readonly renderer');
 assert.match(target.textContent, /路径：pages\/course\/index/);
-assert.equal(target.querySelectorAll('[data-content-presentation-supplement]').length, 1, 'supplement keys are deduplicated and unknown block kinds fail closed');
-const supplementThumbnail = target.querySelector('[data-content-presentation-supplement] img');
+assert.equal(target.querySelectorAll('[data-content-presentation-supplement]').length, 2, 'supplement keys are deduplicated and unknown block kinds fail closed');
+const supplementWithThumbnail = target.querySelector('[data-content-presentation-supplement="excel-row-7"]');
+const supplementWithoutThumbnail = target.querySelector('[data-content-presentation-supplement="excel-row-8"]');
+assert.equal(supplementWithoutThumbnail.classList.contains('aicrm-content-presentation__supplement--without-thumbnail'), true, 'a supplement without a controlled thumbnail declares its single-column layout');
+assert.equal(supplementWithoutThumbnail.querySelector('.aicrm-content-presentation__visual'), null, 'a supplement without a thumbnail does not reserve a visual cell');
+assert.equal(supplementWithThumbnail.classList.contains('aicrm-content-presentation__supplement--without-thumbnail'), false, 'a controlled supplement thumbnail retains its visual column');
+const supplementThumbnail = supplementWithThumbnail.querySelector('img');
 supplementThumbnail.dispatchEvent(new Event('error'));
 assert.equal(target.textContent.includes('封面暂不可用'), true, 'an Excel-card thumbnail has an explicit local fallback');
+assert.equal(supplementWithThumbnail.classList.contains('aicrm-content-presentation__supplement--without-thumbnail'), false, 'a failed supplement thumbnail keeps the visual column for its explicit fallback');
 assert.equal(requests, 0, 'supplemental content remains a display-only caller projection');
 mod.renderContentPresentation(target, {
   mode: 'readonly', package: normalized, selectedRecords: records,
