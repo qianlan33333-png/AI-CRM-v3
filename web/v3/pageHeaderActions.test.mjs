@@ -4,7 +4,7 @@ import { JSDOM } from 'jsdom';
 
 const bundle = await build({
   stdin: {
-    contents: "import { mountPageHeaderActions, mountPageHeaderActionElements, setPageHeaderActionDisabled } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions; globalThis.mountElements = mountPageHeaderActionElements; globalThis.setDisabled = setPageHeaderActionDisabled;",
+    contents: "import { mountPageHeaderActions, mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins, setPageHeaderActionDisabled } from './web/v3/shared/ui/pageHeaderActions'; globalThis.mount = mountPageHeaderActions; globalThis.mountElements = mountPageHeaderActionElements; globalThis.hasOrigins = pageHeaderActionElementsHaveConnectedOrigins; globalThis.setDisabled = setPageHeaderActionDisabled;",
     resolveDir: process.cwd(), sourcefile: 'page-header-actions-test-entry.ts',
   }, bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, logLevel: 'warning',
 });
@@ -144,7 +144,9 @@ try {
   stale.textContent = '旧渲染操作';
   staleSource.append(stale); dom.window.document.body.append(staleSource);
   dom.window.mountElements('stale-owner', [stale]);
+  assert.equal(dom.window.hasOrigins('stale-owner', [stale]), true, 'a live source marker is observable by the page Host');
   staleSource.remove();
+  assert.equal(dom.window.hasOrigins('stale-owner', [stale]), false, 'a donor redraw detaches the old source marker before a stale control can be reused');
   dom.window.mountElements('stale-owner', [stale]);
   assert.equal(topbar.querySelector('[data-page-header-actions="stale-owner"]'), null, 'a redraw-detached source control cannot be resurrected in the header');
   assert.equal(stale.isConnected, false, 'a detached donor control remains detached after stale remount is rejected');
