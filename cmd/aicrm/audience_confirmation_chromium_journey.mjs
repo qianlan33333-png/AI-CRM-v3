@@ -98,6 +98,19 @@ async function stopBrowser(browser) {
   }
 }
 
+async function removeProfile(profile) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 });
+      return true;
+    } catch (error) {
+      if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error?.code)) return false;
+      await delay(100);
+    }
+  }
+  return false;
+}
+
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-audience-confirmation-chromium-"));
 let browser;
 let cdp;
@@ -172,5 +185,6 @@ try {
 } finally {
   if (cdp) cdp.close();
   await stopBrowser(browser);
-  try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 }); } catch (error) { if (!failed) throw error; }
+  const removed = await removeProfile(profile);
+  if (!removed && !failed) throw new Error("Chromium profile cleanup did not complete");
 }
