@@ -48,6 +48,9 @@ const dom = new JSDOM(`<!doctype html><body data-page="channels">
   <input data-image-library-query>
   <input data-open-platform-doc-search>
   <input data-field-mapping-variable-search>
+  <input id="admin-access-search">
+  <input id="admin-access-employee-search">
+  <input data-survey-log-search>
   <section id="group-ops-app"><input name="keyword" data-filter><select data-filter><option>all</option></select></section>
 </body>`, {
   url: 'https://test.invalid/admin/channels', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
@@ -78,11 +81,14 @@ try {
   window.document.querySelector('[data-operation-member-search]').addEventListener('input', () => { calls.staffInput += 1; });
   window.document.querySelector('[data-operation-member-search]').addEventListener('keydown', (event) => { if (event.key === 'Enter') calls.staffEnter += 1; });
   window.document.querySelector('[data-picker-search]').addEventListener('keydown', (event) => { if (event.key === 'Enter') calls.materialEnter += 1; });
-  const newCalls = { image: 0, docs: 0, variables: 0, groupDirectory: 0, groupSelect: 0 };
+  const newCalls = { image: 0, docs: 0, variables: 0, groupDirectory: 0, groupSelect: 0, accessUsers: 0, accessEmployees: 0, surveyLogs: 0 };
   window.document.querySelector('[data-image-library-query]').addEventListener('input', () => { newCalls.image += 1; });
   window.document.querySelector('[data-open-platform-doc-search]').addEventListener('input', () => { newCalls.docs += 1; });
   window.document.querySelector('[data-field-mapping-variable-search]').addEventListener('input', () => { newCalls.variables += 1; });
   window.document.querySelector('#group-ops-app input[name="keyword"]').addEventListener('keydown', (event) => { if (event.key === 'Enter') newCalls.groupDirectory += 1; });
+  window.document.querySelector('#admin-access-search').addEventListener('input', () => { newCalls.accessUsers += 1; });
+  window.document.querySelector('#admin-access-employee-search').addEventListener('input', () => { newCalls.accessEmployees += 1; });
+  window.document.querySelector('[data-survey-log-search]').addEventListener('input', () => { newCalls.surveyLogs += 1; });
   window.document.querySelector('#group-ops-app select[data-filter]').addEventListener('change', () => { newCalls.groupSelect += 1; });
 
   // The two production bundles both call the installer. The document-scoped
@@ -152,7 +158,7 @@ try {
     input.dispatchEvent(new window.Event('input', { bubbles: true, cancelable: true }));
     input.dispatchEvent(new window.FocusEvent('blur', { bubbles: true }));
   }
-  assert.deepEqual(newCalls, { image: 0, docs: 0, variables: 0, groupDirectory: 0, groupSelect: 0 }, 'the four remaining search inputs retain drafts on input and blur');
+  assert.deepEqual({ image: newCalls.image, docs: newCalls.docs, variables: newCalls.variables, groupDirectory: newCalls.groupDirectory, groupSelect: newCalls.groupSelect }, { image: 0, docs: 0, variables: 0, groupDirectory: 0, groupSelect: 0 }, 'the four remaining search inputs retain drafts on input and blur');
   image.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }));
   image.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }));
   const imageCandidateEnter = enter(window, image, { keyCode: 229 });
@@ -160,9 +166,27 @@ try {
   assert.equal(newCalls.image, 0, 'an image-search IME candidate Enter does not schedule a read');
   await pause();
   for (const input of [image, docs, variables, groupDirectory]) enter(window, input);
-  assert.deepEqual(newCalls, { image: 1, docs: 1, variables: 1, groupDirectory: 1, groupSelect: 0 }, 'a normal Enter forwards each remaining search exactly once to its existing handler');
+  assert.deepEqual({ image: newCalls.image, docs: newCalls.docs, variables: newCalls.variables, groupDirectory: newCalls.groupDirectory, groupSelect: newCalls.groupSelect }, { image: 1, docs: 1, variables: 1, groupDirectory: 1, groupSelect: 0 }, 'a normal Enter forwards each remaining search exactly once to its existing handler');
   window.document.querySelector('#group-ops-app select[data-filter]').dispatchEvent(new window.Event('change', { bubbles: true }));
   assert.equal(newCalls.groupSelect, 1, 'Group Ops select filters keep their existing change behavior');
+
+  const accessUsers = window.document.querySelector('#admin-access-search');
+  const accessEmployees = window.document.querySelector('#admin-access-employee-search');
+  const surveyLogs = window.document.querySelector('[data-survey-log-search]');
+  for (const input of [accessUsers, accessEmployees, surveyLogs]) {
+    input.value = '草稿';
+    input.dispatchEvent(new window.Event('input', { bubbles: true, cancelable: true }));
+    input.dispatchEvent(new window.FocusEvent('blur', { bubbles: true }));
+  }
+  assert.deepEqual({ accessUsers: newCalls.accessUsers, accessEmployees: newCalls.accessEmployees, surveyLogs: newCalls.surveyLogs }, { accessUsers: 0, accessEmployees: 0, surveyLogs: 0 }, 'V3 access and survey Hosts keep read/filter drafts until an explicit Enter');
+  accessEmployees.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }));
+  const employeeCandidateEnter = enter(window, accessEmployees, { isComposing: true, keyCode: 229 });
+  assert.equal(employeeCandidateEnter.defaultPrevented, false, 'employee directory IME candidate Enter remains available to the browser');
+  assert.equal(newCalls.accessEmployees, 0, 'employee directory IME candidate Enter does not read the authorized directory');
+  accessEmployees.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }));
+  await pause();
+  for (const input of [accessUsers, accessEmployees, surveyLogs]) enter(window, input);
+  assert.deepEqual({ accessUsers: newCalls.accessUsers, accessEmployees: newCalls.accessEmployees, surveyLogs: newCalls.surveyLogs }, { accessUsers: 1, accessEmployees: 1, surveyLogs: 1 }, 'a normal Enter forwards each V3 Host query once');
 } finally {
   await pause(20);
   dom.window.close();

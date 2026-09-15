@@ -26,6 +26,12 @@ const registeredSearches: RegisteredSearch[] = [
   { selector: 'input[data-image-library-query]', trigger: 'input' },
   { selector: 'input[data-open-platform-doc-search]', trigger: 'input' },
   { selector: 'input[data-field-mapping-variable-search]', trigger: 'input' },
+  // V3-owned access and survey Hosts keep their own read/filter functions.
+  // These precise seams prevent the shared policy from touching provisioning,
+  // role, login, binding, or controlled external-push controls.
+  { selector: '#admin-access-search', trigger: 'input' },
+  { selector: '#admin-access-employee-search', trigger: 'input' },
+  { selector: 'input[data-survey-log-search]', trigger: 'input' },
   { selector: '#group-ops-app input[name="keyword"][data-filter]', trigger: 'keydown' },
   { selector: '.aicrm-group-chat-picker-mask [data-group-picker-search]', trigger: 'input' },
   { selector: '.aicrm-tag-picker [data-role="search"]', trigger: 'input' },

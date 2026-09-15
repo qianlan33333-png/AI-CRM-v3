@@ -42,6 +42,11 @@
   let employeeRequest = 0;
   let employeeAbort = null;
   let employeeDirectoryError = false;
+  // Only explicit Enter updates these read concerns. The inputs keep their
+  // drafts so an unrelated refresh never turns uncommitted text into a query.
+  let usersCommittedQuery = "";
+  let employeeCommittedQuery = "";
+  let accessRevoked = false;
 
   function readCSRFCookie() {
     const part = String(document.cookie || "").split(";").map((item) => item.trim()).find((item) => item.indexOf("aicrm_admin_csrf=") === 0);
@@ -91,13 +96,21 @@
   }
   function makeCell(value, className, label) { const cell = document.createElement("td"); if (className) cell.className = className; if (label) cell.dataset.label = label; cell.textContent = value; return cell; }
   function actionButton(label, action, user) { const button = document.createElement("button"); button.type = "button"; button.className = "admin-button admin-button--ghost"; button.textContent = label; button.dataset.accessAction = action; button.dataset.userId = String(user.admin_user_id); return button; }
+  function clearEmployeeDirectory() {
+    window.clearTimeout(employeeQueryTimer); employeeQueryTimer = 0;
+    employeeRequest += 1;
+    if (employeeAbort) employeeAbort.abort();
+    employeeAbort = null;
+    employeeItems = []; employeeCursor = ""; employeeHasMore = false; selectedEmployee = null; employeeDirectoryError = false; employeeCommittedQuery = "";
+  }
   function clearSensitiveView() {
-    users = []; actor = {}; capabilities = {}; selectedUserID = ""; closeDrawer();
+    accessRevoked = true; users = []; actor = {}; capabilities = {}; selectedUserID = ""; usersCommittedQuery = ""; clearEmployeeDirectory(); closeDrawer();
+    elements.search.disabled = true; elements.refresh.disabled = true; elements.provisionDialog.hidden = true;
     elements.usersBody.replaceChildren(); elements.tableWrap.hidden = true; elements.superCard.hidden = true; elements.provision.hidden = true; elements.transfer.hidden = true; elements.noPermission.hidden = true;
     elements.empty.hidden = true; elements.filterEmpty.hidden = true; elements.searchStatus.textContent = ""; elements.listStatus.textContent = "请重新登录后继续查看员工权限。";
   }
   function filteredUsers() {
-    const query = String(elements.search.value || "").trim();
+    const query = usersCommittedQuery;
     if (!query) return users;
     const folded = query.toLocaleLowerCase();
     return users.filter((user) => String(user.display_name || "").toLocaleLowerCase().includes(folded) || String(user.wecom_userid || "") === query);
@@ -115,7 +128,7 @@
   function renderUsers() {
     const visible = filteredUsers();
     elements.usersBody.replaceChildren();
-    const hasQuery = String(elements.search.value || "").trim() !== "";
+    const hasQuery = usersCommittedQuery !== "";
     elements.empty.hidden = users.length !== 0;
     elements.filterEmpty.hidden = !(users.length > 0 && visible.length === 0 && hasQuery);
     elements.tableWrap.hidden = visible.length === 0;
@@ -137,11 +150,12 @@
     const canManageExisting = users.some(hasAction);
     elements.noPermission.hidden = canProvision() || capabilities.transfer_super_admin === true || canManageExisting;
   }
-  function setLoading(loading) { elements.loading.hidden = !loading; elements.refresh.disabled = loading; if (loading) elements.listError.hidden = true; }
+  function setLoading(loading) { elements.loading.hidden = !loading; elements.refresh.disabled = loading || accessRevoked; if (loading) elements.listError.hidden = true; }
   async function loadUsers() {
     setLoading(true); elements.listStatus.textContent = "正在加载员工列表…";
     try {
       const payload = await requestJSON(api.users, { method: "GET" });
+      accessRevoked = false; elements.search.disabled = false;
       users = Array.isArray(payload.users) ? payload.users : [];
       actor = payload.actor && typeof payload.actor === "object" ? payload.actor : {};
       capabilities = payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : {};
@@ -150,8 +164,12 @@
       return true;
     } catch (error) {
       if (error.status === 401 || error.status === 403) clearSensitiveView();
-      else { users = []; renderUsers(); }
-      elements.empty.hidden = true; elements.filterEmpty.hidden = true; elements.listError.hidden = false; elements.listErrorMessage.textContent = errorMessage(error, "员工列表暂时不可用，请稍后重试。"); elements.listStatus.textContent = "员工列表不可用";
+      else {
+        // A transient read error is not proof that previously authorized rows
+        // or the selected drawer vanished. Keep that view available to retry.
+        renderUsers();
+      }
+      elements.empty.hidden = true; elements.filterEmpty.hidden = true; elements.listError.hidden = false; elements.listErrorMessage.textContent = errorMessage(error, "员工列表暂时不可用，请稍后重试。"); elements.listStatus.textContent = (error.status === 401 || error.status === 403) ? "员工列表不可用" : (users.length ? `员工列表暂时不可用，仍显示上次读取的 ${users.length} 名员工。` : "员工列表暂时不可用。");
       return false;
     } finally { setLoading(false); }
   }
@@ -185,28 +203,47 @@
   function selectedProvisionRole() { const checked = root.querySelector('input[name="provision-role"]:checked'); return checked ? checked.value : ""; }
   function renderEmployeeResults() {
     elements.employeeResults.replaceChildren();
-    if (employeeDirectoryError) return;
+    if (employeeDirectoryError && !employeeItems.length) { const message = document.createElement("p"); message.className = "admin-muted"; message.textContent = "企业员工目录暂时不可用。"; elements.employeeResults.appendChild(message); return; }
     if (!employeeItems.length) { const message = document.createElement("p"); message.className = "admin-muted"; message.textContent = "未找到企业员工。"; elements.employeeResults.appendChild(message); return; }
     employeeItems.forEach((employee) => { const authorized = employee.authorized_account === true; const button = document.createElement("button"); button.type = "button"; button.className = "admin-access-employee-choice"; button.dataset.wecomUserid = String(employee.wecom_userid || ""); button.disabled = authorized; button.setAttribute("aria-pressed", String(selectedEmployee && selectedEmployee.wecom_userid === employee.wecom_userid)); const name = document.createElement("strong"); name.textContent = String(employee.display_name || "未命名员工"); const account = document.createElement("small"); account.textContent = String(employee.wecom_userid || ""); button.append(name, account); if (authorized) { const state = document.createElement("small"); state.textContent = `已开通 · ${roleLabels[employee.role] || "后台权限"}。请在员工列表中管理。`; button.appendChild(state); } elements.employeeResults.appendChild(button); });
     if (employeeHasMore) { const more = document.createElement("button"); more.type = "button"; more.className = "admin-button admin-button--ghost"; more.dataset.accessAction = "more-employees"; more.textContent = "加载更多"; elements.employeeResults.appendChild(more); }
   }
+  function employeeReadIsCurrent(request) { return request === employeeRequest && !elements.provisionDialog.hidden && !accessRevoked; }
   async function loadEmployees(reset) {
-    const query = String(elements.employeeSearch.value || "").trim();
+    const query = employeeCommittedQuery;
     const currentRequest = ++employeeRequest;
     if (employeeAbort) employeeAbort.abort();
     employeeAbort = new AbortController();
-    if (reset) { employeeItems = []; employeeCursor = ""; employeeHasMore = false; selectedEmployee = null; }
-    const params = new URLSearchParams({ limit: "50" }); if (query) params.set("query", query); if (!reset && employeeCursor) params.set("cursor", employeeCursor);
+    const cursor = reset ? "" : employeeCursor;
+    const params = new URLSearchParams({ limit: "50" }); if (query) params.set("query", query); if (cursor) params.set("cursor", cursor);
     elements.employeeStatus.textContent = "正在读取企业员工目录…";
-    try { const payload = await requestJSON(`${employeesURL}?${params.toString()}`, { method: "GET", signal: employeeAbort.signal }); if (currentRequest !== employeeRequest) return; const items = Array.isArray(payload.items) ? payload.items : []; employeeDirectoryError = false; employeeItems = reset ? items : employeeItems.concat(items); employeeCursor = String(payload.next_cursor || ""); employeeHasMore = payload.has_more === true; elements.employeeStatus.textContent = employeeItems.length ? `已显示 ${employeeItems.length} 名员工` : "未找到企业员工"; setAlert("", ""); renderEmployeeResults(); setProvisionStep(1); }
-    catch (error) { if (currentRequest !== employeeRequest || (error && error.name === "AbortError")) return; employeeDirectoryError = true; employeeItems = []; employeeCursor = ""; employeeHasMore = false; selectedEmployee = null; renderEmployeeResults(); elements.employeeStatus.textContent = errorMessage(error, "企业员工目录暂时不可用。"); setAlert(errorMessage(error, "企业员工目录暂时不可用。"), "error"); setProvisionStep(1); }
+    try {
+      const payload = await requestJSON(`${employeesURL}?${params.toString()}`, { method: "GET", signal: employeeAbort.signal });
+      if (!employeeReadIsCurrent(currentRequest)) return;
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      employeeDirectoryError = false;
+      employeeItems = reset ? items : employeeItems.concat(items);
+      employeeCursor = String(payload.next_cursor || ""); employeeHasMore = payload.has_more === true;
+      if (reset && selectedEmployee && !employeeItems.some((item) => String(item.wecom_userid) === String(selectedEmployee.wecom_userid))) selectedEmployee = null;
+      elements.employeeStatus.textContent = employeeItems.length ? `已显示 ${employeeItems.length} 名员工` : "未找到企业员工";
+      setAlert("", ""); renderEmployeeResults(); setProvisionStep(1);
+    } catch (error) {
+      if (!employeeReadIsCurrent(currentRequest) || (error && error.name === "AbortError")) return;
+      if (error && (error.status === 401 || error.status === 403)) { clearSensitiveView(); return; }
+      // The existing authorized directory and choice remain meaningful until a
+      // successful replacement arrives. A failed read never silently removes them.
+      employeeDirectoryError = true;
+      renderEmployeeResults();
+      elements.employeeStatus.textContent = employeeItems.length ? `企业员工目录暂时不可用，仍显示上次读取的 ${employeeItems.length} 名员工。` : errorMessage(error, "企业员工目录暂时不可用。");
+      setAlert(errorMessage(error, "企业员工目录暂时不可用。"), "error"); setProvisionStep(1);
+    }
   }
   function openProvision() {
     if (!canProvision()) return;
-    selectedEmployee = null; employeeDirectoryError = false; setAlert("", ""); elements.employeeSearch.value = ""; root.querySelectorAll('input[name="provision-role"]').forEach((input) => { input.checked = false; const option = input.closest("[data-role-option]"); option.hidden = input.value === "admin" ? capabilities.provision_admin !== true : capabilities.provision_viewer !== true; });
+    clearEmployeeDirectory(); employeeDirectoryError = false; setAlert("", ""); elements.employeeSearch.value = ""; root.querySelectorAll('input[name="provision-role"]').forEach((input) => { input.checked = false; const option = input.closest("[data-role-option]"); option.hidden = input.value === "admin" ? capabilities.provision_admin !== true : capabilities.provision_viewer !== true; });
     elements.provisionDialog.hidden = false; setProvisionStep(1); void loadEmployees(true); elements.employeeSearch.focus();
   }
-  function closeProvision() { elements.provisionDialog.hidden = true; selectedEmployee = null; }
+  function closeProvision() { elements.provisionDialog.hidden = true; clearEmployeeDirectory(); }
   function openTransfer() {
     if (capabilities.transfer_super_admin !== true) return;
     elements.transferTarget.replaceChildren();
@@ -217,7 +254,7 @@
   function closeTransfer() { elements.transferDialog.hidden = true; }
 
   elements.refresh.addEventListener("click", () => { setAlert("", ""); void loadUsers(); });
-  elements.search.addEventListener("input", renderUsers);
+  elements.search.addEventListener("input", () => { usersCommittedQuery = String(elements.search.value || "").trim(); renderUsers(); });
   elements.provision.addEventListener("click", openProvision); elements.provisionClose.addEventListener("click", closeProvision); elements.transfer.addEventListener("click", openTransfer); elements.transferClose.addEventListener("click", closeTransfer);
   elements.drawerClose.addEventListener("click", closeDrawer); elements.drawerBackdrop.addEventListener("click", closeDrawer);
   elements.usersBody.addEventListener("click", (event) => { const button = event.target.closest("button[data-access-action]"); if (!button || button.dataset.accessAction !== "manage") return; openDrawer(users.find((user) => String(user.admin_user_id) === String(button.dataset.userId))); });
@@ -226,7 +263,7 @@
   elements.bindingForm.addEventListener("submit", (event) => { event.preventDefault(); const user = selectedUser(); const value = String(elements.wecomInput.value || "").trim(); if (!user || !value || user.actions.bind_wecom_userid !== true) { setAlert("请输入企微账号。", "error"); return; } if (typeof window.confirm === "function" && !window.confirm(`确定将企微账号绑定为“${value}”吗？`)) return; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled = true; void mutate(api.wecom(user.admin_user_id), "PUT", { wecom_userid: value }, "企微账号已更新。").then((ok) => { if (ok) openDrawer(selectedUser()); }).finally(() => { submit.disabled = false; }); });
   elements.unbind.addEventListener("click", () => { const user = selectedUser(); if (!user || user.actions.bind_wecom_userid !== true) return; if (typeof window.confirm === "function" && !window.confirm("确定解除该员工的企微账号绑定吗？")) return; elements.unbind.disabled = true; void mutate(api.wecom(user.admin_user_id), "PUT", { wecom_userid: "" }, "企微账号绑定已解除。").then((ok) => { if (ok) openDrawer(selectedUser()); }).finally(() => { elements.unbind.disabled = false; }); });
   elements.passwordForm.addEventListener("submit", (event) => { event.preventDefault(); const user = selectedUser(); const password = String(elements.passwordInput.value || ""); if (!user || !password || user.actions.reset_password !== true) { setAlert("请输入新密码。", "error"); return; } const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled = true; void mutate(api.password(user.admin_user_id), "PUT", { password }, "密码已重置。").then((ok) => { if (ok) openDrawer(selectedUser()); }).finally(() => { submit.disabled = false; }); });
-  elements.employeeSearch.addEventListener("input", () => { window.clearTimeout(employeeQueryTimer); employeeQueryTimer = window.setTimeout(() => { void loadEmployees(true); }, 250); });
+  elements.employeeSearch.addEventListener("input", () => { employeeCommittedQuery = String(elements.employeeSearch.value || "").trim(); window.clearTimeout(employeeQueryTimer); employeeQueryTimer = window.setTimeout(() => { void loadEmployees(true); }, 250); });
   elements.employeeResults.addEventListener("click", (event) => { const more = event.target.closest('button[data-access-action="more-employees"]'); if (more) { void loadEmployees(false); return; } const button = event.target.closest("button[data-wecom-userid]"); if (!button || button.disabled) return; selectedEmployee = employeeItems.find((item) => String(item.wecom_userid) === String(button.dataset.wecomUserid) && item.authorized_account !== true) || null; renderEmployeeResults(); setProvisionStep(1); });
   elements.provisionNext.addEventListener("click", () => { if (provisionStep === 1 && selectedEmployee) setProvisionStep(2); else if (provisionStep === 2 && selectedProvisionRole()) setProvisionStep(3); });
   elements.provisionBack.addEventListener("click", () => { if (provisionStep > 1) setProvisionStep(provisionStep - 1); });
