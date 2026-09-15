@@ -135,6 +135,8 @@ try {
   await evaluate(cdp, "(() => { const form=document.querySelector('[data-overview-custom]'); const from=form?.querySelector('[name=from]'); const to=form?.querySelector('[name=to]'); if (!form || !from || !to) return false; from.value='2000-01-01'; to.value='2000-01-02'; form.requestSubmit(); return true; })()");
   await waitFor(cdp, "performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/overview?period=custom&from=2000-01-01&to=2000-01-02'))", "applying a custom range did not use the existing overview read request");
   await waitFor(cdp, "document.querySelector('#overview-admin-root .overview-snapshot')?.textContent?.includes('统计区间：自定义区间') && document.querySelector('[data-page-header-actions=\"overview-range\"] [data-page-header-action=\"period-custom\"]')?.getAttribute('aria-pressed') === 'true'", "the applied custom range did not preserve its existing readback and header state");
+  await selectOverviewPeriod(cdp, "今日", "today");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-overview-paid-records]'))", "today range did not restore its ready payment action");
   const paidRecordsOpened = await evaluate(cdp, "(() => { const button=document.querySelector('[data-overview-paid-records]'); if (!button) return false; button.click(); return true; })()");
   if (!paidRecordsOpened) throw new Error("overview paid-record action is unavailable for a ready payment section");
   await waitFor(cdp, "document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]')", "paid-record drawer did not form the provider-scoped order detail link");
