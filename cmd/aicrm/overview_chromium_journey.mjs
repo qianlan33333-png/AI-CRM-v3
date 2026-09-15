@@ -125,7 +125,12 @@ try {
   await captureOverview(cdp, "overview-paid-records-1440.png", 1440);
   const openedOrder = await evaluate(cdp, "(() => { const link=document.querySelector('.shared-detail-drawer .overview-paid-records a[href=\"/admin/orderDetail.html?id=M-OVERVIEW-BROWSER&provider=wechat\"]'); if (!link) return false; link.click(); return true; })()");
   if (!openedOrder) throw new Error("paid-record drawer link disappeared before navigation");
-  await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/orders/M-OVERVIEW-BROWSER?provider=wechat'))", "provider-scoped order detail did not request its exact Order API URL");
+  try {
+    await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && performance.getEntriesByType('resource').some((entry)=>String(entry.name).includes('/api/admin/orders/M-OVERVIEW-BROWSER?provider=wechat'))", "provider-scoped order detail did not request its exact Order API URL");
+  } catch (error) {
+    const diagnostics = await evaluate(cdp, "JSON.stringify({location:location.href,resources:performance.getEntriesByType('resource').map((entry)=>String(entry.name)),body:document.body.textContent.slice(-1200),scripts:[...document.scripts].map((script)=>script.src)})");
+    throw new Error(`${error.message}: ${diagnostics}`);
+  }
   if (!orderDetailResponses.some((value) => value.provider === "wechat" && value.status === 200)) throw new Error(`provider-scoped Order detail response missing: ${JSON.stringify(orderDetailResponses)}`);
   await cdp.call("Page.navigate", { url: `${baseURL}/admin` });
   await waitFor(cdp, "Boolean(document.querySelector('#overview-admin-root .overview-metrics--primary')) && document.body.textContent.includes('已确认支付')", "overview did not return after paid-record detail navigation");

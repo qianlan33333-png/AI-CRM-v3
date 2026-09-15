@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -78,7 +79,7 @@ func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1")
 	}
-	fixture := newAdminOverviewFixture(t, withAdminOverviewTrendFacts())
+	fixture := newAdminOverviewFixture(t, withAdminOverviewTrendFacts(), withAdminOverviewOrderReadFacts())
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate overview Chromium journey")
@@ -230,7 +231,10 @@ type adminOverviewFixture struct {
 	session     string
 }
 
-type adminOverviewFixtureOptions struct{ includeTrendFacts bool }
+type adminOverviewFixtureOptions struct {
+	includeTrendFacts     bool
+	includeOrderReadFacts bool
+}
 type adminOverviewFixtureOption func(*adminOverviewFixtureOptions)
 
 // withAdminOverviewTrendFacts supplies the three-date visual fixture only to
@@ -238,6 +242,15 @@ type adminOverviewFixtureOption func(*adminOverviewFixtureOptions)
 // minimal one-payment baseline so their exact denominator is self-contained.
 func withAdminOverviewTrendFacts() adminOverviewFixtureOption {
 	return func(options *adminOverviewFixtureOptions) { options.includeTrendFacts = true }
+}
+
+// withAdminOverviewOrderReadFacts enables the synthetic payment configuration
+// only for the browser route that crosses into the existing Order detail host.
+// Provider effects remain disabled and the fixture never starts a worker or
+// invokes a Provider; this merely opens the already-scoped Distribution read
+// composition that the Order detail uses.
+func withAdminOverviewOrderReadFacts() adminOverviewFixtureOption {
+	return func(options *adminOverviewFixtureOptions) { options.includeOrderReadFacts = true }
 }
 
 func newAdminOverviewFixture(t *testing.T, configure ...adminOverviewFixtureOption) *adminOverviewFixture {
@@ -261,7 +274,7 @@ func newAdminOverviewFixture(t *testing.T, configure ...adminOverviewFixtureOpti
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
 	t.Cleanup(server.Close)
 	dataKey := base64.RawStdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	application, err := compose(ctx, platformconfig.Runtime{
+	runtimeConfig := platformconfig.Runtime{
 		Role:         platformconfig.RoleAPI,
 		DatabaseURL:  databaseURL,
 		PublicOrigin: "https://" + server.Listener.Addr().String(),
@@ -274,7 +287,16 @@ func newAdminOverviewFixture(t *testing.T, configure ...adminOverviewFixtureOpti
 			DataKey: dataKey, IdentityPhoneDataKey: dataKey,
 		},
 		Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "overview-browser-admin", Password: "overview-browser-admin-password", DisplayName: "Overview Browser Admin"},
-	})
+	}
+	if options.includeOrderReadFacts {
+		key, cert := distributionFixturePaymentCredentials(t)
+		runtimeConfig.WeChatPay = platformconfig.WeChatPay{
+			Enabled: true, AppID: "wx-overview-browser", AppSecret: "fixture-secret", AppScope: "wechat-app:overview-browser",
+			OrderContactDataKey: dataKey, MerchantID: "overview-fixture-mch", MerchantSerial: "overview-fixture-merchant",
+			PrivateKeyPath: key, PlatformCertPath: cert, APIV3Key: "0123456789abcdef0123456789abcdef",
+		}
+	}
+	application, err := compose(ctx, runtimeConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,14 +304,14 @@ func newAdminOverviewFixture(t *testing.T, configure ...adminOverviewFixtureOpti
 	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "overview-browser-admin", Password: "overview-browser-admin-password", DisplayName: "Overview Browser Admin"}); err != nil {
 		t.Fatal(err)
 	}
-	seedAdminOverviewFacts(t, ctx, application, options.includeTrendFacts)
+	seedAdminOverviewFacts(t, ctx, application, options.includeTrendFacts, options.includeOrderReadFacts)
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	session, _ := adminAccessLogin(t, application.handler, "overview-browser-admin", "overview-browser-admin-password")
 	return &adminOverviewFixture{ctx: ctx, application: application, server: server, session: session}
 }
 
-func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *composedApplication, includeTrendFacts bool) {
+func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *composedApplication, includeTrendFacts, includeOrderReadFacts bool) {
 	t.Helper()
 	pool := application.pool.Native()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -300,11 +322,31 @@ func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *comp
 	if err := pool.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at,created_at,updated_at) VALUES($1,'mp_openid','wechat-app:overview-browser','overview-browser-payer','verified','wechat_miniprogram',1,$2,$2,$2) RETURNING id`, customerID, now).Scan(&identityID); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','overview-browser','overview-browser-order','M-OVERVIEW-BROWSER',$1,$1,1200,'CNY','paid','native',true,1,$2,$2) RETURNING id`, customerID, now).Scan(&orderID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','overview-browser','overview-browser-order','M-OVERVIEW-BROWSER',$1,$1,1200,'CNY','paid','native',true,2,$2,$2) RETURNING id`, customerID, now).Scan(&orderID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,paid_confirmed_at,created_at,updated_at,historical) VALUES($1,'wechat_pay','mini_program','M-OVERVIEW-BROWSER',$2,$3,$3,1200,'CNY','paid',1,$4,$4,$4,false) RETURNING id`, orderID, identityID, customerID, now).Scan(&paymentID); err != nil {
 		t.Fatal(err)
+	}
+	if includeOrderReadFacts {
+		if _, err := pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_version,product_code,product_name,unit_amount_minor,quantity,line_amount_minor)
+VALUES($1,1,99001,1,'overview-browser-product','Overview Browser Product',1200,1,1200)`, orderID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO order_checkout_snapshots(
+order_id,product_type,product_id,product_code,product_name,product_version,service_period_duration_days,
+gross_amount_minor,discount_amount_minor,payable_amount_minor,currency,coupon_applied,coupon_reservation_ref,
+reserved_at,created_at
+) VALUES($1,'standard_product',99001,'overview-browser-product','Overview Browser Product',1,0,1200,0,1200,'CNY',false,'',$2,$2)`, orderID, now); err != nil {
+			t.Fatal(err)
+		}
+		paidDigest := sha256.Sum256([]byte("overview-browser-paid"))
+		if _, err := pool.Exec(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3)`, orderID, paidDigest[:], now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO order_status_history(order_id,from_status,to_status,refunded_minor,order_version,actor_scope,occurred_at) VALUES($1,'pending_payment','paid',0,2,'overview-browser',$2)`, orderID, now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if includeTrendFacts {
 		// Seed three trustworthy confirmation dates only for the visual fixture.
