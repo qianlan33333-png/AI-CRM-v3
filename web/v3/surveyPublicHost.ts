@@ -159,7 +159,7 @@ if (supportedPages.has(page)) {
     recovery.textContent =
       page === "result"
         ? "暂时无法查询提交结果，请稍后重试。"
-        : "暂时无法完成本次提交。已填写的答案仍会保留，请稍后重试。";
+        : "暂时无法完成操作，请保留当前页面并稍后重试。";
     const detail = document.createElement("small");
     detail.dataset.v3SurveyErrorDetail = "";
     detail.textContent = `问题详情：HTTP ${status}`;

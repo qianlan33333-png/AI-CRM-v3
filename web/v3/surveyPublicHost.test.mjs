@@ -111,8 +111,8 @@ screen.innerHTML =
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(
   screen.querySelector("[data-v3-survey-recovery]")?.textContent,
-  "暂时无法完成本次提交。已填写的答案仍会保留，请稍后重试。",
-  "an exact transport status receives a recoverable explanation without inferring success",
+  "暂时无法完成操作，请保留当前页面并稍后重试。",
+  "an exact transport status receives a recoverable explanation without inferring the failed operation",
 );
 assert.equal(
   screen.querySelector("[data-v3-survey-error-detail]")?.textContent,
