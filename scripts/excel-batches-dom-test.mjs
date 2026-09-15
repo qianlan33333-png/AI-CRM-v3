@@ -116,8 +116,27 @@ const receiptRows = Array.from({ length: 51 }, (_, index) => ({
   failure_reason: "",
 }));
 const historyRows = [
-  { ...row, unionid: "历史第一页用户" },
-  { ...row, id: 999, unionid: "历史第二页用户" },
+  {
+    ...row,
+    unionid: "历史第一页用户",
+    version: 7,
+    review_state: "approved",
+    delivery_state: "delivery_proven",
+    sent_at: "2026-09-30T16:00:00.611265Z",
+    card: { ...row.card, cover_digest: "sha256:historic-cover" },
+  },
+  {
+    ...row,
+    id: 999,
+    unionid: "历史第二页用户",
+    version: 8,
+    segment: "B",
+    excluded: true,
+    review_state: "rejected",
+    delivery_state: "final_failed",
+    failure_reason: "provider_rejected",
+    card: { ...row.card, cover_digest: "" },
+  },
 ];
 receiptRows[1] = {
   ...receiptRows[1],
@@ -280,6 +299,9 @@ win.fetch = async (raw, init = {}) => {
     }
     const body = JSON.parse(init.body);
     assert.equal(body.expected_version, row.version);
+    row.text = body.text;
+    row.card.path = body.path;
+    row.card.title = body.title;
     excluded = row.excluded = body.excluded;
     row.version++;
     batch.version++;
@@ -534,13 +556,119 @@ assert.ok(
   "existing cover selection did not use the documented JSON body",
 );
 assert.ok(win.document.body.textContent.includes("冻结封面：素材 #42"), "selected cover was not shown as frozen material evidence");
+// This is the real Excel-row callsite: the Composer retains a local IME draft
+// and only the pre-existing owner action submits a PATCH.
+await click("修改");
+const rowEditor = [...win.document.querySelectorAll("dialog")].find(
+  (dialog) => dialog.open && dialog.textContent.includes("修改发送内容"),
+);
+assert.ok(rowEditor, "Excel row editor did not open");
+const rowText = rowEditor.querySelector("textarea");
+assert.equal(rowText.readOnly, true, "Excel text must be edited through the shared Composer");
+const rowWritesBeforeComposer = calls.filter((call) => call.url.endsWith("/rows/33")).length;
+const openComposer = [...rowEditor.querySelectorAll("button")].find(
+  (button) => button.textContent === "编辑话术与预览",
+);
+assert.ok(openComposer, "Excel row editor did not expose the shared Composer");
+openComposer.click();
+await new Promise((resolve) => setTimeout(resolve, 20));
+const composer = win.document.querySelector('[data-v3-content-composer="1"]');
+assert.ok(composer, "Excel row editor did not mount the shared Composer");
+assert.equal(composer.tagName, "DIALOG", "Excel nested Composer must enter the browser top layer");
+assert.equal(composer.getAttribute("aria-labelledby"), "aicrm-v3-content-composer-title", "nested Composer must retain a native dialog label");
+assert.equal(composer.querySelector(".aicrm-content-composer").hasAttribute("role"), false, "nested Composer must not expose a second dialog role");
+assert.equal(composer.textContent.includes("添加图片"), false, "Excel fixed-card content exposed a generic media selector");
+const composerText = composer.querySelector("textarea[data-v3-composer-text]");
+const originalComposerText = composerText;
+composerText.dispatchEvent(new win.CompositionEvent("compositionstart"));
+composerText.value = "中文组合输入草稿";
+composerText.dispatchEvent(new win.Event("input", { bubbles: true }));
+assert.equal(
+  composer.querySelector("textarea[data-v3-composer-text]"),
+  originalComposerText,
+  "Excel Composer replaced its textarea during an IME composition",
+);
+composerText.dispatchEvent(new win.CompositionEvent("compositionend"));
+assert.ok(
+  composer.querySelector('[data-content-presentation="preview"]')?.textContent.includes("中文组合输入草稿"),
+  "Excel Composer preview did not use the local text draft",
+);
+const cardPreview = composer.querySelector('[data-content-presentation-supplement] img');
+assert.ok(
+  cardPreview?.src.includes("sha256%3Aexisting-cover"),
+  "Excel Composer did not use the row card's actual current cover digest",
+);
+assert.equal(
+  calls.filter((call) => call.url.endsWith("/rows/33")).length,
+  rowWritesBeforeComposer,
+  "opening or editing the Composer patched an Excel row",
+);
+composer.querySelector("button[data-v3-composer-confirm]").click();
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(rowText.value, "中文组合输入草稿", "Composer confirmation did not update only the row dialog draft");
+assert.equal(
+  calls.filter((call) => call.url.endsWith("/rows/33")).length,
+  rowWritesBeforeComposer,
+  "Composer confirmation sent an Owner patch before explicit save",
+);
+pauseFirstRowPatch = false;
+const saveRow = [...rowEditor.querySelectorAll("button")].find(
+  (button) => button.textContent === "保存并重新审核",
+);
+assert.ok(saveRow, "Excel row editor did not retain the existing Owner save action");
+saveRow.click();
+await new Promise((resolve) => setTimeout(resolve, 30));
+const composerPatch = calls.filter((call) => call.url.endsWith("/rows/33")).at(-1);
+assert.equal(composerPatch.init.method, "PATCH", "Excel local draft did not use the existing PATCH endpoint");
+assert.equal(JSON.parse(composerPatch.init.body).text, "中文组合输入草稿", "Excel patch did not carry the confirmed local draft");
+pauseFirstRowPatch = true;
+releaseFirstRowPatch = undefined;
 await click("查看旧版本");
 await new Promise((resolve) => setTimeout(resolve, 20));
+const historyDialog = [...win.document.querySelectorAll("dialog")].find((dialog) => dialog.open && dialog.textContent.includes("历史上传内容版本"));
+assert.ok(historyDialog?.classList.contains("xeb-history-dialog"), "history content uses the dedicated readable-width dialog rather than the generic narrow editor dialog");
 assert.ok(win.document.body.textContent.includes("素材 #42"), "history did not retain the frozen cover material id");
 await click("只读查看");
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(win.document.body.textContent.includes("历史第一页用户"), "history first page did not render");
 assert.equal(win.document.body.textContent.includes("历史第二页用户"), false, "history must not prefetch its second cursor page");
+const historyScroll = win.document.querySelector('[data-excel-history-page] .xeb-scroll');
+assert.equal(historyScroll?.tabIndex, 0, "history table must be keyboard-focusable for horizontal scrolling");
+assert.ok(
+  historyScroll?.querySelector(".xeb-history-table"),
+  "history fields must retain readable column widths inside the local horizontal scroller",
+);
+assert.equal(
+  historyScroll?.getAttribute("aria-label"),
+  "历史内容行字段；可横向滚动查看完整状态和版本追溯",
+  "history table must explain its horizontal-scroll affordance",
+);
+assert.ok(
+  win.document.body.textContent.includes("表格可横向滚动查看完整状态和版本追溯。"),
+  "history table must make its trace fields discoverable on narrow screens",
+);
+assert.ok(
+  win.document.body.textContent.includes("分层：A") &&
+    win.document.body.textContent.includes("行状态：参与") &&
+    win.document.body.textContent.includes("审核：已批准") &&
+    win.document.body.textContent.includes("执行：发送成功") &&
+    win.document.body.textContent.includes("发送时间：2026-10-01 00:00:00") &&
+    win.document.body.textContent.includes("行 #33 · 行版本 #7") &&
+    win.document.body.textContent.includes("内容版本 #1"),
+  "history table must preserve segment, separate review/delivery, sent time, and row/content versions",
+);
+await click("查看内容");
+await new Promise((resolve) => setTimeout(resolve, 20));
+const historicalPresentation = win.document.querySelector('[data-v3-content-readonly="1"]');
+assert.ok(historicalPresentation, "history row did not use the shared readonly content renderer");
+assert.equal(historicalPresentation.tagName, "DIALOG", "history readonly presentation must enter the browser top layer");
+assert.equal(historicalPresentation.querySelector(".aicrm-content-composer").hasAttribute("role"), false, "history readonly presentation must not expose a second dialog role");
+assert.match(historicalPresentation.textContent, /所选历史版本的已保存内容/, "history readonly presentation must distinguish its frozen snapshot from the current saved row");
+assert.ok(
+  historicalPresentation.querySelector("img")?.src.includes("sha256%3Ahistoric-cover"),
+  "historical readonly preview did not use the historical row card cover digest",
+);
+historicalPresentation.querySelector("button[data-v3-content-readonly-close]").click();
 const historyNext = [
   ...(win.document.querySelector('[data-excel-page="history"]')?.querySelectorAll("button") || []),
 ].find((item) => item.textContent === "下一页");
@@ -548,6 +676,28 @@ assert.ok(historyNext && !historyNext.disabled, "history must expose its next cu
 historyNext.click();
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(win.document.body.textContent.includes("历史第二页用户"), "history next cursor page did not render");
+assert.ok(
+  win.document.body.textContent.includes("分层：B") &&
+    win.document.body.textContent.includes("行状态：已排除") &&
+    win.document.body.textContent.includes("审核：已拒绝") &&
+    win.document.body.textContent.includes("执行：明确失败") &&
+    win.document.body.textContent.includes("企微拒绝发送请求") &&
+    win.document.body.textContent.includes("行 #999 · 行版本 #8"),
+  "history must not collapse excluded or rejected rows into a single delivery label",
+);
+await click("查看内容");
+await new Promise((resolve) => setTimeout(resolve, 20));
+const unrecordedHistoricalPresentation = win.document.querySelector('[data-v3-content-readonly="1"]');
+assert.ok(
+  unrecordedHistoricalPresentation.textContent.includes("该内容版本未记录统一封面，不能推断为当前批次封面。"),
+  "a historical row without a cover guessed the current batch cover",
+);
+assert.equal(
+  unrecordedHistoricalPresentation.querySelector("img"),
+  null,
+  "a historical row without a cover rendered a substituted current cover",
+);
+unrecordedHistoricalPresentation.querySelector("button[data-v3-content-readonly-close]").click();
 const closeHistory = [...win.document.querySelectorAll("dialog button")].find((item) => item.textContent === "关闭");
 assert.ok(closeHistory, "history dialog did not expose close");
 closeHistory.click();
@@ -611,7 +761,7 @@ assert.equal(
 );
 await click("重新读取当前页");
 assert.ok(
-  win.document.body.textContent.includes("原话术"),
+  win.document.body.textContent.includes("中文组合输入草稿"),
   "version-drift recovery did not refresh metadata and restore the stable content page",
 );
 pausePostWriteDetail = true;

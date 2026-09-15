@@ -1,4 +1,10 @@
 import { runAction } from "./actionFeedback";
+import {
+  openContentComposer,
+  openReadonlyContentPresentation,
+  type ContentTextRule,
+} from "./shared/ui/contentComposer";
+import type { ContentPresentationSupplement } from "./shared/ui/contentPresentation";
 
 // Browser host only: it never resolves identity, enqueues work, or calls WeCom.
 // It submits the versioned, CSRF-protected commands defined in the batch API.
@@ -23,6 +29,12 @@ const delivery: Record<string, string> = {
   final_failed: "明确失败",
   outcome_unknown: "结果待核实",
 };
+const review: Record<string, string> = {
+  pending_review: "待审核",
+  approved: "已批准",
+  rejected: "已拒绝",
+  ineligible: "不适用",
+};
 
 function displayDateTime(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -34,6 +46,12 @@ function deliveryLabel(value: unknown, empty = "待提交"): string {
   const state = typeof value === "string" ? value : "";
   if (!state) return empty;
   return delivery[state] || "状态待核对";
+}
+
+function reviewLabel(value: unknown): string {
+  const state = typeof value === "string" ? value : "";
+  if (!state) return "审核状态待核对";
+  return review[state] || "审核状态待核对";
 }
 
 const deliveryFailure: Record<string, string> = {
@@ -272,6 +290,19 @@ function style(): void {
     .xeb-actions.admin-toolbar { gap: 8px; }
     .xeb-actions .admin-field { min-width: 168px; margin: 0; }
     .xeb-pagination { justify-content: space-between; }
+    .xeb-history-dialog { width: min(1120px, calc(100vw - 32px)) !important; max-width: 94vw; max-height: calc(100vh - 32px); }
+    .xeb-history-dialog .xeb-scroll { max-width: 100%; }
+    .xeb-history-table { min-width: 1320px; }
+    .xeb-history-table th:nth-child(1), .xeb-history-table td:nth-child(1) { min-width: 130px; }
+    .xeb-history-table th:nth-child(2), .xeb-history-table td:nth-child(2) { min-width: 190px; }
+    .xeb-history-table th:nth-child(3), .xeb-history-table td:nth-child(3) { min-width: 190px; }
+    .xeb-history-table th:nth-child(4), .xeb-history-table td:nth-child(4) { min-width: 130px; }
+    .xeb-history-table th:nth-child(5), .xeb-history-table td:nth-child(5) { min-width: 110px; }
+    .xeb-history-table th:nth-child(6), .xeb-history-table td:nth-child(6) { min-width: 160px; }
+    .xeb-history-table th:nth-child(7), .xeb-history-table td:nth-child(7) { min-width: 120px; }
+    .xeb-history-table th:nth-child(8), .xeb-history-table td:nth-child(8) { min-width: 150px; }
+    .xeb-history-table th:nth-child(9), .xeb-history-table td:nth-child(9) { min-width: 90px; }
+    .xeb-table-hint { margin: 10px 0 6px; color: #5f6b7a; font-size: 13px; }
     .xeb-detail { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 16px; margin-top: 16px; }
     .xeb-detail-nav { padding: 8px; }
     .xeb-detail-nav .admin-button { display: flex; width: 100%; justify-content: flex-start; margin: 2px 0; }
@@ -296,6 +327,7 @@ function style(): void {
       .xeb-head, .xeb-body { padding: 12px; }
       .xeb-pagination { align-items: flex-start; flex-direction: column; }
       .xeb-actions .admin-field { width: 100%; min-width: 0; }
+      .xeb-history-dialog { width: calc(100vw - 16px) !important; max-width: calc(100vw - 16px); padding: 14px; }
     }
   `;
   document.head.append(node);
@@ -310,6 +342,30 @@ function rowState(row: Obj): string {
   if (row.excluded) return "已排除";
   if (row.review_state !== "approved") return "未批准";
   return deliveryLabel(row.delivery_state || row.state);
+}
+
+function historicalSegment(row: Obj): string {
+  return `分层：${String(row.segment || "未分层")}\n行状态：${row.excluded ? "已排除" : "参与"}`;
+}
+
+function historicalReview(row: Obj): string {
+  return `审核：${reviewLabel(row.review_state)}`;
+}
+
+function historicalDelivery(row: Obj): string {
+  const facts = [`执行：${deliveryLabel(row.delivery_state || row.state)}`];
+  if (row.failure_reason) facts.push(`原因：${deliveryReason(row.failure_reason)}`);
+  return facts.join("\n");
+}
+
+function historicalTrace(row: Obj, contentVersion: number): string {
+  const rowID = Number.isSafeInteger(Number(row.id)) && Number(row.id) > 0
+    ? String(row.id)
+    : "未记录";
+  const rowVersion = Number.isSafeInteger(Number(row.version)) && Number(row.version) > 0
+    ? String(row.version)
+    : "未记录";
+  return `行 #${rowID} · 行版本 #${rowVersion}\n内容版本 #${contentVersion}`;
 }
 function rate(value: unknown): string {
   return typeof value === "number"
@@ -331,6 +387,46 @@ function card(row: Obj): HTMLElement {
     el("small", String(value.path || "")),
   );
   return wrap;
+}
+
+// Excel rows are an Owner-defined two-block contract: text followed by the
+// Excel card.  The Composer is deliberately text-only here; it only returns a
+// local form draft and does not acquire a media-library contract.
+const excelTextRule: ContentTextRule = {
+  normalize: (value) => value,
+  validate: (value) => {
+    if (value.trim() === "") return "请输入话术。";
+    if (new TextEncoder().encode(value).length > 8000)
+      return "话术不能超过 8000 字节，请删减后再确认。";
+    return undefined;
+  },
+};
+
+function excelCardSupplement(
+  row: Obj,
+  versionKey: string,
+): ContentPresentationSupplement[] {
+  const source = row.card && typeof row.card === "object" ? row.card : {};
+  const title = String(source.title || "");
+  const path = String(source.path || "");
+  // A historical row's card is the sole authority for its historical cover.
+  // In particular, never substitute the batch's current cover digest here.
+  const digest = String(source.cover_digest || "");
+  const reasons: string[] = [];
+  if (!title) reasons.push("Excel 标题为空，执行时会明确失败。");
+  if (!path) reasons.push("小程序路径未记录，当前内容不能执行。");
+  if (!digest)
+    reasons.push("该内容版本未记录统一封面，不能推断为当前批次封面。");
+  return [{
+    key: `excel-card:${versionKey}:${String(row.id || "unknown")}`,
+    kind: "excel_card",
+    title: title || "标题为空：执行时明确失败",
+    description: path ? `小程序路径：${path}` : undefined,
+    thumbnailURL: digest
+      ? `${base}/covers/${encodeURIComponent(digest)}`
+      : undefined,
+    unavailableReason: reasons.join(" ") || undefined,
+  }];
 }
 
 class Workspace {
@@ -1070,8 +1166,20 @@ class Workspace {
         ["UnionID / 员工", "话术", "小程序卡片", "分层", "状态", "审核操作"],
         page.items.map((row) => {
           const controls = el("div");
+          controls.className = "admin-toolbar xeb-actions";
+          controls.append(
+            action(
+              "查看已保存内容",
+              () =>
+                this.openReadonlyExcelRow(
+                  row,
+                  "已保存 Excel 行内容",
+                  `current:${id}:${String(batch.current_content_version || "current")}`,
+                ),
+              "ghost",
+            ),
+          );
           if (this.editable(batch)) {
-            controls.className = "admin-toolbar xeb-actions";
             controls.append(
               this.batchAction(action("修改", () => this.rowDialog(batch, row), "ghost")),
               this.batchAction(
@@ -1637,6 +1745,22 @@ class Workspace {
       }
     }
   }
+  private openReadonlyExcelRow(
+    row: Obj,
+    title: string,
+    versionKey: string,
+    topLayer = false,
+    readonlyNote?: string,
+  ): void {
+    openReadonlyContentPresentation({
+      title,
+      value: { content_text: String(row.text || "") },
+      textRule: excelTextRule,
+      presentationSupplements: excelCardSupplement(row, versionKey),
+      overlayMount: topLayer ? "top-layer" : "body",
+      readonlyNote,
+    });
+  }
   private rowDialog(batch: Obj, row: Obj): void {
     const boundBatch = Number(batch.id),
       boundGeneration = this.generation,
@@ -1646,6 +1770,7 @@ class Workspace {
       title = el("input") as HTMLInputElement,
       segment = el("select") as HTMLSelectElement;
     text.value = String(row.text || "");
+    text.readOnly = true;
     path.value = String(row.card?.path || "");
     title.value = String(row.card?.title || "");
     ["", "A", "B", "C", "D"].forEach((value) => {
@@ -1656,16 +1781,53 @@ class Workspace {
     });
     dialog.append(el("h3", "修改发送内容"));
     [
-      ["话术", text],
+      ["话术（使用编辑器编辑）", text],
       ["小程序 path", path],
       ["标题（可空，执行时明确失败）", title],
       ["分层", segment],
     ].forEach(([label, control]) =>
       dialog.append(field(String(label), control as HTMLElement)),
     );
+    const feedback = notice();
+    feedback.dataset.excelFeedback = "";
+    const openComposer = action("编辑话术与预览", () => {
+      openContentComposer({
+        title: "编辑 Excel 行话术",
+        value: { content_text: text.value },
+        materialKinds: [],
+        textRule: excelTextRule,
+        overlayMount: "top-layer",
+        presentationSupplements: excelCardSupplement(
+          {
+            ...row,
+            card: { ...(row.card || {}), path: path.value, title: title.value },
+          },
+          `current:${boundBatch}:${String(batch.current_content_version || "current")}`,
+        ),
+        onConfirm: (result) => {
+          if (
+            !dialog.isConnected ||
+            boundBatch !== this.batchID ||
+            boundGeneration !== this.generation
+          )
+            throw new Error("批次已切换，未将编辑写入其他批次");
+          text.value = result.package.content_text;
+          setNotice(feedback, "已更新当前行草稿；请保存并重新审核以提交。", "success");
+        },
+      });
+    }, "secondary");
+    const openReadonly = action("查看已保存内容", () =>
+      this.openReadonlyExcelRow(
+        row,
+        "已保存 Excel 行内容",
+        `current:${boundBatch}:${String(batch.current_content_version || "current")}`,
+        true,
+      ), "ghost");
     const actions = el("div");
     actions.className = "admin-toolbar xeb-actions";
     actions.append(
+      openComposer,
+      openReadonly,
       action("保存并重新审核", async () => {
         if (boundBatch !== this.batchID || boundGeneration !== this.generation)
           throw new Error("批次已切换，未将编辑写入其他批次");
@@ -1693,7 +1855,7 @@ class Workspace {
         dialog.remove();
       }, "ghost"),
     );
-    dialog.append(actions);
+    dialog.append(feedback, actions);
     this.root.append(dialog);
     dialog.showModal();
   }
@@ -1770,6 +1932,7 @@ class Workspace {
     const boundGeneration = this.generation;
     if (id !== this.batchID) return;
     const dialog = el("dialog") as HTMLDialogElement;
+    dialog.className = "xeb-history-dialog";
     dialog.append(el("h3", "历史上传内容版本"));
     let result: Obj;
     try {
@@ -1808,9 +1971,53 @@ class Workspace {
         );
         return;
       }
-      const view = el("pre", JSON.stringify(page.items, null, 2));
-      view.style.whiteSpace = "pre-wrap";
-      viewer.append(view);
+      const view = el("div");
+      view.className = "xeb-scroll";
+      view.tabIndex = 0;
+      view.setAttribute(
+        "aria-label",
+        "历史内容行字段；可横向滚动查看完整状态和版本追溯",
+      );
+      const tableHint = el("p", "表格可横向滚动查看完整状态和版本追溯。");
+      tableHint.className = "xeb-table-hint";
+      const historyTable = table(
+          [
+            "UnionID / 员工",
+            "话术",
+            "小程序卡片",
+            "分层与行状态",
+            "审核状态",
+            "执行状态",
+            "发送时间",
+            "版本追溯",
+            "操作",
+          ],
+          page.items.map((row) => [
+            `${String(row.unionid || "")}\n${String(row.sender_userid || "")}`,
+            String(row.text || ""),
+            card(row),
+            historicalSegment(row),
+            historicalReview(row),
+            historicalDelivery(row),
+            `发送时间：${displayDateTime(row.sent_at)}`,
+            historicalTrace(row, selectedVersion),
+            action(
+              "查看内容",
+              () =>
+                this.openReadonlyExcelRow(
+                  row,
+                  `历史版本 ${selectedVersion} 内容`,
+                  `history:${id}:${selectedVersion}`,
+                  true,
+                  "此内容为所选历史版本的已保存内容。",
+                ),
+              "ghost",
+            ),
+          ]),
+        );
+      historyTable.classList.add("xeb-history-table");
+      view.append(historyTable);
+      viewer.append(tableHint, view);
       if (!page.items.length) viewer.append(el("p", "当前历史页没有内容行。"));
       viewer.append(
         this.pageNavigation(page, "history", (cursor) =>

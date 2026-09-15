@@ -1908,14 +1908,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	radarUI := radarModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page string, assets radarmodule.UIAssets) error {
 		titles := map[string]string{"radar": "内容雷达", "radarDetail": "雷达详情", "radarForm": "雷达配置"}
-		return renderer.RenderRadar(writer, webshell.AdminPageForRequest(request, titles[page], "UnionID 经 OneID 解析后形成可审计访问归因。", "api.admin_radar_links"), page, webshell.RadarAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS})
+		return renderer.RenderRadar(writer, webshell.AdminPageForRequest(request, titles[page], "UnionID 经 OneID 解析后形成可审计访问归因。", "api.admin_radar_links"), page, webshell.RadarAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS, SelectionDialogCSS: assets.SelectionDialogCSS})
 	})
 	groupOpsUI := groupOpsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets groupops.GroupOpsAssets) error {
 		endpoint := "api.admin_group_ops_ui"
 		if page == "groupopsDetail" {
 			endpoint = "api.admin_group_ops_plan_detail"
 		}
-		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: assets.StandardCSS, HostJS: assets.HostJS, OperationPickerJS: assets.OperationPickerJS, GroupPickerCSS: assets.GroupPickerCSS, GroupPickerJS: assets.GroupPickerJS, MaterialPickerCSS: assets.MaterialPickerCSS, MaterialPickerJS: assets.MaterialPickerJS, ComposerCSS: assets.ComposerCSS, ComposerJS: assets.ComposerJS})
+		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: assets.StandardCSS, HostJS: assets.HostJS, SelectionDialogCSS: assets.SelectionDialogCSS, OperationPickerJS: assets.OperationPickerJS, GroupPickerCSS: assets.GroupPickerCSS, GroupPickerJS: assets.GroupPickerJS, MaterialPickerCSS: assets.MaterialPickerCSS, MaterialPickerJS: assets.MaterialPickerJS, ComposerCSS: assets.ComposerCSS, ComposerJS: assets.ComposerJS})
 	})
 	automationUI := automationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets automation.AgentAssets, bootstrap automation.AgentPageBootstrap) error {
 		return renderer.RenderAutomation(writer, webshell.AdminPageForRequest(request, "自动化话术", "管理本地 Agent 与固定话术配置。", "api.admin_automation_agents"), page, donorTemplate, webshell.AutomationAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}, bootstrap.CreateCode)

@@ -21,7 +21,7 @@ type GroupOpsPageRenderer func(http.ResponseWriter, *http.Request, string, strin
 
 type GroupOpsAssets struct {
 	TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string
-	StandardCSS, HostJS                                  string
+	StandardCSS, HostJS, SelectionDialogCSS              string
 	OperationPickerJS                                    string
 	GroupPickerCSS, GroupPickerJS                        string
 	MaterialPickerCSS, MaterialPickerJS                  string
@@ -246,6 +246,9 @@ func (h *groupOpsUI) assets(standard bool) (GroupOpsAssets, error) {
 		return GroupOpsAssets{}, err
 	}
 	if assets.HostJS, err = entry("groupopsHost"); err != nil {
+		return GroupOpsAssets{}, err
+	}
+	if assets.SelectionDialogCSS, err = entry("selectionDialogStyles"); err != nil {
 		return GroupOpsAssets{}, err
 	}
 	for name, target := range map[string]*string{

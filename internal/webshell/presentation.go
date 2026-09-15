@@ -16,6 +16,7 @@ type PresentationAssets struct {
 	Script              string
 	Styles              []string
 	AdminDateTimeScript string
+	SelectionDialogCSS  string
 }
 
 var emptyPresentationStage = regexp.MustCompile(`(<main\b[^>]*\bid="stage"[^>]*>)\s*(</main>)`)
@@ -69,6 +70,13 @@ func presentationFunctions(distDir string) (template.FuncMap, error) {
 						assets.Styles = append(assets.Styles, entry)
 					}
 				}
+			}
+			if manifest.Entries["selectionDialogStyles"] != "" {
+				selectionDialogCSS, err := validEntry("selectionDialogStyles")
+				if err != nil {
+					return nil, err
+				}
+				assets.SelectionDialogCSS = selectionDialogCSS
 			}
 		}
 	}

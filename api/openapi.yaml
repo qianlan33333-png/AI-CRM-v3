@@ -2773,6 +2773,7 @@ paths:
       security: [{adminSession: []}]
       parameters:
         - {name: owner_userid, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: q, in: query, description: "Case-insensitive local group name or opaque chat reference search.", schema: {type: string, maxLength: 160}}
         - {$ref: "#/components/parameters/Limit"}
         - {$ref: "#/components/parameters/Offset"}
       responses: {"200": {description: Local group directory projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
@@ -2798,6 +2799,7 @@ paths:
       security: [{adminSession: []}]
       parameters:
         - {name: owner_userid, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: q, in: query, description: "Case-insensitive local group name or opaque chat reference search.", schema: {type: string, maxLength: 160}}
         - {$ref: "#/components/parameters/Limit"}
         - {$ref: "#/components/parameters/Offset"}
       responses: {"200": {description: Local group picker projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}

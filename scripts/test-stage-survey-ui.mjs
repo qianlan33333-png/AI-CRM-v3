@@ -64,7 +64,7 @@ for (const page of expectedH5) {
   const html = fs.readFileSync(path.join(stage, relative), 'utf8');
   assert.ok(html.includes('data-ui-surface="h5"'), `staged ${relative} does not identify its UI surface`);
   assert.ok(html.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), `staged ${relative} does not load surface feedback styles`);
-  assert.ok(html.includes(`<script async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host`);
+  assert.ok(html.includes(`<script type="module" async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host as an ESM module`);
 }
 assert.equal(stagedManifest.entries?.sidebar, undefined, 'Survey stage exposed the donor sidebar entry');
 assert.equal(stagedManifest.entries?.memberGridShare, undefined, 'Survey stage exposed an unrelated public entry');

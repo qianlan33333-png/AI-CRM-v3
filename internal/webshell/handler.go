@@ -174,6 +174,18 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 		}
 		return
 	}
+	if request.URL.Path == ComponentStatesPath {
+		assets, ok := DistComponentStatesAssets(handler.distDir)
+		if !ok {
+			http.Error(writer, "component state demo unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		data := AdminPageForRequest(request, "共享组件状态示例", "仅展示本地示例状态；不会发送、保存或调用 Provider。", "")
+		if err := handler.renderer.RenderComponentStates(writer, data, assets); err != nil {
+			http.Error(writer, "component state demo unavailable", http.StatusInternalServerError)
+		}
+		return
+	}
 	// Built documents reference their runtime assets and sibling pages with
 	// root-relative depth-1 URLs ("../assets/…", "customers.html").  Vanity
 	// aliases nested deeper than /admin/<name>.html would resolve those

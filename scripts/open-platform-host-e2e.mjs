@@ -86,11 +86,25 @@ for (const response of responseExamples) JSON.parse(response);
 const documentSearch = documentationDOM.window.document.querySelector('input[type="search"]');
 documentSearch.value = 'radar.clicks.list';
 documentSearch.dispatchEvent(new documentationDOM.window.Event('input', { bubbles: true }));
+if ([...documentationDOM.window.document.querySelectorAll('[data-api-doc-operation]')].filter((item) => !item.hidden).length !== 22) {
+  throw new Error('documentation typing did not retain the uncommitted search draft');
+}
+documentSearch.dispatchEvent(new documentationDOM.window.CompositionEvent('compositionstart', { bubbles: true }));
+documentSearch.dispatchEvent(new documentationDOM.window.CompositionEvent('compositionend', { bubbles: true }));
+const documentationCandidateEnter = new documentationDOM.window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' });
+Object.defineProperty(documentationCandidateEnter, 'keyCode', { value: 229 });
+documentSearch.dispatchEvent(documentationCandidateEnter);
+if (documentationCandidateEnter.defaultPrevented || [...documentationDOM.window.document.querySelectorAll('[data-api-doc-operation]')].filter((item) => !item.hidden).length !== 22) {
+  throw new Error('documentation IME candidate Enter submitted its query');
+}
+await sleep(5);
+documentSearch.dispatchEvent(new documentationDOM.window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }));
 if ([...documentationDOM.window.document.querySelectorAll('[data-api-doc-operation]')].filter((item) => !item.hidden).length !== 2) {
   throw new Error('operation search did not narrow the matching table row and operation card');
 }
 documentSearch.value = 'no-such-operation';
 documentSearch.dispatchEvent(new documentationDOM.window.Event('input', { bubbles: true }));
+documentSearch.dispatchEvent(new documentationDOM.window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }));
 const noSearchResult = documentationDOM.window.document.querySelector('.open-platform-empty');
 if (noSearchResult?.hidden) throw new Error('documentation search did not report an empty result');
 documentationDOM.window.document.querySelector('a[href="#operations"]')?.dispatchEvent(new documentationDOM.window.MouseEvent('click', { bubbles: true }));

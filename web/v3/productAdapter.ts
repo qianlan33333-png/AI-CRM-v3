@@ -10,6 +10,7 @@ import type { AdminDb, Product, Tone } from '../src/shared/api/types';
 import { productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr, renderQr } from '../src/admin/sections/qr';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
+import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 
 type RecordValue = Record<string, unknown>;
 type ProductProjection = Product & { resourceId: number };
@@ -1190,30 +1191,21 @@ void (async () => {
   await import('../src/admin/main');
 })();
 
-type StandardTag = { tag_id: string; tag_name?: string; group_name?: string; group_id?: string };
-type StandardTagWindow = Window & { AICRMWeComTagPicker?: { open(options: { title: string; mode: 'multiple'; catalog: unknown; value: StandardTag[]; allowManual: false; onConfirm(tags: StandardTag[]): void; onClear(): void }): void } };
-
 function safeTagging(input: HTMLTextAreaElement): RecordValue {
   try { return object(JSON.parse(input.value || '{}')); } catch { return {}; }
 }
 
-async function tagCatalog(): Promise<unknown> {
-  const response = await donorFetch('/api/admin/wecom/tags', { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-  const value = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`标签目录读取失败（HTTP ${response.status}）`);
-  const payload = object(value);
-  return { groups: list(payload.groups), items: list(payload.items) };
+function productTagCatalogLoadFailure(response: Response): Error {
+  const error = new Error(`标签目录读取失败（HTTP ${response.status}）`) as Error & { status?: number };
+  error.status = response.status;
+  return error;
 }
 
 function installProductPickerStyles(): void {
   if (document.getElementById('product-picker-styles')) return;
-  const link = document.createElement('link');
-  link.id = 'product-picker-styles';
-  link.rel = 'stylesheet';
-  link.href = '/assets/standard-components/wecom_tag_picker.css';
-  document.head.appendChild(link);
   const style = document.createElement('style');
-  style.textContent = `.pk-mask{z-index:10010!important;padding:24px!important}.pk-mask>div{width:min(680px,100%)!important;border:1px solid #e5e7eb;border-radius:16px!important}.pk-mask input{font:inherit;min-height:42px!important}.pk-mask button{font:inherit;min-height:36px;padding:6px 16px!important;border-radius:8px!important}.pk-mask [data-pk-id],.pk-mask [data-pk-none]{min-height:60px;padding:14px 18px!important}.pk-mask [data-pk-id]:hover{background:#f0f5ff!important}.aicrm-tag-picker{z-index:10011!important}[data-product-standard-tag-picker] input[type=checkbox]{appearance:none;position:relative;width:42px;height:24px;border:0;border-radius:20px;background:#cbd5e1;cursor:pointer;flex-shrink:0}[data-product-tag-enabled]:before{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:white;transition:transform .15s}[data-product-standard-tag-picker] input:checked{background:#3370ff}[data-product-tag-enabled]:checked:before{transform:translateX(18px)}[data-product-tag-summary]{line-height:1.8;padding:12px;background:#f7f9fc;border-radius:8px}`;
+  style.id = 'product-picker-styles';
+  style.textContent = `[data-product-standard-tag-picker] input[type=checkbox]{appearance:none;position:relative;width:42px;height:24px;border:0;border-radius:20px;background:#cbd5e1;cursor:pointer;flex-shrink:0}[data-product-tag-enabled]:before{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:white;transition:transform .15s}[data-product-standard-tag-picker] input:checked{background:#3370ff}[data-product-tag-enabled:checked]:before{transform:translateX(18px)}[data-product-tag-summary]{line-height:1.8;padding:12px;background:#f7f9fc;border-radius:8px}`;
   document.head.appendChild(style);
 }
 
@@ -1229,8 +1221,9 @@ function mountProductTagPicker(): void {
   input.closest('details')?.setAttribute('hidden', '');
   for (const note of panel.querySelectorAll('p,div')) if (!note.children.length && note.textContent?.includes('OpenAPI')) note.remove();
   const state = safeTagging(input);
-  const selected: StandardTag[] = list(state.tags).map((item) => object(item)).map((item) => ({ tag_id: String(item.tag_id || item.id || '').trim(), tag_name: String(item.tag_name || item.name || '').trim(), group_name: String(item.group_name || item.group || '').trim() })).filter((item) => item.tag_id);
-  if (!selected.length) for (const raw of list(state.tag_ids)) { const id = String(raw || '').trim(); if (id) selected.push({ tag_id: id }); }
+  const tagSource = 'local_tag_catalog';
+  const selected: TagPickerRecord[] = list(state.tags).map((item) => unresolvedTagRecord(tagSource, String(object(item).tag_id || object(item).id || '').trim())).filter((item): item is TagPickerRecord => Boolean(item));
+  if (!selected.length) for (const raw of list(state.tag_ids)) { const record = unresolvedTagRecord(tagSource, String(raw || '').trim()); if (record) selected.push(record); }
   const host = document.createElement('section');
   host.dataset.productStandardTagPicker = '';
   host.style.cssText = 'display:grid;gap:10px;padding:12px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
@@ -1248,11 +1241,23 @@ function mountProductTagPicker(): void {
   enabled.addEventListener('change', sync); sync();
   host.querySelector('[data-product-tag-open]')?.addEventListener('click', () => {
     error.hidden = true;
-    void tagCatalog().then((catalog) => {
-      const picker = (window as StandardTagWindow).AICRMWeComTagPicker;
-      if (!picker) throw new Error('标准标签选择器加载失败，请刷新后重试');
-      picker.open({ title: '选择购买后企微标签', mode: 'multiple', catalog, value: selected, allowManual: false, onConfirm: (tags) => { selected.splice(0, selected.length, ...tags); sync(); }, onClear: () => { selected.splice(0, selected.length); sync(); } });
-    }).catch((reason: unknown) => { error.textContent = reason instanceof Error ? reason.message : '标签目录读取失败'; error.hidden = false; });
+    const picker = window.AICRMTagPicker;
+    if (!picker) { error.textContent = '标签选择器加载失败，请刷新后重试'; error.hidden = false; return; }
+    picker.open({
+      title: '选择购买后企微标签',
+      source: tagSource,
+      scope: 'product.purchase_after_tag',
+      mode: 'multiple',
+      selectedRecords: selected,
+      loadPage: createTagCatalogPageLoader(tagSource, async ({ signal }) => {
+        const response = await donorFetch('/api/admin/wecom/tags', { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' }, signal });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw productTagCatalogLoadFailure(response);
+        return payload;
+      }),
+      onCommit: (result) => { selected.splice(0, selected.length, ...result.selected); sync(); },
+      accessLossMessage: (failure) => (failure as { status?: number } | undefined)?.status === 403 ? '标签目录权限已失效；当前商品草稿选择仍保留，请取消后重新登录。' : undefined,
+    });
   });
 }
 

@@ -17,13 +17,35 @@ const surfaceFeedbackHost = sourceManifest.entries?.surfaceFeedbackHost;
 const surfaceFeedbackStyles = sourceManifest.entries?.surfaceFeedbackStyles;
 assert.equal(sourceManifest.files?.[surfaceFeedbackHost]?.entry_point, 'web/v3/surfaceFeedbackHost.ts', 'surface feedback Host must be V3-owned');
 assert.equal(sourceManifest.files?.[surfaceFeedbackStyles]?.entry_point, 'web/v3/surfaceFeedback.css', 'surface feedback styles must be V3-owned');
+const selectionDialogStyles = sourceManifest.entries?.selectionDialogStyles;
+assert.equal(sourceManifest.files?.[selectionDialogStyles]?.entry_point, 'web/v3/shared/ui/selectionDialog.css', 'selection dialog styles must be V3-owned');
+const sharedVisualTokens = sourceManifest.entries?.sharedVisualTokens;
+const componentStatesStyles = sourceManifest.entries?.componentStatesStyles;
+const componentStatesHost = sourceManifest.entries?.componentStatesHost;
+assert.equal(sourceManifest.files?.[sharedVisualTokens]?.entry_point, 'web/v3/shared/ui/visualTokens.css', 'shared visual tokens must be V3-owned');
+assert.equal(sourceManifest.files?.[componentStatesStyles]?.entry_point, 'web/v3/componentStates.css', 'component state styles must be V3-owned');
+assert.equal(sourceManifest.files?.[componentStatesHost]?.entry_point, 'web/v3/componentStatesHost.ts', 'component state Host must be V3-owned');
 const entryKeys = [
   'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'radarHost',
-  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'productDistributionStyles', 'memberGridFeedbackHost',
+  'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost',
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
 ];
 const standardComponentSupport = ['assets/standard-components/operation_member_picker.js', 'assets/standard-components/group_chat_picker.css', 'assets/standard-components/group_chat_picker.js', 'assets/standard-components/material_picker.css', 'assets/standard-components/material_picker.js', 'assets/standard-components/send_content_composer.css', 'assets/standard-components/send_content_composer.js', 'assets/standard-components/wecom_tag_picker.css', 'assets/standard-components/wecom_tag_picker.js', 'assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'];
+const stableStandardHost = sourceManifest.entries?.standardComponentsStableHost;
+const hashedStandardHost = sourceManifest.entries?.standardComponentsHost;
+assert.equal(typeof stableStandardHost, 'string', 'stable standard Components Host entry is absent');
+assert.equal(typeof hashedStandardHost, 'string', 'hashed standard Components Host entry is absent');
+const stableStandardHostMetadata = sourceManifest.files?.[stableStandardHost];
+const hashedStandardHostMetadata = sourceManifest.files?.[hashedStandardHost];
+assert.deepEqual(stableStandardHostMetadata?.imports, hashedStandardHostMetadata?.imports, 'stable standard Components Host must retain its chunk closure');
+const stableStandardHostSource = fs.readFileSync(path.join(source, stableStandardHost), 'utf8');
+for (const dependency of stableStandardHostMetadata?.imports || []) {
+  const relative = path.posix.relative(path.posix.dirname(stableStandardHost), dependency.path);
+  const specifier = relative.startsWith('.') ? relative : `./${relative}`;
+  assert.match(stableStandardHostSource, new RegExp(`["']${specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`), `stable standard Components Host does not resolve ${dependency.path} from its public path`);
+}
+assert.doesNotMatch(stableStandardHostSource, /(?:from|import)\s*["']\.\/chunks\//, 'stable standard Components Host resolves chunks under the wrong public directory');
 const groupOpsSupport = [...standardComponentSupport, 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js'];
 const selected = new Set();
 const includeClosure = (relative) => {
@@ -53,7 +75,7 @@ for (const page of adminPages) {
   const html = fs.readFileSync(path.join(stage, relative), 'utf8');
   assert.ok(html.includes('data-ui-surface="admin"'), `staged ${relative} does not identify its UI surface`);
   assert.ok(html.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), `staged ${relative} does not load the surface feedback stylesheet`);
-  assert.ok(html.includes(`<script async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host`);
+  assert.ok(html.includes(`<script type="module" async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host as an ESM module`);
   if (html.includes('class="side-user"')) assert.ok(html.includes(`src="../${sourceManifest.entries.adminSessionHost}"`), `staged ${relative} has no working session Host`);
   assert.ok(!html.includes('href="cycles.html"'), `staged ${relative} still routes its Operation Cycles menu to the retired document`);
   if (html.includes('运营闭环')) assert.ok(html.includes('href="/admin/operation-cycles"'), `staged ${relative} omitted the canonical Operation Cycles menu route`);
@@ -81,7 +103,7 @@ assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.entry_point, 'w
 assert.equal(sourceManifest.files?.[sidebarImageResourceLoader]?.sha256, '38090abd86d19b7027841e7035bb8e8b12548487914a98a893fd71a5ec51187d', 'sidebar image loader must retain its audited dd8 bytes');
 assert.equal(sourceManifest.files?.[sidebarStandardStyles]?.entry_point, 'internal/webshell/static/sidebar_workbench/sidebar_workbench.css', 'sidebar release manifest must contain the standard stylesheet');
 const sidebarHTML = fs.readFileSync(path.join(stage, 'sidebar', 'index.html'), 'utf8');
-const sidebarScripts = [...sidebarHTML.matchAll(/<script(?: async| type="module")? src="([^"]+)"><\/script>/g)].map((match) => match[1]);
+const sidebarScripts = [...sidebarHTML.matchAll(/<script(?:(?:\s+type="module")|(?:\s+async))*\s+src="([^"]+)"><\/script>/g)].map((match) => match[1]);
 assert.deepEqual(sidebarScripts, [`../${surfaceFeedbackHost}`, weComJSSDK, `../${sidebarImageResourceLoader}`, `../${sidebarHost}`], 'staged sidebar document must preserve feedback, JSSDK, standard image loader, and V3 Host order');
 assert.ok(sidebarHTML.includes('data-ui-surface="sidebar"'), 'staged sidebar document does not identify its UI surface');
 assert.ok(sidebarHTML.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), 'staged sidebar document does not load surface feedback styles');
@@ -139,7 +161,7 @@ try {
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-survey-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   const before = fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json'));
   const requiredAssets = [
-    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
+    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet'], ['selectionDialogStyles', 'selection dialog stylesheet'], ['sharedVisualTokens', 'shared visual tokens'], ['componentStatesStyles', 'component state stylesheet'], ['componentStatesHost', 'component state Host']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
     ...['assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'].map((relative) => ({ relative, label: `passive standard asset ${relative}`, entry: false })),
   ];
   for (const { relative: missing, label, entry } of requiredAssets) {

@@ -17,7 +17,7 @@ const host = await buildTestBrowserBundle(path.join(root, "v3", "customerAdapter
 const admin = await buildTestBrowserBundle(path.join(root, "src", "admin", "main.ts"));
 const operationMemberPicker = fs.readFileSync(path.join(root, "..", "internal", "webshell", "static", "admin_console", "operation_member_picker_dd8d60d.js"), "utf8");
 const wecomTagPicker = fs.readFileSync(path.join(root, "donors", "standard-components-production", "static", "wecom_tag_picker.js"), "utf8");
-const standardReady = "window.AICRMStandardComponents={ready:()=>Promise.resolve()};";
+const standardReady = `window.AICRMStandardComponents={ready:()=>Promise.resolve()};window.AICRMTagPicker={open:(options)=>{window.__tagPickerOptions=options;options.loadPage({query:'',signal:new AbortController().signal}).then((page)=>options.onCommit({selected:page.items.slice(0,1),added:page.items.slice(0,1),removed:[]}));}};`;
 
 function documentWithHost(page, query, fetcher) {
   const source = fs.readFileSync(path.join(dist, "admin", page), "utf8");
@@ -43,7 +43,7 @@ const list = documentWithHost("customers.html", "", (window) => async (input, in
     return response({ items: [{ staff_id: 101, user_id: "alice", display_name: "Alice", active: true }] });
   }
   if (url.pathname === "/api/admin/wecom/tags") {
-    return response({ groups: [{ group_id: "group-1", group_name: "分组", tags: [{ tag_id: "8", tag_name: "会员" }] }], items: [{ tag_id: "8", tag_name: "会员", group_name: "分组" }] });
+    return response({ read_model_status: "ready", groups: [{ group_id: 1, group_name: "分组", tags: [{ tag_id: 8, tag_name: "会员" }] }], items: [{ tag_id: 8, group_id: 1, tag_name: "会员", group_name: "分组" }], count: 1, total_tags: 1, tag_limit: 1000 });
   }
   if (url.pathname === "/api/admin/customers") {
     return response({
@@ -88,10 +88,7 @@ try {
   if (!tagButton) fail("standard tag selector trigger is missing");
   tagButton.click();
   await sleep(30);
-  document.querySelector('[data-tag-key="8"]')?.click();
-  document.querySelector("[data-action=\"confirm\"]")?.click();
-  await sleep(10);
-  if (tagInput.value !== "8") fail("standard tag picker did not return its canonical tag ID");
+  if (tagInput.value !== "8" || list.window.__tagPickerOptions?.scope !== "customer.filter.tag" || list.window.__tagPickerOptions?.source !== "local_tag_catalog") fail("V3 tag picker did not return its canonical Customer filter tag ID");
   [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "查询")?.click();
   await sleep(100);
   const filtered = listRequests.filter((request) => request.path === "/api/admin/customers").at(-1);

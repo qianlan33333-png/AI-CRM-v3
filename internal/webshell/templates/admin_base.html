@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  {{with presentationAssets}}{{if .Script}}<script async src="{{.Script}}"></script>{{end}}{{end}}
+  {{with presentationAssets}}{{if .Script}}<script type="module" async src="{{.Script}}"></script>{{end}}{{end}}
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.PageTitle}} · 客户管理后台</title>
@@ -53,6 +53,7 @@
   {{if .Customers}}
   <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v2">
   <link rel="stylesheet" href="/assets/standard-components/wecom_tag_picker.css">
+  {{with presentationAssets}}{{if .SelectionDialogCSS}}<link rel="stylesheet" href="{{.SelectionDialogCSS}}">{{end}}{{end}}
   <script type="module" src="/assets/standard-components/standard_components_host.js"></script>
   <script defer src="/static/admin_console/admin_customers.js?v=customer-profile-v2"></script>
   {{end}}
@@ -90,6 +91,7 @@
   <link rel="stylesheet" href="{{.RadarAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.RadarAssets.LabsCSS}}">
   <link rel="stylesheet" href="/assets/standard-components/material_picker.css">
+  <link rel="stylesheet" href="{{.RadarAssets.SelectionDialogCSS}}">
   <script type="module" src="{{.RadarAssets.StandardHostJS}}"></script>
   <script defer src="/static/admin_console/radar_oneid_bridge.js?v=radar-oneid-v3"></script>
   <script type="module" src="{{.RadarAssets.HostJS}}"></script>
@@ -98,10 +100,13 @@
   <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.LabsCSS}}">
   {{if .GroupOpsStandard}}
-  <link rel="stylesheet" href="{{.GroupOpsAssets.StandardCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.GroupPickerCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.MaterialPickerCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.ComposerCSS}}">
+  {{/* V3 presentation CSS follows frozen component CSS so the mounted V3
+       composer keeps its scoped layout without altering the donor files. */}}
+  <link rel="stylesheet" href="{{.GroupOpsAssets.StandardCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.SelectionDialogCSS}}">
   <script defer src="{{.GroupOpsAssets.OperationPickerJS}}"></script>
   <script defer src="{{.GroupOpsAssets.GroupPickerJS}}"></script>
   <script defer src="{{.GroupOpsAssets.MaterialPickerJS}}"></script>
@@ -157,7 +162,9 @@
   <script type="module" src="{{.ChannelAssets.AdminJS}}"></script>
   {{end}}
   {{if .OwnerHandoff}}
-  <script defer src="/static/admin_console/owner_handoff_host.js?v=owner-handoff-host-v2"></script>
+  {{with presentationAssets}}{{if .SelectionDialogCSS}}<link rel="stylesheet" href="{{.SelectionDialogCSS}}">{{end}}{{end}}
+  <script type="module" src="/assets/standard-components/standard_components_host.js"></script>
+  <script defer src="/static/admin_console/owner_handoff_host.js?v=owner-handoff-host-v3"></script>
   {{end}}
   {{if .AIAssistant}}
   <link rel="stylesheet" href="{{.AIAssistantAssets.TokensCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.LabsCSS}}">
@@ -170,8 +177,17 @@
   <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
   {{end}}
   {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}
+  {{if .ComponentStates}}
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.VisualTokensCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.GroupOpsCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.GroupPickerCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.MaterialPickerCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.SelectionDialogCSS}}">
+  <link rel="stylesheet" href="{{.ComponentStatesAssets.StylesCSS}}">
+  <script type="module" src="{{.ComponentStatesAssets.HostJS}}"></script>
+  {{end}}
 </head>
-<body data-ui-surface="admin" class="admin-shell" data-admin-shell-source="v3_webshell"{{if .OwnerHandoff}} data-page="owner-handoff"{{end}}{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .Radar}} data-page="{{.RadarPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .RuntimeConfig}} data-runtime-config-page="{{.RuntimeConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}>
+<body data-ui-surface="admin" class="admin-shell" data-admin-shell-source="v3_webshell"{{if .OwnerHandoff}} data-page="owner-handoff"{{end}}{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .Radar}} data-page="{{.RadarPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .RuntimeConfig}} data-runtime-config-page="{{.RuntimeConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}{{if .ComponentStates}} data-page="component-states"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">

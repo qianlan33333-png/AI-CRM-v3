@@ -26,7 +26,10 @@ func TestChannelUIUsesDedicatedHostAdapterAndCanonicalRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","channelCenterHost":"assets/channel-host.js","standardComponentsHost":"assets/standard-host.js"},"files":{"assets/standard-components/group_chat_picker.css":{},"assets/standard-components/material_picker.css":{},"assets/standard-components/send_content_composer.css":{},"assets/standard-components/wecom_tag_picker.css":{},"assets/channelAdmissionStandard.css":{}}}`
+	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","channelCenterHost":"assets/channel-host.js","standardComponentsHost":"assets/standard-host.js","selectionDialogStyles":"assets/selection-dialog.css"},"files":{"assets/standard-components/group_chat_picker.css":{},"assets/standard-components/material_picker.css":{},"assets/standard-components/send_content_composer.css":{},"assets/standard-components/wecom_tag_picker.css":{},"assets/channelAdmissionStandard.css":{},"assets/selection-dialog.css":{}}}`
+	if err := os.WriteFile(filepath.Join(dist, "assets", "selection-dialog.css"), []byte("selection dialog"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dist, "assets", "channelAdmissionStandard.css"), []byte("channel-standard"), 0o600); err != nil {
 		t.Fatal(err)
 	}

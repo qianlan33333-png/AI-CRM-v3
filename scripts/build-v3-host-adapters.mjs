@@ -51,6 +51,10 @@ const entryPoints = {
   presentationStyles: path.join(repository, 'web', 'v3', 'presentation.css'),
   actionFeedbackStyles: path.join(repository, 'web', 'v3', 'actionFeedback.css'),
   sharedDetailDrawerStyles: path.join(repository, 'web', 'v3', 'shared', 'ui', 'detailDrawer.css'),
+  selectionDialogStyles: path.join(repository, 'web', 'v3', 'shared', 'ui', 'selectionDialog.css'),
+  sharedVisualTokens: path.join(repository, 'web', 'v3', 'shared', 'ui', 'visualTokens.css'),
+  componentStatesStyles: path.join(repository, 'web', 'v3', 'componentStates.css'),
+  componentStatesHost: path.join(repository, 'web', 'v3', 'componentStatesHost.ts'),
   productDistributionStyles: path.join(repository, 'web', 'v3', 'productDistribution.css'),
   memberGridFeedbackHost: path.join(repository, 'web', 'v3', 'memberGridFeedbackHost.ts'),
   // Distribution owns its own public/current-session and administrator
@@ -200,7 +204,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'productDistributionStyles', 'memberGridFeedbackHost', 'distributionCenter', 'distributionAdmin', 'distributionStyles'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost' || name === 'surveyHost') continue;
+  if (['surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost', 'distributionCenter', 'distributionAdmin', 'distributionStyles'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost' || name === 'surveyHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -210,19 +214,24 @@ for (const name of Object.keys(entryPoints)) {
 const standardHostEntry = manifest.entries.standardComponentsHost;
 if (typeof standardHostEntry !== 'string') throw new Error('standard Components Host entry is absent from manifest');
 const stableStandardHost = 'assets/standard-components/standard_components_host.js';
-const stableStandardHostContents = fs.readFileSync(path.join(dist, standardHostEntry));
+// The stable entry is one directory deeper than the hashed V3 bundle. Its
+// shared chunks remain under /assets/chunks, so rebase only those V3 module
+// specifiers and retain their manifest closure for release staging.
+const stableStandardHostContents = Buffer.from(fs.readFileSync(path.join(dist, standardHostEntry), 'utf8').replace(/(["'])\.\/chunks\//g, '$1../chunks/'));
+if (/(["'])\.\/chunks\//.test(stableStandardHostContents.toString('utf8'))) throw new Error('stable standard Components Host retained an invalid relative chunk path');
 fs.writeFileSync(path.join(dist, stableStandardHost), stableStandardHostContents);
 const stableStandardHostMetadata = metadataFor(stableStandardHostContents);
-manifest.files[stableStandardHost] = { ...stableStandardHostMetadata, entry_point: 'web/v3/standardComponentsHost.ts', imports: [], inputs: ['web/v3/standardComponentsHost.ts'] };
+manifest.files[stableStandardHost] = { ...stableStandardHostMetadata, entry_point: 'web/v3/standardComponentsHost.ts', imports: manifest.files[standardHostEntry].imports, inputs: ['web/v3/standardComponentsHost.ts'] };
 manifest.release_files[stableStandardHost] = stableStandardHostMetadata;
 manifest.entries.standardComponentsStableHost = stableStandardHost;
 
 const customerHost = manifest.entries.customerHost;
 const frozenAdmin = manifest.entries.admin;
-if (typeof customerHost !== 'string' || typeof frozenAdmin !== 'string') throw new Error('customer Host or frozen admin entry is absent from manifest');
+const selectionDialogStyles = manifest.entries.selectionDialogStyles;
+if (typeof customerHost !== 'string' || typeof frozenAdmin !== 'string' || typeof selectionDialogStyles !== 'string') throw new Error('customer Host, selection dialog stylesheet, or frozen admin entry is absent from manifest');
 const customerHostReference = `../${customerHost}`;
 const frozenAdminReference = `<script type="module" src="../${frozenAdmin}"></script>`;
-const standardCustomerReferences = `<link rel="stylesheet" href="../assets/standard-components/wecom_tag_picker.css">\n<script type="module" src="../${stableStandardHost}"></script>`;
+const standardCustomerReferences = `<link rel="stylesheet" href="../${selectionDialogStyles}">\n<link rel="stylesheet" href="../assets/standard-components/wecom_tag_picker.css">\n<script type="module" src="../${stableStandardHost}"></script>`;
 for (const documentName of ['customers.html', 'customerDetail.html']) {
   const documentPath = path.join(dist, 'admin', documentName);
   let documentHTML = fs.readFileSync(documentPath, 'utf8');
@@ -363,7 +372,10 @@ const injectSurfaceFeedback = (relative, surface) => {
   const documentPath = path.join(dist, relative);
   let documentHTML = fs.readFileSync(documentPath, 'utf8');
   const stylesheet = ['surfaceFeedbackStyles', 'actionFeedbackStyles', 'presentationStyles'].map((entry) => `<link rel="stylesheet" href="../${manifest.entries[entry]}">`).join('\n');
-  const host = `<script async src="../${surfaceFeedbackHost}"></script>`;
+  // surfaceFeedbackHost has shared ESM imports. Keep its previous eager async
+  // behavior while loading it as a module so emitted chunks remain valid in
+  // admin, sidebar, and public staged documents.
+  const host = `<script type="module" async src="../${surfaceFeedbackHost}"></script>`;
   if (!documentHTML.includes('</head>') || !documentHTML.includes('<body')) throw new Error(`${relative} has no HTML shell for surface feedback`);
   if (documentHTML.includes(stylesheet) || documentHTML.includes(host)) throw new Error(`${relative} already contains surface feedback`);
   documentHTML = documentHTML.replace('<head>', `<head>\n${host}`).replace('</head>', `${stylesheet}\n</head>`);
@@ -419,7 +431,7 @@ const distributionAdmin = manifest.entries.distributionAdmin;
 const distributionStyles = manifest.entries.distributionStyles;
 if (typeof distributionCenter !== 'string' || typeof distributionAdmin !== 'string' || typeof distributionStyles !== 'string') throw new Error('distribution frontend entries are absent from manifest');
 const distributionDocument = (title, rootID, entry, adminSurface = false) => {
-  const feedback = adminSurface ? `<link rel="stylesheet" href="../${entries.get('surfaceFeedbackStyles')}"><script async src="../${entries.get('surfaceFeedbackHost')}"></script>` : '';
+  const feedback = adminSurface ? `<link rel="stylesheet" href="../${entries.get('surfaceFeedbackStyles')}"><script type="module" async src="../${entries.get('surfaceFeedbackHost')}"></script>` : '';
   const surface = adminSurface ? ' data-ui-surface="admin"' : ' data-ui-surface="distribution"';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${title} · AI-CRM</title><link rel="stylesheet" href="../${distributionStyles}">${feedback}</head><body${surface}><main id="${rootID}" class="distribution-shell" aria-live="polite"></main><script type="module" src="../${entry}"></script></body></html>\n`;
 };

@@ -22,17 +22,17 @@ func TestUIBindingMountsOnlyRadarPages(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{"tokens.css", "labs.css", "admin.js", "radarHost.js", "standardHost.js"} {
+	for _, file := range []string{"tokens.css", "labs.css", "admin.js", "radarHost.js", "standardHost.js", "selectionDialog.css"} {
 		if err := os.WriteFile(filepath.Join(dist, "assets", file), []byte("x"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	raw, _ := json.Marshal(map[string]any{"entries": map[string]string{"tokens": "assets/tokens.css", "labs": "assets/labs.css", "admin": "assets/admin.js", "radarHost": "assets/radarHost.js", "standardComponentsStableHost": "assets/standardHost.js"}})
+	raw, _ := json.Marshal(map[string]any{"entries": map[string]string{"tokens": "assets/tokens.css", "labs": "assets/labs.css", "admin": "assets/admin.js", "radarHost": "assets/radarHost.js", "standardComponentsStableHost": "assets/standardHost.js", "selectionDialogStyles": "assets/selectionDialog.css"}})
 	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), raw, 0600); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewModuleRegistration().UIBinding(dist, func(w http.ResponseWriter, _ *http.Request, page string, assets UIAssets) error {
-		if assets.HostJS != "/assets/radarHost.js" || assets.StandardHostJS != "/assets/standardHost.js" {
+		if assets.HostJS != "/assets/radarHost.js" || assets.StandardHostJS != "/assets/standardHost.js" || assets.SelectionDialogCSS != "/assets/selectionDialog.css" {
 			t.Fatalf("picker hosts missing: %+v", assets)
 		}
 		w.WriteHeader(200)

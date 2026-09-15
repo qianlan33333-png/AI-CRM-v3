@@ -1,4 +1,5 @@
 /** Browser-only presentation. No transport interception or write retries. */
+import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
 export {};
 type BusyOptions = { label?: string; initial?: boolean };
 declare global {
@@ -94,6 +95,7 @@ window.addEventListener('error', event => {
   if (event.target instanceof HTMLScriptElement || event.target instanceof HTMLLinkElement) resourceFailure();
 }, true);
 function install(): void {
+  installCommittedTextSearch();
   if (window.__AICRMSurfaceFeedback) return;
   window.__AICRMSurfaceFeedback = { busy };
   document.querySelectorAll(roots).forEach(inspect);
