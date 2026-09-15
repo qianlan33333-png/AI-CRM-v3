@@ -1237,6 +1237,50 @@
       ],
       "reason": "Bind the Root-reviewed combined read-only Overview paid-record drilldown and Distribution current distinct open/querying exception-order metric after the final Overview authority approval. Existing Distribution exception-record todos remain unchanged; frozen donors remain unchanged.",
       "review_reference": "Root review of exact combined Overview/Distribution authority diff on 2026-09-16; ordinary PR review and required CI remain pending."
+    },
+    {
+      "base_commit": "9d310804cf65f3668599ef173b893748c405e449",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "a759668892f9d92ea21c50b4e1b4f3590cd0a53876aa14ecdf673f76c09a7aea",
+          "head_sha256": "5c172834a6a7f081d07827225ee558686920b70d32d4c988d06cc2557c4d1093"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "b946c5d6d2465933e976f57bb92aa6f0665cd95e475eec4dacf78fa1b98309e2",
+          "head_sha256": "cb37c3a505df9224b0e85f7686959d269701a58eafeceb465620cd9bf612d7be"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "250a407959db9d90fa377acb15fe735dcde152a82e8d81099d9669b380fc0c0b",
+          "head_sha256": "1db61b398ad05da054735b0aa50dd2b698c9ed9f36aa0b519592b949f1709bc0"
+        }
+      ],
+      "reason": "Bind the Root-reviewed combined read-only Overview paid-record drilldown and Distribution current distinct open/querying exception-order metric after the ordered #345, #352, #351 and #343 stack. Existing Distribution exception-record todos remain unchanged; frozen donors remain unchanged.",
+      "review_reference": "Root review of exact combined Overview/Distribution authority diff on 2026-09-16; ordinary PR review and required CI remain pending."
+    },
+    {
+      "base_commit": "3ab25ffa01e8e60a93c5d3e4da421a486ae9dda4",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "fc3e53eef94e2fdf253aca9975dab9313f4f3f97b47896dd956f92bbea0ac169",
+          "head_sha256": "5c172834a6a7f081d07827225ee558686920b70d32d4c988d06cc2557c4d1093"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "10422b165e04f6d146b1eb7b65cd43a17971dc433bd01f15277bccdbc4b20a99",
+          "head_sha256": "cb37c3a505df9224b0e85f7686959d269701a58eafeceb465620cd9bf612d7be"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "9fe52f44a009b49723d95e43a22b9b1b3dfba6040af790377a112c1e5dc93e20",
+          "head_sha256": "1db61b398ad05da054735b0aa50dd2b698c9ed9f36aa0b519592b949f1709bc0"
+        }
+      ],
+      "reason": "Bind the Root-reviewed combined read-only Overview paid-record drilldown and Distribution current distinct open/querying exception-order metric after the final ordered Overview stack. Existing Distribution exception-record todos remain unchanged; frozen donors remain unchanged.",
+      "review_reference": "Root review of exact combined Overview/Distribution authority diff on 2026-09-16; ordinary PR review and required CI remain pending."
     }
   ]
 }
