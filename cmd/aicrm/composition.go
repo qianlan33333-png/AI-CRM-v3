@@ -1897,7 +1897,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return producthttp.RenderMemberGridInternal(writer, request, request.URL.Query().Get("id"))
 		}
 		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品", "spProductData": "周期商品 · 会员数据"}
-		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page", "spProductData": "api.admin_service_period_member_grid"}
+		// These are presentation-only active navigation identifiers. They use
+		// the canonical V3 admin routes shared by the server shell and the
+		// release-document navigation Host; Product remains the owner of its
+		// page data and commands.
+		endpoints := map[string]string{"products": "api.admin_wechat_pay_products_page", "productForm": "api.admin_wechat_pay_products_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_products_page", "spProductData": "api.admin_service_period_products_page"}
 		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, ProductCSS: assets.ProductCSS, HostJS: assets.HostJS, StandardHostJS: assets.StandardHostJS, StandardCSS: assets.StandardCSS})
 	})
 	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
