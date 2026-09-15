@@ -17,6 +17,7 @@ var ErrInvalid = errors.New("invalid payment command")
 var ErrConflict = errors.New("payment conflict")
 var ErrNotFound = errors.New("payment not found")
 var ErrUnavailable = errors.New("payment unavailable")
+var ErrCanonicalPayerUnavailable = errors.New("payment canonical payer unavailable")
 
 // ErrSettlementCapabilityDisabled is returned before a distribution receiver
 // effect is accepted when the merchant has not enabled the separate

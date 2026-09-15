@@ -102,9 +102,31 @@ func TestAdminRadarVisitorIdentityProjectionMatchesCanonicalLineageAndFailsClose
 		if projection[customerdomain.CustomerID(withinBoundary[0])].CanonicalCustomerID != customerdomain.CustomerID(withinBoundary[len(withinBoundary)-1]) {
 			t.Fatalf("127-pointer batch projection=%+v", projection)
 		}
+		roots, readErr := reader.CanonicalCustomerRoots(tx, []customerdomain.CustomerID{
+			customerdomain.CustomerID(merged), customerdomain.CustomerID(root), customerdomain.CustomerID(merged),
+		})
+		if readErr != nil || len(roots) != 2 || roots[customerdomain.CustomerID(merged)] != customerdomain.CustomerID(root) || roots[customerdomain.CustomerID(root)] != customerdomain.CustomerID(root) {
+			t.Fatalf("canonical customer roots=%v err=%v", roots, readErr)
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	batch := make([]customerdomain.CustomerID, 0, 500)
+	for index := 0; index < 500; index++ {
+		batch = append(batch, customerdomain.CustomerID(insertRadarVisitorCustomer(t, native, "active", nil)))
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		roots, readErr := reader.CanonicalCustomerRoots(tx, batch)
+		if readErr != nil || len(roots) != len(batch) {
+			t.Fatalf("500 canonical customer roots=%d err=%v", len(roots), readErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = reader.CanonicalCustomerRoots(ctx, append(batch, customerdomain.CustomerID(root))); !errors.Is(err, query.ErrInvalidQuery) {
+		t.Fatalf("501 canonical customer roots error=%v", err)
 	}
 	overBoundary := insertRadarVisitorMergeChain(t, native, 128)
 	assertCanonicalAgreementFailure(t, ctx, uow, reader, "depth", customerdomain.CustomerID(overBoundary[0]), query.ErrInvalidQuery)
@@ -135,6 +157,10 @@ func assertCanonicalAgreementFailure(t *testing.T, ctx context.Context, uow plat
 		_, batchErr := reader.AdminRadarVisitorIdentities(tx, "wecom-corp:radar-visitor", []customerdomain.CustomerID{id})
 		if !errors.Is(batchErr, expected) {
 			t.Fatalf("%s batch visitor lineage error=%v want category %v", name, batchErr, expected)
+		}
+		_, rootsErr := reader.CanonicalCustomerRoots(tx, []customerdomain.CustomerID{id})
+		if !errors.Is(rootsErr, expected) {
+			t.Fatalf("%s canonical root error=%v want category %v", name, rootsErr, expected)
 		}
 		return nil
 	})
