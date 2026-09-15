@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
@@ -119,6 +120,69 @@ func (r *Repository) ReadPaidOverviewPayerPage(ctx context.Context, window payme
 		return paymentport.PaidOverviewPayerPage{}, mapError(err)
 	}
 	return result, nil
+}
+
+// ReadPaidOverviewRecords returns the exact paid-confirmation records behind
+// the overview gross and business-order count. It is deliberately separate
+// from Order: Payment owns the original paid-confirmation fact and a merchant
+// reference is only unambiguous together with this row's provider.
+func (r *Repository) ReadPaidOverviewRecords(ctx context.Context, window paymentport.OverviewWindow, after *paymentport.PaidOverviewRecordCursor, limit int) (paymentport.PaidOverviewRecordPage, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return paymentport.PaidOverviewRecordPage{}, err
+	}
+	if !window.Valid() || limit < 1 || limit > 100 || (after != nil && !after.Valid()) {
+		return paymentport.PaidOverviewRecordPage{}, paymentport.ErrInvalid
+	}
+	args := []any{window.Start.UTC(), window.End.UTC()}
+	query := `SELECT provider,merchant_order_no,payer_customer_id,amount_minor,currency,paid_confirmed_at,id
+		FROM payments
+		WHERE status='paid' AND paid_confirmed_at IS NOT NULL
+			AND paid_confirmed_at >= $1 AND paid_confirmed_at < $2`
+	if after != nil {
+		args = append(args, after.PaidConfirmedAt.UTC(), after.PaymentID)
+		query += ` AND (paid_confirmed_at < $3 OR (paid_confirmed_at = $3 AND id < $4))`
+	}
+	args = append(args, limit+1)
+	query += ` ORDER BY paid_confirmed_at DESC,id DESC LIMIT $` + strconv.Itoa(len(args))
+	rows, err := t.Query(ctx, query, args...)
+	if err != nil {
+		return paymentport.PaidOverviewRecordPage{}, mapError(err)
+	}
+	defer rows.Close()
+	result := paymentport.PaidOverviewRecordPage{Items: []paymentport.PaidOverviewRecord{}}
+	var lastPaymentID int64
+	for rows.Next() {
+		var item paymentport.PaidOverviewRecord
+		var paymentID int64
+		if err = rows.Scan(&item.Provider, &item.OrderReference, &item.PayerCustomerID, &item.AmountMinor, &item.Currency, &item.PaidConfirmedAt, &paymentID); err != nil {
+			return paymentport.PaidOverviewRecordPage{}, mapError(err)
+		}
+		if !validPaidOverviewRecord(item, paymentID) {
+			return paymentport.PaidOverviewRecordPage{}, paymentport.ErrInvalid
+		}
+		if len(result.Items) == limit {
+			last := result.Items[len(result.Items)-1]
+			result.NextCursor = &paymentport.PaidOverviewRecordCursor{PaidConfirmedAt: last.PaidConfirmedAt.UTC(), PaymentID: lastPaymentID}
+			break
+		}
+		result.Items = append(result.Items, item)
+		lastPaymentID = paymentID
+	}
+	if err = rows.Err(); err != nil {
+		return paymentport.PaidOverviewRecordPage{}, mapError(err)
+	}
+	return result, nil
+}
+
+func validPaidOverviewRecord(item paymentport.PaidOverviewRecord, paymentID int64) bool {
+	if paymentID < 1 || item.OrderReference == "" || item.AmountMinor < 1 || item.Currency == "" || item.PaidConfirmedAt.IsZero() {
+		return false
+	}
+	if item.Provider != "wechat_pay" && item.Provider != "wechat_shop" {
+		return false
+	}
+	return item.PayerCustomerID == nil || *item.PayerCustomerID > 0
 }
 
 type overviewMoneyJSON struct {

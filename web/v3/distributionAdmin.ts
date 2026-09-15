@@ -3,8 +3,15 @@ import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
 import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 import { openShareQrDialog } from './shared/ui/shareQrDialog';
 import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionSettlementStatusLabel } from './distributionPresentation';
+import type { ConfirmationDialogOptions, ConfirmationDialogResult } from './shared/ui/confirmationDialog';
 
 export {};
+
+declare global {
+  interface Window {
+    AICRMConfirmation?: { confirm(options: ConfirmationDialogOptions): Promise<ConfirmationDialogResult> };
+  }
+}
 
 type Row = Record<string, unknown>;
 type Tab = 'distributors' | 'orders' | 'exceptions';
@@ -98,6 +105,7 @@ function errText(status: number, payload: unknown): string {
 
 const keys = new Map<string, string>();
 const pendingMutations = new Set<string>();
+const pendingConfirmations = new Set<string>();
 function key(scope: string): string {
   let value = keys.get(scope);
   if (!value) {
@@ -264,6 +272,46 @@ let detailGeneration = 0;
 const activeDetailBodies = new Map<HTMLElement, Tab>();
 
 function pageState(value = tab): PageState { return pageStates[value]; }
+
+function actionTargetIsCurrent(target: Tab, id: string, version: number, requestAccessGeneration: number): boolean {
+  if (requestAccessGeneration !== accessGeneration || tab !== target || pageState(target).loading) return false;
+  const key = target === 'distributors' ? 'id' : 'exception_id';
+  return pageState(target).rows.some((row) => idText(row[key]) === id && integer(row.version) === version);
+}
+
+async function confirmAction(
+  scope: string,
+  target: Tab,
+  id: string,
+  version: number,
+  options: ConfirmationDialogOptions,
+): Promise<ConfirmationDialogResult | undefined> {
+  if (pendingConfirmations.has(scope)) {
+    notice('确认窗口已打开，请先完成或取消当前操作。', true);
+    return undefined;
+  }
+  const confirm = window.AICRMConfirmation?.confirm;
+  if (typeof confirm !== 'function') {
+    notice('确认界面未完成加载，本次操作未提交；请重新加载页面后再试。', true);
+    return undefined;
+  }
+  const requestAccessGeneration = accessGeneration;
+  pendingConfirmations.add(scope);
+  try {
+    const result = await confirm(options);
+    if (!result.confirmed) return undefined;
+    if (!actionTargetIsCurrent(target, id, version, requestAccessGeneration)) {
+      notice('目标记录或授权范围已变化，未提交操作；请重新读取后确认。', true);
+      return undefined;
+    }
+    return result;
+  } catch {
+    notice('确认界面暂时不可用，本次操作未提交；请重新加载页面后再试。', true);
+    return undefined;
+  } finally {
+    pendingConfirmations.delete(scope);
+  }
+}
 
 function accessFailure(error: unknown, status: number): error is RequestError {
   return error instanceof RequestError && error.status === status;
@@ -735,10 +783,21 @@ async function mutate(scope: string, path: string, body: string): Promise<void> 
 }
 
 async function setDistributor(id: number, version: number, operation: 'disable' | 'enable'): Promise<void> {
-  const reason = operation === 'disable' ? window.prompt('停用原因（将记录审计）：') || '' : '管理员恢复';
-  if (!reason.trim()) {
-    notice('必须填写停用原因，未提交操作。', true);
-    return;
+  let reason = '管理员恢复';
+  if (operation === 'disable') {
+    const result = await confirmAction(`confirm:distributor:disable:${id}:${version}`, 'distributors', String(id), version, {
+      title: '停用分销员',
+      description: `即将停用分销员 ID ${id}。停用后该分销员不能继续推广。请填写原因，系统会记录审计。`,
+      confirmLabel: '确认停用',
+      tone: 'danger',
+      fields: [{ name: 'reason', label: '停用原因', placeholder: '请输入停用原因', required: true, kind: 'textarea' }],
+    });
+    if (!result?.confirmed) return;
+    reason = result.values?.reason || result.reason || '';
+    if (!reason.trim()) {
+      notice('必须填写停用原因，未提交操作。', true);
+      return;
+    }
   }
   await mutate(`distributor:${operation}:${id}:${version}:${reason}`, `/api/admin/distribution/distributors/${id}/${operation}`, JSON.stringify({ version, reason }));
 }
@@ -754,8 +813,19 @@ function amount(value: string | null): number | undefined {
 }
 
 async function recovery(id: string, version: number): Promise<void> {
-  const value = amount(window.prompt('追回金额（分）：'));
-  const evidence = window.prompt('追回凭证参考：');
+  const result = await confirmAction(`confirm:recovery:${id}:${version}`, 'exceptions', id, version, {
+    title: '登记追回',
+    description: `即将为异常编号 ${id} 登记追回。金额单位为分。请核对金额和凭证参考后再登记；此操作不会声明已完成微信分账。`,
+    confirmLabel: '确认登记追回',
+    tone: 'danger',
+    fields: [
+      { name: 'amount_minor', label: '追回金额（分）', placeholder: '请输入正整数（分）', required: true, kind: 'positive-integer' },
+      { name: 'evidence_reference', label: '追回凭证参考', placeholder: '请输入凭证参考', required: true, kind: 'text' },
+    ],
+  });
+  if (!result?.confirmed) return;
+  const value = amount(result.values?.amount_minor || '');
+  const evidence = result.values?.evidence_reference || '';
   if (value === undefined || !evidence?.trim()) {
     notice('追回金额必须是有效正整数分，且必须填写凭证参考；未提交操作。', true);
     return;
@@ -764,8 +834,19 @@ async function recovery(id: string, version: number): Promise<void> {
 }
 
 async function liability(id: string, version: number): Promise<void> {
-  const value = amount(window.prompt('商户承担金额（分）：'));
-  const reason = window.prompt('承担原因：');
+  const result = await confirmAction(`confirm:liability:${id}:${version}`, 'exceptions', id, version, {
+    title: '登记商户承担',
+    description: `即将为异常编号 ${id} 登记商户承担。金额单位为分。请核对金额和承担原因后再登记。`,
+    confirmLabel: '确认登记商户承担',
+    tone: 'danger',
+    fields: [
+      { name: 'amount_minor', label: '承担金额（分）', placeholder: '请输入正整数（分）', required: true, kind: 'positive-integer' },
+      { name: 'reason', label: '承担原因', placeholder: '请输入承担原因', required: true, kind: 'textarea' },
+    ],
+  });
+  if (!result?.confirmed) return;
+  const value = amount(result.values?.amount_minor || '');
+  const reason = result.values?.reason || '';
   if (value === undefined || !reason?.trim()) {
     notice('承担金额必须是有效正整数分，且必须填写原因；未提交操作。', true);
     return;

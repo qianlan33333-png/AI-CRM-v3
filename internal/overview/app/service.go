@@ -32,6 +32,10 @@ const authorizedGlobalScope = "admin_authorized_global"
 // deliberately does not start a background job.
 const DefaultSectionReadTimeout = 2 * time.Second
 
+// PaidRecordsPageSize is deliberately fixed for the admin drawer. The API
+// never lets a browser turn a detail click into an unbounded Payment read.
+const PaidRecordsPageSize = 25
+
 type Section struct {
 	Status     Status    `json:"status"`
 	AsOf       time.Time `json:"as_of"`
@@ -140,6 +144,26 @@ func (q Query) Valid() bool {
 	return q.Range.Period != "" && q.Range.Timezone == "Asia/Shanghai" && !q.Range.Start.IsZero() && !q.Range.End.IsZero() && q.Range.End.After(q.Range.Start)
 }
 
+// PaidRecordsQuery reuses the exact reporting range of the overview's paid
+// denominator. The cursor is Payment's typed keyset position; HTTP owns any
+// opaque serialization and binds it to this Range before calling the app.
+type PaidRecordsQuery struct {
+	Range  Range
+	Cursor *paymentport.PaidOverviewRecordCursor
+}
+
+func (q PaidRecordsQuery) Valid() bool {
+	return Query{Range: q.Range}.Valid() && (q.Cursor == nil || q.Cursor.Valid())
+}
+
+// PaidRecordsResponse is intentionally limited to Payment-owned payment
+// facts. It does not resolve a historical payer to a present-day Customer.
+type PaidRecordsResponse struct {
+	Range      Range
+	Items      []paymentport.PaidOverviewRecord
+	NextCursor *paymentport.PaidOverviewRecordCursor
+}
+
 type Service struct {
 	customers    customerport.OverviewReader
 	payments     paymentport.OverviewReader
@@ -208,6 +232,22 @@ func (service *Service) Read(ctx context.Context, query Query) (Response, error)
 	response.Distribution = distributionResponse(distributionResult.asOf, distributionResult.facts, distributionResult.err)
 	response.Todos = todosResponse(distributionResult.asOf, distributionResult.facts, distributionResult.err)
 	return response, nil
+}
+
+// ReadPaidRecords reads a bounded, same-denominator Payment page for the
+// overview drawer. Unlike Read, it is one explicit owner read: an error never
+// returns a partial page dressed as a successful overview response.
+func (service *Service) ReadPaidRecords(ctx context.Context, query PaidRecordsQuery) (PaidRecordsResponse, error) {
+	if service == nil || service.payments == nil || service.readTimeout <= 0 || !query.Valid() {
+		return PaidRecordsResponse{}, paymentport.ErrInvalid
+	}
+	child, cancel := context.WithTimeout(ctx, service.readTimeout)
+	page, err := service.payments.ReadPaidOverviewRecords(child, paymentport.OverviewWindow{Start: query.Range.Start, End: query.Range.End}, query.Cursor, PaidRecordsPageSize)
+	cancel()
+	if err != nil {
+		return PaidRecordsResponse{}, err
+	}
+	return PaidRecordsResponse{Range: query.Range, Items: page.Items, NextCursor: page.NextCursor}, nil
 }
 
 type paidReadResult struct {

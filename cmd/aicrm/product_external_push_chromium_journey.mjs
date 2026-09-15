@@ -232,6 +232,45 @@ try {
     return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} binding=${page?.businessBinding === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
   };
 
+  const assertProductEditorHeader = async (kind, title, returnLabel) => {
+    for (const width of [1280, 1440]) {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      const layout = await evaluate(cdp, `(() => {
+        const visible = (node) => {
+          if (!(node instanceof HTMLElement) || node.hidden) return false;
+          const style = getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const topbar = document.querySelector('.admin-topbar');
+        const topbarRect = topbar?.getBoundingClientRect();
+        const actions = Array.from(topbar?.querySelectorAll('[data-page-header-actions="product-editor"] button') || []);
+        const duplicateTitles = Array.from(document.querySelectorAll('#stage *')).filter((node) => node.children.length === 0 && node.textContent?.trim() === ${JSON.stringify(title)} && visible(node));
+        const bodyReturn = Array.from(document.querySelectorAll('#stage button')).some((button) => button.textContent?.trim() === ${JSON.stringify(returnLabel)} && visible(button));
+        const frozenHeader = document.querySelector('#stage [data-v3-product-frozen-header="hidden"]');
+        const frozenRect = frozenHeader?.getBoundingClientRect();
+        return {
+          topbars: document.querySelectorAll('.admin-topbar').length,
+          shellTitles: topbar?.querySelectorAll('.admin-page-title').length || 0,
+          shellTitle: topbar?.querySelector('.admin-page-title')?.textContent?.trim(),
+          actions: actions.map((button) => button.textContent?.trim()),
+          actionGeometry: actions.map((button) => { const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, visible: visible(button) }; }),
+          topbarGeometry: topbarRect ? { left: topbarRect.left, right: topbarRect.right, top: topbarRect.top, bottom: topbarRect.bottom, width: topbarRect.width, height: topbarRect.height } : null,
+          duplicateTitles: duplicateTitles.length,
+          bodyReturn,
+          frozenHeaderHidden: frozenHeader instanceof HTMLElement && frozenHeader.hidden && Boolean(frozenRect && frozenRect.height === 0),
+          width: window.innerWidth,
+        };
+      })()`);
+      const topbarFits = layout?.topbarGeometry && layout.topbarGeometry.left >= 0 && layout.topbarGeometry.right <= width && layout.topbarGeometry.width > 0 && layout.topbarGeometry.height > 0;
+      const actionsFit = layout?.actionGeometry?.every((action) => action.visible && action.left >= 0 && action.right <= width && action.top >= layout.topbarGeometry.top && action.bottom <= layout.topbarGeometry.bottom);
+      if (!layout || layout.topbars !== 1 || layout.shellTitles !== 1 || layout.shellTitle !== title || layout.width !== width ||
+        layout.actions.join('|') !== `${returnLabel}|保存当前维度` || !topbarFits || !actionsFit || layout.duplicateTitles !== 0 || layout.bodyReturn || !layout.frozenHeaderHidden) {
+        throw new Error(`${kind} editor header layout invalid at ${width}: ${JSON.stringify(layout)}`);
+      }
+    }
+  };
+
   const productPath = "/admin/wechat-pay/productForm.html?id=" + productID;
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(productPath) });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
@@ -247,12 +286,36 @@ try {
   if (!await evaluate(cdp, `(() => { const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '=')); return hasCookie('aicrm_admin_csrf') && hasCookie('aicrm_csrf'); })()`)) {
     throw new Error("product Host did not receive CSRF session bridge " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('ordinary', '编辑普通商品', '返回商品管理');
   // The list Host owns the lifecycle buttons. Exercise the real browser
   // session, CSRF header and CAS endpoint once in each direction before the
   // form journey, leaving the seeded fixture enabled for its remaining steps.
   const productsPath = "/admin/products.html";
+  const runProductLifecycleAction = async (label) => {
+    const result = await evaluate(cdp, `((label) => {
+      const row = Array.from(document.querySelectorAll('tbody tr')).find((item) => item.textContent.includes('browser-push-product'));
+      if (!row) return { invoked: false };
+      const trigger = row.querySelector('button[data-table-action-menu-trigger]');
+      if (!(trigger instanceof HTMLButtonElement) || trigger.disabled || trigger.getClientRects().length === 0 || getComputedStyle(trigger).visibility === 'hidden') return { invoked: false };
+      const panelID = trigger.getAttribute('aria-controls');
+      const panel = panelID ? document.getElementById(panelID) : null;
+      if (!(panel instanceof HTMLElement)) return { invoked: false };
+      trigger.click();
+      const menuVisible = !panel.hidden && panel.getClientRects().length > 0 && getComputedStyle(panel).display !== 'none' && getComputedStyle(panel).visibility === 'visible';
+      const action = menuVisible ? Array.from(panel.querySelectorAll('button')).find((button) => button.textContent.trim() === label) : undefined;
+      if (!(action instanceof HTMLButtonElement) || action.disabled || action.getClientRects().length === 0 || getComputedStyle(action).visibility === 'hidden') return { invoked: false, menuVisible };
+      action.click();
+      return { invoked: true, menuVisible, panelID };
+    })(${JSON.stringify(label)})`);
+    if (!result?.invoked || !result.menuVisible || typeof result.panelID !== 'string') throw new Error(`product lifecycle ${label} action was not invoked through its visible menu: ${JSON.stringify(result)}`);
+    return result.panelID;
+  };
+  const waitForLifecycleMenuClosed = async (panelID, label) => {
+    const encodedPanelID = JSON.stringify(panelID);
+    await waitFor(cdp, `(() => { const panel = document.getElementById(${encodedPanelID}); return !panel || panel.hidden || panel.getClientRects().length === 0 || getComputedStyle(panel).display === 'none' || getComputedStyle(panel).visibility === 'hidden'; })()`, `product lifecycle ${label} action left its overflow menu open after completion`);
+  };
   await cdp.call("Page.navigate", { url: baseURL + productsPath });
-  await waitFor(cdp, "location.pathname === '/admin/products.html' && Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '停用'))", "product list lifecycle Host did not render the seeded enabled row");
+  await waitFor(cdp, "location.pathname === '/admin/products.html' && Array.from(document.querySelectorAll('tbody tr')).some((row) => { const trigger=row.querySelector('button[data-table-action-menu-trigger]'); return row.textContent.includes('browser-push-product') && trigger instanceof HTMLButtonElement && !trigger.disabled && trigger.getClientRects().length > 0 && getComputedStyle(trigger).visibility !== 'hidden' && Boolean(trigger.getAttribute('aria-controls')); })", "product list lifecycle Host did not render the seeded enabled action menu");
   const shareOpened = await evaluate(cdp, "(()=>{const row=[...document.querySelectorAll('tbody tr')].find(item=>item.textContent.includes('browser-push-product'));const trigger=[...(row?.querySelectorAll('button')||[])].find(button=>button.textContent.trim()==='分享');if(!(trigger instanceof HTMLButtonElement))return false;Object.defineProperty(navigator,'clipboard',{value:{writeText:async value=>{window.__productShareCopied=value;}},configurable:true});window.__productShareOpened=[];window.open=(url)=>{window.__productShareOpened.push(String(url));return null;};window.__productShareAnchorClick=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){window.__productShareDownloaded={download:this.download,href:this.href};};trigger.focus();trigger.click();return true})()");
   if (!shareOpened) throw new Error('product list share entry was unavailable');
   await waitFor(cdp, "Boolean(document.querySelector('dialog[data-shared-qr-dialog=\"true\"][open]'))", "product share did not open the shared QR dialog");
@@ -268,12 +331,14 @@ try {
   await waitFor(cdp, "!document.querySelector('dialog[data-shared-qr-dialog=\"true\"]')", 'product share close did not remove the dialog');
   if (!await evaluate(cdp, "(()=>{const row=[...document.querySelectorAll('tbody tr')].find(item=>item.textContent.includes('browser-push-product'));return document.activeElement===[...(row?.querySelectorAll('button')||[])].find(button=>button.textContent.trim()==='分享')})()")) throw new Error('product share close did not restore the share trigger focus');
   await evaluate(cdp, "if(window.__productShareAnchorClick)HTMLAnchorElement.prototype.click=window.__productShareAnchorClick; true");
-  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='停用').click(); return true; })()");
+  const disablePanelID = await runProductLifecycleAction('停用');
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已停用')", "product lifecycle disable did not complete through the Host");
+  await waitForLifecycleMenuClosed(disablePanelID, '停用');
   await cdp.call("Page.navigate", { url: baseURL + productsPath });
-  await waitFor(cdp, "Array.from(document.querySelectorAll('tbody tr')).some((row) => row.textContent.includes('browser-push-product') && Array.from(row.querySelectorAll('button')).some((button) => button.textContent.trim() === '启用'))", "product list did not read back the disabled lifecycle");
-  await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('tbody tr')).find((item)=>item.textContent.includes('browser-push-product')); Array.from(row.querySelectorAll('button')).find((button)=>button.textContent.trim()==='启用').click(); return true; })()");
+  await waitFor(cdp, "Array.from(document.querySelectorAll('tbody tr')).some((row) => { const trigger=row.querySelector('button[data-table-action-menu-trigger]'); return row.textContent.includes('browser-push-product') && trigger instanceof HTMLButtonElement && !trigger.disabled && trigger.getClientRects().length > 0 && getComputedStyle(trigger).visibility !== 'hidden' && Boolean(trigger.getAttribute('aria-controls')); })", "product list did not read back the disabled lifecycle action menu");
+  const enablePanelID = await runProductLifecycleAction('启用');
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('商品已启用')", "product lifecycle enable did not complete through the Host");
+  await waitForLifecycleMenuClosed(enablePanelID, '启用');
   await cdp.call("Page.navigate", { url: baseURL + productPath });
   await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html'", "product lifecycle return did not reach frozen product form");
   // Host mounting creates the editor before its configuration GET resolves.
@@ -425,6 +490,7 @@ try {
   } catch (_) {
     throw new Error("service-period product Host did not render " + await browserSaveDiagnostic());
   }
+  await assertProductEditorHeader('service-period', '编辑周期商品', '返回周期商品管理');
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "service-period product configuration did not load");
   } catch (_) {

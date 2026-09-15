@@ -187,10 +187,12 @@
   {{if .Distribution}}
   <link rel="stylesheet" href="{{.DistributionAssets.CSS}}">
 	<link rel="stylesheet" href="{{.DistributionAssets.DetailDrawerCSS}}">
+  {{with presentationAssets}}{{if .ConfirmationDialogCSS}}<link rel="stylesheet" href="{{.ConfirmationDialogCSS}}">{{end}}{{if .ConfirmationDialogScript}}<script type="module" src="{{.ConfirmationDialogScript}}"></script>{{end}}{{end}}
   <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
   {{end}}
   {{if .Overview}}
   <link rel="stylesheet" href="{{.OverviewAssets.CSS}}">
+  <link rel="stylesheet" href="{{.OverviewAssets.DetailDrawerCSS}}">
   <script type="module" src="{{.OverviewAssets.AdminJS}}"></script>
   {{end}}
   {{with presentationAssets}}{{range .Styles}}<link rel="stylesheet" href="{{.}}">{{end}}{{end}}

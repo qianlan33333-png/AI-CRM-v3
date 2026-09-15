@@ -210,7 +210,7 @@ type ComponentStatesAssets struct {
 // OverviewAssets is the V3-owned stylesheet and Host module for the read-only
 // operating overview. The shell receives only manifest-derived URLs; all
 // business facts remain in the authorized overview HTTP endpoint.
-type OverviewAssets struct{ CSS, AdminJS string }
+type OverviewAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -323,7 +323,7 @@ func (renderer *Renderer) RenderComponentStates(writer http.ResponseWriter, data
 // shell. The Host independently fetches the already-authorized read-only API;
 // this package never receives or resolves operating facts.
 func (renderer *Renderer) RenderOverview(writer http.ResponseWriter, data AdminPageData, assets OverviewAssets) error {
-	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" {
+	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.DetailDrawerCSS == "" || assets.AdminJS == "" {
 		return errors.New("overview shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -491,7 +491,10 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)
-	data.ShowPageHeader = false
+	// Product list pages use the shared V3 shell title and action slot; form
+	// pages use the same shell header for their existing editor actions. The
+	// Product adapter retains original controls while removing duplicate donor headings.
+	data.ShowPageHeader = page == "products" || page == "spProducts" || page == "productForm" || page == "spProductForm"
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
 	if err != nil {

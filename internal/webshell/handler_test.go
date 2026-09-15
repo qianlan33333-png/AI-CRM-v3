@@ -634,8 +634,18 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Contains(body, `<header class="admin-topbar">`) || !strings.Contains(body, `href="/product-assets/product-distribution.css"`) || !strings.Contains(body, `src="/product-assets/product-host.js"`) {
-		t.Fatalf("product shell mismatch status=%d body=%q", response.Code, body)
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Count(body, `<header class="admin-topbar">`) != 1 || !strings.Contains(body, `<h1 class="admin-page-title">普通商品</h1>`) || !strings.Contains(body, `href="/product-assets/product-distribution.css"`) || !strings.Contains(body, `src="/product-assets/product-host.js"`) {
+		t.Fatalf("product list shell mismatch status=%d body=%q", response.Code, body)
+	}
+	for _, page := range []string{"productForm", "spProductForm", "spProductData"} {
+		response = httptest.NewRecorder()
+		err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/"+page+".html", nil), "产品编辑", "", "api.admin_products_page"), page, `<section data-page="`+page+`">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", ProductCSS: "/product-assets/product-distribution.css", HostJS: "/product-assets/product-host.js", StandardHostJS: "/product-assets/standard-components-host.js", StandardCSS: []string{"/product-assets/standard-components/material_picker.css", "/product-assets/standard-components/send_content_composer.css", "/product-assets/standard-components/wecom_tag_picker.css", "/product-assets/selection-dialog.css"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := response.Body.String(); response.Code != http.StatusOK || strings.Count(body, `<header class="admin-topbar">`) != 0 || !strings.Contains(body, `data-page="`+page+`"`) {
+			t.Fatalf("product embedded page=%s topbar=%d body=%q", page, strings.Count(body, `<header class="admin-topbar">`), body)
+		}
 	}
 }
 
@@ -1059,5 +1069,24 @@ func TestRenderGroupOpsInjectsManifestVerifiedReadonlyContentRenderer(t *testing
 	standardBody := standardResponse.Body.String()
 	if standardResponse.Code != http.StatusOK || !strings.Contains(standardBody, `<header class="admin-topbar">`) || !strings.Contains(standardBody, `<h1 class="admin-page-title">群运营计划</h1>`) || !strings.Contains(standardBody, `<main id="stage" class="admin-page" data-group-ops-standard-stage>`) || strings.Contains(standardBody, `admin-workspace-stage--embedded`) {
 		t.Fatalf("standard Group Ops native shell mismatch status=%d body=%q", standardResponse.Code, standardBody)
+	}
+}
+
+func TestRenderProductFormsUseTheSharedSSRHeader(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", ProductCSS: "/product-assets/product-distribution.css", HostJS: "/product-assets/product-host.js", StandardHostJS: "/product-assets/standard-components-host.js", StandardCSS: []string{"/product-assets/standard-components/material_picker.css", "/product-assets/standard-components/send_content_composer.css", "/product-assets/standard-components/wecom_tag_picker.css", "/product-assets/selection-dialog.css"}}
+	for _, page := range []string{"productForm", "spProductForm"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/"+page+".html?id=9", nil)
+		if err := renderer.RenderProducts(response, AdminPageForRequest(request, "编辑商品", "", "api.admin_products_page"), page, `<section data-page="`+page+`">frozen donor product fragment</section>`, assets); err != nil {
+			t.Fatalf("render %s: %v", page, err)
+		}
+		body := response.Body.String()
+		if response.Code != http.StatusOK || strings.Count(body, `<header class="admin-topbar">`) != 1 || strings.Count(body, `class="admin-page-title"`) != 1 || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="`+page+`">frozen donor product fragment</section></template>`) {
+			t.Fatalf("%s must render one SSR header and one V3 shell: %q", page, body)
+		}
 	}
 }

@@ -251,5 +251,9 @@ save.click();
 await waitFor(() => Array.isArray(saved?.images) && saved.images.includes('/api/admin/image-library/42/variants/original'), 'saving the current material dimension must serialize its reordered typed Media receipts');
 assert.ok(saved.images.indexOf('/api/admin/image-library/42/variants/original') < saved.images.indexOf('/api/admin/image-library/41/variants/original'), 'the current-dimension save preserves the displayed drag/button order');
 
+// JSDOM close does not dispatch browser lifecycle events. Flush the Product
+// adapter's normal pagehide disposal path before destroying this test window.
+dom.window.dispatchEvent(new dom.window.Event('pagehide'));
+await wait(0);
 dom.window.close();
 console.log('product material owner URL ordering, typed upload, retry, sort, and stale-route isolation: PASS');
