@@ -311,10 +311,8 @@ class FrozenMaterialPresentation {
       if (!nameNode || !thumbnailStatus || !enabledNode || !actions) return;
       card.setAttribute('role', 'row');
       card.style.cssText = 'display:grid;grid-template-columns:72px minmax(150px,1.2fr) minmax(112px,1fr) minmax(128px,1.2fr) minmax(122px,1fr) minmax(110px,1fr) 88px;gap:10px;align-items:center;min-width:0;padding:9px 12px;border:0;border-bottom:1px solid #F2F3F5;border-radius:0;overflow:visible;background:#fff';
-      inner.style.display = 'contents';
       cover.setAttribute('role', 'cell');
       cover.style.cssText = 'height:56px;border-radius:5px;grid-column:1;cursor:pointer;background:#EFF4FF';
-      body.style.display = 'contents';
       nameNode.setAttribute('role', 'cell');
       nameNode.style.cssText = 'grid-column:2;min-width:0;font-size:13px;font-weight:500;color:#1F2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
       const title = document.createElement('small'); title.textContent = item.title || '—'; title.style.cssText = 'display:block;margin-top:3px;color:#8F959E;font-size:12px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
@@ -330,7 +328,11 @@ class FrozenMaterialPresentation {
       const updated = document.createElement('span'); updated.setAttribute('role', 'cell'); updated.textContent = `${formatTime(item.updated_at)} · v${item.version}`; updated.style.cssText = 'grid-column:6;min-width:0;color:#646A73;font-size:12px;line-height:18px';
       actions.setAttribute('role', 'cell');
       actions.style.cssText = 'grid-column:7;display:flex;align-items:center;justify-content:flex-end;gap:2px;white-space:nowrap';
-      actions.before(appid, page, updated);
+      // Move the original interactive nodes into one physical grid row. This
+      // avoids browser-specific `display:contents` grid fragmentation while
+      // retaining the same elements, listeners, busy state and stage-level
+      // delegation from the frozen owner.
+      card.replaceChildren(cover, nameNode, appid, page, thumbnailStatus, updated, actions);
       card.dataset.materialLibraryMetadataVersion = `${item.id}:${item.version}`;
     });
   }

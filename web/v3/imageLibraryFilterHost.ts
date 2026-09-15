@@ -369,10 +369,10 @@ class ImageLibraryHost {
     }
     const table = document.createElement("table");
     table.dataset.imageLibraryDirectory = "true";
-    table.style.cssText = "width:100%;min-width:1040px;border-collapse:collapse;table-layout:fixed";
+    table.style.cssText = "width:100%;border-collapse:collapse;table-layout:fixed";
     const header = document.createElement("thead");
     const heading = document.createElement("tr");
-    for (const [label, width] of [["图片 / 名称", "280px"], ["尺寸", "100px"], ["大小", "100px"], ["分组 / 标签", "180px"], ["上传时间", "160px"], ["状态", "90px"], ["操作", "76px"]] as const) {
+    for (const [label, width] of [["图片 / 名称", "27%"], ["尺寸", "8%"], ["大小", "8%"], ["分组 / 标签", "18%"], ["上传时间", "16%"], ["状态", "10%"], ["操作", "8%"]] as const) {
       const cell = document.createElement("th");
       cell.textContent = label;
       cell.style.cssText = `padding:10px 12px;width:${width};font-size:12px;font-weight:500;color:#8F959E;text-align:left;background:#FAFAFB;border-bottom:1px solid #DEE0E3;white-space:nowrap`;
@@ -406,8 +406,8 @@ class ImageLibraryHost {
       url: item.thumbnailUrl,
       alt: item.name,
       loadingLabel: "加载图片…",
-      unavailableLabel: "图片预览暂不可用",
-      noURLLabel: "暂无图片预览",
+      unavailableLabel: "预览不可用",
+      noURLLabel: "暂无预览",
       imageDisplay: "block",
       loadingDisplay: "grid",
       fallbackDisplay: "grid",
@@ -417,10 +417,11 @@ class ImageLibraryHost {
       status.style.inset = "0";
       status.style.placeItems = "center";
       status.style.padding = "12px";
-      status.style.fontSize = "12px";
+      status.style.fontSize = "11px";
       status.style.textAlign = "center";
       status.style.background = "#EFF4FF";
     }
+    preview.title = "图片预览暂不可用时仍可编辑素材";
     if (thumbnail.image) {
       thumbnail.image.style.width = "100%";
       thumbnail.image.style.height = "48px";
@@ -443,8 +444,8 @@ class ImageLibraryHost {
     const size = cell(); size.textContent = formatFileSize(item.size); size.style.color = "#646A73";
     const group = cell();
     const groupValue = [item.tag, item.tags].filter(Boolean).join(" · ") || "未分组";
-    group.textContent = groupValue; group.style.cssText += ";color:#646A73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
-    const time = cell(); time.textContent = chinaTime(item.uploadedAt); time.style.color = "#646A73";
+    group.textContent = groupValue; group.style.cssText += ";color:#646A73;overflow-wrap:anywhere;line-height:18px";
+    const time = cell(); time.textContent = chinaTime(item.uploadedAt); time.style.cssText += ";color:#646A73;overflow-wrap:anywhere;line-height:18px";
     const state = cell();
     const chip = document.createElement("span");
     chip.className = "admin-chip";

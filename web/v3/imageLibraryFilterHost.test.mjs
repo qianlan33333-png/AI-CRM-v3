@@ -191,7 +191,7 @@ const initialImage = initialThumbnail?.querySelector('img');
 assert.equal(initialThumbnail?.dataset.materialThumbnailState, "loading", "source-owned card exposes the shared thumbnail loading state");
 initialImage?.dispatchEvent(new dom.window.Event('error'));
 assert.equal(initialThumbnail?.dataset.materialThumbnailState, "error", "a source-owned card keeps the shared thumbnail error state");
-assert.match(initialThumbnail?.textContent || "", /图片预览暂不可用/, "image card error has a visible fallback");
+assert.match(initialThumbnail?.textContent || "", /预览不可用/, "image directory error has a visible fallback");
 
 let current = controls();
 current.input.value = "旧";
