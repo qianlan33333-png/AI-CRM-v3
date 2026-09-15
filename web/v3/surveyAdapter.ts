@@ -49,7 +49,7 @@ const donorLoadDb = api.loadDb.bind(api);
 
 async function readQuestionnaireDirectory() {
   const data = unwrapGenerated(await listLegacyQuestionnaires({ limit: 50, offset: 0 }, apiRequestOptions()));
-  if (!data || !Array.isArray(data.items)) throw new Error('问卷目录响应不完整');
+  if (!data || !('items' in data) || !Array.isArray(data.items)) throw new Error('问卷目录响应不完整');
   const db = emptyAdminDb();
   db.rows.questionnaires = data.items.map(questionnairePageDto);
   return db;
