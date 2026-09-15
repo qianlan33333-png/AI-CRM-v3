@@ -12,6 +12,7 @@ const materialFirstID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID;
 const materialLaterID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID;
 const historicalOrderReference = process.env.AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER;
 const exactParams = process.env.AICRM_PRODUCT_PUSH_TEST_PARAMS;
+const screenshotDirectory = process.env.AICRM_PRODUCT_PUSH_SCREENSHOT_DIR;
 // The Product owner derives a stable per-product endpoint reference from the
 // target submitted to its admin command. Browser checks must use the owner's
 // readback value, rather than compare that derived reference to the target.
@@ -25,6 +26,15 @@ if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+async function captureProductMaterialScreens(cdp, prefix) {
+  if (!screenshotDirectory) return;
+  await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
+  for (const width of [1280, 1440]) {
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const image = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    await fs.writeFile(path.join(screenshotDirectory, `${prefix}-${width}.png`), Buffer.from(image.data, 'base64'), { mode: 0o600 });
+  }
+}
 // Do not embed a regular expression in a Runtime.evaluate template string:
 // JavaScript string escaping would turn `\s` into a literal `s`. Cookie order
 // is arbitrary, so split exact names instead of relying on a position-specific
@@ -313,6 +323,7 @@ try {
   }
   const uploadedProduct = await evaluate(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];return rows.find(row=>row.dataset.v3ProductMaterialKey!=='image:" + materialLaterID + "')?.dataset.v3ProductMaterialKey||''})()");
   if (!/^image:[1-9][0-9]*$/.test(uploadedProduct || '')) throw new Error('product upload did not expose a typed Media row');
+  await captureProductMaterialScreens(cdp, 'ordinary-material-draft');
   const productSortMoved = await evaluate(cdp, "(()=>{const row=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')].find(item=>item.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + ");const button=row?.querySelector('[data-v3-product-material-action=\"up\"]');if(!(button instanceof HTMLButtonElement))return false;button.focus();button.click();const active=document.activeElement;return active instanceof HTMLButtonElement&&!active.disabled&&active.closest('[data-v3-product-material-key]')?.dataset.v3ProductMaterialKey===" + JSON.stringify(uploadedProduct) + "})()");
   if (!productSortMoved) throw new Error('product material sort did not preserve the active row action');
   await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='保存当前维度').click(); true");
@@ -416,6 +427,7 @@ try {
   if (!serviceUploadNode.nodeId) throw new Error('service-period material upload source input was unavailable');
   await cdp.call('DOM.setFileInputFiles', { files: [serviceUploadPath], nodeId: serviceUploadNode.nodeId });
   await waitFor(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];const tab=document.querySelector('a[href=\"#sp-media\"]');return rows.length===1&&tab?.getAttribute('aria-current')==='step'&&document.querySelector('#spfDescription')?.value==='Chromium service material draft remains active'})()", 'service-period upload reset the current media dimension or did not append its typed receipt');
+  await captureProductMaterialScreens(cdp, 'service-material-draft');
   await evaluate(cdp, "(() => { document.querySelector('a[href=\"#sp-push\"]')?.click(); const enabled=document.querySelector('#spfExternalPushEnabled'); const reference=document.querySelector('#spfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-url').value='https://commerce-browser.invalid'; document.querySelector('#product-v3-external-push-type').value='member_renew'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='service browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; (Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')) || document.querySelector('[data-external-push-configuration-save]')).click(); return true; })()");
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '2' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "service-period browser configuration save did not finish");
