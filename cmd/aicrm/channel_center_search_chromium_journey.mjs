@@ -7,7 +7,9 @@ import { chromiumStartupDiagnostic, chromiumStartupTimeoutMS } from "../../inter
 const baseURL = process.env.AICRM_CHANNEL_CENTER_TEST_URL;
 const username = process.env.AICRM_CHANNEL_CENTER_TEST_USERNAME;
 const password = process.env.AICRM_CHANNEL_CENTER_TEST_PASSWORD;
+const screenshotDirectory = process.env.AICRM_CHANNEL_CENTER_SCREENSHOT_DIR;
 if (!/^https:\/\//.test(baseURL || "") || !username || !password) throw new Error("Channel Center Chromium journey requires HTTPS URL and credentials");
+if (!path.isAbsolute(screenshotDirectory || "")) throw new Error("Channel Center Chromium journey requires an absolute screenshot directory");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const asError = (error) => error instanceof Error ? error : new Error(String(error));
 function browserBinary() {
@@ -43,6 +45,14 @@ async function waitFor(cdp, expression, label) {
   }
   throw new Error(`${label}: ${await evaluate(cdp, "JSON.stringify({path:location.pathname,text:document.body.innerText.slice(-1800),probe:window.__channelSearchProbe})")}`);
 }
+async function captureChannelCenter(cdp, width) {
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+  const layout = await evaluate(cdp, "(()=>{const root=document.querySelector('#stage');const input=document.querySelector('input[aria-label=\\\"搜索渠道名称\\\"]');const topbar=document.querySelector('.admin-topbar');return {viewport:innerWidth,scrollWidth:document.documentElement.scrollWidth,root:root?.getBoundingClientRect().width||0,input:input?.getBoundingClientRect().width||0,topbar:topbar?.getBoundingClientRect().width||0}})()");
+  if (!layout || layout.viewport !== width || layout.scrollWidth > width + 1 || layout.root > width + 1 || layout.input <= 0 || layout.topbar <= 0) throw new Error(`Channel Center ${width}px layout=${JSON.stringify(layout)}`);
+  const image = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
+  await fs.writeFile(path.join(screenshotDirectory, `channel-center-${width}.png`), Buffer.from(image.data, "base64"), { mode: 0o600 });
+}
 const waitForExit = (child, ms) => new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) return resolve(true); const timer = setTimeout(() => resolve(true), ms); child.once("exit", () => { clearTimeout(timer); resolve(true); }); });
 async function stopBrowser(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return null;
@@ -74,6 +84,8 @@ try {
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   await waitFor(cdp, "location.pathname === '/admin/channels'", "login did not reach Channel Center");
   await waitFor(cdp, "Boolean(document.querySelector('input[aria-label=\"搜索渠道名称\"]')) && document.body.textContent.includes('中文渠道 输入法验证') && document.body.textContent.includes('English control channel')", "Channel Center Host did not render its real list");
+  await captureChannelCenter(cdp, 1280);
+  await captureChannelCenter(cdp, 1440);
   await evaluate(cdp, `(() => { const input=document.querySelector('input[aria-label="搜索渠道名称"]'); input.focus(); input.dataset.channelSearchProbe='initial'; window.__channelSearchProbe.events=[]; window.__channelSearchProbe.fetches=[]; window.__channelSearchProbe.mutations=0; return true; })()`);
 
   await cdp.call("Input.imeSetComposition", { text: "中文渠道", selectionStart: 4, selectionEnd: 4, replacementStart: 0, replacementEnd: 0 });
@@ -100,7 +112,7 @@ try {
   await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   await waitFor(cdp, "document.body.textContent.includes('中文渠道 输入法验证')&&document.body.textContent.includes('English control channel')", "empty Enter did not restore the loaded Channel Center page");
-  console.log("channel_center_search_chromium: PASS");
+  console.log("channel_center_search_chromium: PASS screenshots=" + screenshotDirectory);
 } catch (error) {
   if (error instanceof DevToolsUnavailable) console.log("channel_center_search_chromium: SKIP_DEVTOOLS");
   else journeyError = asError(error);

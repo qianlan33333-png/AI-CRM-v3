@@ -26,6 +26,16 @@ func TestPostgreSQLChannelCenterCommittedSearchChromiumJourney(t *testing.T) {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
 	fixture := newGroupOpsChromiumFixture(t)
+	screenshots := t.TempDir()
+	if configured := platformconfig.ChannelCenterScreenshotDirectory(); configured != "" {
+		if !filepath.IsAbs(configured) {
+			t.Fatal("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR must be absolute")
+		}
+		if err := os.MkdirAll(configured, 0o700); err != nil {
+			t.Fatalf("create Channel Center screenshot directory: %v", err)
+		}
+		screenshots = configured
+	}
 	session, csrf := adminAccessLogin(t, fixture.application.handler, "groupops-browser-owner", "groupops-browser-owner-password")
 	for index, channel := range []struct{ name, code string }{
 		{name: "中文渠道 输入法验证", code: "ime-channel-cn"},
@@ -43,6 +53,7 @@ func TestPostgreSQLChannelCenterCommittedSearchChromiumJourney(t *testing.T) {
 		"AICRM_CHANNEL_CENTER_TEST_URL="+fixture.server.URL,
 		"AICRM_CHANNEL_CENTER_TEST_USERNAME=groupops-browser-owner",
 		"AICRM_CHANNEL_CENTER_TEST_PASSWORD=groupops-browser-owner-password",
+		"AICRM_CHANNEL_CENTER_SCREENSHOT_DIR="+screenshots,
 	)
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "channel_center_search_chromium: SKIP_DEVTOOLS") {
