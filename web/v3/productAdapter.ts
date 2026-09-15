@@ -1287,8 +1287,8 @@ function mountProductTagPicker(): void {
   if (!selected.length) for (const raw of list(state.tag_ids)) { const record = unresolvedTagRecord(tagSource, String(raw || '').trim()); if (record) selected.push(record); }
   const host = document.createElement('section');
   host.dataset.productStandardTagPicker = '';
-  host.style.cssText = 'display:grid;gap:10px;padding:12px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
-  host.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" role="switch" data-product-tag-enabled> 启用购买后企微标签</label><button type="button" data-product-tag-open style="height:30px;padding:0 12px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;cursor:pointer">选择标签</button></div><div data-product-tag-summary style="font-size:12px;color:#646A73"></div><p data-product-tag-error style="margin:0;font-size:12px;color:#D83931" hidden></p>';
+  host.className = 'product-standard-tag-picker';
+  host.innerHTML = '<div class="product-standard-tag-picker__controls" data-product-tag-controls><label class="product-standard-tag-picker__label"><input type="checkbox" role="switch" data-product-tag-enabled> 启用购买后企微标签</label><button class="product-standard-tag-picker__button" type="button" data-product-tag-open>选择标签</button></div><div data-product-tag-summary></div><p class="product-standard-tag-picker__error" data-product-tag-error hidden></p>';
   panel.querySelector('div[style*="display:grid"]')?.append(host);
   const enabled = host.querySelector<HTMLInputElement>('[data-product-tag-enabled]')!;
   const summary = host.querySelector<HTMLElement>('[data-product-tag-summary]')!;

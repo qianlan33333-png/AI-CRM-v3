@@ -39,9 +39,37 @@
 .product-distribution-policy__field input:focus { border-color: #3370FF; box-shadow: 0 0 0 3px rgba(51, 112, 255, .12); }
 
 /* The Product Host mounts this tag draft control into the frozen sale form.
- * Keep its checked state in this manifest-managed Product CSS so strict
- * same-origin CSP never relies on a runtime style tag. */
-[data-product-standard-tag-picker] input[type="checkbox"] {
+ * Keep it in this manifest-managed Product CSS so strict same-origin CSP
+ * never relies on runtime style tags or inline Host layout attributes. */
+.product-standard-tag-picker {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #DEE0E3;
+  border-radius: 8px;
+  background: #fff;
+}
+.product-standard-tag-picker__controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.product-standard-tag-picker__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.product-standard-tag-picker__button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #DEE0E3;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+.product-standard-tag-picker input[type="checkbox"] {
   appearance: none;
   position: relative;
   width: 42px;
@@ -63,13 +91,20 @@
   background: #fff;
   transition: transform .15s;
 }
-[data-product-standard-tag-picker] input:checked { background: #3370ff; }
+.product-standard-tag-picker input:checked { background: #3370ff; }
 [data-product-tag-enabled]:checked::before { transform: translateX(18px); }
 [data-product-tag-summary] {
   line-height: 1.8;
   padding: 12px;
   background: #f7f9fc;
   border-radius: 8px;
+  color: #646A73;
+  font-size: 12px;
+}
+.product-standard-tag-picker__error {
+  margin: 0;
+  color: #D83931;
+  font-size: 12px;
 }
 
 @media (max-width: 720px) {

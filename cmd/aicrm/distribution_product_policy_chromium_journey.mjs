@@ -47,9 +47,14 @@ async function assertProductTagToggleStyle(cdp, page) {
     const uncheckedTransform=getComputedStyle(enabled,'::before').transform;
     enabled.checked=true; enabled.dispatchEvent(new Event('change',{bubbles:true}));
     await new Promise(resolve => setTimeout(resolve, 180));
-    return {checked:enabled.checked,uncheckedBackground,uncheckedTransform,checkedBackground:getComputedStyle(enabled).backgroundColor,checkedTransform:getComputedStyle(enabled,'::before').transform};
+    const picker=enabled.closest('[data-product-standard-tag-picker]');
+    const controls=picker?.querySelector('[data-product-tag-controls]');
+    const label=picker?.querySelector('.product-standard-tag-picker__label');
+    const action=picker?.querySelector('[data-product-tag-open]');
+    const summary=picker?.querySelector('[data-product-tag-summary]');
+    return {checked:enabled.checked,uncheckedBackground,uncheckedTransform,checkedBackground:getComputedStyle(enabled).backgroundColor,checkedTransform:getComputedStyle(enabled,'::before').transform,layout:{pickerDisplay:picker&&getComputedStyle(picker).display,controlsDisplay:controls&&getComputedStyle(controls).display,labelDisplay:label&&getComputedStyle(label).display,actionHeight:action&&getComputedStyle(action).height,actionBorderColor:action&&getComputedStyle(action).borderTopColor,summaryPadding:summary&&getComputedStyle(summary).paddingTop}};
   })()`);
-  if (!state?.checked || state.uncheckedBackground !== 'rgb(203, 213, 225)' || state.checkedBackground !== 'rgb(51, 112, 255)' || state.uncheckedTransform !== 'none' || state.checkedTransform !== 'matrix(1, 0, 0, 1, 18, 0)') throw new Error(`product tag checked switch style did not apply ${page}: ${JSON.stringify(state)}`);
+  if (!state?.checked || state.uncheckedBackground !== 'rgb(203, 213, 225)' || state.checkedBackground !== 'rgb(51, 112, 255)' || state.uncheckedTransform !== 'none' || state.checkedTransform !== 'matrix(1, 0, 0, 1, 18, 0)' || state.layout?.pickerDisplay !== 'grid' || state.layout?.controlsDisplay !== 'flex' || state.layout?.labelDisplay !== 'flex' || state.layout?.actionHeight !== '36px' || state.layout?.actionBorderColor !== 'rgb(222, 224, 227)' || state.layout?.summaryPadding !== '12px') throw new Error(`product tag checked switch style did not apply ${page}: ${JSON.stringify(state)}`);
   await capturePolicyForm(cdp, `tag-toggle-checked-${page}`);
   await value(cdp, "(() => { const enabled=document.querySelector('[data-product-tag-enabled]'); enabled.checked=false; enabled.dispatchEvent(new Event('change',{bubbles:true})); return true; })()");
 }
