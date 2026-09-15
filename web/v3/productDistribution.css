@@ -18,16 +18,13 @@
   gap: 16px;
 }
 .product-distribution-policy__title { margin: 0; font-size: 16px; font-weight: 600; line-height: 24px; }
-.product-distribution-policy__hint,
-.product-distribution-policy__application-hint,
-.product-distribution-policy__pending { margin: 4px 0 0; color: #646A73; font-size: 13px; line-height: 20px; }
+.product-distribution-policy__hint { margin: 4px 0 0; color: #646A73; font-size: 13px; line-height: 20px; }
 .product-distribution-policy__toggle { display: inline-flex; flex: none; align-items: center; gap: 8px; min-height: 32px; color: #344054; font-size: 14px; cursor: pointer; }
 .product-distribution-policy__toggle input { width: 16px; height: 16px; margin: 0; accent-color: #3370FF; }
 .product-distribution-policy__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .product-distribution-policy__fields.is-disabled { opacity: .62; }
 .product-distribution-policy__field { display: grid; gap: 7px; color: #646A73; font-size: 13px; line-height: 20px; }
-.product-distribution-policy__field input,
-.product-distribution-policy__application-link {
+.product-distribution-policy__field input {
   width: 100%;
   min-width: 0;
   height: 38px;
@@ -39,32 +36,79 @@
   font-size: 14px;
   outline: none;
 }
-.product-distribution-policy__field input:focus,
-.product-distribution-policy__application-link:focus { border-color: #3370FF; box-shadow: 0 0 0 3px rgba(51, 112, 255, .12); }
-.product-distribution-policy__application { display: grid; gap: 10px; padding-top: 16px; border-top: 1px solid #EFF0F1; }
-.product-distribution-policy__application-title { color: #344054; font-size: 14px; font-weight: 600; line-height: 22px; }
-.product-distribution-policy__application-row { display: flex; align-items: center; gap: 10px; }
-.product-distribution-policy__copy {
-  height: 38px;
-  flex: none;
-  padding: 0 15px;
-  border: 1px solid #3370FF;
-  border-radius: 6px;
-  background: #3370FF;
-  color: #fff;
-  font: inherit;
-  font-size: 14px;
-  cursor: pointer;
-  white-space: nowrap;
+.product-distribution-policy__field input:focus { border-color: #3370FF; box-shadow: 0 0 0 3px rgba(51, 112, 255, .12); }
+
+/* The Product Host mounts this tag draft control into the frozen sale form.
+ * Keep it in this manifest-managed Product CSS so strict same-origin CSP
+ * never relies on runtime style tags or inline Host layout attributes. */
+.product-standard-tag-picker {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #DEE0E3;
+  border-radius: 8px;
+  background: #fff;
 }
-.product-distribution-policy__copy:hover { background: #245BDB; border-color: #245BDB; }
-.product-distribution-policy__copy:focus-visible { outline: 3px solid rgba(51, 112, 255, .22); outline-offset: 2px; }
-.product-distribution-policy__qr { width: 168px; height: 168px; padding: 6px; border: 1px solid #DEE0E3; border-radius: 8px; background: #fff; }
-.product-distribution-policy__pending { padding-top: 14px; border-top: 1px solid #EFF0F1; }
+.product-standard-tag-picker__controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.product-standard-tag-picker__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.product-standard-tag-picker__button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #DEE0E3;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+.product-standard-tag-picker input[type="checkbox"] {
+  appearance: none;
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: 0;
+  border-radius: 20px;
+  background: #cbd5e1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-product-tag-enabled]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .15s;
+}
+.product-standard-tag-picker input:checked { background: #3370ff; }
+[data-product-tag-enabled]:checked::before { transform: translateX(18px); }
+[data-product-tag-summary] {
+  line-height: 1.8;
+  padding: 12px;
+  background: #f7f9fc;
+  border-radius: 8px;
+  color: #646A73;
+  font-size: 12px;
+}
+.product-standard-tag-picker__error {
+  margin: 0;
+  color: #D83931;
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .product-distribution-policy { padding: 16px; }
   .product-distribution-policy__head { flex-direction: column; gap: 8px; }
   .product-distribution-policy__fields { grid-template-columns: 1fr; gap: 12px; }
-  .product-distribution-policy__application-row { align-items: stretch; flex-direction: column; }
-  .product-distribution-policy__copy { width: 100%; }
 }
