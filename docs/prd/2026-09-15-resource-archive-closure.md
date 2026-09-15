@@ -28,7 +28,7 @@ External Effects: not involved. 归档不提交 Provider 写入，不建立队�
 ## 实施边界
 
 - 复用 GroupOps、Channel、Survey、Product 和 Coupon Owner 的 HTTP 与应用服务；不跨域读写表。
-- Channel 复用已合入的稳定资源 ID、ETag、幂等键和归档回读能力，发现无缺口时只以 Journey 覆盖。
+- Channel 复用已合入的稳定资源 ID、ETag、幂等键和归档回读能力；本轮修正正常列表错误携带 `include_archived=true`，保留旧详情和历史读取。
 - 普通商品由本地生命周期新增终态 `archived`；周期商品复用既有归档命令。
 - 问卷新增数据库/领域终态 `archived`，保留不可变版本与答卷外键。
 - 问卷 DELETE 是 CAS 命令：确认前 UI 冻结 `id`、`expected_version` 与 `Idempotency-Key`，请求体必须是 `{expected_version}`；服务端不在 DELETE 时补读“最新版本”。同键同体回放原收据，陈旧版本为 409。归档定义在编辑页只读，不能通过更新、启停或复制恢复原对象。
@@ -47,4 +47,4 @@ External Effects: not involved. 归档不提交 Provider 写入，不建立队�
 ## 参考
 
 - GitHub PR #288：渠道列表归档使用稳定资源 ID、ETag、幂等和读回。
-- GitHub PR #332：破坏性动作确认组件的职责边界。该 PR 尚未合入，本变更不复制它，复用当前已合入的 `confirmBox`。
+- GitHub PR #332：破坏性动作确认组件已合入当前基线；本变更继续复用当前已合入的 `confirmBox`，不复制新的通用组件。
