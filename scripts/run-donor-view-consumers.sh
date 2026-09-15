@@ -60,6 +60,9 @@ run_frontend_and_stage_checks() {
   # raw frontend before staging so the final package cannot contain test edits.
   npm run build
   node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
+  node internal/webshell/static/admin_console/admin_access_committed_search.test.mjs
+  node internal/webshell/static/admin_console/survey_operations_frozen_runtime.test.mjs
+  node web/v3/committedTextSearch.test.mjs
   node --test internal/webshell/chromium_launch.test.mjs
   node internal/webshell/owner_handoff_host.test.mjs
   node scripts/build-v3-host-adapters.mjs
