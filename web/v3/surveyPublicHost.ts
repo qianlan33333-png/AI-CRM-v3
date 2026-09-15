@@ -149,20 +149,27 @@ if (supportedPages.has(page)) {
     );
     const raw = rawNodes.map((node) => node.textContent?.trim() || "").join(" ");
     const status = /(?:^|[（(\s])HTTP ([45][0-9]{2})(?:$|[）)\s])/.exec(raw)?.[1];
-    // The frozen controller surfaces transport failures as an exact HTTP
-    // status. Translate that known transport fact only; validation and Owner
-    // domain errors retain their existing wording and behavior.
-    if (!status) return;
+    // `ApiError` deliberately makes 401/403 actionable but omits the HTTP
+    // number in its public copy. Classify only those two stable messages and
+    // the known unavailable transport response. Owner validation and domain
+    // errors retain their original wording and retry semantics.
+    const unauthorized = status === "401" || raw.includes("登录状态已失效");
+    const forbidden = status === "403" || raw.includes("当前账号无权执行此操作");
+    const unavailable = status === "503";
+    if (!unauthorized && !forbidden && !unavailable) return;
     for (const node of rawNodes) node.remove();
     const recovery = document.createElement("p");
     recovery.dataset.v3SurveyRecovery = "";
-    recovery.textContent =
-      page === "result"
-        ? "暂时无法查询提交结果，请稍后重试。"
-        : "暂时无法完成操作，请保留当前页面并稍后重试。";
+    recovery.textContent = unauthorized
+      ? "登录或授权已失效，请重新授权后继续。"
+      : forbidden
+        ? "当前无权限访问此问卷，请联系管理员确认访问权限。"
+        : page === "result"
+          ? "暂时无法查询提交结果，请稍后重试。"
+          : "暂时无法完成操作，请保留当前页面并稍后重试。";
     const detail = document.createElement("small");
     detail.dataset.v3SurveyErrorDetail = "";
-    detail.textContent = `问题详情：HTTP ${status}`;
+    detail.textContent = `问题详情：HTTP ${unauthorized ? "401" : forbidden ? "403" : status}`;
     error.prepend(recovery);
     error.append(detail);
   };

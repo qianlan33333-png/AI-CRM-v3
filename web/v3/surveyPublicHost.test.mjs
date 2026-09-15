@@ -124,6 +124,22 @@ assert.ok(
   "the existing retry action remains available beside the V3 error explanation",
 );
 
+for (const [raw, expected, detail] of [
+  ["登录状态已失效，请重新登录", "登录或授权已失效，请重新授权后继续。", "问题详情：HTTP 401"],
+  ["当前账号无权执行此操作", "当前无权限访问此问卷，请联系管理员确认访问权限。", "问题详情：HTTP 403"],
+]) {
+  screen.innerHTML = `<button data-h5-submit>提交</button><div data-h5-error>${raw}</div>`;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(screen.querySelector("[data-v3-survey-recovery]")?.textContent, expected, `${detail} keeps its authorization meaning`);
+  assert.equal(screen.querySelector("[data-v3-survey-error-detail]")?.textContent, detail, `${detail} remains a secondary diagnostic`);
+  assert.ok(screen.querySelector("[data-h5-submit]"), `${detail} does not clear the Owner retry control or draft`);
+}
+
+screen.innerHTML = "<button data-h5-submit>提交</button><div data-h5-error>问卷已停止填写</div>";
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(screen.querySelector("[data-v3-survey-recovery]"), null, "Owner domain errors retain their own wording rather than being presented as transport recovery");
+assert.match(screen.querySelector("[data-h5-error]")?.textContent || "", /问卷已停止填写/, "Owner domain error remains visible");
+
 screen.innerHTML = "<button data-h5-submit disabled>提交</button>";
 await new Promise((resolve) => setTimeout(resolve, 0));
 const ownerDisabled = screen.querySelector("[data-h5-submit]");
