@@ -139,6 +139,15 @@ try {
   assert.equal(topbar.querySelector('[data-page-header-actions="ai-plan-detail"]'), null, 'disposed owner leaves no stale host while another owner stays mounted');
   restoreOther();
   assert.equal(other.parentElement, otherSource, 'second owner restores only its own parent reference');
+  const staleSource = dom.window.document.createElement('div');
+  const stale = dom.window.document.createElement('button');
+  stale.textContent = '旧渲染操作';
+  staleSource.append(stale); dom.window.document.body.append(staleSource);
+  dom.window.mountElements('stale-owner', [stale]);
+  staleSource.remove();
+  dom.window.mountElements('stale-owner', [stale]);
+  assert.equal(topbar.querySelector('[data-page-header-actions="stale-owner"]'), null, 'a redraw-detached source control cannot be resurrected in the header');
+  assert.equal(stale.isConnected, false, 'a detached donor control remains detached after stale remount is rejected');
   const empty = new JSDOM('<!doctype html><header class="admin-topbar"><div class="admin-topbar-head"></div></header>', { runScripts: 'outside-only' });
   try {
     empty.window.eval(bundle.outputFiles[0].text);
