@@ -38,6 +38,7 @@ const dom = new JSDOM(page, {
     window.Request = Request;
     window.Response = Response;
     window.Headers = Headers;
+    window.AICRMStandardComponents = { ready: () => Promise.resolve() };
     window.AICRMTagPicker = { open(options) { options.loadPage({ query: '', signal: new AbortController().signal }).then((page) => options.onCommit({ selected: page.items.slice(0, 1), added: page.items.slice(0, 1), removed: [] })); } };
     window.fetch = async (input, init = {}) => {
       const raw = input instanceof Request ? input.url : String(input);
@@ -59,6 +60,8 @@ const dom = new JSDOM(page, {
       }
       if (url.pathname === '/api/admin/channels') return reply({ items: [], total: 0 });
       if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [{ group_id: 4, group_name: '已同步标签' }], items: [{ tag_id: 37, tag_name: '已购买', group_id: 4, group_name: '已同步标签' }], count: 1, total_tags: 1, tag_limit: 1000 });
+      if (url.pathname === '/api/admin/image-library/38') return reply({ item: { id: 38, name: '页面素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });
+      if (url.pathname === '/api/admin/image-library/39') return reply({ item: { id: 39, name: '后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true } });
       if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return reply({ items: [{ id: 38, name: '页面素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true }], total: 1, has_more: true, next_offset: 1 });
       if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '1') return reply({ items: [{ id: 39, name: '后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], total: 2, has_more: false });
       if (url.pathname === '/api/admin/image-library') return reply({ items: [{ id: 39, name: '后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], total: 1, has_more: false });
@@ -77,11 +80,25 @@ dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 await waitFor(() => dom.window.document.getElementById('pfName'), 'frozen product form must mount through the real Admin client');
 const materialOpen = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '从素材库选择');
 materialOpen.click();
-const materialRow = await waitFor(() => dom.window.document.querySelector('[data-picker-id="39"]'), 'the original product picker must retain later catalog pages');
-const legacyProductMask = dom.window.document.querySelector('.pk-mask');
-assert.equal(legacyProductMask.style.getPropertyPriority('display'), 'important', 'the delayed frozen product picker must stay hidden');
-materialRow.click();
+await waitFor(() => dom.window.document.querySelector('[data-v3-selection-session="material"]'), 'the V3 product picker must open over the original product draft');
+assert.equal(dom.window.document.querySelector('.pk-mask'), null, 'the V3 product bridge must not open a second frozen picker');
+assert.match(dom.window.document.querySelector('.aicrm-material-picker__head p').textContent, /上传或外部图片请在页面原图列表中管理/, 'the V3 picker must explain that non-library images retain the owner page controls');
+  const firstPageMaterial = await waitFor(() => dom.window.document.querySelector('[data-v3-material-key$=":38"]'), 'the V3 product picker must render its first server page');
+  firstPageMaterial.click();
+  dom.window.document.querySelector('[data-v3-picker-more]').click();
+  const materialRow = await waitFor(() => dom.window.document.querySelector('[data-v3-material-key$=":39"]'), 'the V3 product picker must retain later catalog pages');
+  materialRow.click();
+  assert.match(dom.window.document.querySelector('[data-v3-picker-selected]').textContent, /页面素材.*后续页素材/s, 'product selection must retain the complete temporary multi-select draft across catalog pages');
+  dom.window.document.querySelector('[data-v3-material-remove$=":38"]').click();
+  assert.match(dom.window.document.querySelector('[data-v3-picker-selected]').textContent, /后续页素材/, 'removing one item must remain a temporary V3 draft change');
+assert.ok(dom.window.document.querySelector('[data-v3-selection-session="material"]'), 'later-page material stays temporary until confirmation');
+dom.window.document.querySelector('[data-v3-picker-confirm]').click();
+await waitFor(() => dom.window.document.querySelector('[data-v3-selection-session="material"]') === null, 'confirmed V3 selection must close only after the original product draft accepts it');
 await waitFor(() => [...dom.window.document.querySelectorAll('img')].some((image) => image.src.includes('/39/variants/thumb_320')), 'the frozen form must render the original later-page material selection');
+materialOpen.click();
+await waitFor(() => dom.window.document.querySelector('[data-v3-picker-selected]')?.textContent.includes('后续页素材'), 'reopening must revalidate and reconstruct the product owner draft as selectedRecords');
+dom.window.document.querySelector('[data-v3-picker-close]').click();
+assert.ok([...dom.window.document.querySelectorAll('img')].some((image) => image.src.includes('/39/variants/thumb_320')), 'cancelling a reopened picker must retain the product draft');
 const tagOpen = await waitFor(() => dom.window.document.querySelector('[data-product-tag-open]'), 'standard product tag control must mount');
 tagOpen.click();
 await waitFor(() => dom.window.document.getElementById('pfWecomTagging').value.includes('37'), 'V3 tag picker must return an Owner catalog tag to the product draft');

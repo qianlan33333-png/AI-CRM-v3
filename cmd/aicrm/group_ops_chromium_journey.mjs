@@ -10,7 +10,8 @@ const planID = process.env.AICRM_GROUPOPS_TEST_PLAN_ID;
 const replacementStaffID = process.env.AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID;
 const composerImageIDs = String(process.env.AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS || '').split(',').map((value) => Number(value));
 const screenshotDir = process.env.AICRM_GROUPOPS_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "") || composerImageIDs.length !== 2 || composerImageIDs.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, plan ID, and two composer Media IDs");
+const radarUploadPath = process.env.AICRM_GROUPOPS_RADAR_UPLOAD;
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "") || !radarUploadPath || composerImageIDs.length !== 2 || composerImageIDs.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, plan ID, two composer Media IDs, and a Radar upload file");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const browserBinary = () => {
   const candidates = [process.env.AICRM_CHROMIUM_BINARY, process.env.CHROME_BIN].filter(Boolean);
@@ -66,7 +67,7 @@ try {
   const target = await (await fetch(`${address}/json/new?about:blank`, { method: "PUT" })).json();
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
-  cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
+  cdp = new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("DOM.enable");
   await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
   const planPath = `/admin/automation-conversion/group-ops/plans/${planID}`;
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=${encodeURIComponent(planPath)}` });
@@ -219,6 +220,36 @@ try {
   if (screenshotDir) { const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, 'material-picker-thumbnail-fallback-360.png'); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]')", "material dialog cancel did not return to the actual Radar form");
+
+  // Exercise the Radar caller rather than invoking its public picker API. The
+  // original upload produces the current form draft; V3 must revalidate and
+  // show it, cancellation must keep it, then a catalog result is applied by
+  // the original callback and persisted by the unmodified Radar save command.
+  await evaluate(cdp, "document.querySelector('#typeCards .type-card[data-t=\"image\"]')?.click(); document.querySelector('#btnUpload')?.click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('#fileInput'))", "Radar original upload input did not mount");
+  const domDocument = await cdp.call('DOM.getDocument', { depth: 1 });
+  const fileInput = await cdp.call('DOM.querySelector', { nodeId: domDocument.root.nodeId, selector: '#fileInput' });
+  if (!fileInput.nodeId) throw new Error('Radar original upload input was not addressable through DOM');
+  await cdp.call('DOM.setFileInputFiles', { nodeId: fileInput.nodeId, files: [radarUploadPath] });
+  await waitFor(cdp, "document.querySelector('#mediaPicked')?.hidden===false && document.querySelector('#mediaName')?.textContent?.includes('chromium-radar-current-upload.png')", "Radar original upload did not update its real form draft");
+  await evaluate(cdp, "document.querySelector('#btnPick')?.click(); true");
+  await waitFor(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-selected]')?.textContent?.includes('chromium-radar-current-upload.png')", "V3 Radar picker did not revalidate the original uploaded draft");
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]')?.click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && document.querySelector('#mediaName')?.textContent?.includes('chromium-radar-current-upload.png')", "Radar picker cancellation changed the original uploaded draft");
+  await evaluate(cdp, "document.querySelector('#btnPick')?.click(); true");
+  await waitFor(cdp, "Array.from(document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-key]')).some((row)=>String(row.textContent||'').includes('Chromium 雷达素材一'))", "Radar V3 picker did not load its authorized catalog record");
+  const radarMaterialID = await evaluate(cdp, "(()=>{const row=Array.from(document.querySelectorAll('[data-v3-selection-session=\"material\"] [data-v3-material-key]')).find((item)=>String(item.textContent||'').includes('Chromium 雷达素材一'));if(!(row instanceof HTMLElement))return 0;row.click();return Number((row.dataset.v3MaterialKey||'').split(':').at(-1)||0)})()");
+  if (!Number.isSafeInteger(radarMaterialID) || radarMaterialID < 1) throw new Error('Radar V3 catalog choice did not expose a trusted ID');
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-confirm]')?.click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && document.querySelector('#mediaName')?.textContent?.includes('Chromium 雷达素材一')", "Radar V3 confirmation did not update the original form draft");
+  await evaluate(cdp, "document.querySelector('#btnPick')?.click(); true");
+  await waitFor(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-selected]')?.textContent?.includes('Chromium 雷达素材一')", "Radar reopening did not reconstruct its current original form draft");
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-material-remove]')?.click(); document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]')?.click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && document.querySelector('#mediaName')?.textContent?.includes('Chromium 雷达素材一')", "Radar cancellation after a temporary removal changed the original form draft");
+  await evaluate(cdp, "(()=>{const name=document.querySelector('#fName');const url=document.querySelector('#fUrl');if(!(name instanceof HTMLInputElement)||!(url instanceof HTMLInputElement))return false;name.value='Chromium V3 Radar material';url.value='https://example.com/chromium-v3-radar-material';document.querySelector('#fSave')?.click();return true})()");
+  await waitFor(cdp, "location.pathname.endsWith('/admin/radar.html')", "Radar original save did not return to its list");
+  const radarReadback = await evaluate(cdp, "fetch('/api/admin/radar-links',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>{const item=(body?.items||[]).find((entry)=>entry?.title==='Chromium V3 Radar material');return Boolean(item&&Number(item.cover_image_id)===" + radarMaterialID + ")})");
+  if (!radarReadback) throw new Error('Radar owner save/readback did not retain the V3-confirmed catalog material');
 
   const groupsPath = "/admin/automation-conversion/group-ops/groups/ui";
   await cdp.call("Page.navigate", { url: `${baseURL}${groupsPath}` });

@@ -20,6 +20,7 @@ const editorConsole = new VirtualConsole();
 editorConsole.on('jsdomError', error => { if (String(error.message).includes('navigation')) navigationErrors.push(error.message); });
 const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.html', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: editorConsole, beforeParse(window) {
   window.__AICRM_TEST_MOCK__ = false; window.Request = Request; window.Response = Response; window.Headers = Headers;
+  window.AICRMStandardComponents = { ready: () => Promise.resolve() };
   window.fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href); const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     calls.push({ path: url.pathname, method, body: typeof init.body === 'string' ? init.body : '' }); const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
@@ -30,6 +31,8 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
       return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, version } });
     }
     if (url.pathname === '/api/admin/service-period-products' || url.pathname === '/api/v1/products') return json({ items: [], total: 0, has_more: false });
+    if (url.pathname === '/api/admin/image-library/38') return json({ item: { id: 38, name: '首页素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });
+    if (url.pathname === '/api/admin/image-library/39') return json({ item: { id: 39, name: '周期后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true } });
     if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '0') return json({ items: [{ id: 38, name: '首页素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true }], has_more: true, next_offset: 1 });
     if (url.pathname === '/api/admin/image-library' && url.searchParams.get('offset') === '1') return json({ items: [{ id: 39, name: '周期后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], has_more: false });
     if (url.pathname === '/api/admin/image-library') return json({ items: [{ id: 39, name: '周期后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true }], has_more: false });
@@ -61,12 +64,19 @@ actionEnabled.checked = false; actionEnabled.dispatchEvent(new dom.window.Event(
 document.querySelector('a[href="#sp-media"]').click();
 
 const open = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '从素材库选择'); open.click();
-await waitFor(() => document.querySelector('[data-picker-id="39"]'), 'original picker did not include later periodic catalog page');
-assert.equal(document.querySelector('.pk-mask').style.getPropertyPriority('display'), 'important', 'frozen periodic picker was not suppressed');
-document.querySelector('[data-picker-close]').click();
-await waitFor(() => document.querySelector('.pk-mask') === null, 'periodic cancel left frozen picker pending');
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]'), 'V3 periodic picker did not open');
+assert.equal(document.querySelector('.pk-mask'), null, 'periodic V3 bridge must not open a second frozen picker');
+document.querySelector('[data-v3-picker-close]').click();
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]') === null, 'periodic cancel left the V3 picker pending');
 assert.equal(document.querySelector('#sp-media img'), null, 'periodic cancel changed the draft');
-open.click(); await waitFor(() => document.querySelector('[data-picker-id="39"]'), 'original picker did not reopen after cancel'); document.querySelector('[data-picker-id="39"]').click();
+open.click();
+await waitFor(() => document.querySelector('[data-v3-material-key$=":38"]'), 'V3 periodic picker did not reopen after cancel');
+document.querySelector('[data-v3-picker-more]').click();
+await waitFor(() => document.querySelector('[data-v3-material-key$=":39"]'), 'V3 periodic picker did not include later catalog page');
+document.querySelector('[data-v3-material-key$=":39"]').click();
+assert.ok(document.querySelector('[data-v3-selection-session="material"]'), 'periodic selection must remain temporary before confirmation');
+document.querySelector('[data-v3-picker-confirm]').click();
+await waitFor(() => document.querySelector('[data-v3-selection-session="material"]') === null, 'periodic V3 confirm did not return to the owner draft');
 await waitFor(() => [...document.querySelectorAll('#sp-media img')].some((image) => image.src.includes('/39/variants/thumb_320')), 'periodic frozen form did not receive original material');
 for (const [id, value] of [['spfName', '周期素材'], ['spfCode', 'sp-media'], ['spfPrice', '0.02'], ['spfStock', '1']]) document.getElementById(id).value = value;
 const save = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存当前维度'); save.click();

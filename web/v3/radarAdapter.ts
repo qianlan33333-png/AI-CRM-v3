@@ -1,19 +1,23 @@
 export {};
 import { api } from '../src/shared/api/client';
+import type { AttachItem, ImageItem, RadarMedia } from '../src/shared/api/types';
 import { rememberActionInputs, runAction } from './actionFeedback';
 import { request as authenticatedRequest } from '../src/api/transport';
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
-import { installMaterialPickerAdapter, type MaterialPickerLoadRequest } from './shared/ui/materialPickerAdapter';
+import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord } from './shared/ui/materialPickerAdapter';
 
 const takeRadarUploadInput = rememberActionInputs((input) =>
   document.body.dataset.page === 'radarForm' && Boolean(input.files?.length),
 );
 for (const method of ['uploadRadarImage', 'uploadRadarPdf'] as const) {
   const original = api[method].bind(api);
-  api[method] = (file) => runAction(takeRadarUploadInput(), () => original(file), '上传中…');
+  api[method] = (file) => runAction(takeRadarUploadInput(), () => original(file), '上传中…').then((media) => {
+    rememberRadarOriginalUpload(method === 'uploadRadarImage' ? 'image' : 'attachment', media);
+    return media;
+  });
 }
 
-type MaterialItem = { type: 'image' | 'attachment'; library_id: number; title?: string; subtitle?: string; thumbnail_url?: string; metadata?: Record<string, unknown>; selectable?: boolean; unavailable_reason?: string };
+type MaterialItem = MaterialPickerRecord & { type: 'image' | 'attachment'; metadata: Record<string, unknown> };
 type StandardWindow = Window & {
   AICRMStandardComponents?: { ready(): Promise<void> };
 };
@@ -46,88 +50,326 @@ async function loadRadarMaterialPage(request: MaterialPickerLoadRequest): Promis
   return {
     items: list(payload.items).map(record).flatMap((item): MaterialItem[] => {
       const id = Number(item.id ?? item.library_id);
-      return Number.isSafeInteger(id) && id > 0 ? [{ type, library_id: id, title: String(item.name ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.variant_url ?? ''), metadata: item, selectable: item.enabled !== false, unavailable_reason: item.enabled === false ? '素材已停用' : undefined }] : [];
+      return Number.isSafeInteger(id) && id > 0 ? [{ type, library_id: id, title: String(item.name ?? item.file_name ?? `素材 ${id}`), subtitle: String(item.description ?? item.category ?? ''), thumbnail_url: String(item.thumb_320_url ?? item.variant_url ?? ''), mime_type: String(item.mime_type ?? ''), metadata: { ...item, authorized: true }, selectable: item.enabled !== false, unavailable_reason: item.enabled === false ? '素材已停用' : undefined }] : [];
     }),
     nextCursor: payload.has_more === true && Number.isSafeInteger(next) && next > offset ? String(next) : undefined,
   };
 }
 
-void (async () => {
+const radarMaterialAdapterReady = (async () => {
   await (window as StandardWindow).AICRMStandardComponents?.ready();
   installMaterialPickerAdapter({ source: 'radar-content', scope: 'radar-content-editor', loadPage: loadRadarMaterialPage, accessLossMessage: (error) => { const status = (error as { status?: unknown }).status; return status === 401 || status === 403 ? '素材目录权限已失效；已选素材仍可查看，请取消后重新登录。' : undefined; } });
   // @ts-ignore frozen side-effect entry has no module declaration.
   await import('../src/admin/main');
 })();
 
-type MaterialPickerWindow = Window & {
-  AICRMMaterialPicker?: { open(options: { type: 'image' | 'attachment'; title: string; selectedIds: number[]; limit: number; onConfirm(item: MaterialItem): void; onCancel(): void }): void };
-};
+type MaterialPickerWindow = Window & { AICRMMaterialPicker?: { open(options: {
+  type: 'image' | 'attachment'; title: string; selectedIds: number[]; selectedRecords: MaterialItem[]; limit: 1;
+  allowedMimeTypes?: string[];
+  onCommit(result: { selected: MaterialItem[]; added: MaterialItem[]; removed: MaterialItem[] }): void | Promise<void>;
+  onCancel(): void;
+}): void } };
 
-let pendingRadarPickerObserver: MutationObserver | undefined;
+const radarSelectionByForm = new Map<string, MaterialItem | undefined>();
+// A typed draft that was invalidated by a card switch may never save unless a
+// new same-type material callback has populated the frozen owner form.
+const radarTypeSwitchInvalidatedForms = new Set<string>();
+const replayingFrozenRadarPicker = new WeakSet<HTMLElement>();
+let radarPickerOpening = false;
+const radarMetadataReadTimeoutMilliseconds = 2500;
+
+function pendingRadarMaterial(type: 'image' | 'attachment', libraryID: number, name: string, subtitle: string, reason = '素材状态待当前目录确认'): MaterialItem {
+  return {
+    type, library_id: libraryID, title: name || `已选${type === 'image' ? '图片' : 'PDF'}素材 ${libraryID}`,
+    subtitle, thumbnail_url: '', mime_type: type === 'attachment' ? 'application/pdf' : '',
+    enabled: false, selectable: false, metadata: { authorized: false }, unavailable_reason: reason,
+  };
+}
+
+function radarFormKey(): string {
+  const id = new URLSearchParams(location.search).get('id') || 'new';
+  return `${location.pathname}:${id}`;
+}
+
+function radarPickerType(): 'image' | 'attachment' | undefined {
+  const type = document.querySelector<HTMLElement>('#typeCards .type-card.on')?.dataset.t;
+  return type === 'image' ? 'image' : type === 'pdf' ? 'attachment' : undefined;
+}
+
+function radarHelp(message: string): void {
+  const help = document.getElementById('mediaHelp');
+  if (!help) return;
+  help.textContent = message;
+  help.setAttribute('role', 'alert');
+}
+
+async function initialRadarSelection(type: 'image' | 'attachment'): Promise<MaterialItem | undefined> {
+  const key = radarFormKey();
+  if (radarSelectionByForm.has(key)) {
+    const tracked = radarSelectionByForm.get(key);
+    if (!tracked) return undefined;
+    // A local form cache records the owner draft, never a lasting directory
+    // grant. Every reopening verifies that exact typed record in the current
+    // scoped catalogue; a formerly enabled item may have been removed or lost
+    // permission since the previous dialog.
+    if (tracked.type !== type) return undefined;
+    const verified = await verifiedRadarMaterial(type, tracked.library_id, String(tracked.title || ''), String(tracked.subtitle || ''));
+    radarSelectionByForm.set(key, verified);
+    return verified;
+  }
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id || !/^[1-9]\d*$/.test(id)) {
+    radarSelectionByForm.set(key, undefined);
+    return undefined;
+  }
+  const db = await api.loadDb({ page: 'radarForm', id });
+  const link = db.radarLinks.find((item) => item.id === Number(id));
+  const expected = type === 'image' ? 'image' : 'pdf';
+  const libraryID = Number(link?.media_item_id);
+  const selected = link?.target_type === expected && Number.isSafeInteger(libraryID) && libraryID > 0
+    ? await verifiedRadarMaterial(type, libraryID, link.file_name_snapshot || `已选${type === 'image' ? '图片' : 'PDF'}素材 ${libraryID}`, '当前雷达草稿')
+    : undefined;
+  radarSelectionByForm.set(key, selected);
+  return selected;
+}
+
+async function verifiedRadarMaterial(type: 'image' | 'attachment', libraryID: number, fallbackName: string, fallbackSubtitle: string): Promise<MaterialItem> {
+  const endpoint = type === 'image' ? 'image-library' : 'attachment-library';
+  const pending = pendingRadarMaterial(type, libraryID, fallbackName, fallbackSubtitle);
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), radarMetadataReadTimeoutMilliseconds);
+  try {
+    const response = await originalFetch(new URL(`/api/admin/${endpoint}/${libraryID}`, location.origin), { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: controller.signal });
+    if (!response.ok) return pending;
+    const payload = record(await response.json().catch(() => ({})));
+    const item = record(payload.item ?? (type === 'image' ? payload.image : payload.attachment));
+    const id = Number(item.id ?? item.resource_id);
+    const mimeType = String(item.mime_type ?? '');
+    if (id !== libraryID || item.enabled === false || (type === 'attachment' && mimeType !== 'application/pdf')) return pending;
+    return {
+      type, library_id: id, title: String(item.name ?? item.file_name ?? fallbackName), subtitle: String(item.description ?? fallbackSubtitle),
+      thumbnail_url: String(item.thumb_320_url ?? item.variant_url ?? ''), mime_type: mimeType,
+      enabled: true, selectable: true, metadata: { ...item, authorized: true },
+    };
+  } catch {
+    return pendingRadarMaterial(type, libraryID, fallbackName, fallbackSubtitle, controller.signal.aborted ? '素材目录确认超时；请刷新或重新登录后重试。' : '素材状态待当前目录确认');
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function rememberRadarOriginalUpload(type: 'image' | 'attachment', media: RadarMedia): void {
+  if (document.body.dataset.page !== 'radarForm') return;
+  const libraryID = Number(media.id);
+  if (!Number.isSafeInteger(libraryID) || libraryID < 1) return;
+  const key = radarFormKey();
+  radarTypeSwitchInvalidatedForms.delete(key);
+  radarSelectionByForm.set(key, pendingRadarMaterial(type, libraryID, media.name, media.meta, '刚上传素材待当前目录确认'));
+}
+
+function observeOriginalRadarDraft(): void {
+  document.addEventListener('click', (event) => {
+    const target = event.target as Element | null;
+    if (target?.closest('#mediaRemove')) {
+      radarSelectionByForm.set(radarFormKey(), undefined);
+      return;
+    }
+    const typeCard = target?.closest<HTMLElement>('#typeCards .type-card');
+    if (!typeCard) return;
+    // This capture listener runs before the frozen card handler.  Read the
+    // actual owner form's current type and visible media rather than relying on
+    // a V3 picker cache: an edit can switch type before the picker ever opens.
+    const previousType = radarPickerType();
+    const hadFrozenMedia = document.getElementById('mediaPicked')?.hidden === false;
+    const key = radarFormKey();
+    window.setTimeout(() => {
+      const nextType = radarPickerType();
+      if (!previousType || !nextType || previousType === nextType || !hadFrozenMedia) return;
+      // Image and attachment IDs belong to distinct Media domains. A numeric
+      // collision may name two unrelated records, so never relabel an image as
+      // an attachment (or the reverse). The frozen form intentionally keeps
+      // media through a type-card click; clear it with its real remove action
+      // and make the new type an explicit re-selection.
+      radarTypeSwitchInvalidatedForms.add(key);
+      document.getElementById('mediaRemove')?.click();
+      radarSelectionByForm.set(key, undefined);
+      radarHelp('内容类型已切换，请按当前类型重新选择素材。');
+    }, 0);
+  }, true);
+
+  document.addEventListener('click', (event) => {
+    const save = (event.target as Element | null)?.closest<HTMLElement>('#fSave');
+    if (!save) return;
+    const key = radarFormKey();
+    const type = radarPickerType();
+    const selected = radarSelectionByForm.get(key);
+    if ((type === 'image' || type === 'attachment') && selected && selected.type !== type) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      radarHelp('素材类型与当前内容类型不一致，请重新选择素材后再保存。');
+      return;
+    }
+    if (radarTypeSwitchInvalidatedForms.has(key) && document.getElementById('mediaPicked')?.hidden === false) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      radarHelp('内容类型已切换，请重新选择素材后再保存。');
+    }
+  }, true);
+}
+
+function radarLegacyImage(item: MaterialItem): ImageItem {
+  return {
+    resourceId: String(item.library_id), name: item.title || `图片素材 ${item.library_id}`, size: '', tag: '', tone: 'ok', bg: '#EFF4FF', desc: item.subtitle || '', tags: '', enabled: true, uploadedAt: '',
+    originalUrl: `/api/admin/image-library/${item.library_id}/variants/original`, thumbnailUrl: `/api/admin/image-library/${item.library_id}/variants/thumb_320`,
+  };
+}
+
+function radarLegacyAttachment(item: MaterialItem): AttachItem {
+  return { resourceId: String(item.library_id), name: item.title || `PDF 素材 ${item.library_id}`, type: item.mime_type || 'application/pdf', size: '', tags: '', uploadedAt: '', enabled: true };
+}
+
+async function applyRadarSelectionThroughFrozenForm(button: HTMLElement, type: 'image' | 'attachment', selected: MaterialItem): Promise<void> {
+  if (!Number.isSafeInteger(selected.library_id) || selected.library_id < 1) throw new Error('所选素材缺少有效服务端 ID；未改动当前雷达草稿。');
+  if (selected.metadata.authorized !== true) throw new Error(`素材「${selected.title}」尚未在当前授权目录确认；请刷新或搜索后再确认。`);
+  let restore: (() => void) | undefined;
+  let claimed = false;
+  let active = true;
+  const originalLoadDb = api.loadDb.bind(api);
+  const complete = <T>(operation: () => T): T => {
+    restore?.();
+    restore = undefined;
+    return operation();
+  };
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => complete(() => reject(new Error('雷达表单未返回素材选择回调；未改动当前草稿。'))), 3000);
+    const observer = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (!(node instanceof HTMLElement) || !node.classList.contains('pk-mask')) continue;
+        node.style.setProperty('display', 'none', 'important');
+        node.setAttribute('aria-hidden', 'true');
+        const row = Array.from(node.querySelectorAll<HTMLElement>('[data-pk-id]')).find((candidate) => candidate.dataset.pkId === String(selected.library_id));
+        if (!row) {
+          node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click();
+          complete(() => reject(new Error('素材目录未返回当前选择；未改动当前雷达草稿。')));
+          return;
+        }
+        const confirm = node.querySelector<HTMLElement>('[data-pk="ok"]');
+        if (!confirm) {
+          node.querySelector<HTMLElement>('[data-pk="cancel"]')?.click();
+          complete(() => reject(new Error('雷达表单未提供素材确认操作；未改动当前草稿。')));
+          return;
+        }
+        row.click();
+        confirm.click();
+        window.setTimeout(() => complete(resolve), 0);
+        return;
+      }
+    });
+    restore = () => {
+      active = false;
+      window.clearTimeout(timer);
+      observer.disconnect();
+      api.loadDb = originalLoadDb;
+    };
+    api.loadDb = async (context) => {
+      const bridgeRead = !claimed && context === undefined;
+      if (bridgeRead) claimed = true;
+      let db;
+      try {
+        db = await originalLoadDb(context);
+      } catch (error) {
+        if (bridgeRead) {
+          complete(() => reject(error));
+          // The frozen click handler does not catch openPicker rejections.
+          // Keep its stale continuation pending after reporting the scoped V3
+          // failure, so it cannot later open or apply a legacy picker.
+          return await new Promise<never>(() => {});
+        }
+        throw error;
+      }
+      if (bridgeRead && !active) return await new Promise<never>(() => {});
+      if (!bridgeRead) return db;
+      return {
+        ...db,
+        rows: {
+          ...db.rows,
+          images: type === 'image' ? [...db.rows.images.filter((item) => item.resourceId !== String(selected.library_id)), radarLegacyImage(selected)] : db.rows.images,
+          attachItems: type === 'attachment' ? [...db.rows.attachItems.filter((item) => item.resourceId !== String(selected.library_id)), radarLegacyAttachment(selected)] : db.rows.attachItems,
+        },
+      };
+    };
+    observer.observe(document.body, { childList: true, subtree: true });
+    replayingFrozenRadarPicker.add(button);
+    button.click();
+    replayingFrozenRadarPicker.delete(button);
+    if (!claimed) complete(() => reject(new Error('雷达表单未读取当前素材目录；未改动当前草稿。')));
+  });
+}
 
 function relayRadarMaterialSelection(): void {
   document.addEventListener('click', (event) => {
-    const button = (event.target as Element | null)?.closest('#btnPick');
-    if (!button) return;
-    pendingRadarPickerObserver?.disconnect();
-    // `openPicker` waits for the frozen page's scoped `loadDb` before it
-    // appends `.pk-mask`; observing that append avoids racing the renderer.
-    const observer = new MutationObserver((records) => {
-      for (const record of records) {
-        for (const node of record.addedNodes) {
-          if (!(node instanceof HTMLElement) || !node.classList.contains('pk-mask')) continue;
-          observer.disconnect();
-          if (pendingRadarPickerObserver === observer) pendingRadarPickerObserver = undefined;
-          openStandardPicker(node);
-          return;
-        }
-      }
-    });
-    pendingRadarPickerObserver = observer;
-    observer.observe(document.body, { childList: true, subtree: true });
-
-    function openStandardPicker(legacyMask: HTMLElement): void {
+    const button = (event.target as Element | null)?.closest<HTMLButtonElement>('#btnPick');
+    if (!button || replayingFrozenRadarPicker.has(button)) return;
+    const type = radarPickerType();
+    if (!type) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (document.querySelector('[data-v3-selection-session="material"]') || radarPickerOpening) return;
+    radarPickerOpening = true;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.textContent = '正在确认当前素材…';
+    void (async () => {
+      await radarMaterialAdapterReady;
       const picker = (window as MaterialPickerWindow).AICRMMaterialPicker;
-      if (!picker) {
-        observer.disconnect();
-        if (pendingRadarPickerObserver === observer) pendingRadarPickerObserver = undefined;
-        return;
-      }
-      // The frozen picker remains alive as the form-state callback channel,
-      // but cannot flash through its inline `display:flex` style.
-      legacyMask.style.setProperty('display', 'none', 'important');
-      legacyMask.setAttribute('aria-hidden', 'true');
-      const type = document.querySelector<HTMLElement>('#typeCards .type-card.on')?.dataset.t === 'pdf' ? 'attachment' : 'image';
+      if (!picker) throw new Error('素材选择组件尚未就绪，请稍后重试。');
+      const key = radarFormKey();
+      const initial = await initialRadarSelection(type);
+      const selectedRecords = initial && initial.type === type ? [initial] : [];
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+      button.textContent = originalText;
       picker.open({
-        type,
-        title: type === 'image' ? '选择图片素材' : '选择 PDF 附件',
-        selectedIds: [],
-        limit: 1,
-        onConfirm(item) {
-          const row = Array.from(legacyMask.querySelectorAll<HTMLElement>('[data-pk-id]')).find((candidate) => candidate.dataset.pkId === String(item.library_id));
-          if (!row) {
-            const help = document.getElementById('mediaHelp');
-            if (help) {
-              help.textContent = '素材目录已变化，未改动当前草稿；请刷新页面后重新选择。';
-              help.setAttribute('role', 'alert');
-            }
-            legacyMask.querySelector<HTMLElement>('[data-pk="cancel"]')?.click();
+        type, title: type === 'image' ? '选择图片素材' : '选择 PDF 附件',
+        selectedIds: selectedRecords.map((item) => item.library_id), selectedRecords, limit: 1,
+        ...(type === 'attachment' ? { allowedMimeTypes: ['application/pdf'] } : {}),
+        async onCommit(result) {
+          if (radarPickerType() !== type) throw new Error('内容类型已改变；请取消后按当前类型重新选择素材。');
+          if (result.selected.length > 1) throw new Error('内容雷达一次只能选择一项素材；未改动当前草稿。');
+          const next = result.selected[0];
+          const previous = radarSelectionByForm.get(key);
+          if (!next) {
+            if (previous) document.getElementById('mediaRemove')?.click();
+            radarSelectionByForm.set(key, undefined);
             return;
           }
-          row.click();
-          legacyMask.querySelector<HTMLElement>('[data-pk="ok"]')?.click();
+          if (next.type !== type) throw new Error('素材类型与当前内容类型不匹配；未改动当前雷达草稿。');
+          if (type === 'attachment' && next.mime_type !== 'application/pdf') throw new Error('雷达 PDF 仅支持 application/pdf 素材；未改动当前草稿。');
+          if (next.metadata.authorized !== true) throw new Error(`素材「${next.title}」尚未在当前授权目录确认；请刷新或搜索后再确认。`);
+          if (previous?.library_id === next.library_id && previous.type === next.type) {
+            radarSelectionByForm.set(key, next);
+            return;
+          }
+          await applyRadarSelectionThroughFrozenForm(button, type, next);
+          radarTypeSwitchInvalidatedForms.delete(key);
+          radarSelectionByForm.set(key, next);
         },
-        onCancel() {
-          legacyMask.querySelector<HTMLElement>('[data-pk="cancel"]')?.click();
-        },
+        onCancel() { /* cancelling never invokes the frozen caller */ },
       });
-    }
+    })().catch((error) => radarHelp(error instanceof Error ? error.message : '素材选择暂时不可用，请稍后重试。')).finally(() => {
+      radarPickerOpening = false;
+      if (!document.querySelector('[data-v3-selection-session="material"]')) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.textContent = originalText;
+      }
+    });
   }, true);
-  window.addEventListener('pagehide', () => pendingRadarPickerObserver?.disconnect(), { once: true });
-  window.addEventListener('unload', () => pendingRadarPickerObserver?.disconnect(), { once: true });
 }
 
 relayRadarMaterialSelection();
+observeOriginalRadarDraft();
 
 type RadarVisitor = {
   nickname?: string;

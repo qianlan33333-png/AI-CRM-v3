@@ -39,6 +39,7 @@ type groupOpsChromiumFixture struct {
 	ownerStaffID       int64
 	replacementStaffID int64
 	composerImageIDs   [2]int64
+	radarUploadPath    string
 }
 
 func TestPostgreSQLGroupOpsStandardHostCompositionPreflight(t *testing.T) {
@@ -82,7 +83,7 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	}
 	fixture := newGroupOpsChromiumFixture(t)
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
-	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10), "AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS="+strconv.FormatInt(fixture.composerImageIDs[0], 10)+","+strconv.FormatInt(fixture.composerImageIDs[1], 10))
+	command.Env = append(os.Environ(), "AICRM_GROUPOPS_TEST_URL="+fixture.server.URL, "AICRM_GROUPOPS_TEST_USERNAME=groupops-browser-owner", "AICRM_GROUPOPS_TEST_PASSWORD=groupops-browser-owner-password", "AICRM_GROUPOPS_TEST_PLAN_ID="+strconv.FormatInt(fixture.planID, 10), "AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID="+strconv.FormatInt(fixture.replacementStaffID, 10), "AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS="+strconv.FormatInt(fixture.composerImageIDs[0], 10)+","+strconv.FormatInt(fixture.composerImageIDs[1], 10), "AICRM_GROUPOPS_RADAR_UPLOAD="+fixture.radarUploadPath)
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "group_ops_chromium: SKIP_DEVTOOLS") {
 		t.Fatalf("Group Ops Chromium DevTools unexpectedly unavailable: %s", strings.TrimSpace(string(output)))
@@ -117,6 +118,10 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	var ownerCount, ownerID int64
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*),coalesce(min(staff_id),0) FROM group_ops_plan_members WHERE plan_id=$1`, fixture.planID).Scan(&ownerCount, &ownerID); err != nil || ownerCount != 1 || ownerID != fixture.replacementStaffID {
 		t.Fatalf("browser owner persistence count=%d owner=%d err=%v", ownerCount, ownerID, err)
+	}
+	var radarMaterials int
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM radar_links WHERE title='Chromium V3 Radar material' AND content_type='image' AND media_id IS NOT NULL`).Scan(&radarMaterials); err != nil || radarMaterials != 1 {
+		t.Fatalf("browser Radar material persistence count=%d err=%v", radarMaterials, err)
 	}
 }
 
@@ -185,9 +190,10 @@ func newGroupOpsChromiumFixture(t *testing.T) *groupOpsChromiumFixture {
 		t.Fatal(err)
 	}
 	composerImageIDs := seedGroupOpsChromiumImages(t, ctx, application)
+	radarUploadPath := seedGroupOpsRadarUploadFile(t)
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID, composerImageIDs: composerImageIDs}
+	return &groupOpsChromiumFixture{ctx: ctx, application: application, server: server, script: filepath.Join(filepath.Dir(source), "group_ops_chromium_journey.mjs"), planID: planID, ownerStaffID: actorID, replacementStaffID: replacementStaffID, composerImageIDs: composerImageIDs, radarUploadPath: radarUploadPath}
 }
 
 // seedGroupOpsChromiumImages uses the normal Media tables only. The browser
@@ -223,6 +229,24 @@ func seedGroupOpsChromiumImages(t *testing.T, ctx context.Context, application *
 		}
 	}
 	return composer
+}
+
+// seedGroupOpsRadarUploadFile creates one native image input for the actual
+// Radar form. The browser uses its original upload action, then verifies the
+// V3 picker reopens from that same caller draft before choosing a catalog item.
+func seedGroupOpsRadarUploadFile(t *testing.T) string {
+	t.Helper()
+	canvas := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{217, 70, 239, 255}), image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "chromium-radar-current-upload.png")
+	if err := os.WriteFile(path, encoded.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // Group Ops runs against the same already-staged release closure as CI. The

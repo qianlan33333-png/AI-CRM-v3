@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -45,6 +46,8 @@ type productExternalPushChromiumFixture struct {
 	script                   string
 	productID                int64
 	serviceProductID         int64
+	materialFirstID          int64
+	materialLaterID          int64
 	historicalOrderReference string
 	dataKey                  []byte
 }
@@ -89,6 +92,8 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		"AICRM_PRODUCT_PUSH_TEST_PASSWORD=product-browser-owner-password",
 		"AICRM_PRODUCT_PUSH_TEST_PRODUCT_ID="+strconv.FormatInt(fixture.productID, 10),
 		"AICRM_PRODUCT_PUSH_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(fixture.serviceProductID, 10),
+		"AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID="+strconv.FormatInt(fixture.materialFirstID, 10),
+		"AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID="+strconv.FormatInt(fixture.materialLaterID, 10),
 		"AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
 		"AICRM_PRODUCT_PUSH_TEST_PARAMS="+exactParams,
 	)
@@ -188,6 +193,10 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 	if err != nil {
 		t.Fatal(err)
 	}
+	materialFirstID, materialLaterID, err := seedProductMaterialChromiumImages(ctx, application)
+	if err != nil {
+		t.Fatal(err)
+	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan error, 1)
 	go func() { workerDone <- application.effectsRuntime.Run(workerCtx) }()
@@ -223,6 +232,13 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 	application.handler.ServeHTTP(outerServiceProduct, outerServiceProductRequest)
 	if outerServiceProduct.Code != http.StatusOK || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)) {
 		t.Fatalf("outer composed service-period product Host status=%d product_assets=%t service_form=%t service_anchor=%t", outerServiceProduct.Code, bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)))
+	}
+	outerMaterials := httptest.NewRecorder()
+	outerMaterialsRequest := httptest.NewRequest(http.MethodGet, "/api/admin/image-library?limit=50&offset=50&enabled_only=true", nil)
+	outerMaterialsRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
+	application.handler.ServeHTTP(outerMaterials, outerMaterialsRequest)
+	if outerMaterials.Code != http.StatusOK || !bytes.Contains(outerMaterials.Body.Bytes(), []byte(`Chromium 商品后续页素材`)) || !bytes.Contains(outerMaterials.Body.Bytes(), []byte(`"has_more":false`)) {
+		t.Fatalf("outer composed product material later page status=%d later=%t terminal_page=%t", outerMaterials.Code, bytes.Contains(outerMaterials.Body.Bytes(), []byte(`Chromium 商品后续页素材`)), bytes.Contains(outerMaterials.Body.Bytes(), []byte(`"has_more":false`)))
 	}
 	for _, read := range []struct {
 		path   string
@@ -266,6 +282,7 @@ func newProductExternalPushChromiumFixtureWithTimeout(t *testing.T, timeout time
 		ctx: ctx, application: application, server: server,
 		script:    filepath.Join(filepath.Dir(source), "product_external_push_chromium_journey.mjs"),
 		productID: productID, serviceProductID: serviceProductID,
+		materialFirstID: materialFirstID, materialLaterID: materialLaterID,
 		historicalOrderReference: historicalOrderReference, dataKey: dataKey,
 	}
 }
@@ -538,4 +555,40 @@ VALUES('browser-commerce-history',$1,$2,$3,'applied',1,1,0,0,$3) RETURNING id`, 
 		return 0, 0, "", err
 	}
 	return productID, serviceProductID, orderReference, nil
+}
+
+// seedProductMaterialChromiumImages keeps one authorised image outside the
+// first 50-row Media page. The browser must apply it through the V3 Product
+// caller rather than the frozen picker, whose legacy directory is bounded to
+// the first page.
+func seedProductMaterialChromiumImages(ctx context.Context, application *composedApplication) (int64, int64, error) {
+	content, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+	if err != nil {
+		return 0, 0, err
+	}
+	digestValue := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(digestValue[:])
+	pool := application.pool.Native()
+	if _, err = pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',$2,$3)`, digest, len(content), content); err != nil {
+		return 0, 0, err
+	}
+	var laterID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,'browser-product-later.png','Chromium 商品后续页素材','真实商品素材分页验收','chromium,product','chromium-product','image/png',$2,1,1,true,1,1) RETURNING id`, digest, len(content)).Scan(&laterID); err != nil {
+		return 0, 0, err
+	}
+	var firstID int64
+	for index := 1; index <= 50; index++ {
+		name := "Chromium 商品目录填充 " + strconv.Itoa(index)
+		if index == 50 {
+			name = "Chromium 商品首页素材"
+		}
+		var imageID int64
+		if err = pool.QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,description,tags,category,mime_type,byte_size,width,height,enabled,created_by,updated_by) VALUES($1,$2,$3,'真实商品素材分页验收','chromium,product','chromium-product','image/png',$4,1,1,true,1,1) RETURNING id`, digest, "browser-product-page-"+strconv.Itoa(index)+".png", name, len(content)).Scan(&imageID); err != nil {
+			return 0, 0, err
+		}
+		if index == 50 {
+			firstID = imageID
+		}
+	}
+	return firstID, laterID, nil
 }
