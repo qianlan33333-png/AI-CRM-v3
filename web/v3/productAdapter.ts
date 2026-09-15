@@ -693,10 +693,17 @@ async function readShare(product: ProductProjection): Promise<string> {
   try { payload = object(await response.json()); } catch { throw new Error(`商品分享地址读取失败（HTTP ${response.status}）`); }
   if (response.status === 409 && (payload.code === 'product_not_enabled' || payload.error === 'product_not_enabled')) throw new Error('请先启用商品');
   if (!response.ok) throw new Error(`商品分享地址读取失败（HTTP ${response.status}）`);
+  const productCode = typeof payload.product_code === 'string' ? payload.product_code : '';
   const path = typeof payload.purchase_url === 'string' ? payload.purchase_url : '';
-  if (payload.product_id !== product.resourceId || payload.lifecycle !== 'enabled' || payload.available !== true || path !== `/p/${product.resourceId}` || payload.qr_code_url != null) throw new Error('商品分享响应不完整或越过站内边界');
-  const url = new URL(path, location.origin);
-  if (url.origin !== location.origin || url.pathname !== path || url.search || url.hash) throw new Error('商品分享地址必须是当前站点的公开路径');
+  if (payload.product_id !== product.resourceId || productCode !== product.code || payload.lifecycle !== 'enabled' || payload.available !== true || payload.qr_code_url != null || !path.startsWith('/p/')) throw new Error('商品分享响应不完整或越过站内边界');
+  const encodedCode = path.slice('/p/'.length);
+  if (!encodedCode || encodedCode.includes('/')) throw new Error('商品分享响应不完整或越过站内边界');
+  let decodedCode: string;
+  try { decodedCode = decodeURIComponent(encodedCode); } catch { throw new Error('商品分享响应不完整或越过站内边界'); }
+  if (decodedCode !== product.code) throw new Error('商品分享响应不完整或越过站内边界');
+  let url: URL;
+  try { url = new URL(path, location.origin); } catch { throw new Error('商品分享响应不完整或越过站内边界'); }
+  if (url.origin !== location.origin || url.username || url.password || url.pathname !== path || url.search || url.hash) throw new Error('商品分享地址必须是当前站点的公开路径');
   return url.toString();
 }
 
