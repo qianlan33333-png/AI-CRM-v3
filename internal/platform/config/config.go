@@ -902,12 +902,28 @@ func ChromiumJourneyRequired() bool {
 	return ok && value == "1"
 }
 
+// ProductExternalPushDarwinChromiumDiagnosticAllowed permits an explicitly
+// requested developer diagnostic run of the Product external-push Chromium
+// journey on Darwin. Linux CI remains the required release browser gate.
+// This is test-only configuration; application runtime behavior never reads it.
+func ProductExternalPushDarwinChromiumDiagnosticAllowed() bool {
+	value, ok := os.LookupEnv("AICRM_PRODUCT_PUSH_ALLOW_DARWIN_CHROMIUM")
+	return ok && value == "1"
+}
+
 // AdminLayoutScreenshotDirectory returns an explicitly configured CI or local
 // evidence directory for the admin-shell Chromium layout journey. It is not a
 // runtime setting and the caller still validates that any supplied path is
 // absolute before writing screenshots.
 func AdminLayoutScreenshotDirectory() string {
 	return os.Getenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR")
+}
+
+// ChannelCenterScreenshotDirectory returns the optional evidence directory for
+// the authenticated Channel Center Chromium journey. It is test-only; callers
+// validate an absolute path before writing browser evidence.
+func ChannelCenterScreenshotDirectory() string {
+	return os.Getenv("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR")
 }
 
 // AccessGovernanceScreenshotDirectory returns the optional evidence directory
@@ -929,6 +945,13 @@ func TagPickerScreenshotDirectory() string {
 // that a supplied path is absolute before it writes its local screenshots.
 func ComponentStatesScreenshotDirectory() string {
 	return os.Getenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR")
+}
+
+// AutomationFixedContentScreenshotDirectory returns the optional evidence
+// directory for the fixed-script content Chromium journey. The test validates
+// that a supplied path is absolute before it writes rendered screenshots.
+func AutomationFixedContentScreenshotDirectory() string {
+	return os.Getenv("AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR")
 }
 
 // AudienceConfirmationScreenshotDirectory returns the optional evidence

@@ -88,14 +88,36 @@ async function waitFor(cdp, expression, message) {
   throw new Error(message);
 }
 
+async function waitForBrowserExit(browser, timeoutMilliseconds) {
+  if (!browser || browser.exitCode !== null || browser.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMilliseconds);
+    browser.once("exit", () => { clearTimeout(timer); resolve(true); });
+  });
+}
+
 async function stopBrowser(browser) {
-  if (!browser || browser.exitCode !== null || browser.signalCode !== null) return;
+  if (!browser || browser.exitCode !== null || browser.signalCode !== null) return true;
   browser.kill("SIGTERM");
-  await Promise.race([new Promise((resolve) => browser.once("exit", resolve)), delay(3000)]);
+  if (await waitForBrowserExit(browser, 3000)) return true;
   if (browser.exitCode === null && browser.signalCode === null) {
     browser.kill("SIGKILL");
-    await Promise.race([new Promise((resolve) => browser.once("exit", resolve)), delay(1000)]);
+    return waitForBrowserExit(browser, 1000);
   }
+  return true;
+}
+
+async function removeProfile(profile) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 });
+      return true;
+    } catch (error) {
+      if (!['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error?.code)) return false;
+      await delay(100);
+    }
+  }
+  return false;
 }
 
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-audience-confirmation-chromium-"));
@@ -171,6 +193,8 @@ try {
   throw error;
 } finally {
   if (cdp) cdp.close();
-  await stopBrowser(browser);
-  try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 }); } catch (error) { if (!failed) throw error; }
+  const browserExited = await stopBrowser(browser);
+  if (!browserExited && !failed) throw new Error('Chromium did not exit before audience-confirmation profile cleanup');
+  const removed = await removeProfile(profile);
+  if (!removed && !failed) throw new Error('Chromium profile cleanup did not complete');
 }

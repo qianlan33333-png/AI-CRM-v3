@@ -34,6 +34,14 @@ export type ContentMaterialSelectionRequest = {
 export type ContentComposerResult = { package: ContentPackage; selectedRecords: ContentMaterialRecord[] };
 export type ContentComposerOptions = {
   title: string;
+  /** Accurate caller-owned explanation of what confirmation does in this page. */
+  confirmationNote?: string;
+  /** Caller-owned idle guidance; defaults to the existing page-draft wording. */
+  readyHint?: string;
+  /** Caller-owned label for the command that receives the local draft. */
+  confirmLabel?: string;
+  /** Caller-owned pending wording while that command is running. */
+  confirmingHint?: string;
   value: unknown;
   selectedRecords?: readonly ContentMaterialRecord[];
   /** Only use caller_persisted when the caller read the same owner sequence. */
@@ -63,6 +71,18 @@ export type ContentComposerOptions = {
 
 const kinds: readonly ContentMaterialKind[] = ['image', 'miniprogram', 'attachment', 'group_invite'];
 const labels: Record<ContentMaterialKind, string> = { image: '图片', miniprogram: '小程序', attachment: '附件', group_invite: '群邀请' };
+
+// The frozen feedback delegate checks this established runtime property before
+// classifying a business-looking button as unavailable. These V3 controls
+// already have caller-owned behavior and must keep that visible state.
+type FeedbackBoundButton = HTMLButtonElement & { __dcBound?: boolean };
+function markRealAction(button: HTMLButtonElement): HTMLButtonElement {
+  const bound = button as FeedbackBoundButton;
+  bound.__dcBound = true;
+  button.dataset.capabilityState = 'real';
+  button.removeAttribute('aria-description');
+  return button;
+}
 
 function copy(record: ContentMaterialRecord): ContentMaterialRecord {
   return { ...record };
@@ -162,13 +182,14 @@ export function openContentComposer(options: ContentComposerOptions): void {
     mask.setAttribute('aria-labelledby', 'aicrm-v3-content-composer-title');
   }
   mask.innerHTML = `<section class="aicrm-content-composer" role="dialog" aria-modal="true" aria-labelledby="aicrm-v3-content-composer-title">
-    <header class="aicrm-content-composer__head"><div><h3 id="aicrm-v3-content-composer-title"></h3><p>确认仅更新当前页面草稿，实际发送由计划执行触发。</p></div><button type="button" data-v3-composer-cancel>取消</button></header>
+    <header class="aicrm-content-composer__head"><div><h3 id="aicrm-v3-content-composer-title"></h3><p data-v3-composer-confirmation-note></p></div><button type="button" data-v3-composer-cancel>取消</button></header>
     <div class="aicrm-content-composer__body">
       <section data-v3-composer-editor></section><aside data-v3-composer-preview></aside>
     </div>
     <p class="aicrm-content-composer__status" data-v3-composer-status role="status"></p>
     <footer><button type="button" data-v3-composer-cancel>取消</button><button type="button" data-v3-composer-confirm>确认内容</button></footer>
   </section>`;
+  mask.querySelectorAll<HTMLButtonElement>('button').forEach(markRealAction);
   document.body.append(mask);
   if (topLayer) (mask as HTMLDialogElement).showModal();
   const dialog = mask.querySelector<HTMLElement>('.aicrm-content-composer')!;
@@ -182,6 +203,10 @@ export function openContentComposer(options: ContentComposerOptions): void {
   const status = mask.querySelector<HTMLElement>('[data-v3-composer-status]')!;
   const confirm = mask.querySelector<HTMLButtonElement>('[data-v3-composer-confirm]')!;
   title.textContent = options.title;
+  mask.querySelector<HTMLElement>('[data-v3-composer-confirmation-note]')!.textContent = String(options.confirmationNote || '确认仅更新当前页面草稿，实际发送由计划执行触发。').trim() || '确认仅更新当前页面草稿。';
+  confirm.textContent = String(options.confirmLabel || '确认内容').trim() || '确认内容';
+  const readyHint = String(options.readyHint || '可确认后返回当前页面继续保存。').trim() || '可确认后返回当前页面继续保存。';
+  const confirmingHint = String(options.confirmingHint || '正在应用内容草稿…').trim() || '正在应用内容草稿…';
   let closed = false;
   let confirming = false;
   let selecting = false;
@@ -238,15 +263,15 @@ export function openContentComposer(options: ContentComposerOptions): void {
       item.append(information);
       const actions = document.createElement('div');
       actions.className = 'aicrm-content-composer__material-actions';
-      const remove = document.createElement('button');
+      const remove = markRealAction(document.createElement('button'));
       remove.type = 'button'; remove.dataset.v3ComposerRemove = String(index); remove.textContent = '移除';
       remove.disabled = confirming;
       actions.append(remove);
       if (ordering !== 'none') {
-        const up = document.createElement('button');
+        const up = markRealAction(document.createElement('button'));
         up.type = 'button'; up.dataset.v3ComposerMove = `${index}:-1`; up.textContent = '上移';
         up.disabled = confirming || index === 0 || (ordering === 'within_kind' && records[index - 1]?.kind !== record.kind);
-        const down = document.createElement('button');
+        const down = markRealAction(document.createElement('button'));
         down.type = 'button'; down.dataset.v3ComposerMove = `${index}:1`; down.textContent = '下移';
         down.disabled = confirming || index === records.length - 1 || (ordering === 'within_kind' && records[index + 1]?.kind !== record.kind);
         actions.append(up, down);
@@ -279,7 +304,7 @@ export function openContentComposer(options: ContentComposerOptions): void {
     label.append(textarea);
     editor.append(label);
     for (const variable of (options.variablePolicy?.variables || []).filter((item) => !item.disabledReason)) {
-      const button = document.createElement('button');
+      const button = markRealAction(document.createElement('button'));
       button.type = 'button';
       button.dataset.v3ComposerVariable = variable.token;
       button.textContent = `插入${variable.label}`;
@@ -288,7 +313,7 @@ export function openContentComposer(options: ContentComposerOptions): void {
     if (variableBar.childElementCount) editor.append(variableBar);
   }
   for (const kind of permittedKinds) {
-    const button = document.createElement('button');
+    const button = markRealAction(document.createElement('button'));
     button.type = 'button';
     button.dataset.v3ComposerAdd = kind;
     button.textContent = `添加${labels[kind]}`;
@@ -361,7 +386,7 @@ export function openContentComposer(options: ContentComposerOptions): void {
     renderContentPresentation(preview, { mode: 'preview', package: currentPackage(), selectedRecords: records, materialOrder, variablePolicy: options.variablePolicy, normalizeText, supplements: options.presentationSupplements });
     const issueText = issues.map((issue) => `${issue.token}：${issue.reason}`).join('；');
     const capabilityNotice = String(options.variableNotice || '').trim();
-    status.textContent = confirming ? '正在应用内容草稿…' : selecting ? '正在选择素材…' : notice || validation || issueText || capabilityNotice || '可确认后返回当前页面继续保存。';
+    status.textContent = confirming ? confirmingHint : selecting ? '正在选择素材…' : notice || validation || issueText || capabilityNotice || readyHint;
     confirm.disabled = confirming || selecting || isBlocking(issues) || Boolean(validation);
     restoreRecordFocus();
   };

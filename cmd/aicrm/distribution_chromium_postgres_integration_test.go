@@ -100,7 +100,7 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	runJourney := func(phase, want string) {
 		t.Helper()
 		command := exec.CommandContext(ctx, "node", journey)
-		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_SETTLEMENT_CONFIRMED_AT="+seed.detailSettlementConfirmedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ORDER_COLLISION_REFERENCE="+seed.orderCollisionReference, "AICRM_DISTRIBUTION_BROWSER_ORDER_SETTLED_AT="+seed.orderSettledAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_PRODUCT="+seed.earningsProduct, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_ORDER="+seed.earningsOrderReference, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_GROSS_MINOR="+strconv.FormatInt(seed.earningsGrossMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_COMMISSION_MINOR="+strconv.FormatInt(seed.earningsCommissionMinor, 10), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
+		command.Env = append(os.Environ(), "AICRM_DISTRIBUTION_BROWSER_PHASE="+phase, "AICRM_DISTRIBUTION_BROWSER_URL="+server.URL, "AICRM_DISTRIBUTION_BROWSER_DISABLED_URL="+disabledServer.URL, "AICRM_DISTRIBUTION_BROWSER_SESSION="+seed.session, "AICRM_DISTRIBUTION_BROWSER_PROMOTION="+seed.promotion, "AICRM_DISTRIBUTION_BROWSER_PRODUCT="+seed.productCode, "AICRM_DISTRIBUTION_BROWSER_PRODUCT_ID="+strconv.FormatInt(seed.productID, 10), "AICRM_DISTRIBUTION_BROWSER_APPLICATION_TARGET_ID="+strconv.FormatInt(seed.applicationTargetID, 10), "AICRM_DISTRIBUTION_BROWSER_CSRF="+seed.csrf, "AICRM_DISTRIBUTION_BROWSER_DETAIL_ATTRIBUTION="+strconv.FormatInt(seed.detailAttributionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_EXCEPTION="+strconv.FormatInt(seed.detailExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_CONFIRMATION_EXCEPTION="+strconv.FormatInt(seed.confirmationExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_CONFIRMATION_FAILURE_EXCEPTION="+strconv.FormatInt(seed.confirmationFailureExceptionID, 10), "AICRM_DISTRIBUTION_BROWSER_DETAIL_CREATED_AT="+seed.detailCreatedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_SETTLEMENT_CONFIRMED_AT="+seed.detailSettlementConfirmedAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_ORDER_COLLISION_REFERENCE="+seed.orderCollisionReference, "AICRM_DISTRIBUTION_BROWSER_ORDER_SETTLED_AT="+seed.orderSettledAt.Format(time.RFC3339Nano), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_PRODUCT="+seed.earningsProduct, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_ORDER="+seed.earningsOrderReference, "AICRM_DISTRIBUTION_BROWSER_EARNINGS_GROSS_MINOR="+strconv.FormatInt(seed.earningsGrossMinor, 10), "AICRM_DISTRIBUTION_BROWSER_EARNINGS_COMMISSION_MINOR="+strconv.FormatInt(seed.earningsCommissionMinor, 10), "AICRM_DISTRIBUTION_BROWSER_ADMIN_DISPLAY_NAME="+seed.adminDisplayName, "AICRM_DISTRIBUTION_BROWSER_ADMIN=distribution-admin", "AICRM_DISTRIBUTION_BROWSER_PASSWORD=distribution-admin-password")
 		output, runErr := command.CombinedOutput()
 		if runErr != nil || !strings.Contains(string(output), want) {
 			t.Fatalf("Distribution Chromium %s phase err=%v output=%s", phase, runErr, strings.TrimSpace(string(output)))
@@ -113,23 +113,25 @@ func TestPostgreSQLDistributionChromiumJourney(t *testing.T) {
 	runJourney("ready", "distribution_chromium: PASS")
 	assertDistributionRegistrationAndCredentialFacts(t, ctx, application, seed)
 	assertDistributionPromotionProductsStrictlyFilter(t, ctx, application, seed)
+	assertDistributionAdminConfirmationFacts(t, ctx, application, seed)
 }
 
 type distributionChromiumSeed struct {
-	session, promotion, productCode, csrf        string
-	adminDisplayName                             string
-	registrationCustomerID                       int64
-	productID, applicationTargetID               int64
-	commissionID, detailAttributionID            int64
-	detailExceptionID                            int64
-	receiverEffectID                             int64
-	detailCreatedAt, detailSettlementConfirmedAt time.Time
-	orderCollisionReference                      string
-	orderSettledAt                               time.Time
-	earningsProduct                              string
-	earningsOrderReference                       string
-	earningsGrossMinor, earningsCommissionMinor  int64
-	receiverCount, effectCount, intentCount      int64
+	session, promotion, productCode, csrf                   string
+	adminDisplayName                                        string
+	registrationCustomerID                                  int64
+	productID, applicationTargetID                          int64
+	commissionID, detailAttributionID                       int64
+	detailExceptionID                                       int64
+	confirmationExceptionID, confirmationFailureExceptionID int64
+	receiverEffectID                                        int64
+	detailCreatedAt, detailSettlementConfirmedAt            time.Time
+	orderCollisionReference                                 string
+	orderSettledAt                                          time.Time
+	earningsProduct                                         string
+	earningsOrderReference                                  string
+	earningsGrossMinor, earningsCommissionMinor             int64
+	receiverCount, effectCount, intentCount                 int64
 }
 
 func assertDistributionH5OAuthStart(t *testing.T, handler http.Handler) {
@@ -257,6 +259,7 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 			t.Fatal(err)
 		}
 	}
+	confirmationException, confirmationFailureException := seedDistributionChromiumAdminConfirmationFacts(t, ctx, pool, distributor, credential, policy, code, now)
 	orderCollisionReference, orderSettledAt := seedDistributionChromiumProviderCollision(t, ctx, pool, product, code, distributor, credential, policy, detailCustomer, now)
 	sessionDigest := sha256.Sum256([]byte(session))
 	if _, err := pool.Exec(ctx, "INSERT INTO distribution_browser_sessions(token_digest,customer_id,identity_id,channel,app_id,app_scope,expires_at,created_at) VALUES($1,$2,$3,'mini_program','wx-distribution-browser','wechat-app:distribution-browser',$4,$5)", sessionDigest[:], registrationCustomer, identityID, now.Add(8*time.Hour), now); err != nil {
@@ -272,7 +275,36 @@ func seedDistributionChromiumFacts(t *testing.T, ctx context.Context, applicatio
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM payment_profit_sharing_provider_intents`).Scan(&intentCount); err != nil {
 		t.Fatal(err)
 	}
-	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", adminDisplayName: adminDisplayName, registrationCustomerID: registrationCustomer, productID: product, applicationTargetID: applicationTarget, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, receiverEffectID: receiverEffectID, detailCreatedAt: detailCreatedAt, detailSettlementConfirmedAt: detailSettlementConfirmedAt, orderCollisionReference: orderCollisionReference, orderSettledAt: orderSettledAt, earningsProduct: "分销浏览器商品", earningsGrossMinor: 9900000, earningsCommissionMinor: 990000, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
+	return distributionChromiumSeed{session: session, promotion: token, productCode: code, csrf: "distribution-browser-csrf", adminDisplayName: adminDisplayName, registrationCustomerID: registrationCustomer, productID: product, applicationTargetID: applicationTarget, commissionID: commission, detailAttributionID: detailAttribution, detailExceptionID: detailException, confirmationExceptionID: confirmationException, confirmationFailureExceptionID: confirmationFailureException, receiverEffectID: receiverEffectID, detailCreatedAt: detailCreatedAt, detailSettlementConfirmedAt: detailSettlementConfirmedAt, orderCollisionReference: orderCollisionReference, orderSettledAt: orderSettledAt, earningsProduct: "分销浏览器商品", earningsGrossMinor: 9900000, earningsCommissionMinor: 990000, receiverCount: receiverCount, effectCount: effectCount, intentCount: intentCount}
+}
+
+// seedDistributionChromiumAdminConfirmationFacts adds two local, already-paid
+// after-sales cases. They exercise only Distribution's own append-only admin
+// ledger: the browser never calls a provider.
+func seedDistributionChromiumAdminConfirmationFacts(t *testing.T, ctx context.Context, pool *pgxpool.Pool, distributorID, credentialID, policyID int64, productCode string, now time.Time) (int64, int64) {
+	t.Helper()
+	ids := make([]int64, 0, 2)
+	for index, orderID := range []int64{9401, 9402} {
+		// The admin service writes at its current clock instant, so fixture facts
+		// must not be timestamped into the future or PostgreSQL will correctly
+		// reject an updated_at-before-created_at mutation.
+		at := now.Add(-time.Duration(2-index) * time.Minute)
+		var attributionID, commissionID, exceptionID int64
+		if err := pool.QueryRow(ctx, `INSERT INTO distribution_order_attributions(order_id,order_item_line,product_code,product_name,distributor_id,promotion_credential_id,qualification_evidence_reference,qualification_state,policy_id,policy_version,commission_rate_basis_points,wait_days,attributed_at)
+			VALUES($1,1,$2,'分销确认夹具商品',$3,$4,$5,'eligible',$6,1,1000,7,$7) RETURNING id`, orderID, productCode, distributorID, credentialID, "order:"+strconv.FormatInt(orderID, 10)+":line:1", policyID, at).Scan(&attributionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `INSERT INTO distribution_commissions(attribution_id,order_id,order_item_line,distributor_id,original_item_paid_minor,successful_refund_minor,initial_minor,current_payable_minor,paid_minor,commission_rate_basis_points,paid_confirmed_at,due_at,status,hold_reason,cancel_reason,exception_reason,version,created_at,updated_at)
+			VALUES($1,$2,1,$3,9900,9900,990,0,495,1000,$4,$5,'exception','','','buyer_refund_after_paid',1,$4,$4) RETURNING id`, attributionID, orderID, distributorID, at, at.Add(7*24*time.Hour)).Scan(&commissionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `INSERT INTO distribution_exceptions(commission_id,kind,status,unpaid_due_minor,already_paid_minor,amount_minor,reason,evidence_reference,actor_scope,version,created_at,updated_at)
+			VALUES($1,'buyer_refund_after_paid','open',0,495,495,'buyer_refund_after_paid',$2,'distribution-chromium',1,$3,$3) RETURNING id`, commissionID, "refund:confirmation:"+strconv.FormatInt(orderID, 10), at).Scan(&exceptionID); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, exceptionID)
+	}
+	return ids[0], ids[1]
 }
 
 // seedDistributionChromiumProviderCollision creates two real Order rows with
@@ -492,6 +524,30 @@ func assertDistributionRegisteredEarningsReadModel(t *testing.T, ctx context.Con
 	application.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"order_reference":"`+seed.earningsOrderReference+`"`) || !strings.Contains(response.Body.String(), `"product_name":"`+seed.earningsProduct+`"`) || !strings.Contains(response.Body.String(), `"initial_minor":990000`) {
 		t.Fatalf("registered commissions status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func assertDistributionAdminConfirmationFacts(t *testing.T, ctx context.Context, application *composedApplication, seed distributionChromiumSeed) {
+	t.Helper()
+	pool := application.pool.Native()
+	var successfulAdjustments, successfulReceipts, successfulAudits, failedAdjustments, failedReceipts int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_commission_adjustments a JOIN distribution_exceptions e ON e.commission_id=a.commission_id WHERE e.id=$1 AND a.kind='manual_recovery'`, seed.confirmationExceptionID).Scan(&successfulAdjustments); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_operation_receipts WHERE operation='recovery' AND result_kind='exception' AND result_id=$1`, seed.confirmationExceptionID).Scan(&successfulReceipts); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_audit_events WHERE event_type='distribution.recovery_recorded.v1' AND aggregate_type='exception' AND aggregate_id=$1`, seed.confirmationExceptionID).Scan(&successfulAudits); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_commission_adjustments a JOIN distribution_exceptions e ON e.commission_id=a.commission_id WHERE e.id=$1 AND a.kind='manual_recovery'`, seed.confirmationFailureExceptionID).Scan(&failedAdjustments); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM distribution_operation_receipts WHERE operation='recovery' AND result_kind='exception' AND result_id=$1`, seed.confirmationFailureExceptionID).Scan(&failedReceipts); err != nil {
+		t.Fatal(err)
+	}
+	if successfulAdjustments != 1 || successfulReceipts != 1 || successfulAudits != 1 || failedAdjustments != 0 || failedReceipts != 0 {
+		t.Fatalf("admin confirmation facts success adjustments=%d receipts=%d audits=%d failed adjustments=%d receipts=%d", successfulAdjustments, successfulReceipts, successfulAudits, failedAdjustments, failedReceipts)
 	}
 }
 

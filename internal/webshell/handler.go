@@ -351,6 +351,11 @@ var adminSpecs = map[string]adminSpec{
 		summary:        "优惠券入口已预留。",
 		activeEndpoint: "api.admin_coupons_page",
 	},
+	"/admin/materials": {
+		title:          "素材库",
+		summary:        "图片、附件和小程序素材使用各自受权读写契约。",
+		activeEndpoint: "api.admin_materials_workspace",
+	},
 	"/admin/image-library": {
 		title:          "图片素材库",
 		summary:        "图片素材库入口已预留。",
