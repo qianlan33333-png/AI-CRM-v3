@@ -5,6 +5,7 @@
 export type PageHeaderAction = {
   label: string;
   variant?: 'primary' | 'secondary' | 'ghost';
+  disabled?: boolean;
   onClick?: () => void | Promise<void>;
   onError?: (error: unknown) => void;
   href?: string;
@@ -35,10 +36,13 @@ function actionElement(action: PageHeaderAction): HTMLElement {
   control.type = 'button';
   control.className = buttonClass(action.variant);
   control.textContent = action.label;
+  control.disabled = action.disabled === true;
+  if (control.disabled) control.setAttribute('aria-disabled', 'true');
   const reset = () => {
     if (!control.isConnected) return;
     control.disabled = false;
     control.removeAttribute('aria-busy');
+    control.removeAttribute('aria-disabled');
   };
   control.addEventListener('click', () => {
     if (control.disabled || !action.onClick) return;

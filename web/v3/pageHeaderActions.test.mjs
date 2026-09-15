@@ -43,6 +43,12 @@ try {
   assert.equal(rejected, 0, 'a pending action does not report a failure');
   resolvePending(); await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(save.disabled, false, 'a fulfilled action restores its own control');
+  dom.window.mount('distribution-safe', [{ label: '暂不可用', disabled: true, onClick: () => { clicked += 100; } }]);
+  const disabled = topbar.querySelector('[data-page-header-actions="distribution-safe"] button');
+  disabled.click();
+  assert.equal(disabled.disabled, true, 'an explicit action-disabled state is preserved at mount');
+  assert.equal(disabled.getAttribute('aria-disabled'), 'true', 'disabled actions expose their state');
+  assert.equal(clicked, 1, 'a disabled action cannot invoke its page command');
   const rejectedAction = dom.window.mount('distribution-safe', [{
     label: '重试',
     onClick: () => Promise.reject(new Error('expected rejection')),
