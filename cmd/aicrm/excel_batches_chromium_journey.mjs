@@ -10,6 +10,7 @@ import {
 const baseURL = process.env.AICRM_EXCEL_TEST_URL;
 const username = process.env.AICRM_EXCEL_TEST_USERNAME;
 const password = process.env.AICRM_EXCEL_TEST_PASSWORD;
+const screenshotDir = process.env.AICRM_EXCEL_BROWSER_SCREENSHOT_DIR;
 if (!/^https:\/\//.test(baseURL || "") || !username || !password)
   throw new Error(
     "Excel batch Chromium journey requires HTTPS URL and test credentials",
@@ -140,6 +141,59 @@ async function waitForNetwork(check, message) {
   }
   throw new Error(message);
 }
+async function pointerClick(cdp, selector, message) {
+  const point = await evaluate(
+    cdp,
+    `(() => {
+      const node = document.querySelector(${JSON.stringify(selector)});
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, visible: rect.width > 1 && rect.height > 1, receivesPointer: top === node || node.contains(top) };
+    })()`,
+  );
+  if (!point?.visible || !point.receivesPointer)
+    throw new Error(`${message}: ${JSON.stringify(point)}`);
+  await cdp.call("Input.dispatchMouseEvent", {
+    type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1,
+  });
+  await cdp.call("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1,
+  });
+}
+async function pointerClickText(cdp, scopeSelector, text, message) {
+  const marked = await evaluate(
+    cdp,
+    `(() => {
+      document.querySelectorAll('[data-aicrm-chromium-pointer]').forEach((node) => node.removeAttribute('data-aicrm-chromium-pointer'));
+      const scope = document.querySelector(${JSON.stringify(scopeSelector)});
+      const target = [...(scope?.querySelectorAll('button') || [])].find((node) => node.textContent?.trim() === ${JSON.stringify(text)});
+      if (!target) return false;
+      target.setAttribute('data-aicrm-chromium-pointer', '1');
+      target.scrollIntoView({ block: 'center', inline: 'center' });
+      return true;
+    })()`,
+  );
+  if (!marked) throw new Error(`${message}: control missing`);
+  await delay(80);
+  await pointerClick(cdp, '[data-aicrm-chromium-pointer="1"]', message);
+}
+async function keyboardText(cdp, selector, value, message) {
+  await pointerClick(cdp, selector, message);
+  const focused = await evaluate(
+    cdp,
+    `(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!(node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement)) return false; node.focus(); node.select(); return document.activeElement === node && node.selectionStart ===0 && node.selectionEnd === node.value.length; })()`,
+  );
+  if (!focused) throw new Error(`${message}: focused editable target is unavailable`);
+  // CDP inserts through Chromium's native input pipeline after the actual
+  // pointer target has proven it is not inert behind a parent dialog.
+  await cdp.call("Input.insertText", { text: value });
+  await waitFor(cdp, `document.querySelector(${JSON.stringify(selector)})?.value===${JSON.stringify(value)}`, `${message}: keyboard text did not reach the target`);
+}
+async function pressEscape(cdp) {
+  await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+}
 async function setViewport(cdp, width, height = 900) {
   await cdp.call("Emulation.setDeviceMetricsOverride", {
     width,
@@ -150,6 +204,62 @@ async function setViewport(cdp, width, height = 900) {
     screenHeight: height,
   });
   await delay(80);
+}
+async function captureExcelComposer(cdp, width) {
+  if (!screenshotDir) return;
+  await setViewport(cdp, width, width <= 420 ? 860 : 980);
+  const layout = await evaluate(
+    cdp,
+    `(() => {
+      const mask = document.querySelector('dialog[open][data-v3-content-composer][data-v3-content-top-layer="1"]');
+      const composer = mask?.querySelector('.aicrm-content-composer');
+      const confirm = mask?.querySelector('[data-v3-composer-confirm]');
+      const thumbnail = mask?.querySelector('[data-content-presentation-supplement] img');
+      const box = (node) => {
+        if (!node) return null;
+        const rect = node.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+      };
+      return {
+        viewport: document.documentElement.clientWidth,
+        documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+        mask: box(mask), composer: box(composer), confirm: box(confirm),
+        thumbnail: box(thumbnail), thumbnailObjectFit: thumbnail ? getComputedStyle(thumbnail).objectFit : '',
+        confirmVisible: Boolean(confirm && getComputedStyle(confirm).display !== 'none' && !confirm.disabled),
+      };
+    })()`,
+  );
+  if (!layout || layout.viewport > width || layout.viewport < width - 16 || layout.documentWidth > layout.viewport + 1 || !layout.mask || !layout.composer || !layout.confirmVisible || !layout.thumbnail || Math.abs(layout.thumbnail.width - 48) > 1 || Math.abs(layout.thumbnail.height - 48) > 1 || layout.thumbnailObjectFit !== 'cover' || layout.composer.left < -1 || layout.composer.right > width + 1 || layout.confirm.left < -1 || layout.confirm.right > width + 1)
+    throw new Error(`Excel Composer viewport=${width} layout=${JSON.stringify(layout)}`);
+  await fs.mkdir(screenshotDir, { recursive: true });
+  const image = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  const target = path.join(screenshotDir, `operation-excel-composer-${width}.png`);
+  await fs.writeFile(target, Buffer.from(image.data, "base64"));
+  console.log(`excel_batches_chromium: SCREENSHOT ${target}`);
+}
+async function captureExcelHistory(cdp, filename, readonly = false) {
+  if (!screenshotDir) return;
+  await setViewport(cdp, 1280);
+  const layout = await evaluate(
+    cdp,
+    `(() => {
+      const dialog = document.querySelector('dialog[open]');
+      const history = dialog?.querySelector('[data-excel-history-page]');
+      const scroll = history?.querySelector('.xeb-scroll');
+      const rect = (node) => { if (!node) return null; const value = node.getBoundingClientRect(); return { left: value.left, right: value.right, top: value.top, bottom: value.bottom }; };
+      if (${readonly ? "true" : "false"}) return { dialog: rect(document.querySelector('dialog[open][data-v3-content-readonly][data-v3-content-top-layer=\"1\"]')), history: false };
+      return { dialog: rect(dialog), history: Boolean(history?.textContent?.includes('表格可横向滚动查看完整状态和版本追溯。')), scroll: scroll ? { clientWidth: scroll.clientWidth, scrollWidth: scroll.scrollWidth, overflowX: getComputedStyle(scroll).overflowX, label: scroll.getAttribute('aria-label'), tabIndex: scroll.tabIndex } : null };
+    })()`,
+  );
+  const valid = readonly
+    ? Boolean(layout?.dialog)
+    : Boolean(layout?.dialog && layout?.history && layout?.scroll && layout.scroll.scrollWidth > layout.scroll.clientWidth && /auto|scroll/.test(layout.scroll.overflowX) && layout.scroll.label === '历史内容行字段；可横向滚动查看完整状态和版本追溯' && layout.scroll.tabIndex === 0);
+  if (!valid) throw new Error(`Excel history ${readonly ? 'readonly' : 'table'} evidence is incomplete: ${JSON.stringify(layout)}`);
+  await fs.mkdir(screenshotDir, { recursive: true });
+  const image = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  const target = path.join(screenshotDir, filename);
+  await fs.writeFile(target, Buffer.from(image.data, "base64"));
+  console.log(`excel_batches_chromium: SCREENSHOT ${target}`);
 }
 async function assertExcelListViewport(cdp, width) {
   await setViewport(cdp, width);
@@ -388,18 +498,105 @@ try {
     `document.querySelector('[data-excel-feedback][role=status]')?.textContent.includes('统一封面已更新')`,
     "cover upload failed",
   );
-  await evaluate(
+  await pointerClickText(
     cdp,
-    `[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='修改').click();true`,
+    ".xeb-detail-main",
+    "修改",
+    "Excel row edit entry did not receive a real pointer click",
   );
   await waitFor(
     cdp,
     `Boolean(document.querySelector('dialog[open] textarea'))`,
     "edit dialog missing",
   );
+  await pointerClickText(
+    cdp,
+    "dialog[open]",
+    "编辑话术与预览",
+    "Excel shared Composer did not receive a real pointer click",
+  );
+  await waitFor(
+    cdp,
+    `Boolean(document.querySelector('dialog[open][data-v3-content-composer][data-v3-content-top-layer="1"] textarea[data-v3-composer-text]'))`,
+    "Excel shared Composer was not promoted to the native top layer",
+  );
+  await keyboardText(
+    cdp,
+    'dialog[open][data-v3-content-composer] textarea[data-v3-composer-text]',
+    "人工修改后的话术",
+    "Excel shared Composer textarea did not receive real keyboard input",
+  );
   await evaluate(
     cdp,
-    `document.querySelector('dialog textarea').value='人工修改后的话术';[...document.querySelectorAll('dialog button')].find(b=>b.textContent==='保存并重新审核').click();true`,
+    `(() => { const input = document.querySelector('dialog[open][data-v3-content-composer] textarea[data-v3-composer-text]'); input.focus(); input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '中' })); return document.activeElement === input; })()`,
+  );
+  await pressEscape(cdp);
+  await waitFor(
+    cdp,
+    `document.querySelector('dialog[open][data-v3-content-composer] textarea[data-v3-composer-text]')?.value==='人工修改后的话术'`,
+    "an IME Escape closed the native top-layer Composer or discarded its draft",
+  );
+  await evaluate(
+    cdp,
+    `(() => { const input = document.querySelector('dialog[open][data-v3-content-composer] textarea[data-v3-composer-text]'); input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中' })); return true; })()`,
+  );
+  await pressEscape(cdp);
+  await waitFor(
+    cdp,
+    `!document.querySelector('dialog[open][data-v3-content-composer]')&&Boolean(document.querySelector('dialog[open] textarea[readonly]'))`,
+    "ordinary Escape did not close only the top-layer Composer",
+  );
+  await pointerClickText(
+    cdp,
+    "dialog[open]",
+    "编辑话术与预览",
+    "Excel Composer did not reopen after an IME candidate Escape",
+  );
+  await waitFor(
+    cdp,
+    `Boolean(document.querySelector('dialog[open][data-v3-content-composer][data-v3-content-top-layer="1"] textarea[data-v3-composer-text]'))`,
+    "Excel Composer did not reopen in the native top layer",
+  );
+  await keyboardText(
+    cdp,
+    'dialog[open][data-v3-content-composer] textarea[data-v3-composer-text]',
+    "人工修改后的话术",
+    "reopened Excel Composer textarea did not receive real keyboard input",
+  );
+  for (const width of [1440, 1280, 420, 360]) await captureExcelComposer(cdp, width);
+  await setViewport(cdp, 1280);
+  await pointerClick(
+    cdp,
+    'dialog[open][data-v3-content-composer] button[data-v3-composer-confirm]',
+    "Excel shared Composer confirmation did not receive a real pointer click",
+  );
+  await waitFor(
+    cdp,
+    `!document.querySelector('dialog[open][data-v3-content-composer]')&&Boolean(document.querySelector('dialog[open] textarea[readonly]'))&&document.querySelector('dialog[open] textarea')?.value==='人工修改后的话术'`,
+    "shared Composer confirmation did not return its local draft to the parent row dialog",
+  );
+  await pointerClickText(
+    cdp,
+    "dialog[open]",
+    "查看已保存内容",
+    "row readonly presentation did not receive a real pointer click",
+  );
+  await waitFor(
+    cdp,
+    `Boolean(document.querySelector('dialog[open][data-v3-content-readonly][data-v3-content-top-layer="1"]'))`,
+    "row readonly presentation was not promoted to the native top layer",
+  );
+  await pressEscape(cdp);
+  await waitFor(
+    cdp,
+    `!document.querySelector('dialog[open][data-v3-content-readonly]')&&Boolean(document.querySelector('dialog[open] textarea[readonly]'))`,
+    "Escape did not close only the top readonly presentation",
+  );
+  await pointerClickText(
+    cdp,
+    "dialog[open]",
+    "保存并重新审核",
+    "Excel Owner save did not receive a real pointer click",
   );
   await waitFor(
     cdp,
@@ -485,7 +682,37 @@ try {
     `/\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}/.test(document.querySelector('dialog[open]')?.textContent||'')&&!/\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}/.test(document.querySelector('dialog[open]')?.textContent||'')`,
     "historical-version timestamp was not rendered as a Shanghai whole-second value",
   );
-  await evaluate(cdp, `document.querySelector('dialog[open] button')?.click();true`);
+  await pointerClickText(
+    cdp,
+    "dialog[open]",
+    "只读查看",
+    "history version reader did not receive a real pointer click",
+  );
+  await waitFor(
+    cdp,
+    `(() => { const page = document.querySelector('dialog[open] [data-excel-history-page]'); return Boolean(page?.querySelector('button') && [...page.querySelectorAll('button')].find((button)=>button.textContent==='查看内容') && page.textContent.includes('分层：') && page.textContent.includes('审核：') && page.textContent.includes('执行：') && page.textContent.includes('发送时间：') && page.textContent.includes('行 #') && page.textContent.includes('内容版本 #')); })()`,
+    "historical content rows did not preserve their traceable business facts",
+  );
+  await captureExcelHistory(cdp, "operation-excel-history-1280.png");
+  await pointerClickText(
+    cdp,
+    "dialog[open] [data-excel-history-page]",
+    "查看内容",
+    "history row readonly presentation did not receive a real pointer click",
+  );
+  await waitFor(
+    cdp,
+    `Boolean(document.querySelector('dialog[open][data-v3-content-readonly][data-v3-content-top-layer="1"]'))`,
+    "history row readonly presentation was not promoted to the native top layer",
+  );
+  await captureExcelHistory(cdp, "operation-excel-history-readonly-1280.png", true);
+  await pressEscape(cdp);
+  await waitFor(
+    cdp,
+    `!document.querySelector('dialog[open][data-v3-content-readonly]')&&Boolean(document.querySelector('dialog[open] [data-excel-history-page]'))`,
+    "Escape did not return from history readonly presentation to its parent dialog",
+  );
+  await pointerClickText(cdp, "dialog[open]", "关闭", "history dialog close did not receive a real pointer click");
   await cdp.call("Page.reload");
   await waitFor(
     cdp,
@@ -498,10 +725,20 @@ try {
   failed = true;
   throw error;
 } finally {
-  if (cdp) cdp.close();
-  if (browser && browser.exitCode === null && browser.signalCode === null) {
-    browser.kill("SIGTERM");
-    await browserExit(browser);
+  if (cdp) {
+    // Ask Chromium to close its profile before dropping the DevTools socket.
+    // A signal-only shutdown can leave the screenshot profile busy on macOS,
+    // which keeps this otherwise-complete browser Journey alive until the Go
+    // context kills it.
+    try { await cdp.call("Browser.close"); } catch (_) {}
+    cdp.close();
   }
+  if (browser && browser.exitCode === null && browser.signalCode === null)
+    await browserExit(browser);
   await removeProfile(profile);
+  // Node's WebSocket close handshake can retain a handle after the browser
+  // has exited. The Journey reached PASS only after every browser assertion,
+  // artifact write, and cleanup above completed, so terminate the harness
+  // rather than letting that idle handle consume the Go test context.
+  if (!failed) process.exit(0);
 }

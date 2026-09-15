@@ -15,9 +15,10 @@ const boundedStderr = (stderr, profile) => {
 // chromiumStartupDiagnostic distinguishes a failed child process from a live
 // process whose DevTools endpoint exceeded the startup budget. It is exported
 // for a no-browser contract test so CI diagnosis cannot silently regress.
-export const chromiumStartupDiagnostic = ({ profile, exitCode = null, signalCode = null, launchError, stderr } = {}) => {
+export const chromiumStartupDiagnostic = ({ profile, exitCode = null, signalCode = null, launchError, stderr, timeoutMS = chromiumStartupTimeoutMS } = {}) => {
   const safeStderr = boundedStderr(stderr, profile);
+  const safeTimeoutMS = Number.isSafeInteger(timeoutMS) && timeoutMS > 0 ? timeoutMS : chromiumStartupTimeoutMS;
   if (launchError) return `Chromium launch failed before remote debugging (category=${safeErrorCategory(launchError)} stderr=${safeStderr})`;
   if (exitCode !== null || signalCode) return `Chromium exited before remote debugging (exit_code=${exitCode ?? "none"} signal=${signalCode || "none"} stderr=${safeStderr})`;
-  return `Chromium remote debugging did not become ready within ${chromiumStartupTimeoutMS}ms (process=still_running stderr=${safeStderr})`;
+  return `Chromium remote debugging did not become ready within ${safeTimeoutMS}ms (process=still_running stderr=${safeStderr})`;
 };

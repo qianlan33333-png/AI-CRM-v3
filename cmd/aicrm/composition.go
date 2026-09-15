@@ -281,7 +281,23 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	queries := identityquery.NewPostgreSQL(phoneVault)
 	hxcIdentity := identityapp.HXCSourceService{Inspector: queries, Store: identityRepository, OneID: oneID, VerifiedIdentity: identityadapter.HXCVerifiedUnionIDFactory{Enabled: cfg.HXCDashboard.UnionIDVerified}}
 	paymentRepository := paymentstore.NewPostgreSQL()
+	overviewReadUoW, err := platformpostgres.NewReadOnlyRepeatableReadUnitOfWork(pool)
+	if err != nil {
+		return fail(err)
+	}
 	distributionRepository, err := distributionstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	customerOverview, err := customerapp.NewOverviewReader(uow, identityRepository)
+	if err != nil {
+		return fail(err)
+	}
+	paymentOverview, err := paymentapp.NewOverviewReader(overviewReadUoW, paymentRepository, queries)
+	if err != nil {
+		return fail(err)
+	}
+	distributionOverview, err := distributionapp.NewOverviewReader(uow, distributionRepository)
 	if err != nil {
 		return fail(err)
 	}
@@ -292,6 +308,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	requestSecurity := requestAccessSecurity{authentication: authentication}
+	adminOverviewHandler, err := newAdminOverviewHandler(customerOverview, paymentOverview, distributionOverview, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
 	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
@@ -1729,6 +1749,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/v1/customer-tag-commands/", customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/overview", adminOverviewHandler)
 	adminAPIs.Handle("/api/admin/hxc-dashboard/", hxcHandler.Routes())
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
@@ -1894,7 +1915,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if page == "groupopsDetail" {
 			endpoint = "api.admin_group_ops_plan_detail"
 		}
-		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: assets.StandardCSS, HostJS: assets.HostJS, OperationPickerJS: assets.OperationPickerJS, GroupPickerCSS: assets.GroupPickerCSS, GroupPickerJS: assets.GroupPickerJS, MaterialPickerCSS: assets.MaterialPickerCSS, MaterialPickerJS: assets.MaterialPickerJS, ComposerCSS: assets.ComposerCSS, ComposerJS: assets.ComposerJS})
+		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS, StandardCSS: assets.StandardCSS, HostJS: assets.HostJS, SelectionDialogCSS: assets.SelectionDialogCSS, OperationPickerJS: assets.OperationPickerJS, GroupPickerCSS: assets.GroupPickerCSS, GroupPickerJS: assets.GroupPickerJS, MaterialPickerCSS: assets.MaterialPickerCSS, MaterialPickerJS: assets.MaterialPickerJS, ComposerCSS: assets.ComposerCSS, ComposerJS: assets.ComposerJS})
 	})
 	automationUI := automationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets automation.AgentAssets, bootstrap automation.AgentPageBootstrap) error {
 		return renderer.RenderAutomation(writer, webshell.AdminPageForRequest(request, "自动化话术", "管理本地 Agent 与固定话术配置。", "api.admin_automation_agents"), page, donorTemplate, webshell.AutomationAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}, bootstrap.CreateCode)
@@ -2316,6 +2337,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/customers/", identity)
 	mux.Handle("/api/admin/customer-sync-runs", identity)
 	mux.Handle("/api/admin/customer-sync-runs/", identity)
+	mux.Handle("/api/admin/overview", identity)
 	mux.Handle("/api/admin/hxc-dashboard/", identity)
 	mux.Handle("/api/admin/questionnaires", identity)
 	mux.Handle("/api/admin/questionnaires/", identity)

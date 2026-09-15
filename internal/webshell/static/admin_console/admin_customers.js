@@ -249,7 +249,7 @@
   }
 
   function clearTagSelectorErrors() {
-    root.querySelectorAll("[data-customer-tag-picker-load-error]").forEach((node) => node.remove());
+    root.querySelectorAll("[data-customer-tag-loader-error],[data-customer-tag-picker-load-error]").forEach((node) => node.remove());
   }
 
   function showTagSelectorError(selects, error) {
@@ -915,7 +915,14 @@
   if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult, el.singleTagRefresh); });
   if (el.batchTagRefresh) el.batchTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.batchTagResult, el.batchTagRefresh); });
   if (el.singleTagRefresh) el.singleTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.singleTagResult, el.singleTagRefresh); });
-  if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); void loadList("", "reset"); });
+  if (el.filters) {
+    el.filters.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      el.filters.requestSubmit();
+    });
+    el.filters.addEventListener("submit", function (event) { event.preventDefault(); void loadList("", "reset"); });
+  }
   if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); void loadList("", "reset"); });
   if (el.refresh) el.refresh.addEventListener("click", function () { if (!listBusy) void loadList(listRetry.cursor, listRetry.navigation, listRetry.query); });
   if (el.previous) el.previous.addEventListener("click", function () { if (!listBusy && activeQuery === committedQuery && pageIndex > 0) void loadList(pageCursors[pageIndex - 1], "previous"); });

@@ -3,7 +3,10 @@
 
 export type SelectionDialogOptions = {
   dialog: HTMLElement;
-  search: HTMLInputElement;
+  /** A selector's IME-safe search field, when the dialog has one. */
+  search?: HTMLInputElement;
+  /** A non-selector dialog may use a textarea, select, or primary control. */
+  initialFocus?: HTMLElement;
   close(): void;
   submit(): void;
   onKeyDown?(event: KeyboardEvent): void;
@@ -95,7 +98,7 @@ export function installSelectionDialog(options: SelectionDialogOptions): Selecti
       }
       return;
     }
-    if (event.target === options.search && event.key === 'Enter') {
+    if (options.search && event.target === options.search && event.key === 'Enter') {
       if (event.isComposing || event.keyCode === 229 || composing || compositionJustEnded) {
         event.stopPropagation();
         return;
@@ -107,17 +110,21 @@ export function installSelectionDialog(options: SelectionDialogOptions): Selecti
     options.onKeyDown?.(event);
   };
 
-  options.search.addEventListener('compositionstart', onCompositionStart);
-  options.search.addEventListener('compositionupdate', onCompositionUpdate);
-  options.search.addEventListener('compositionend', onCompositionEnd);
+  // Composition can originate in an optional search input, textarea, select
+  // host, or contenteditable editor. Listen at the dialog boundary so Escape
+  // never dismisses a parent editor while its IME candidate session is active.
+  options.dialog.addEventListener('compositionstart', onCompositionStart);
+  options.dialog.addEventListener('compositionupdate', onCompositionUpdate);
+  options.dialog.addEventListener('compositionend', onCompositionEnd);
   options.dialog.addEventListener('keydown', onKeyDown);
-  window.setTimeout(() => { if (options.search.isConnected) options.search.focus({ preventScroll: true }); }, 0);
+  const initialFocus = options.initialFocus || options.search;
+  window.setTimeout(() => { if (initialFocus?.isConnected) initialFocus.focus({ preventScroll: true }); }, 0);
 
   return {
     dispose() {
-      options.search.removeEventListener('compositionstart', onCompositionStart);
-      options.search.removeEventListener('compositionupdate', onCompositionUpdate);
-      options.search.removeEventListener('compositionend', onCompositionEnd);
+      options.dialog.removeEventListener('compositionstart', onCompositionStart);
+      options.dialog.removeEventListener('compositionupdate', onCompositionUpdate);
+      options.dialog.removeEventListener('compositionend', onCompositionEnd);
       options.dialog.removeEventListener('keydown', onKeyDown);
       if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     },

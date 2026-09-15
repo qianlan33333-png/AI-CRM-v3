@@ -46,6 +46,66 @@ func NewPostgresStoreWithObservation(phoneVault *identitysecure.PhoneVault, obse
 }
 
 var _ identityapp.Store = (*PostgresStore)(nil)
+var _ identityport.CanonicalCustomerOverviewReader = (*PostgresStore)(nil)
+
+// overviewRuntimeCreationSources is deliberately closed. Every listed value
+// is emitted by a current interactive Provider path that calls
+// ProvisionVerifiedIdentity at the customer-root creation interaction. A
+// directory sync, archive ingestion, or generic WeCom callback can first
+// encounter a pre-existing contact, so those sources intentionally remain
+// unknown until Identity persists a stronger creation-origin fact.
+var overviewRuntimeCreationSources = []string{
+	"wechat_miniprogram",
+	"wechat.payment.h5_oauth.userinfo",
+	"wechat.survey.oauth.userinfo",
+	"wechat.radar.oauth",
+}
+
+// ReadNewCanonicalCustomerOverview reads only Identity-owned records. A root
+// is known-new only when its first persisted verified identity came from an
+// explicitly declared interactive runtime source and no immutable historical
+// subject receipt names the root. It counts the original root-provision fact
+// even if a later lifecycle change retires, closes, or merges that root; a
+// later mutable state must not erase a real historical creation measurement.
+// This prevents cutover/import rows and any origin that cannot be proven from
+// becoming business "new customers".
+func (store *PostgresStore) ReadNewCanonicalCustomerOverview(ctx context.Context, window identityport.OverviewWindow) (identityport.NewCanonicalCustomerOverview, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return identityport.NewCanonicalCustomerOverview{}, err
+	}
+	if !window.Valid() {
+		return identityport.NewCanonicalCustomerOverview{}, errStore
+	}
+	result := identityport.NewCanonicalCustomerOverview{Evidence: "identity.runtime_verified_source.v1"}
+	err = tx.QueryRow(ctx, `WITH candidates AS (
+	SELECT c.id,
+		EXISTS(
+			SELECT 1 FROM identity_history_import_receipts h
+			WHERE h.outcome='canonical' AND h.customer_id=c.id
+		) AS historical,
+		(
+			SELECT i.source FROM customer_identities i
+			WHERE i.customer_id=c.id AND i.assurance='verified'
+			ORDER BY i.id ASC LIMIT 1
+		) AS initial_source
+	FROM customers c
+	WHERE c.created_at >= $1 AND c.created_at < $2
+)
+SELECT
+	COALESCE(COUNT(*) FILTER (WHERE NOT historical AND initial_source=ANY($3::text[])),0),
+	COALESCE(COUNT(*) FILTER (WHERE historical),0),
+	COALESCE(COUNT(*) FILTER (WHERE NOT historical AND (initial_source IS NULL OR NOT(initial_source=ANY($3::text[])))),0)
+FROM candidates`, window.Start.UTC(), window.End.UTC(), overviewRuntimeCreationSources).Scan(
+		&result.KnownNewCanonicalCustomers,
+		&result.HistoricalExcluded,
+		&result.UnknownSource,
+	)
+	if err != nil {
+		return identityport.NewCanonicalCustomerOverview{}, persistenceFailure(err)
+	}
+	return result, nil
+}
 
 func (store *PostgresStore) AttachDeclaredPhone(ctx context.Context, command identityport.DeclaredPhoneCommand, ref identitydomain.NormalizedReference) (identityport.DeclaredAttachResult, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)

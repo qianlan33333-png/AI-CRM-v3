@@ -568,6 +568,17 @@ func TestTagPickerScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	}
 }
 
+func TestComponentStatesScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR", "")
+	if value := ComponentStatesScreenshotDirectory(); value != "" {
+		t.Fatalf("missing component state screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR", "/tmp/aicrm-component-states-evidence")
+	if value := ComponentStatesScreenshotDirectory(); value != "/tmp/aicrm-component-states-evidence" {
+		t.Fatalf("component state screenshot directory=%q", value)
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	allowed := map[string]string{
 		"AICRM_DATABASE_URL":                 "postgres://target@localhost/aicrm",

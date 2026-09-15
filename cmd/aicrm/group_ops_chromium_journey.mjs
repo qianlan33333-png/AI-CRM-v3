@@ -8,8 +8,9 @@ const username = process.env.AICRM_GROUPOPS_TEST_USERNAME;
 const password = process.env.AICRM_GROUPOPS_TEST_PASSWORD;
 const planID = process.env.AICRM_GROUPOPS_TEST_PLAN_ID;
 const replacementStaffID = process.env.AICRM_GROUPOPS_TEST_REPLACEMENT_STAFF_ID;
+const composerImageIDs = String(process.env.AICRM_GROUPOPS_TEST_COMPOSER_IMAGE_IDS || '').split(',').map((value) => Number(value));
 const screenshotDir = process.env.AICRM_GROUPOPS_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "")) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, and plan ID");
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(planID || "") || composerImageIDs.length !== 2 || composerImageIDs.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("Group Ops Chromium journey requires HTTPS URL, credentials, plan ID, and two composer Media IDs");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const browserBinary = () => {
   const candidates = [process.env.AICRM_CHROMIUM_BINARY, process.env.CHROME_BIN].filter(Boolean);
@@ -132,14 +133,52 @@ try {
   const nodeModalOpened = await evaluate(cdp, "(() => { const node=document.querySelector('[data-action=\"open-node-modal\"]'); if (!node) return false; node.click(); return true; })()");
   if (!nodeModalOpened) throw new Error(`Group Ops renderer lost the node action after its ready check: ${JSON.stringify(refreshedDetail)}`);
   await waitFor(cdp, "Boolean(document.querySelector('[name=\"node_day_index\"]'))", "standard node editor did not open");
-  await evaluate(cdp, "(() => { const set=(name,value)=>{const input=document.querySelector(`[name=\"${name}\"]`); input.value=value; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));}; set('node_day_index','2'); set('node_scheduled_time','09:30'); set('node_action_title','Chromium 日程动作'); set('node_content_package_json',JSON.stringify({content_text:'浏览器真实后端节点',image_library_ids:[],miniprogram_library_ids:[],attachment_library_ids:[],group_invite_library_ids:[]})); document.querySelector('[data-action=\"save-node\"]').click(); return true; })()");
+  await evaluate(cdp, "(() => { const set=(name,value)=>{const input=document.querySelector(`[name=\"${name}\"]`); input.value=value; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));}; set('node_day_index','2'); set('node_scheduled_time','09:30'); set('node_action_title','Chromium 日程动作'); document.querySelector('[data-action=\"configure-node-content\"]').click(); return true; })()");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-content-composer] [data-v3-composer-text]'))", "actual Group Ops content composer did not open");
+  await evaluate(cdp, `(() => { const field=document.querySelector('[data-v3-content-composer] [data-v3-composer-text]'); field.value='浏览器真实后端节点 {{历史变量}}'; field.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('[data-v3-content-composer] [data-v3-composer-add="image"]').click(); return true; })()`);
+  await waitFor(cdp, `Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":${composerImageIDs[0]}"]')) && Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":${composerImageIDs[1]}"]'))`, "Group Ops scoped image selector did not read the authorised Media page");
+  await evaluate(cdp, `document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":${composerImageIDs[0]}"]').click(); document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":${composerImageIDs[1]}"]').click(); document.querySelector('[data-v3-selection-session="material"] [data-v3-picker-confirm]').click(); true`);
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]') && document.querySelectorAll('[data-v3-content-composer] [data-v3-composer-remove]').length===2", "two temporary Group Ops materials did not return to the content draft");
+  // Remove then reopen the real selector. The restored current selection must
+  // retain its real Media label; no save/send happens until the node command.
+  await evaluate(cdp, "document.querySelector('[data-v3-content-composer] [data-v3-composer-remove=\"0\"]').click(); true");
+  await waitFor(cdp, "document.querySelectorAll('[data-v3-content-composer] [data-v3-composer-remove]').length===1", "composer removal did not stay local to the draft");
+  await evaluate(cdp, "document.querySelector('[data-v3-content-composer] [data-v3-composer-add=\"image\"]').click(); true");
+  await waitFor(cdp, `Boolean(document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":${composerImageIDs[0]}"][aria-pressed="false"]'))`, "reopened Group Ops selector did not retain the remaining selected Media record");
+  await evaluate(cdp, `document.querySelector('[data-v3-selection-session="material"] [data-v3-material-key$=":${composerImageIDs[0]}"]').click(); document.querySelector('[data-v3-selection-session="material"] [data-v3-picker-confirm]').click(); true`);
+  await waitFor(cdp, `(() => { const names=Array.from(document.querySelectorAll('[data-v3-content-composer] .aicrm-content-composer__materials strong')).map((item)=>item.textContent||''); return names.length===2 && names[0].includes('Chromium 群运营素材二') && names[1].includes('Chromium 群运营素材一'); })()`, "reopened selector did not preserve its caller-owned material draft order");
+  await evaluate(cdp, "document.querySelector('[data-v3-content-composer] [data-v3-composer-move=\"0:1\"]').click(); true");
+  await waitFor(cdp, `(() => Array.from(document.querySelectorAll('[data-v3-content-composer] .aicrm-content-composer__materials strong')).map((item)=>item.textContent||'')[0]?.includes('Chromium 群运营素材一'))()`, "composer reorder did not update its local persisted-order draft");
+  for (const width of [1440, 1280, 420, 360]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 1000 });
+    await delay(80);
+    const layout = await evaluate(cdp, "(() => { const dialog=document.querySelector('[data-v3-content-composer] .aicrm-content-composer'), body=dialog?.querySelector('.aicrm-content-composer__body'), textarea=dialog?.querySelector('[data-v3-composer-text]'), preview=dialog?.querySelector('[data-content-presentation=\"preview\"]'), footer=dialog?.querySelector('footer'), cancel=dialog?.querySelector('header [data-v3-composer-cancel]'), thumbnail=preview?.querySelector('.aicrm-content-presentation__thumbnail'), details=preview?.querySelector('.aicrm-content-presentation__material-details'); const box=node=>{const rect=node?.getBoundingClientRect(); return rect?{left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:rect.width,height:rect.height}:null;}; const thumbnailStyle=thumbnail&&getComputedStyle(thumbnail); return {documentWidth:document.documentElement.scrollWidth,dialog:box(dialog),body:box(body),textarea:box(textarea),preview:box(preview),footer:box(footer),thumbnail:box(thumbnail),details:box(details),thumbnailCSS:thumbnailStyle&&{width:thumbnailStyle.width,height:thumbnailStyle.height,maxWidth:thumbnailStyle.maxWidth,maxHeight:thumbnailStyle.maxHeight,display:thumbnailStyle.display},thumbnailHTML:thumbnail?.outerHTML,bodyOverflow:body&&getComputedStyle(body).overflowY,cancelNoWrap:cancel&&getComputedStyle(cancel).whiteSpace,cancelFits:cancel&&cancel.scrollWidth<=cancel.clientWidth}; })()");
+    const previewLayoutIsOrdered = width <= 640
+      ? layout?.details?.top >= layout?.thumbnail?.bottom + 6
+      : layout?.details?.left >= layout?.thumbnail?.right + 6;
+    if (!layout || layout.documentWidth > width + 1 || !layout.dialog || layout.dialog.width > width || layout.dialog.bottom > 1000 || !layout.body || layout.bodyOverflow !== 'auto' || !layout.textarea || !layout.preview || !layout.footer || layout.footer.bottom > layout.dialog.bottom + 1 || layout.footer.top < layout.dialog.top || layout.cancelNoWrap !== 'nowrap' || !layout.cancelFits || !layout.thumbnail || layout.thumbnail.width > 52 || layout.thumbnail.height > 52 || !layout.details || !previewLayoutIsOrdered) throw new Error(`Group Ops composer ${width}px layout is not operable: ${JSON.stringify(layout)}`);
+    if (screenshotDir) { await fs.mkdir(screenshotDir, { recursive: true }); const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, `groupops-composer-${width}.png`); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
+  }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 900 });
+  await evaluate(cdp, "document.querySelector('[data-v3-content-composer] [data-v3-composer-confirm]').click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-content-composer]')", "content composer confirmation did not return to the node-local draft");
+  const localContentDraft = await evaluate(cdp, "(() => ({pkg:document.querySelector('[name=\"node_content_package_json\"]')?.value,order:document.querySelector('[name=\"node_content_material_order_json\"]')?.value}))()");
+  if (!localContentDraft?.pkg?.includes('浏览器真实后端节点 {{历史变量}}') || !localContentDraft?.order?.includes('media-library')) throw new Error(`Group Ops composer did not update only the local node draft: ${JSON.stringify(localContentDraft)}`);
+  await evaluate(cdp, "document.querySelector('[data-action=\"save-node\"]').click(); true");
   await waitFor(cdp, "document.body.textContent.includes('Chromium 日程动作') && document.body.textContent.includes('第 2 天') && document.body.textContent.includes('09:30')", "browser node save did not return persisted schedule");
-  const persisted = await evaluate(cdp, `fetch('/api/admin/automation-conversion/group-ops/plans/${planID}/nodes',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>body.items?.some((node)=>node.day_index===2&&node.scheduled_time==='09:30'&&node.trigger_time_label==='09:30'&&node.action_title==='Chromium 日程动作'&&node.status==='active'))`);
-  if (!persisted) throw new Error("Group Ops node API did not return browser-persisted schedule");
+  const persistedNodes = await evaluate(cdp, `fetch('/api/admin/automation-conversion/group-ops/plans/${planID}/nodes',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>body.items||[])`);
+  const persisted = Array.isArray(persistedNodes) && persistedNodes.some((node)=>node.day_index===2&&node.scheduled_time==='09:30'&&node.trigger_time_label==='09:30'&&node.action_title==='Chromium 日程动作'&&node.status==='active'&&node.message_text==='浏览器真实后端节点 {{历史变量}}'&&node.material_plan?.references?.length===2&&node.material_plan.references[0]?.kind==='image'&&node.material_plan.references[0]?.id===composerImageIDs[0]&&node.material_plan.references[1]?.kind==='image'&&node.material_plan.references[1]?.id===composerImageIDs[1]);
+  if (!persisted) throw new Error(`Group Ops node API did not return browser-persisted schedule: ${JSON.stringify(persistedNodes)}`);
+  await waitFor(cdp, "Boolean(document.querySelector('[data-action=\"view-node-content\"]'))", "saved node did not expose its actual readonly content action");
+  await evaluate(cdp, "document.querySelector('[data-action=\"view-node-content\"]').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-content-readonly]'))", "saved node content did not resolve into the shared readonly presenter");
+  const readonly = await evaluate(cdp, "(() => { const root=document.querySelector('[data-v3-content-readonly]'); const text=root?.textContent||''; const previews=Array.from(root?.querySelectorAll('img.aicrm-content-presentation__thumbnail')||[]).map((image)=>({complete:image.complete,width:image.naturalWidth,src:image.getAttribute('src')})); return {text,previews}; })()");
+  if (!readonly?.text?.includes('浏览器真实后端节点 {{历史变量}}') || readonly.text.indexOf('Chromium 群运营素材一') > readonly.text.indexOf('Chromium 群运营素材二') || readonly.previews.length !== 2 || readonly.previews.some((preview)=>!preview.complete || preview.width < 1 || !preview.src)) throw new Error(`saved Group Ops content did not read back names, order, and thumbnails: ${JSON.stringify(readonly)}`);
+  await evaluate(cdp, "document.querySelector('[data-v3-content-readonly-close]').click(); true");
   await evaluate(cdp, "document.querySelector('[data-action=\"switch-detail-panel\"][data-panel=\"basic\"]').click(); document.querySelector('[data-action=\"pick-plan-owner\"]').click(); true");
-  await waitFor(cdp, "document.querySelectorAll('[data-operation-member-picker]:not([hidden]) [data-operation-member-row]').length >= 2", "standard owner picker did not load local employees");
-  const ownerChanged = await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('[data-operation-member-picker] [data-operation-member-row]')).find((item)=>item.dataset.userId===\"chromium-replacement\"); if(!row)return false; row.querySelector('[data-operation-member-row-select]').click(); document.querySelector('[data-operation-member-picker] [data-operation-member-confirm]').click(); return true; })()");
-  if (!ownerChanged) throw new Error("standard owner picker had no replacement employee");
+  await waitFor(cdp, "Array.from(document.querySelectorAll('[data-v3-selection-session=\"staff\"] [data-v3-staff-key]')).filter(row=>String(row.textContent||'').includes('chromium-replacement')).length === 1", "V3 owner picker did not load the authorised local employees");
+  const ownerChanged = await evaluate(cdp, "(() => { const row=Array.from(document.querySelectorAll('[data-v3-selection-session=\"staff\"] [data-v3-staff-key]')).find((item)=>String(item.textContent||'').includes('chromium-replacement')); if(!row)return false; row.click(); const confirm=document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-confirm]'); if(!confirm||confirm.disabled)return false; confirm.click(); return true; })()");
+  if (!ownerChanged) throw new Error("V3 owner picker had no authorised replacement employee");
   await waitFor(cdp, `document.querySelector('[name="owner_userid"]').value === ${JSON.stringify(replacementStaffID)}`, "standard owner picker did not set an owner");
   await evaluate(cdp, "document.querySelector('[data-action=\"save-plan\"]').click(); true");
   await waitFor(cdp, "document.body.textContent.includes('saved') || document.body.textContent.includes('已保存')", "browser owner save did not return persisted detail");
@@ -180,6 +219,78 @@ try {
   if (screenshotDir) { const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const target = path.join(screenshotDir, 'material-picker-thumbnail-fallback-360.png'); await fs.writeFile(target, Buffer.from(shot.data, 'base64')); console.log(`group_ops_chromium: SCREENSHOT ${target}`); }
   await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"material\"] [data-v3-picker-cancel]').click(); true");
   await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"material\"]')", "material dialog cancel did not return to the actual Radar form");
+
+  const groupsPath = "/admin/automation-conversion/group-ops/groups/ui";
+  await cdp.call("Page.navigate", { url: `${baseURL}${groupsPath}` });
+  await waitFor(cdp, "Boolean(document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]'))", "Group Ops groups list did not render its real keyword filter");
+  const imeCandidatePrevented = await evaluate(cdp, `(() => {
+    const field = document.querySelector('#group-ops-app input[name="keyword"][data-filter]');
+    if (!field) return null;
+    window.__groupDirectoryReads = 0;
+    window.__groupDirectoryQueries = [];
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const request = typeof input === 'string' || input instanceof URL ? undefined : input;
+      const url = new URL(request ? request.url : String(input), location.href);
+      const method = String(init?.method || request?.method || 'GET').toUpperCase();
+      if (method === 'GET' && url.pathname === '/api/admin/automation-conversion/group-ops/groups') {
+        window.__groupDirectoryReads += 1;
+        window.__groupDirectoryQueries.push(url.search);
+        if (window.__delayNextGroupRead) {
+          window.__delayNextGroupRead = false;
+          return new Promise((resolve, reject) => {
+            window.__releaseGroupRead = () => nativeFetch(input, init).then(resolve, reject);
+          });
+        }
+      }
+      return nativeFetch(input, init);
+    };
+    field.focus();
+    field.value = 'Chromium';
+    field.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    field.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    field.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    const candidate = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' });
+    Object.defineProperty(candidate, 'keyCode', { value: 229 });
+    field.dispatchEvent(candidate);
+    return candidate.defaultPrevented;
+  })()`);
+  if (imeCandidatePrevented !== false) throw new Error("Group Ops keyword IME candidate Enter was prevented");
+  await delay(80);
+  const readsAfterCandidate = await evaluate(cdp, "window.__groupDirectoryReads");
+  if (readsAfterCandidate !== 0) throw new Error(`Group Ops keyword IME candidate Enter read the directory ${readsAfterCandidate} times`);
+  await evaluate(cdp, "window.__delayNextGroupRead = true; document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); true");
+  await waitFor(cdp, "window.__groupDirectoryReads === 1 && typeof window.__releaseGroupRead === 'function'", "Group Ops keyword Enter did not issue its delayed existing directory read");
+  const composingDraftStarted = await evaluate(cdp, `(() => {
+    const field=document.querySelector('#group-ops-app input[name="keyword"][data-filter]');
+    if (!field) return false;
+    window.__groupKeywordDOM = field;
+    field.focus(); field.value='中文草稿B';
+    field.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+    field.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+    window.__releaseGroupRead();
+    return true;
+  })()`);
+  if (!composingDraftStarted) throw new Error('Group Ops in-flight composition fixture did not start');
+  await delay(100);
+  const composingPreserved = await evaluate(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');return Boolean(field===window.__groupKeywordDOM&&field?.value==='中文草稿B'&&document.activeElement===field)})()");
+  if (!composingPreserved) throw new Error('Group Ops delayed result replaced the active IME draft before composition ended');
+  await evaluate(cdp, "document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); true");
+  await waitFor(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');return Boolean(field&&field!==window.__groupKeywordDOM&&field.value==='中文草稿B'&&document.activeElement===field)})()", "Group Ops composition completion did not render the delayed result while preserving the draft/focus");
+  await evaluate(cdp, `(() => {
+    const field=document.querySelector('#group-ops-app input[name="keyword"][data-filter]');
+    field.value='未提交'; field.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+    field.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
+    return true;
+  })()`);
+  await delay(100);
+  const blurRetained = await evaluate(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');return Boolean(field&&field.value==='未提交'&&window.__groupDirectoryReads===1)})()");
+  if (!blurRetained) throw new Error('Group Ops keyword blur submitted or discarded its draft');
+  await evaluate(cdp, "(()=>{const select=document.querySelector('#group-ops-app select[name=\"bind_status\"][data-filter]');if(!select)return false;select.value='bound';select.dispatchEvent(new Event('change',{bubbles:true}));return true})()");
+  await waitFor(cdp, "window.__groupDirectoryReads === 2", "Group Ops binding filter did not issue its existing directory read");
+  const dropdownPreservedDraft = await evaluate(cdp, "(()=>{const field=document.querySelector('#group-ops-app input[name=\"keyword\"][data-filter]');const bind=document.querySelector('#group-ops-app select[name=\"bind_status\"][data-filter]');const query=window.__groupDirectoryQueries?.[1]||'';return Boolean(field&&bind&&field.value==='未提交'&&bind.value==='bound'&&new URLSearchParams(query).get('keyword')==='Chromium'&&new URLSearchParams(query).get('bind_status')==='bound')})()");
+  if (!dropdownPreservedDraft) throw new Error('Group Ops binding filter did not retain the draft or reuse the committed keyword');
+
   console.log("group_ops_chromium: PASS");
 } catch (error) {
   if (error instanceof DevToolsUnavailable) console.log("group_ops_chromium: SKIP_DEVTOOLS");

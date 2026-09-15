@@ -107,7 +107,9 @@ paths:
       security: [{adminSession: []}]
       parameters:
         - {name: status, in: query, schema: {type: string, enum: [all, draft, enabled, disabled], default: all}}
-        - {$ref: "#/components/parameters/Limit"}
+        - {name: search, in: query, description: Trimmed UTF-8 byte length must not exceed 200., schema: {type: string, maxLength: 200}}
+        - {name: content_type, in: query, schema: {type: string, enum: [link, image, pdf]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
         - {$ref: "#/components/parameters/Offset"}
       responses:
         "200": {description: Radar definitions with local lifecycle facts, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkPage"}}}}
@@ -800,6 +802,22 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
+  /api/admin/overview:
+    get:
+      operationId: getAdminOverview
+      tags: [Overview]
+      description: "Read-only operating summary for the authenticated global admin-read scope. Every owner section returns its own `status`, `as_of`, and `scope`: `zero` is a confirmed zero, `data_missing` preserves known values plus missing-evidence counts, and `failed` does not invalidate other sections. Payment includes native and historical rows only when the original paid confirmation time is trustworthy; no-time historical facts are reported as missing evidence rather than silently excluded."
+      security: [{adminSession: []}]
+      parameters:
+        - {name: period, in: query, required: true, schema: {type: string, enum: [today, 7d, 30d, custom]}}
+        - {name: from, in: query, description: Required only when period=custom. Inclusive Beijing calendar date., schema: {type: string, format: date}}
+        - {name: to, in: query, description: Required only when period=custom and must be on or after from. Inclusive Beijing calendar date., schema: {type: string, format: date}}
+      responses:
+        "200": {description: "Per-section operating facts. The request has no Provider calls, writes, queues, or persisted aggregate table.", content: {application/json: {schema: {$ref: "#/components/schemas/AdminOverview"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/customers:
     get:
       operationId: listCustomers
@@ -4197,6 +4215,129 @@ components:
       content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformV1Failure"}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    AdminOverview:
+      type: object
+      additionalProperties: false
+      required: [range, contract, paid, customers, refunds, distribution, todos]
+      properties:
+        range: {$ref: "#/components/schemas/AdminOverviewRange"}
+        contract: {$ref: "#/components/schemas/AdminOverviewContract"}
+        paid: {$ref: "#/components/schemas/AdminOverviewPaid"}
+        customers: {$ref: "#/components/schemas/AdminOverviewCustomers"}
+        refunds: {$ref: "#/components/schemas/AdminOverviewRefunds"}
+        distribution: {$ref: "#/components/schemas/AdminOverviewDistribution"}
+        todos: {$ref: "#/components/schemas/AdminOverviewTodos"}
+    AdminOverviewRange:
+      type: object
+      additionalProperties: false
+      required: [period, timezone, start, end]
+      properties:
+        period: {type: string, enum: [today, 7d, 30d, custom]}
+        timezone: {const: Asia/Shanghai}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time, description: Exclusive range end.}
+    AdminOverviewContract:
+      type: object
+      additionalProperties: false
+      required: [scope, paid_gross, paid_payers, new_customers, refunds, distribution, cross_domain_reads]
+      properties:
+        scope: {const: admin_authorized_global}
+        paid_gross: {type: string}
+        paid_payers: {type: string}
+        new_customers: {type: string}
+        refunds: {type: string}
+        distribution: {type: string}
+        cross_domain_reads: {type: string}
+    AdminOverviewSection:
+      type: object
+      additionalProperties: false
+      required: [status, as_of, scope]
+      properties:
+        status: {type: string, enum: [ready, zero, data_missing, failed]}
+        as_of: {type: string, format: date-time, description: Actual completion observation time for this owner section.}
+        scope: {const: admin_authorized_global}
+        reason_code: {type: string}
+    AdminOverviewMoney:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: {type: integer, format: int64}
+        currency: {type: string, minLength: 1, maxLength: 16}
+    AdminOverviewTrendPoint:
+      type: object
+      additionalProperties: false
+      required: [date, gross, order_count]
+      properties:
+        date: {type: string, format: date}
+        gross: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+        order_count: {type: integer, format: int64, minimum: 0}
+    AdminOverviewPaid:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [gross, order_count, trend]
+          properties:
+            gross: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            order_count: {type: integer, format: int64, minimum: 0, description: Distinct Payment business order_id values in the trustworthy paid_confirmed_at window.}
+            distinct_canonical_payers:
+              type: integer
+              format: int64
+              minimum: 0
+              description: Distinct current canonical Customer roots for the historical paid payer set. Omitted when the bounded OneID root read is unavailable so clients cannot present an unknown count as zero.
+            missing_payer_count: {type: integer, format: int64, minimum: 0}
+            missing_confirmation_evidence_count: {type: integer, format: int64, minimum: 0}
+            missing_confirmation_evidence_amount: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            trend: {type: array, items: {$ref: "#/components/schemas/AdminOverviewTrendPoint"}}
+    AdminOverviewCustomers:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [new_canonical_customers, historical_excluded]
+          properties:
+            new_canonical_customers: {type: integer, format: int64, minimum: 0}
+            historical_excluded: {type: integer, format: int64, minimum: 0}
+            unknown_source_count: {type: integer, format: int64, minimum: 0}
+            evidence: {type: string}
+    AdminOverviewRefunds:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [completed_amount, completed_count, net_amount]
+          properties:
+            completed_amount: {type: array, items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            completed_count: {type: integer, format: int64, minimum: 0}
+            missing_completion_evidence_count: {type: integer, format: int64, minimum: 0}
+            net_amount: {type: [array, "null"], items: {$ref: "#/components/schemas/AdminOverviewMoney"}}
+            evidence: {type: string}
+    AdminOverviewDistribution:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [period_paid_sales_minor, period_initial_commission_minor, period_commission_count, current_unsettled_minor, current_settled_minor, currency]
+          properties:
+            period_paid_sales_minor: {type: integer, format: int64, minimum: 0}
+            period_initial_commission_minor: {type: integer, format: int64, minimum: 0}
+            period_commission_count: {type: integer, format: int64, minimum: 0}
+            current_unsettled_minor: {type: integer, format: int64, minimum: 0}
+            current_settled_minor: {type: integer, format: int64, minimum: 0}
+            currency: {const: CNY}
+    AdminOverviewTodos:
+      allOf:
+        - {$ref: "#/components/schemas/AdminOverviewSection"}
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [code, count, href]
+                properties:
+                  code: {type: string}
+                  count: {type: integer, format: int64, minimum: 0}
+                  href: {type: string, pattern: "^/"}
     RadarLink:
       type: object
       additionalProperties: false

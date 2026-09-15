@@ -19,17 +19,24 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     url: "https://owner-host.fixture/admin/owner-migration", runScripts: "outside-only", pretendToBeVisual: true,
     beforeParse(window) {
       window.Headers = Headers;
-      window.OperationMemberPicker = { open: async (options) => {
-        pickerOpens.push({ scope: options.scope, pageSize: options.pageSize, includeInactive: options.includeInactive, allowRefresh: options.allowRefresh, title: options.title });
-        const selected = (contextBody.staff || []).find((staff) => Boolean(staff.Active) !== options.includeInactive);
-        if (selected) options.onSelect({ user_id: selected.UserID });
+      window.AICRMStaffPicker = { open(options) {
+        pickerOpens.push({ source: options.source, scope: options.scope, title: options.title, hint: options.directoryHint });
+        const controller = new AbortController();
+        void options.loadPage({ query: "", signal: controller.signal }).then((page) => {
+          const selected = page.items.find((item) => options.title.includes("原负责人") ? item.active === false : item.active !== false);
+          if (selected) options.onCommit({ selected: [selected], added: [selected], removed: [] });
+        });
       } };
       window.fetch = async (input, init = {}) => {
         const url = new URL(String(input), window.location.origin);
         const method = init.method || "GET";
-        requests.push({ path: url.pathname, method });
+        requests.push({ path: url.pathname, query: url.search, method, body: init.body || "" });
         if (url.pathname === "/static/admin_console/owner_migration_dd8d60d.html" && method === "GET") return response(donor);
         if (url.pathname === "/api/admin/customers/owner-handoffs/context" && method === "GET") return response(contextBody, contextStatus);
+        if (url.pathname === "/api/admin/common/operation-members" && method === "GET") {
+          const inactive = url.searchParams.get("include_inactive") === "true";
+          return response({ items: (contextBody.staff || []).filter((staff) => inactive || staff.Active !== false).map((staff) => ({ staff_id: staff.ID, user_id: staff.UserID, display_name: staff.DisplayName, active: staff.Active })) });
+        }
         if (url.pathname === "/api/admin/customers/owner-handoffs/previews" && method === "POST") {
           if (previewStatus !== 200) return response({ error: "provider_unavailable（服务暂不可用）" }, previewStatus);
           return response({
@@ -53,9 +60,9 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
   const page = stage?.querySelector("[data-owner-migration-page]");
   if (exercisePicker && page) {
     page.querySelector('[data-owner-picker="source"]')?.click();
-    await wait();
+    await wait(); await wait();
     page.querySelector('[data-owner-picker="target"]')?.click();
-    await wait();
+    await wait(); await wait();
   }
   if (exerciseLegacyImport && page) {
     const csv = [
@@ -96,6 +103,8 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     context_gets: requests.filter(request => request.path === "/api/admin/customers/owner-handoffs/context" && request.method === "GET").length,
     user_message: stage?.textContent || "",
     picker_opens: pickerOpens,
+    member_reads: requests.filter(request => request.path === "/api/admin/common/operation-members"),
+    preview_body: requests.find(request => request.path === "/api/admin/customers/owner-handoffs/previews")?.body || "",
     source_id: page?.querySelector('[data-owner-userid="source"]')?.value || "",
     target_id: page?.querySelector('[data-owner-userid="target"]')?.value || "",
     import_visible: !page?.querySelector("[data-import-summary]")?.hidden,
@@ -131,9 +140,9 @@ const picker = await mountFixture({
   operator: "管理员 #42",
 }, 200, true);
 if (picker.init !== "ready" || picker.source_id !== "11" || picker.target_id !== "12" || JSON.stringify(picker.picker_opens) !== JSON.stringify([
-  { scope: "owner_migration", pageSize: 100, includeInactive: true, allowRefresh: false, title: "选择原负责人" },
-  { scope: "owner_migration", pageSize: 100, includeInactive: false, allowRefresh: false, title: "选择目标负责人" },
-])) throw new Error(`owner handoff Host picker contract mismatch ${JSON.stringify(picker)}`);
+  { source: "owner_migration.operation_members", scope: "owner_migration", title: "选择原负责人", hint: "本页只显示前 100 项或搜索结果；未出现的原选择仍保留，不能据此判定失效。" },
+  { source: "owner_migration.operation_members", scope: "owner_migration", title: "选择目标负责人", hint: "本页只显示前 100 项或搜索结果；未出现的原选择仍保留，不能据此判定失效。" },
+]) || !picker.member_reads.some((request) => request.query.includes('include_inactive=true')) || !picker.member_reads.some((request) => request.query.includes('include_inactive=false'))) throw new Error(`owner handoff Host picker contract mismatch ${JSON.stringify(picker)}`);
 
 const legacyImport = await mountFixture({
   staff: [
@@ -172,3 +181,57 @@ const previewFailure = await mountFixture({
 if (previewFailure.notice !== "迁移服务暂不可用，请稍后重试。" || previewFailure.notice.includes("provider_unavailable")) throw new Error(`owner handoff Host must not expose provider status codes ${JSON.stringify(previewFailure)}`);
 
 console.log("owner_handoff_host: PASS");
+
+// The V3 session rejects superseded loader results. The Host also keeps its
+// staff_id → UserID map commit-owned: a late old page must not corrupt the
+// actual Excel preview after a newer source employee has been selected.
+let releaseOldDirectory;
+const lateDirectory = new JSDOM('<!doctype html><html><body><main data-owner-handoff-host></main></body></html>', {
+  url: 'https://owner-host.fixture/admin/owner-migration', runScripts: 'outside-only', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.Headers = Headers;
+    window.AICRMStaffPicker = { open(options) { window.__ownerPickerOptions = options; } };
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(String(input), window.location.origin);
+      const method = String(init.method || 'GET').toUpperCase();
+      if (url.pathname === '/static/admin_console/owner_migration_dd8d60d.html') return response(donor);
+      if (url.pathname === '/api/admin/customers/owner-handoffs/context') return response({ staff: [{ ID: 14, UserID: 'target-user', DisplayName: '目标负责人', Active: true }], operator: '管理员 #42' });
+      if (url.pathname === '/api/admin/common/operation-members') {
+        if (url.searchParams.get('q') === 'old') return new Promise((resolve) => { releaseOldDirectory = () => resolve(response({ items: [{ staff_id: 12, user_id: 'old-source', display_name: '旧目录结果', active: false }] })); });
+        return response({ items: [{ staff_id: 13, user_id: 'new-source', display_name: '新目录结果', active: false }] });
+      }
+      if (url.pathname === '/api/admin/customers/owner-handoffs/previews' && method === 'POST') {
+        window.__ownerPreviewBody = init.body;
+        return response({ ID: 'preview-race', Hash: 'race-hash', ConfirmationPhrase: '确认迁移', Mode: 'local_only', Rows: [] });
+      }
+      return response({ error: 'unexpected route' }, 500);
+    };
+  },
+});
+lateDirectory.window.eval(host);
+await wait(); await wait();
+const latePage = lateDirectory.window.document.querySelector('[data-owner-migration-page]');
+latePage.querySelector('[data-owner-userid="target"]').value = '14';
+latePage.querySelector('[data-owner-picker="source"]').click();
+await wait();
+const sourceOptions = lateDirectory.window.__ownerPickerOptions;
+if (!sourceOptions || sourceOptions.title !== '选择原负责人') throw new Error('owner handoff race fixture did not open the source V3 picker');
+const stale = sourceOptions.loadPage({ query: 'old', signal: new AbortController().signal });
+const current = await sourceOptions.loadPage({ query: 'new', signal: new AbortController().signal });
+sourceOptions.onCommit({ selected: [current.items[0]], added: [current.items[0]], removed: [] });
+releaseOldDirectory();
+await stale;
+const csv = new Blob(['external_userid,是否迁移,当前负责人userid,客户备注名,备注\nrace-external,是,new-source,新映射,验证'], { type: 'text/csv' });
+Object.defineProperty(csv, 'name', { value: 'mapping-race.csv' });
+const fileInput = latePage.querySelector('[data-import-file]');
+Object.defineProperty(fileInput, 'files', { configurable: true, value: [csv] });
+latePage.querySelector('[data-scope-segment="excel_include"]').click();
+latePage.querySelector('[data-upload-file]').click();
+await wait(); await wait();
+latePage.querySelector('[data-preview]').click();
+await wait(); await wait();
+const raceBody = JSON.parse(lateDirectory.window.__ownerPreviewBody || '{}');
+if (raceBody.source_staff_id !== 13 || raceBody.target_staff_id !== 14 || JSON.stringify(raceBody.external_userids) !== JSON.stringify(['race-external'])) throw new Error(`owner handoff late directory result changed the preview mapping ${JSON.stringify(raceBody)}`);
+lateDirectory.window.close();
+
+console.log('owner_handoff_host: mapping race PASS');

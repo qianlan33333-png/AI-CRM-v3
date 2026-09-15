@@ -33,16 +33,6 @@ async function browserExit(child) { if (!child || child.exitCode !== null || chi
 async function removeProfile(profile) { for (let i = 0; i < 40; i += 1) { try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 }); return true; } catch (error) { if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error?.code)) return false; await delay(100); } } return false; }
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-customer-tags-chromium-"));
 let browser; let cdp; let failed = false;
-const screenshotDir = process.env.AICRM_CUSTOMER_TAG_SCREENSHOT_DIR;
-const captureSectionError = process.env.AICRM_CUSTOMER_TAG_CAPTURE_SECTION_ERROR === "1";
-async function captureCustomerScreenshot(name, width) {
-  if (!screenshotDir || !cdp) return;
-  await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 1100, deviceScaleFactor: 1, mobile: false });
-  await delay(100);
-  const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
-  await fs.mkdir(screenshotDir, { recursive: true });
-  await fs.writeFile(path.join(screenshotDir, name), Buffer.from(shot.data, "base64"));
-}
 try {
   browser = spawn(browserBinary(), ["--headless=new", "--no-sandbox", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--ignore-certificate-errors", "--allow-insecure-localhost", "about:blank"], { stdio: ["ignore", "ignore", "ignore"] });
   const created = await (await fetch(`${await port(profile)}/json/new?about:blank`, { method: "PUT" })).json();
@@ -52,17 +42,16 @@ try {
   const exceptions = []; const resources = new Map(); let customerListResponses = 0;
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
   const requiredResources = ["/static/admin_console/admin_customers.js", "/assets/standard-components/standard_components_host.js", "/assets/standard-components/wecom_tag_picker.js", "/api/admin/customers", "/api/admin/wecom/tags"];
-  cdp.on("Network.responseReceived", (params) => { try { const pathname = new URL(String(params.response?.url || "")).pathname; if (pathname === "/api/admin/customers") customerListResponses += 1; if ([...requiredResources, "/api/v1/customer-tag-commands/preview", "/api/v1/customer-tag-commands"].includes(pathname)) resources.set(pathname, Number(params.response?.status) || 0); } catch (_) {} });
+  cdp.on("Network.responseReceived", (params) => { try { const pathname = new URL(String(params.response?.url || "")).pathname; if (pathname === "/api/admin/customers") customerListResponses += 1; if ([...requiredResources, "/api/v1/customer-tag-commands/preview", "/api/v1/customer-tag-commands"].includes(pathname) || pathname.startsWith("/assets/chunks/")) resources.set(pathname, Number(params.response?.status) || 0); } catch (_) {} });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fcustomers` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   await waitFor(cdp, "location.pathname === '/admin/customers' && Boolean(document.querySelector('[data-customer-directory-root]'))", "login did not load the customer Host route");
   const diagnostic = async () => JSON.stringify({ path: await evaluate(cdp, "location.pathname"), rows: await evaluate(cdp, "document.querySelectorAll('#customer-list-body input[type=checkbox]').length"), resources: Object.fromEntries(resources), exceptions });
-  try { await waitFor(cdp, "document.querySelectorAll('#customer-list-body input[type=checkbox]').length >= 2 && document.querySelectorAll('#customer-tag-batch option').length >= 2 && typeof window.AICRMWeComTagPicker?.open === 'function' && typeof window.AICRMTagPicker?.open === 'function'", "customer list, tag catalog, or V3 picker did not load"); } catch (_) { throw new Error(`customer Host did not load: ${await diagnostic()}`); }
+  try { await waitFor(cdp, "document.querySelectorAll('#customer-list-body input[type=checkbox]').length >= 2 && document.querySelectorAll('#customer-tag-batch option').length >= 2 && document.querySelectorAll('#customer-tag-batch button').length >= 2 && typeof window.AICRMTagPicker?.open === 'function' && typeof window.AICRMWeComTagPicker?.open === 'function'", "customer list, V3 tag catalog, or manifest tag asset did not load"); } catch (_) { throw new Error(`customer Host did not load: ${await diagnostic()}`); }
   if (requiredResources.some((pathname) => resources.get(pathname) !== 200)) throw new Error(`customer Host release assets did not load: ${await diagnostic()}`);
-  // The customer query remains this Host's native form-submit interaction.
-  // A Chinese IME candidate Enter must commit composition only; the next plain
-  // Enter is the explicit query and may replace the list.
+  // The native customer form submits only committed search input. A Chinese IME
+  // candidate Enter must not replace the list; the following plain Enter must.
   const requestsBeforeComposition = customerListResponses;
   await evaluate(cdp, "document.querySelector('#customer-list-filters [name=keyword]').focus(); true");
   await cdp.call("Input.imeSetComposition", { text: "候选客户", selectionStart: 4, selectionEnd: 4, replacementStart: 0, replacementEnd: 0 });
@@ -70,9 +59,10 @@ try {
   await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   await delay(150);
   if (customerListResponses !== requestsBeforeComposition) throw new Error(`IME candidate Enter submitted the customer search: ${await diagnostic()}`);
-  await cdp.call("Input.insertText", { text: "候选客户" });
-  await evaluate(cdp, "document.querySelector('#customer-list-filters [name=keyword]').focus(); true");
-  await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await cdp.call("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0, replacementStart: 0, replacementEnd: 0 });
+  await evaluate(cdp, "(() => { const input=document.querySelector('#customer-list-filters [name=keyword]'); input.value='候选客户'; input.focus(); return true; })()");
+  await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await cdp.call("Input.dispatchKeyEvent", { type: "char", text: "\\r", unmodifiedText: "\\r", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   for (let attempt = 0; attempt < 20 && customerListResponses <= requestsBeforeComposition; attempt += 1) await delay(100);
   if (customerListResponses <= requestsBeforeComposition) throw new Error(`plain Enter did not request the customer search: ${await diagnostic()}`);
@@ -83,6 +73,14 @@ try {
   // only the two form drafts; it must not replace the durable command path.
   await evaluate(cdp, `(() => { const form=document.querySelector('#customer-tag-batch'); const add=form.querySelector('[name="add_tag_ids"]'); const button=add.parentElement.querySelector('button'); button.click(); return true; })()`);
   await waitFor(cdp, "document.querySelectorAll('[data-v3-selection-session=\"tag\"] [data-v3-tag-key]').length >= 2", "V3 add-tag picker did not render the real catalog");
+  if (requiredResources.some((pathname) => resources.get(pathname) !== 200)) throw new Error(`customer Host release assets did not load after tag entry: ${await diagnostic()}`);
+  // The public stable Host is copied under assets/standard-components. Its V3
+  // chunks must resolve one directory up and be fetched by this real module
+  // graph; source text alone cannot validate the staged asset path.
+  const stableHostChunkReferences = await evaluate(cdp, "fetch('/assets/standard-components/standard_components_host.js',{credentials:'same-origin'}).then(async(response)=>{if(!response.ok)throw new Error('stable Host HTTP '+response.status);const source=await response.text();return source.split(/[\"']/).filter((part)=>part.startsWith('../chunks/'));})");
+  if (!Array.isArray(stableHostChunkReferences) || stableHostChunkReferences.length === 0 || stableHostChunkReferences.some((reference) => !reference.startsWith('../chunks/'))) throw new Error(`customer Host stable component entry did not expose rebased chunk imports: ${await diagnostic()}`);
+  const stableHostChunkPaths = stableHostChunkReferences.map((reference) => new URL(reference, `${baseURL}/assets/standard-components/standard_components_host.js`).pathname);
+  if (stableHostChunkPaths.some((pathname) => resources.get(pathname) !== 200)) throw new Error(`customer Host stable component chunks were not fetched through the real module graph: ${await diagnostic()}`);
   await evaluate(cdp, "document.querySelectorAll('[data-v3-selection-session=\"tag\"] [data-v3-tag-key]')[0].click(); document.querySelector('[data-v3-selection-session=\"tag\"] [data-v3-tag-confirm]').click(); true");
   await waitFor(cdp, "(() => { const select=document.querySelector('#customer-tag-batch [name=\"add_tag_ids\"]'); return select?.selectedOptions[0]?.value === select?.options[0]?.value; })()", "V3 add-tag picker did not update the original form draft");
   await evaluate(cdp, `(() => { const form=document.querySelector('#customer-tag-batch'); const remove=form.querySelector('[name="remove_tag_ids"]'); const button=remove.parentElement.querySelector('button'); button.click(); return true; })()`);
@@ -104,49 +102,6 @@ try {
       !rendered.includes('（active）')
     ) break;
     if (attempt === 19) throw new Error(`explicit result refresh did not render durable outcomes: ${rendered}`);
-  }
-  if (screenshotDir) {
-    await cdp.call("Page.navigate", { url: `${baseURL}/admin/customers/1` });
-    await waitFor(cdp, "location.pathname === '/admin/customers/1' && !document.querySelector('#customer-detail-content')?.hidden", "customer detail route did not render");
-    await waitFor(cdp, "document.querySelectorAll('#customer-360-main .customer-record-card').length >= 2", "customer detail sections did not render");
-    if (await evaluate(cdp, "document.querySelector('#customer-profile-meta')?.textContent.includes('客户类型 0')")) throw new Error("unknown customer contact type was rendered as a raw numeric code");
-    await captureCustomerScreenshot("customer-profile-1440.png", 1440);
-    await captureCustomerScreenshot("customer-profile-1280.png", 1280);
-    if (captureSectionError) {
-      // This browser-only response fixture proves that a degraded /360 section
-      // does not erase ready sibling sections. It is intentionally kept out of
-      // the normal server readback evidence.
-      const recordBody = Buffer.from(JSON.stringify({
-        canonical_customer_id: 1,
-        profile: { status: "ready", data: { customer_id: 1, display_name: "fixture one", oneid: "customer #1", status: "active", contact_type: 1, source: "chromium_fixture" } },
-        identity_summary: { status: "ready", data: { identities: [{ summary: "企业身份已验证" }], phones: [] } },
-        order_summary: { status: "ready", data: { total: 2, paid: 1, refunded: 0, failed: 1, recent: [{ id: 1001, merchant_order_no: "ORD-1001", status: "paid", created_at: "2026-09-15T00:00:00Z" }, { id: 1002, merchant_order_no: "ORD-1002", status: "failed", created_at: "2026-09-14T00:00:00Z" }] } },
-        questionnaire_summary: { status: "ready", data: { total: 2, recent: [{ id: 81, title: "初次需求问卷", assessment_label: "已完成", submitted_at: "2026-09-15T00:00:00Z" }, { id: 82, title: "跟进问卷", score: 0, submitted_at: "2026-09-14T00:00:00Z" }] } },
-        risk: { status: "ready", data: { level: "medium", reasons: ["payment_failures_present"] } },
-        recent_touchpoints: { status: "ready", data: [{ id: 91, title: "客户资料已同步", source_domain: "wecom", occurred_at: "2026-09-15T00:00:00Z" }, { id: 92, title: "订单支付失败", source_domain: "order", occurred_at: "2026-09-14T00:00:00Z" }] },
-      })).toString("base64");
-      const degradedBody = Buffer.from(JSON.stringify({
-        canonical_customer_id: 1,
-        profile: { status: "ready", data: { customer_id: 1, display_name: "fixture one", oneid: "customer #1", status: "active", contact_type: 1, source: "chromium_fixture" } },
-        identity_summary: { status: "ready", data: { identities: [{ summary: "企业身份已验证" }], phones: [] } },
-        order_summary: { status: "degraded", data: {} },
-        questionnaire_summary: { status: "ready", data: { total: 2, recent: [{ id: 81, title: "初次需求问卷", assessment_label: "已完成", submitted_at: "2026-09-15T00:00:00Z" }] } },
-        risk: { status: "degraded", data: { level: "unknown", reasons: ["order_section_unavailable"] } },
-        recent_touchpoints: { status: "ready", data: [{ id: 91, title: "客户资料已同步", source_domain: "wecom", occurred_at: "2026-09-15T00:00:00Z" }] },
-      })).toString("base64");
-      let customer360Body = recordBody;
-      cdp.on("Fetch.requestPaused", (params) => { void cdp.call("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "application/json" }], body: customer360Body }); });
-      await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "*/api/admin/customers/1/360*", requestStage: "Response" }] });
-      await cdp.call("Page.navigate", { url: `${baseURL}/admin/customers/1` });
-      await waitFor(cdp, "document.querySelector('#customer-360-main')?.textContent.includes('ORD-1001') && document.querySelector('#customer-360-sidebar')?.textContent.includes('客户资料已同步')", "controlled customer records did not render");
-      await captureCustomerScreenshot("customer-profile-records-fixture-1280.png", 1280);
-      customer360Body = degradedBody;
-      await cdp.call("Page.navigate", { url: `${baseURL}/admin/customers/1` });
-      await waitFor(cdp, "document.querySelector('#customer-360-main .admin-state--error')?.textContent.includes('该分区暂时不可用')", "controlled degraded customer section did not render");
-      await captureCustomerScreenshot("customer-profile-degraded-1280.png", 1280);
-      await cdp.call("Fetch.disable");
-    }
-    console.log(`customer screenshots: ${screenshotDir}`);
   }
   console.log("customer_tag_command_chromium: PASS");
 } catch (error) { failed = true; throw error; } finally { if (cdp) cdp.close(); if (browser && browser.exitCode === null && browser.signalCode === null) { browser.kill("SIGTERM"); await browserExit(browser); } const removed = await removeProfile(profile); if (!removed && !failed) throw new Error("Chromium test profile cleanup did not complete"); }

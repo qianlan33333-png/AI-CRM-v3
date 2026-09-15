@@ -20,6 +20,7 @@ const (
 	LoginPath            = "/login"
 	WeComAuthStartPath   = "/auth/wecom/start"
 	AdminRootPath        = "/admin"
+	ComponentStatesPath  = "/admin/component-states"
 	LoginAccessPath      = "/admin/config/login-access"
 	OneIDResolveAPIPath  = "/api/admin/oneid/resolve"
 	OneIDCustomerAPIPath = "/api/admin/oneid/customers/"

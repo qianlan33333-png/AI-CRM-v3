@@ -250,7 +250,12 @@ await flush(); await flush();
 assert.equal(reopenedMaterial.querySelector('[data-v3-picker-confirm]').disabled, false, 'a delayed closed material loader must not lock a reopened session');
 reopenedMaterial.querySelector('[data-v3-picker-cancel]').click();
 
-window.AICRMMaterialPicker.open({ type: 'group_invite', selectedIds: [9] });
-assert.equal(donorCalls.length, 1, 'group invitation command remains on its caller-owned frozen route');
+window.AICRMMaterialPicker.open({ type: 'group_invite', selectedIds: [9], onCommit: () => {} });
+await flush();
+const invite = document.querySelector('[data-v3-selection-session="material"]');
+assert.ok(invite, 'Media-owned group invite uses the V3 temporary selector');
+assert.equal(calls.at(-1).type, 'group_invite', 'group invite loader stays caller-scoped and read-only');
+assert.equal(donorCalls.length, 0, 'group invite cannot fall through to a frozen ensure/create command');
+invite.querySelector('[data-v3-picker-cancel]').click();
 dom.window.close();
 console.log('material picker adapter: scoped load, native IME search, paging, failure retention, draft commit, and cancel PASS');

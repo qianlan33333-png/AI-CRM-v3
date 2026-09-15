@@ -42,6 +42,7 @@ export function createFieldMappingEditor(
     onChange?(): void;
   },
 ) {
+  installCommittedTextSearch();
   const doc = container.ownerDocument;
   if (!doc.getElementById("field-mapping-styles")) {
     const style = doc.createElement("style");
@@ -245,6 +246,7 @@ export function createFieldMappingEditor(
     const search = node("input", "fm-control");
     search.placeholder = "搜索变量";
     search.setAttribute("aria-label", "搜索变量");
+    search.dataset.fieldMappingVariableSearch = "";
     const choices = node("div", "");
     popover.append(search, choices);
     const remove = node("button", "fm-button");
@@ -385,3 +387,4 @@ export function createFieldMappingEditor(
     },
   };
 }
+import { installCommittedTextSearch } from "./shared/ui/committedTextSearch";

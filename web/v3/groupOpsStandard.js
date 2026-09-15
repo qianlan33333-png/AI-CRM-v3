@@ -20,6 +20,15 @@
     ownerOptions: [],
     createOwner: null,
     groupFilterOwner: null,
+    // Group list text is deliberately two-phase: inputs remain a local draft
+    // until Enter, while other filter changes and refreshes reuse this value.
+    groupKeywordDraft: "",
+    groupKeywordCommitted: "",
+    groupPlanID: "",
+    groupBindStatus: "",
+    groupsReadError: "",
+    groupKeywordComposing: false,
+    pendingGroupsRender: null,
     refreshingOwnerGroups: false,
     notice: "",
     noticeIsError: false,
@@ -51,6 +60,9 @@
     writeReadbackPlanId: 0,
   };
   let detailReadGeneration = 0;
+  let ownerGroupsReadGeneration = 0;
+  let ownerGroupsRefreshGeneration = 0;
+  let groupsReadGeneration = 0;
 
   const routes = {
     list: "/admin/automation-conversion/group-ops/ui",
@@ -298,14 +310,19 @@
 
   function nodeToContentPackage(node) {
     const current = node || {};
+    // The Group Ops owner DTO calls this message_text; the frozen form calls
+    // it text_content. Preserve either server-owned projection when reopening
+    // a saved node, rather than treating a legitimate historical script as an
+    // empty editor merely because its material package has no text member.
+    const persistedText = current.text_content || current.message_text || "";
     if (current.content_package_json && typeof current.content_package_json === "object") {
       const normalized = normalizeContentPackage(current.content_package_json);
-      if (contentPackageIsEmpty(normalized) && current.text_content) {
-        normalized.content_text = String(current.text_content || "").trim();
+      if (!normalized.content_text && persistedText) {
+        normalized.content_text = String(persistedText).trim();
       }
       return mergeRecognizedLegacyAttachmentIds(normalized, current.attachments);
     }
-    return mergeRecognizedLegacyAttachmentIds({ content_text: current.text_content || "" }, current.attachments);
+    return mergeRecognizedLegacyAttachmentIds({ content_text: persistedText }, current.attachments);
   }
 
   function contentPackageToNodePayload(contentPackage) {
@@ -323,6 +340,43 @@
       return normalizeContentPackage(JSON.parse(raw));
     } catch (error) {
       return normalizeContentPackage({});
+    }
+  }
+
+  function normalizeContentMaterialRecords(value) {
+    const records = Array.isArray(value) ? value : [];
+    const allowedKinds = new Set(["image", "miniprogram", "attachment", "group_invite"]);
+    const seen = new Set();
+    return records.flatMap((record) => {
+      if (!record || typeof record !== "object" || record.source !== "media-library") return [];
+      const kind = String(record.kind || "");
+      const id = parseInt(String(record.id || ""), 10);
+      const key = `${kind}:${id}`;
+      if (!allowedKinds.has(kind) || id < 1 || seen.has(key)) return [];
+      seen.add(key);
+      return [{
+        source: "media-library",
+        kind,
+        id,
+        label: String(record.label || `${kind} #${id}`),
+        subtitle: record.subtitle ? String(record.subtitle) : undefined,
+        thumbnailURL: record.thumbnailURL ? String(record.thumbnailURL) : undefined,
+        disabledReason: record.disabledReason ? String(record.disabledReason) : undefined,
+      }];
+    });
+  }
+
+  function contentMaterialRecordsForNode(node) {
+    return normalizeContentMaterialRecords((node || {}).content_material_records || (node || {}).content_material_order_json);
+  }
+
+  function contentMaterialRecordsFromForm() {
+    const raw = currentFormValue("node_content_material_order_json");
+    if (!raw) return [];
+    try {
+      return normalizeContentMaterialRecords(JSON.parse(raw));
+    } catch (error) {
+      return [];
     }
   }
 
@@ -406,10 +460,17 @@
     app.querySelectorAll("[data-action]").forEach((element) => {
       element.addEventListener("click", onAction);
     });
-    app.querySelectorAll("[data-filter]").forEach((element) => {
+    app.querySelectorAll("select[data-filter]").forEach((element) => {
       element.addEventListener("change", onFilterChange);
-      element.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") onFilterChange();
+    });
+    app.querySelectorAll('input[name="keyword"][data-filter]').forEach((element) => {
+      element.addEventListener("keydown", onKeywordKeydown);
+      element.addEventListener("compositionstart", () => { state.groupKeywordComposing = true; });
+      element.addEventListener("compositionend", () => {
+        state.groupKeywordComposing = false;
+        // Keep this DOM alive through the IME candidate key that may follow
+        // compositionend. The shared document policy then ignores that key.
+        window.setTimeout(flushPendingGroupsRender, 0);
       });
     });
     app.querySelectorAll("[data-group-picker-search]").forEach((element) => {
@@ -420,8 +481,51 @@
     });
   }
 
-  function onFilterChange() {
-    if (state.mode === "groups") loadGroupsPage();
+  function groupKeywordInput() {
+    return app.querySelector('input[name="keyword"][data-filter]');
+  }
+
+  function captureGroupsDraft() {
+    const input = groupKeywordInput();
+    if (input) state.groupKeywordDraft = input.value || "";
+  }
+
+  function groupsFocusSnapshot() {
+    const input = groupKeywordInput();
+    if (!input || document.activeElement !== input) return null;
+    return {
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+    };
+  }
+
+  function restoreGroupsFocus(snapshot) {
+    if (!snapshot) return;
+    const input = groupKeywordInput();
+    if (!input || !input.isConnected) return;
+    input.focus({ preventScroll: true });
+    const length = input.value.length;
+    if (snapshot.selectionStart !== null && snapshot.selectionEnd !== null) {
+      input.setSelectionRange(Math.min(snapshot.selectionStart, length), Math.min(snapshot.selectionEnd, length));
+    }
+  }
+
+  function onFilterChange(event) {
+    const element = event && event.currentTarget;
+    if (state.mode !== "groups" || !element) return;
+    captureGroupsDraft();
+    if (element.name === "plan_id") state.groupPlanID = element.value || "";
+    if (element.name === "bind_status") state.groupBindStatus = element.value || "";
+    loadGroupsPage();
+  }
+
+  function onKeywordKeydown(event) {
+    if (state.mode !== "groups" || event.key !== "Enter") return;
+    if (event.isComposing || event.keyCode === 229) return;
+    const input = event.currentTarget;
+    state.groupKeywordDraft = input.value || "";
+    state.groupKeywordCommitted = state.groupKeywordDraft;
+    loadGroupsPage();
   }
 
   function currentFormValue(name) {
@@ -439,26 +543,30 @@
   }
 
   function memberStaffId(member) {
-    return String((member || {}).staff_id || (member || {}).local_staff_id || (member || {}).user_id || "");
+    return String((member || {}).staff_id || (member || {}).local_staff_id || "");
   }
 
   function normalizeOwners(payload, plan) {
     const owners = new Map();
     normalizeItems(payload).forEach((member) => {
       const staffId = memberStaffId(member);
-      const userId = member.user_id || member.userid || staffId;
-      if (staffId) owners.set(staffId, { staff_id: staffId, user_id: userId, display_name: member.display_name || member.name || userId });
+      const userId = member.user_id || member.sender_userid || member.userid || "";
+      if (staffId) owners.set(staffId, { staff_id: staffId, user_id: userId, display_name: member.display_name || member.name || userId || `员工 #${staffId}`, directory_pending: !userId });
     });
     if (plan && plan.owner_userid && !owners.has(plan.owner_userid)) {
-      owners.set(plan.owner_userid, { staff_id: plan.owner_userid, user_id: plan.owner_userid, display_name: plan.owner_name || plan.owner_userid });
+      owners.set(plan.owner_userid, { staff_id: plan.owner_userid, user_id: "", display_name: plan.owner_name || `员工 #${plan.owner_userid}`, directory_pending: true });
     }
     return Array.from(owners.values());
   }
 
-  function currentMemberFor(userId) {
-    const normalized = String(userId || "");
+  // All GroupOps form and plan `owner_userid` fields are the GroupOps Owner's
+  // local staff_id compatibility value.  Never match a numeric external UserID
+  // here: it may collide with another local staff ID and select the wrong owner.
+  function currentMemberFor(staffId) {
+    const normalized = String(staffId || "");
     if (!normalized) return null;
-    return state.ownerOptions.find((member) => memberStaffId(member) === normalized || member.user_id === normalized) || { staff_id: normalized, user_id: normalized, display_name: normalized };
+    return state.ownerOptions.find((member) => memberStaffId(member) === normalized)
+      || { staff_id: normalized, user_id: "", display_name: `员工 #${normalized}`, directory_pending: true };
   }
 
   function renderMemberField(name, currentUserId, action, label, disabled = false) {
@@ -479,24 +587,98 @@
     if (current) current.textContent = memberLabel(member);
   }
 
-  function openMemberPicker({ fieldName, title, value, onPicked }) {
-    if (!window.OperationMemberPicker) {
-      state.notice = "人员加载失败，请稍后重试";
+  function staffPickerError(error) {
+    const status = Number(error && error.status);
+    if (status === 401 || status === 403) return "员工目录权限已失效；当前负责人草稿仍保留，请取消后重新登录。";
+    return undefined;
+  }
+
+  function memberRecord(member) {
+    const staffId = memberStaffId(member);
+    if (!/^[1-9]\d*$/.test(staffId)) return null;
+    const userId = String(member.user_id || member.sender_userid || member.userid || "").trim();
+    const displayName = String(member.display_name || member.name || userId || `员工 #${staffId}`).trim();
+    const unavailableReason = !userId
+      ? (member.directory_pending ? "当前负责人映射待目录确认；请重新选择后保存。" : "员工目录缺少可信企微 UserID，不能确认。")
+      : undefined;
+    return { source: "groupops.operation_members", staff_id: staffId, user_id: userId, display_name: displayName, active: member.active !== false, unavailable_reason: unavailableReason };
+  }
+
+  function memberReadError(response, body) {
+    const message = api.responseErrorMessage
+      ? api.responseErrorMessage(response, body, `员工目录读取失败（HTTP ${response.status}）`)
+      : `员工目录读取失败（HTTP ${response.status}）`;
+    const error = new Error(message);
+    error.status = response.status;
+    return error;
+  }
+
+  async function loadGroupOpsMembers({ query, signal }) {
+    const url = new URL(routes.apiMembers, window.location.origin);
+    const trimmed = String(query || "").trim();
+    if (trimmed) url.searchParams.set("q", trimmed);
+    const response = await fetch(url.toString(), { credentials: "same-origin", headers: { Accept: "application/json" }, signal });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw memberReadError(response, body);
+    if (!Array.isArray(body.items)) throw new Error("员工目录响应不完整，请重试。");
+    return { items: body.items.map(memberRecord).filter(Boolean) };
+  }
+
+  async function refreshGroupOpsMembers({ signal }) {
+    const headers = new Headers({ Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": `groupops-member-refresh-${Date.now()}-${crypto.randomUUID()}` });
+    const token = String(document.cookie || "").split(";").map(part => part.trim()).map(part => part.split("=")).find(([name]) => name === "aicrm_csrf" || name === "aicrm_admin_csrf");
+    if (token && token[1]) headers.set("X-CSRF-Token", token.slice(1).join("="));
+    const response = await fetch("/api/admin/common/operation-members/sync", { method: "POST", credentials: "same-origin", headers, signal, body: JSON.stringify({ scope: "group_ops", page_size: 100 }) });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw memberReadError(response, body);
+  }
+
+  function openMemberPicker({ fieldName, title, value, onPicked, allowEmpty = false }) {
+    const picker = window.AICRMStaffPicker;
+    if (!picker || typeof picker.open !== "function") {
+      state.notice = "员工选择器加载失败；当前草稿未修改，请刷新后重试。";
       if (state.mode === "detail") renderDetail();
       else if (state.mode === "groups") renderGroups();
       else renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
       return;
     }
-    window.OperationMemberPicker.open({
-      value,
-      context: "group_ops_owner",
-      selection: { mode: "single", max: 1 },
+    const currentValue = String(value || "");
+    // GroupOps stores the GroupOps Owner's local staff_id in its compatibility
+    // `owner_userid` field.  Compare that one local identifier only: a numeric
+    // external UserID may collide with a different authorised staff record.
+    // An unresolved numeric local ID remains visible/removable but blocked
+    // until the current scoped directory confirms its UserID mapping.
+    const known = state.ownerOptions.find((member) => memberStaffId(member) === currentValue);
+    const selected = known
+      ? memberRecord(known)
+      : (/^[1-9]\d*$/.test(currentValue)
+        ? { source: "groupops.operation_members", staff_id: currentValue, user_id: "", display_name: `员工 #${currentValue}`, unavailable_reason: "当前负责人映射待目录确认；请重新选择后保存。" }
+        : null);
+    picker.open({
       title: title || "选择负责人",
-      scope: "group_ops",
-      page_size: 100,
-      onSelect: (member) => {
-        setMemberField(fieldName, member);
-        if (typeof onPicked === "function") onPicked(member);
+      source: "groupops.operation_members",
+      scope: "group_ops.owner",
+      mode: "single",
+      limit: 1,
+      selectedRecords: selected ? [selected] : [],
+      loadPage: loadGroupOpsMembers,
+      refresh: refreshGroupOpsMembers,
+      directoryHint: "每次最多显示 100 位员工，可搜索定位；未出现的初选仍保留，不能据此判定失效。",
+      accessLossMessage: staffPickerError,
+      onCommit: ({ selected: next }) => {
+        const member = next[0];
+        if (!member) {
+          if (!allowEmpty) throw new Error("请选择一位负责人后再确认。");
+          setMemberField(fieldName, { staff_id: "", user_id: "", display_name: "" });
+          if (typeof onPicked === "function") onPicked(null);
+          return;
+        }
+        const projected = { staff_id: String(member.staff_id), user_id: member.user_id, sender_userid: member.user_id, display_name: member.display_name, active: member.active !== false };
+        const existing = state.ownerOptions.findIndex(item => memberStaffId(item) === String(member.staff_id));
+        if (existing >= 0) state.ownerOptions.splice(existing, 1, { ...state.ownerOptions[existing], ...projected });
+        else state.ownerOptions.push(projected);
+        setMemberField(fieldName, projected);
+        if (typeof onPicked === "function") onPicked(projected);
       },
     });
   }
@@ -541,6 +723,7 @@
     if (action === "open-node-modal") return openNodeModal();
     if (action === "edit-node") return openNodeModal(event.currentTarget.dataset.nodeId);
     if (action === "configure-node-content") return openNodeContentComposer();
+    if (action === "view-node-content") return openNodeContentReadonly(event.currentTarget.dataset.nodeId, event.currentTarget);
     if (action === "save-node") return saveNode();
     if (action === "cancel-node") return closeNodeModal();
     if (action === "delete-node") return deleteNode(event.currentTarget.dataset.nodeId);
@@ -566,16 +749,14 @@
           state.plan.owner_userid = memberStaffId(member);
           state.plan.owner_name = member.display_name || member.name || member.user_id || "";
         }
-        loadOwnerGroups(memberStaffId(member)).catch((error) => {
-          state.notice = error.message || "加载群聊失败";
-          renderDetail();
-        });
+        void loadOwnerGroups(memberStaffId(member));
       },
     });
     if (action === "pick-group-filter-owner") return openMemberPicker({
       fieldName: "owner_userid",
       title: "选择群主/管理员",
       value: currentFormValue("owner_userid"),
+      allowEmpty: true,
       onPicked: (member) => {
         state.groupFilterOwner = member;
         loadGroupsPage();
@@ -583,7 +764,7 @@
     });
     if (action === "clear-group-filter-owner") {
       state.groupFilterOwner = null;
-      setMemberField("owner_userid", { user_id: "", display_name: "" });
+      setMemberField("owner_userid", { staff_id: "", user_id: "", display_name: "" });
       return loadGroupsPage();
     }
     return undefined;
@@ -1074,16 +1255,48 @@
     loadDetailPage(state.plan.id);
   }
 
+  function ownerGroupsReadIsCurrent({ planId, ownerStaffId, generation, detailGeneration }) {
+    return generation === ownerGroupsReadGeneration
+      && detailGeneration === detailReadGeneration
+      && state.mode === "detail"
+      && Number(state.plan?.id) === planId
+      && currentFormValue("owner_userid") === ownerStaffId;
+  }
+
+  function invalidateOwnerGroupsRefresh() {
+    ownerGroupsReadGeneration += 1;
+    ownerGroupsRefreshGeneration += 1;
+    if (!state.refreshingOwnerGroups) return;
+    state.refreshingOwnerGroups = false;
+    state.notice = "";
+    state.noticeIsError = false;
+  }
+
   async function loadOwnerGroups(ownerUserId) {
     const owner = String(ownerUserId || "").trim();
+    invalidateOwnerGroupsRefresh();
+    const generation = ++ownerGroupsReadGeneration;
+    const planId = Number(state.plan?.id || 0);
+    const detailGeneration = detailReadGeneration;
+    if (!planId) return;
+    const isCurrent = () => ownerGroupsReadIsCurrent({ planId, ownerStaffId: owner, generation, detailGeneration });
     if (!owner) {
+      if (!isCurrent()) return;
       state.groups = [];
       renderDetail();
       return;
     }
-    const payload = await requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(owner)}`);
-    state.groups = normalizeItems(payload);
-    renderDetail();
+    try {
+      const payload = await requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(owner)}`);
+      if (!isCurrent()) return;
+      state.groups = normalizeItems(payload);
+      renderDetail();
+    } catch (error) {
+      if (!isCurrent()) return;
+      state.notice = requestErrorMessage(error, "加载群聊失败");
+      state.noticeIsError = true;
+      renderDetail();
+    }
   }
 
   async function refreshOwnerGroups() {
@@ -1094,6 +1307,12 @@
       renderDetail();
       return;
     }
+    const generation = ++ownerGroupsReadGeneration;
+    const refreshGeneration = ++ownerGroupsRefreshGeneration;
+    const planId = Number(state.plan.id || 0);
+    const detailGeneration = detailReadGeneration;
+    const isCurrent = () => refreshGeneration === ownerGroupsRefreshGeneration
+      && ownerGroupsReadIsCurrent({ planId, ownerStaffId: owner, generation, detailGeneration });
     state.refreshingOwnerGroups = true;
     state.notice = "刷新中";
     renderDetail();
@@ -1106,24 +1325,36 @@
           operator: "admin_ui",
         },
       });
+      if (!isCurrent()) return;
       const payload = await requestJson(`${routes.apiGroups}?owner_userid=${encodeURIComponent(owner)}`);
+      if (!isCurrent()) return;
       state.groups = normalizeItems(payload);
       state.notice = `已刷新：新增 ${formatNumber(synced.new_count || 0)} 个，更新 ${formatNumber(synced.updated_count || 0)} 个`;
+      state.noticeIsError = false;
     } catch (error) {
+      if (!isCurrent()) return;
       state.notice = requestErrorMessage(error, "刷新失败");
+      state.noticeIsError = true;
     } finally {
+      if (!isCurrent()) return;
       state.refreshingOwnerGroups = false;
       renderDetail();
     }
   }
 
   function openNodeModal(nodeId) {
+    if (window.AICRMGroupOpsV3Content && typeof window.AICRMGroupOpsV3Content.cancelPending === "function") {
+      window.AICRMGroupOpsV3Content.cancelPending();
+    }
     state.editingNodeId = Number(nodeId || 0);
     state.showNodeModal = true;
     renderDetail();
   }
 
   function closeNodeModal() {
+    if (window.AICRMGroupOpsV3Content && typeof window.AICRMGroupOpsV3Content.cancelPending === "function") {
+      window.AICRMGroupOpsV3Content.cancelPending();
+    }
     state.editingNodeId = 0;
     state.showNodeModal = false;
     renderDetail();
@@ -1142,12 +1373,17 @@
     const nodeId = Number(state.editingNodeId || 0);
     const existing = editingNode() || {};
     const contentPayload = contentPackageToNodePayload(contentPackageFromForm());
+    const contentMaterialRecords = contentMaterialRecordsFromForm();
     const payload = {
       day_index: Number(currentFormValue("node_day_index") || 1),
       scheduled_time: currentFormValue("node_scheduled_time") || "20:00",
       action_title: currentFormValue("node_action_title"),
       text_content: contentPayload.text_content,
       content_package_json: contentPayload.content_package_json,
+      // This only carries the existing owner sequence to the V3 Host. The
+      // Host verifies exact IDs/types against content_package_json and writes
+      // the real material_plan.references; UI labels never persist.
+      content_material_order_json: contentMaterialRecords,
       attachments: legacyAttachmentsForNode(existing.attachments),
       sort_order: Number(currentFormValue("node_sort_order") || 0),
       status: currentFormValue("node_status") || "active",
@@ -1288,7 +1524,9 @@
     if (!state.showCreate) return "";
     const draft = state.createDraft || {};
     const locked = createControlsDisabled();
-    const ownerID = draft.owner_userid || (state.createOwner || {}).user_id;
+    // GroupOps stores local staff_id in this compatibility owner field. Never
+    // substitute the external UserID: numeric values can collide across staff.
+    const ownerID = draft.owner_userid || (state.createOwner || {}).staff_id;
     const ownerField = renderMemberField(
       "create_owner_userid",
       ownerID,
@@ -1449,6 +1687,9 @@
 
   async function loadDetailPage(planId) {
     if (state.savingPlan || state.planReadbackPending) return;
+    // A navigation or authoritative reread invalidates an earlier owner
+    // projection too. Its late success/failure must not repaint this detail.
+    invalidateOwnerGroupsRefresh();
     const generation = ++detailReadGeneration;
     renderLoading();
     try {
@@ -1569,7 +1810,7 @@
     const summary = contentPackageSummary(contentPackage);
     target.innerHTML =
       `<strong>话术：</strong><span>${escapeHtml(summary.text)}</span>` +
-      `<strong>内容：</strong><span>图片 ${summary.imageCount} / 小程序 ${summary.miniprogramCount} / 附件 ${summary.attachmentCount} / 客户群 ${summary.groupInviteCount}</span>`;
+      `<strong>内容：</strong><span>图片 ${summary.imageCount} / 小程序 ${summary.miniprogramCount} / 附件 ${summary.attachmentCount} / 群邀请素材 ${summary.groupInviteCount}</span>`;
   }
 
   function renderLegacyAttachmentNotice(node) {
@@ -1583,26 +1824,54 @@
 
   function openNodeContentComposer() {
     const hidden = app.querySelector('[name="node_content_package_json"]');
-    if (!hidden) return;
-    if (!window.AICRMSendContentComposer || typeof window.AICRMSendContentComposer.open !== "function") {
-      state.notice = "标准发送内容组件加载失败，请刷新页面后重试";
+    const orderHidden = app.querySelector('[name="node_content_material_order_json"]');
+    if (!hidden || !orderHidden) return;
+    if (!window.AICRMGroupOpsV3Content || typeof window.AICRMGroupOpsV3Content.open !== "function") {
+      state.notice = "内容编辑器加载失败，请刷新页面后重试";
       renderDetail();
       return;
     }
-    window.AICRMSendContentComposer.open({
+    const openingButton = app.querySelector('[data-action="configure-node-content"]');
+    window.AICRMGroupOpsV3Content.open({
       title: "配置群运营动作内容",
-      textEnabled: true,
       value: contentPackageFromForm(),
-      limits: {
-        image: 3,
-        miniprogram: 1,
-        attachment: 9,
-        group_invite: 1,
+      selectedRecords: contentMaterialRecordsFromForm(),
+      loadingTarget: openingButton,
+      isCurrent() {
+        return Boolean(hidden.isConnected && orderHidden.isConnected && app.querySelector('[data-action="save-node"]'));
       },
-      onConfirm(contentPackage) {
-        const normalized = normalizeContentPackage(contentPackage);
+      onConfirm(result) {
+        if (!hidden.isConnected || !orderHidden.isConnected) throw new Error("当前动作已关闭或切换，未更新草稿。");
+        const normalized = normalizeContentPackage(result.package);
+        const records = normalizeContentMaterialRecords(result.selectedRecords);
         hidden.value = JSON.stringify(normalized);
+        orderHidden.value = JSON.stringify(records);
         refreshNodeContentSummary(normalized);
+      },
+    });
+  }
+
+  function openNodeContentReadonly(nodeId, openingButton) {
+    const node = state.nodes.find((item) => Number(item.id) === Number(nodeId)) || null;
+    if (!node) return;
+    if (!window.AICRMGroupOpsV3Content || typeof window.AICRMGroupOpsV3Content.openReadonly !== "function") {
+      state.notice = "内容详情加载失败，请刷新页面后重试";
+      renderDetail();
+      return;
+    }
+    window.AICRMGroupOpsV3Content.openReadonly({
+      title: "已保存群运营内容",
+      value: nodeToContentPackage(node),
+      selectedRecords: contentMaterialRecordsForNode(node),
+      loadingTarget: openingButton,
+      isCurrent() {
+        return Boolean(
+          app.isConnected &&
+          openingButton && openingButton.isConnected &&
+          state.nodes.includes(node) &&
+          state.plan &&
+          Number(state.plan.id) > 0,
+        );
       },
     });
   }
@@ -1632,10 +1901,13 @@
       text_content: "",
       attachments: [],
       content_package_json: {},
+      content_material_records: [],
+      content_material_order_json: [],
       sort_order: 10,
       status: "active",
     };
     const currentContentPackage = nodeToContentPackage(current);
+    const currentContentRecords = contentMaterialRecordsForNode(current);
     const currentContentSummary = contentPackageSummary(currentContentPackage);
     const modal = state.showNodeModal && !archived
       ? `
@@ -1656,11 +1928,12 @@
               <aside class="group-ops__content-box">
                 <div class="group-ops__content-summary" data-node-content-summary>
                   <strong>话术摘要</strong><span>${escapeHtml(currentContentSummary.text)}</span>
-                  <strong>内容数量</strong><span>图片 ${currentContentSummary.imageCount} / 小程序 ${currentContentSummary.miniprogramCount} / 附件 ${currentContentSummary.attachmentCount} / 客户群 ${currentContentSummary.groupInviteCount}</span>
+                  <strong>内容数量</strong><span>图片 ${currentContentSummary.imageCount} / 小程序 ${currentContentSummary.miniprogramCount} / 附件 ${currentContentSummary.attachmentCount} / 群邀请 ${currentContentSummary.groupInviteCount}</span>
                 </div>
                 <button class="group-ops__button" type="button" data-action="configure-node-content">配置话术和素材</button>
                 ${renderLegacyAttachmentNotice(current)}
                 <input type="hidden" name="node_content_package_json" value="${escapeHtml(JSON.stringify(currentContentPackage))}">
+                <input type="hidden" name="node_content_material_order_json" value="${escapeHtml(JSON.stringify(currentContentRecords))}">
               </aside>
             </div>
             <div class="group-ops__modal-footer">
@@ -1680,7 +1953,7 @@
           <td><span class="group-ops__summary">${escapeHtml(textSummary(nodeToContentPackage(node).content_text || node.text_content))}</span></td>
           <td><div class="group-ops__chip-row">${materialChips(node)}</div></td>
           <td><div class="group-ops__row-actions">
-            ${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : `${actionButton("编辑", "edit-node", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${actionButton("删除", "delete-node", "group-ops__button--danger").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}`}
+            ${actionButton("查看内容", "view-node-content", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${archived ? '<span class="group-ops__chip group-ops__chip--neutral">只读</span>' : `${actionButton("编辑", "edit-node", "").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}${actionButton("删除", "delete-node", "group-ops__button--danger").replace(">", ` data-node-id="${escapeHtml(node.id)}">`)}`}
           </div></td>
         </tr>`,
       )
@@ -1879,37 +2152,66 @@
 
   function groupsQueryParams() {
     const params = new URLSearchParams();
-    const keyword = currentFormValue("keyword");
-    const owner = currentFormValue("owner_userid");
-    const plan = currentFormValue("plan_id");
-    const bind = currentFormValue("bind_status");
+    const keyword = state.groupKeywordCommitted;
+    const owner = memberStaffId(state.groupFilterOwner);
     if (keyword) params.set("keyword", keyword);
     if (owner) params.set("owner_userid", owner);
-    if (plan) params.set("plan_id", plan);
-    if (bind) params.set("bind_status", bind);
+    if (state.groupPlanID) params.set("plan_id", state.groupPlanID);
+    if (state.groupBindStatus) params.set("bind_status", state.groupBindStatus);
     return params.toString();
   }
 
+  function renderGroupsRead(generation, result) {
+    if (generation !== groupsReadGeneration || state.mode !== "groups") return;
+    if (state.groupKeywordComposing) {
+      state.pendingGroupsRender = { generation, result };
+      return;
+    }
+    const focus = groupsFocusSnapshot();
+    captureGroupsDraft();
+    if (result.kind === "success") {
+      state.groups = normalizeItems(result.groupPayload);
+      state.plans = normalizeItems(result.planPayload);
+      state.ownerOptions = normalizeOwners(result.ownersPayload, null);
+      state.groupsReadError = "";
+    } else {
+      // A failed read leaves the last successful rows in place and explains
+      // that the controls still represent the current draft/committed state.
+      state.groupsReadError = (result.error && result.error.message) || "读取群聊失败，请重试";
+    }
+    renderGroups();
+    restoreGroupsFocus(focus);
+  }
+
+  function flushPendingGroupsRender() {
+    const pending = state.pendingGroupsRender;
+    state.pendingGroupsRender = null;
+    if (pending) renderGroupsRead(pending.generation, pending.result);
+  }
+
   async function loadGroupsPage() {
+    captureGroupsDraft();
+    const generation = ++groupsReadGeneration;
+    const query = groupsQueryParams();
     try {
-      const query = groupsQueryParams();
       const [groupPayload, planPayload, ownersPayload] = await Promise.all([
         requestJson(query ? `${routes.apiGroups}?${query}` : routes.apiGroups),
         state.plans.length ? Promise.resolve({ items: state.plans }) : requestJson(routes.apiPlans),
         requestJson(routes.apiMembers),
       ]);
-      state.groups = normalizeItems(groupPayload);
-      state.plans = normalizeItems(planPayload);
-      state.ownerOptions = normalizeOwners(ownersPayload, null);
-      renderGroups();
+      // Some standalone Hosts use the minimal requestJson fallback above. It
+      // parses a non-2xx error document, so require the owned list shape before
+      // treating it as an empty directory.
+      if (!groupPayload || !Array.isArray(groupPayload.items)) throw new Error("群聊列表暂不可读取");
+      renderGroupsRead(generation, { kind: "success", groupPayload, planPayload, ownersPayload });
     } catch (error) {
-      renderError(error.message);
+      renderGroupsRead(generation, { kind: "error", error });
     }
   }
 
   function renderPlanFilter() {
     return state.plans
-      .map((plan) => `<option value="${escapeHtml(plan.id)}">${escapeHtml(plan.plan_name)}</option>`)
+      .map((plan) => `<option value="${escapeHtml(plan.id)}"${String(plan.id) === state.groupPlanID ? " selected" : ""}>${escapeHtml(plan.plan_name)}</option>`)
       .join("");
   }
 
@@ -1926,22 +2228,29 @@
         </tr>`,
       )
       .join("");
+    const groupsReadNotice = state.groupsReadError
+      ? state.groups.length
+        ? `${state.groupsReadError}；当前显示上次读取结果`
+        : `群聊列表暂不可读取：${state.groupsReadError}`
+      : "";
+    const emptyRows = state.groupsReadError ? "群聊列表暂不可读取" : "暂无数据";
     renderShell(`
       <div class="group-ops__bar">${pageButton("返回列表", routes.list)}</div>
       <section class="group-ops__card">
         <div class="group-ops__filters">
-          <label class="group-ops__field group-ops__field--wide"><span>群名 / 群 ID</span><input name="keyword" data-filter></label>
-          <label class="group-ops__field"><span>群主/管理员</span>${renderMemberField("owner_userid", (state.groupFilterOwner || {}).user_id, "pick-group-filter-owner", state.groupFilterOwner ? "更换成员" : "选择成员")}</label>
+          <label class="group-ops__field group-ops__field--wide"><span>群名 / 群 ID</span><input name="keyword" data-filter value="${escapeHtml(state.groupKeywordDraft)}"></label>
+          <label class="group-ops__field"><span>群主/管理员</span>${renderMemberField("owner_userid", memberStaffId(state.groupFilterOwner), "pick-group-filter-owner", state.groupFilterOwner ? "更换成员" : "选择成员")}</label>
           <div class="group-ops__row-actions">${actionButton("清除成员", "clear-group-filter-owner")}</div>
           <label class="group-ops__field"><span>所属计划</span><select name="plan_id" data-filter><option value="">全部</option>${renderPlanFilter()}</select></label>
-          <label class="group-ops__field"><span>已绑定 / 未绑定</span><select name="bind_status" data-filter><option value="">全部</option><option value="bound">已绑定</option><option value="unbound">未绑定</option></select></label>
+          <label class="group-ops__field"><span>已绑定 / 未绑定</span><select name="bind_status" data-filter><option value=""${state.groupBindStatus === "" ? " selected" : ""}>全部</option><option value="bound"${state.groupBindStatus === "bound" ? " selected" : ""}>已绑定</option><option value="unbound"${state.groupBindStatus === "unbound" ? " selected" : ""}>未绑定</option></select></label>
         </div>
+        ${groupsReadNotice ? `<p class="group-ops__notice group-ops__notice--error" role="alert">${escapeHtml(groupsReadNotice)}</p>` : ""}
       </section>
       <section class="group-ops__card">
         <div class="group-ops__table-wrap">
           <table class="group-ops__table">
             <thead><tr><th>群名</th><th>群 ID</th><th>群主</th><th>所属计划</th><th>状态</th></tr></thead>
-            <tbody>${rows || '<tr><td colspan="5" class="group-ops__empty">暂无数据</td></tr>'}</tbody>
+            <tbody>${rows || `<tr><td colspan="5" class="group-ops__empty">${emptyRows}</td></tr>`}</tbody>
           </table>
         </div>
       </section>

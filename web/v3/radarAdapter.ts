@@ -1,7 +1,10 @@
 export {};
 import { api } from '../src/shared/api/client';
+import { emptyAdminDb, radarPageDto, type AdminReadContext } from '../src/api/admin';
+import { getRadarLink } from '../src/api/generated/p4-radar/p4-radar';
+import type { RadarLink as ApiRadarLink } from '../src/api/generated/health.schemas';
 import { rememberActionInputs, runAction } from './actionFeedback';
-import { request as authenticatedRequest } from '../src/api/transport';
+import { apiRequestOptions, request as authenticatedRequest, unwrapGenerated } from '../src/api/transport';
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest } from './shared/ui/materialPickerAdapter';
 
@@ -21,6 +24,52 @@ type StandardWindow = Window & {
 const originalFetch = window.fetch.bind(window);
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+
+type RadarExactTarget =
+  | { kind: 'other' }
+  | { kind: 'new' }
+  | { kind: 'read'; id: number }
+  | { kind: 'invalid' };
+
+function radarExactTarget(context?: AdminReadContext): RadarExactTarget {
+  if (context?.page !== 'radarDetail' && context?.page !== 'radarForm') return { kind: 'other' };
+  const entries = Array.from(new URL(location.href).searchParams.entries());
+  if (context.page === 'radarForm' && entries.length === 0) return { kind: 'new' };
+  if (entries.length !== 1 || entries[0][0] !== 'id') return { kind: 'invalid' };
+  const rawID = entries[0][1];
+  if (!/^[1-9][0-9]*$/.test(rawID)) return { kind: 'invalid' };
+  const id = Number(rawID);
+  if (!Number.isSafeInteger(id) || String(id) !== rawID) return { kind: 'invalid' };
+  return { kind: 'read', id };
+}
+
+async function exactRadarDb(id: number) {
+  const payload = record(unwrapGenerated(await getRadarLink(id, apiRequestOptions())));
+  const link = record(payload.link);
+  if (
+    payload.local_projection !== true ||
+    payload.real_external_call_executed !== false ||
+    !Number.isSafeInteger(link.link_id) ||
+    link.link_id !== id
+  ) {
+    throw new Error('内容雷达详情数据异常，请刷新重试。');
+  }
+  const db = emptyAdminDb();
+  db.radarLinks = [radarPageDto(link as unknown as ApiRadarLink)];
+  return db;
+}
+
+function installRadarExactRead(): void {
+  const prior = api.loadDb.bind(api);
+  api.loadDb = async (context?: AdminReadContext) => {
+    const target = radarExactTarget(context);
+    if (target.kind === 'invalid') throw new Error('内容雷达链接 ID 无效');
+    if (target.kind !== 'read' || api.mode !== 'http') return prior(context);
+    return exactRadarDb(target.id);
+  };
+}
+
+installRadarExactRead();
 
 // Radar explicitly supplies this authorised, page-scoped read to the shared
 // dialog. The dialog never reaches into AdminApi or chooses a catalogue scope.
@@ -128,6 +177,519 @@ function relayRadarMaterialSelection(): void {
 }
 
 relayRadarMaterialSelection();
+
+const radarListPageLimit = 20;
+type RadarListStatus = 'all' | 'draft' | 'enabled' | 'disabled';
+type RadarListContentType = 'all' | 'link' | 'image' | 'pdf';
+type RadarListQuery = { search: string; contentType: RadarListContentType; status: RadarListStatus; offset: number };
+type RadarListItem = { link: ApiRadarLink; frozen: RadarListLinks[number]; status: Exclude<RadarListStatus, 'all'> };
+type RadarListPage = { items: RadarListItem[]; total: number; limit: number; offset: number; hasMore: boolean };
+type RadarListLinks = ReturnType<typeof emptyAdminDb>['radarLinks'];
+
+const radarListGenerationEvent = 'aicrm:radar-list-generation';
+let radarListGeneration = 0;
+let radarListShareGeneration = 0;
+let frozenRadarLinks: RadarListLinks | undefined;
+
+function beginRadarListGeneration(): number {
+  radarListGeneration += 1;
+  radarListShareGeneration += 1;
+  window.dispatchEvent(new CustomEvent(radarListGenerationEvent, { detail: { generation: radarListGeneration } }));
+  return radarListGeneration;
+}
+
+function invalidateRadarListShareGeneration(): void {
+  radarListShareGeneration += 1;
+}
+
+function installRadarListShareGenerationGuard(): void {
+  const prior = api.getRadarSharePath.bind(api);
+  api.getRadarSharePath = async (id: number): Promise<string> => {
+    if (document.body.dataset.page !== 'radar' || api.mode !== 'http') return prior(id);
+    const generation = radarListShareGeneration;
+    const path = await prior(id);
+    if (generation !== radarListShareGeneration) throw new Error('内容雷达列表已更新，请重新打开分享。');
+    return path;
+  };
+}
+
+function radarListErrorStatus(error: unknown): number {
+  return error instanceof Error && 'status' in error && Number.isSafeInteger((error as { status?: unknown }).status)
+    ? Number((error as { status: number }).status)
+    : 0;
+}
+
+function radarListErrorMessage(error: unknown): string {
+  switch (radarListErrorStatus(error)) {
+    case 400: return '筛选条件无效，请检查后重试。';
+    case 401: return '登录状态已失效，请重新登录后读取内容雷达。';
+    case 403: return '当前账号没有读取内容雷达的权限。';
+    case 503: return '内容雷达暂时无法读取，请稍后重试。';
+    default: return '内容雷达暂时无法读取，请检查网络后重试。';
+  }
+}
+
+function radarListMutationErrorMessage(error: unknown): string {
+  switch (radarListErrorStatus(error)) {
+    case 401: return '登录状态已失效，请重新登录后再更新内容雷达状态。';
+    case 403: return '当前账号没有更新内容雷达状态的权限。';
+    default: return error instanceof Error ? error.message : '内容雷达状态更新失败，请重试。';
+  }
+}
+
+function radarListQueryEqual(left: RadarListQuery, right: RadarListQuery): boolean {
+  return left.search === right.search && left.contentType === right.contentType && left.status === right.status && left.offset === right.offset;
+}
+
+function radarListDraftQuery(search: HTMLInputElement, contentType: HTMLSelectElement, status: HTMLSelectElement, offset: number): RadarListQuery | undefined {
+  const value = search.value.trim();
+  if (new TextEncoder().encode(value).byteLength > 200) return undefined;
+  const type = contentType.value;
+  const lifecycle = status.value;
+  if (!['all', 'link', 'image', 'pdf'].includes(type) || !['all', 'draft', 'enabled', 'disabled'].includes(lifecycle) || !Number.isSafeInteger(offset) || offset < 0) return undefined;
+  return { search: value, contentType: type as RadarListContentType, status: lifecycle as RadarListStatus, offset };
+}
+
+function radarListItem(value: unknown): RadarListItem {
+  const source = record(value);
+  const id = source.link_id;
+  const status = source.status;
+  const statisticsStatus = source.statistics_status;
+  const checkedInteger = (input: unknown): number | null => input === null ? null : typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? input : Number.NaN;
+  const totalLandings = checkedInteger(source.total_landings);
+  const authorizedUsers = checkedInteger(source.authorized_users);
+  const authorizedViews = checkedInteger(source.authorized_views);
+  const viewCount = checkedInteger(source.view_count);
+  const lastViewedAt = source.last_viewed_at;
+  if (
+    !Number.isSafeInteger(id) || Number(id) < 1 ||
+    typeof source.public_code !== 'string' || typeof source.name !== 'string' || typeof source.title !== 'string' ||
+    typeof source.destination_url !== 'string' || !['draft', 'enabled', 'disabled'].includes(String(status)) ||
+    !Number.isSafeInteger(source.version) || Number(source.version) < 1 ||
+    !Number.isSafeInteger(source.created_by) || Number(source.created_by) < 1 ||
+    !Number.isSafeInteger(source.updated_by) || Number(source.updated_by) < 1 ||
+    typeof source.created_at !== 'string' || typeof source.updated_at !== 'string' ||
+    !['ready', 'unavailable'].includes(String(statisticsStatus)) ||
+    Number.isNaN(totalLandings) || Number.isNaN(authorizedUsers) || Number.isNaN(authorizedViews) || Number.isNaN(viewCount) ||
+    !(lastViewedAt === null || typeof lastViewedAt === 'string')
+  ) throw new Error('invalid radar list item');
+  if (statisticsStatus === 'ready' && (totalLandings === null || authorizedUsers === null || authorizedViews === null || viewCount === null)) throw new Error('invalid radar statistics');
+  if (statisticsStatus === 'unavailable' && (totalLandings !== null || authorizedUsers !== null || authorizedViews !== null || viewCount !== null || lastViewedAt !== null)) throw new Error('invalid unavailable radar statistics');
+  const link = radarPageDto(source as unknown as ApiRadarLink);
+  return { link: { ...source, link_id: source.link_id } as unknown as ApiRadarLink, status: status as RadarListItem['status'], frozen: link };
+}
+
+async function readRadarListPage(query: RadarListQuery, signal: AbortSignal): Promise<RadarListPage> {
+  const url = new URL('/api/admin/radar-links', location.origin);
+  url.searchParams.set('limit', String(radarListPageLimit));
+  url.searchParams.set('offset', String(query.offset));
+  if (query.search) url.searchParams.set('search', query.search);
+  if (query.contentType !== 'all') url.searchParams.set('content_type', query.contentType);
+  if (query.status !== 'all') url.searchParams.set('status', query.status);
+  const response = await authenticatedRequest(url.toString(), { cache: 'no-store', headers: { Accept: 'application/json' }, signal });
+  const payload = record(await response.json());
+  const sourceItems = Array.isArray(payload.items) ? payload.items : undefined;
+  const total = payload.total;
+  const limit = payload.limit;
+  const offset = payload.offset;
+  const hasMore = payload.has_more;
+  if (
+    payload.local_projection !== true || payload.real_external_call_executed !== false || !sourceItems ||
+    !Number.isSafeInteger(total) || Number(total) < 0 || limit !== radarListPageLimit || offset !== query.offset ||
+    typeof hasMore !== 'boolean' || sourceItems.length > radarListPageLimit || (hasMore && sourceItems.length === 0) ||
+    (query.status !== 'all' && payload.status_filter !== query.status)
+  ) throw new Error('invalid radar list page');
+  return { items: sourceItems.map(radarListItem), total: Number(total), limit: radarListPageLimit, offset: query.offset, hasMore };
+}
+
+function installRadarListRead(): void {
+  const prior = api.loadDb.bind(api);
+  api.loadDb = async (context?: AdminReadContext) => {
+    if (context?.page === 'radar' && api.mode === 'http') {
+      const db = emptyAdminDb();
+      // Frozen renderList closes over this exact array. Replacing its contents,
+      // rather than its renderer, retains the original row/action behavior.
+      frozenRadarLinks = db.radarLinks;
+      return db;
+    }
+    return prior(context);
+  };
+}
+
+class RadarListController {
+  private readonly controller = new AbortController();
+  private readonly feedback = document.createElement('p');
+  private readonly summary = document.createElement('span');
+  private readonly retryButton = this.button('重新读取当前页');
+  private readonly previousButton = this.button('上一页');
+  private readonly nextButton = this.button('下一页');
+  private readonly resetButton = this.button('清空筛选');
+  private readonly refreshButton = this.button('刷新');
+  private readonly panel = document.createElement('div');
+  private page: RadarListPage | undefined;
+  private applied: RadarListQuery = { search: '', contentType: 'all', status: 'all', offset: 0 };
+  private retrySnapshot: RadarListQuery | undefined;
+  private activeRequest: AbortController | undefined;
+  private generation = 0;
+  private committedBridgeGeneration = 0;
+  private loading = false;
+  private writing = false;
+  private actionRecovery: { query: RadarListQuery; outcome: 'unknown' | 'accepted' } | undefined;
+  private authorizationFailed = false;
+  private initialReadFailed = false;
+  private paintingFrozenList = false;
+  private statuses = new Map<number, RadarListItem['status']>();
+
+  constructor(
+    private readonly root: HTMLElement,
+    private readonly links: RadarListLinks,
+    private readonly search: HTMLInputElement,
+    private readonly contentType: HTMLSelectElement,
+    private readonly status: HTMLSelectElement,
+    private readonly frozenRefresh: HTMLButtonElement,
+  ) {
+    this.prepare();
+  }
+
+  mount(tableCard: HTMLElement): void {
+    tableCard.insertAdjacentElement('afterend', this.panel);
+    this.installCapture();
+    void this.load({ ...this.applied });
+  }
+
+  destroy(): void {
+    this.activeRequest?.abort();
+    this.controller.abort();
+  }
+
+  private button(label: string): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn';
+    button.textContent = label;
+    // This V3 controller owns the real read action before the shared capture
+    // feedback delegate observes the element in the DOM.
+    (button as HTMLButtonElement & { __dcBound?: boolean }).__dcBound = true;
+    return button;
+  }
+
+  private claimRealAction(element: HTMLElement | null): void {
+    if (!element) return;
+    (element as HTMLElement & { __dcBound?: boolean }).__dcBound = true;
+    element.dataset.capabilityState = 'real';
+    element.removeAttribute('aria-description');
+  }
+
+  private claimRenderedActions(): void {
+    [this.retryButton, this.previousButton, this.nextButton, this.resetButton, this.refreshButton].forEach((button) => this.claimRealAction(button));
+    this.claimRealAction(this.root.querySelector<HTMLElement>('#btnNew'));
+    this.claimRealAction(this.root.querySelector<HTMLElement>('#shareCopy'));
+    this.claimRealAction(this.root.querySelector<HTMLElement>('#shareQrDownload'));
+    this.root.querySelectorAll<HTMLElement>('[data-toggle]').forEach((button) => this.claimRealAction(button));
+  }
+
+  private prepare(): void {
+    this.root.dataset.v3RadarListController = '';
+    this.search.placeholder = '按名称、标题或链接搜索';
+    if (![...this.status.options].some((option) => option.value === 'draft')) {
+      const draft = document.createElement('option');
+      draft.value = 'draft'; draft.textContent = '草稿';
+      this.status.insertBefore(draft, this.status.querySelector('option[value="enabled"]') || null);
+    }
+    this.frozenRefresh.textContent = '查询';
+    this.panel.dataset.v3RadarListControls = '';
+    this.panel.className = 'card';
+    this.panel.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;flex-wrap:wrap';
+    this.summary.className = 'muted';
+    this.feedback.dataset.v3RadarListFeedback = '';
+    this.feedback.setAttribute('role', 'status');
+    this.feedback.style.cssText = 'margin:0;color:#8F959E;font-size:13px;line-height:20px';
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+    this.previousButton.classList.add('ghost');
+    this.nextButton.classList.add('ghost');
+    actions.append(this.resetButton, this.refreshButton, this.retryButton, this.previousButton, this.nextButton);
+    this.panel.append(this.summary, this.feedback, actions);
+    this.claimRenderedActions();
+    this.resetButton.addEventListener('click', () => {
+      if (this.controlsLocked()) return;
+      this.search.value = ''; this.contentType.value = 'all'; this.status.value = 'all';
+      void this.load({ search: '', contentType: 'all', status: 'all', offset: 0 });
+    }, { signal: this.controller.signal });
+    this.refreshButton.addEventListener('click', () => { if (!this.controlsLocked() && this.page) void this.load({ ...this.applied }); }, { signal: this.controller.signal });
+    this.retryButton.addEventListener('click', () => {
+      if (this.loading || this.authorizationFailed) return;
+      if (this.actionRecovery) void this.retryActionReadback();
+      else if (this.retrySnapshot) void this.load({ ...this.retrySnapshot });
+    }, { signal: this.controller.signal });
+    this.previousButton.addEventListener('click', () => {
+      if (!this.controlsLocked() && this.page) void this.load({ ...this.applied, offset: Math.max(0, this.page.offset - this.page.limit) });
+    }, { signal: this.controller.signal });
+    this.nextButton.addEventListener('click', () => {
+      if (!this.controlsLocked() && this.page) void this.load({ ...this.applied, offset: this.page.offset + this.page.limit });
+    }, { signal: this.controller.signal });
+    this.renderControls();
+  }
+
+  private installCapture(): void {
+    const filterChange = (event: Event): void => {
+      if (this.paintingFrozenList) return;
+      const target = event.target;
+      if (target !== this.search && target !== this.contentType && target !== this.status) return;
+      event.stopImmediatePropagation();
+      if (this.controlsLocked()) return;
+      this.renderControls();
+    };
+    this.root.addEventListener('input', filterChange, { capture: true, signal: this.controller.signal });
+    this.root.addEventListener('change', filterChange, { capture: true, signal: this.controller.signal });
+    this.root.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      if (target.closest('#fRefresh')) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        const query = this.draft(0);
+        if (!query) this.showError('搜索内容最多为 200 个 UTF-8 字节。');
+        else if (!this.controlsLocked()) void this.load(query);
+        return;
+      }
+      const toggle = target.closest<HTMLElement>('[data-toggle]');
+      if (!toggle) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      const id = Number(toggle.dataset.toggle);
+      if (!Number.isSafeInteger(id) || id < 1 || this.controlsLocked() || this.loading || !this.page) return;
+      void this.toggleAndReadBack(id);
+    }, { capture: true, signal: this.controller.signal });
+  }
+
+  private draft(offset: number): RadarListQuery | undefined {
+    return radarListDraftQuery(this.search, this.contentType, this.status, offset);
+  }
+
+  private queryIsStale(): boolean {
+    const draft = this.draft(this.applied.offset);
+    return !draft || !radarListQueryEqual(draft, this.applied);
+  }
+
+  private controlsLocked(): boolean {
+    return this.writing || this.actionRecovery !== undefined || this.authorizationFailed;
+  }
+
+  private async load(snapshot: RadarListQuery): Promise<boolean> {
+    if (this.authorizationFailed) return false;
+    this.activeRequest?.abort();
+    const request = new AbortController();
+    this.activeRequest = request;
+    const generation = ++this.generation;
+    const bridgeGeneration = beginRadarListGeneration();
+    this.loading = true;
+    this.retrySnapshot = undefined;
+    this.feedback.textContent = '正在读取内容雷达…';
+    this.feedback.setAttribute('role', 'status');
+    this.renderControls();
+    try {
+      const page = await readRadarListPage(snapshot, request.signal);
+      if (request.signal.aborted || generation !== this.generation) return false;
+      this.links.splice(0, this.links.length, ...page.items.map((item) => item.frozen));
+      this.statuses = new Map(page.items.map((item) => [item.link.link_id, item.status]));
+      this.page = page;
+      this.applied = { ...snapshot };
+      this.committedBridgeGeneration = bridgeGeneration;
+      this.retrySnapshot = undefined;
+      this.initialReadFailed = false;
+      this.feedback.textContent = '';
+      this.feedback.setAttribute('role', 'status');
+      this.paintFrozenList();
+      return true;
+    } catch (error) {
+      if (request.signal.aborted || generation !== this.generation) return false;
+      if ([401, 403].includes(radarListErrorStatus(error))) {
+        this.clearUnauthorizedList();
+      } else {
+        this.retrySnapshot = { ...snapshot };
+        this.initialReadFailed = !this.page;
+      }
+      this.showError(radarListErrorMessage(error));
+      return false;
+    } finally {
+      if (generation === this.generation) {
+        this.loading = false;
+        if (this.activeRequest === request) this.activeRequest = undefined;
+        this.renderControls();
+      }
+    }
+  }
+
+  private async readBackAfterWrite(snapshot: RadarListQuery): Promise<boolean> {
+    let refreshed = await this.load(snapshot);
+    if (refreshed && this.page?.items.length === 0 && snapshot.offset > 0) {
+      refreshed = await this.load({ ...snapshot, offset: Math.max(0, snapshot.offset - radarListPageLimit) });
+    }
+    return refreshed;
+  }
+
+  private recoveryMessage(outcome: 'unknown' | 'accepted'): string {
+    return outcome === 'unknown'
+      ? '状态更新结果未确认，请重新读取当前页核对后再操作。'
+      : '状态已更新，列表未刷新。请重新读取当前页。';
+  }
+
+  private async retryActionReadback(): Promise<void> {
+    const recovery = this.actionRecovery;
+    if (!recovery || this.loading || this.authorizationFailed) return;
+    const refreshed = await this.readBackAfterWrite({ ...recovery.query });
+    if (refreshed) {
+      this.actionRecovery = undefined;
+      this.feedback.textContent = '';
+      this.feedback.setAttribute('role', 'status');
+    } else if (!this.authorizationFailed) {
+      this.showError(this.recoveryMessage(recovery.outcome));
+    }
+    this.renderControls();
+  }
+
+  private async toggleAndReadBack(id: number): Promise<void> {
+    const item = this.links.find((candidate) => candidate.id === id);
+    if (!item) return;
+    const snapshot = { ...this.applied };
+    this.writing = true;
+    this.feedback.textContent = '正在更新内容雷达状态…';
+    this.feedback.setAttribute('role', 'status');
+    this.renderControls();
+    try {
+      await api.toggleRadarLink(id, !item.enabled);
+    } catch (error) {
+      const status = radarListErrorStatus(error);
+      this.writing = false;
+      if ([401, 403].includes(status)) {
+        this.clearUnauthorizedList();
+        this.showError(radarListMutationErrorMessage(error));
+      } else if (status === 0 || status >= 500) {
+        this.actionRecovery = { query: snapshot, outcome: 'unknown' };
+        this.showError(this.recoveryMessage('unknown'));
+      } else {
+        this.showError(radarListMutationErrorMessage(error));
+      }
+      this.renderControls();
+      return;
+    }
+    const refreshed = await this.readBackAfterWrite(snapshot);
+    this.writing = false;
+    if (!refreshed && !this.authorizationFailed) {
+      this.actionRecovery = { query: snapshot, outcome: 'accepted' };
+      this.showError(this.recoveryMessage('accepted'));
+    }
+    this.renderControls();
+  }
+
+  private clearUnauthorizedList(): void {
+    invalidateRadarListShareGeneration();
+    this.links.splice(0, this.links.length);
+    this.statuses.clear();
+    this.page = undefined;
+    this.initialReadFailed = true;
+    this.retrySnapshot = undefined;
+    this.actionRecovery = undefined;
+    this.authorizationFailed = true;
+    const shareMask = this.root.querySelector<HTMLElement>('#shareMask');
+    shareMask?.classList.remove('open');
+    const shareURL = this.root.querySelector<HTMLInputElement>('#shareUrl');
+    if (shareURL) { shareURL.value = ''; shareURL.disabled = true; }
+    const copy = this.root.querySelector<HTMLButtonElement>('#shareCopy');
+    if (copy) copy.disabled = true;
+    const download = this.root.querySelector<HTMLButtonElement>('#shareQrDownload');
+    if (download) download.disabled = true;
+    const qr = this.root.querySelector<HTMLElement>('#shareQr');
+    if (qr) qr.textContent = '分享链接已失效，请重新登录后重试。';
+    this.paintFrozenList();
+  }
+
+  private paintFrozenList(): void {
+    const saved = { search: this.search.value, contentType: this.contentType.value, status: this.status.value };
+    this.paintingFrozenList = true;
+    try {
+      this.search.value = ''; this.contentType.value = 'all'; this.status.value = 'all';
+      this.search.dispatchEvent(new Event('input', { bubbles: true }));
+    } finally {
+      this.search.value = saved.search; this.contentType.value = saved.contentType; this.status.value = saved.status;
+      this.paintingFrozenList = false;
+    }
+    this.projectCurrentPage();
+    this.claimRenderedActions();
+  }
+
+  private projectCurrentPage(): void {
+    this.root.querySelectorAll<HTMLTableRowElement>('#listRows tr').forEach((row) => {
+      const action = row.querySelector<HTMLElement>('[data-detail]');
+      const id = Number(action?.dataset.detail);
+      const status = this.statuses.get(id);
+      if (!action || !Number.isSafeInteger(id) || !status) return;
+      row.dataset.v3RadarListGeneration = String(this.committedBridgeGeneration);
+      row.classList.toggle('row-off', status !== 'enabled');
+      const cell = row.cells.item(2);
+      if (!cell) return;
+      const chip = document.createElement('span');
+      chip.className = `chip ${status === 'enabled' ? 'ok' : status === 'draft' ? 'blue' : 'gray'}`;
+      chip.textContent = status === 'enabled' ? '启用' : status === 'draft' ? '草稿' : '停用';
+      cell.replaceChildren(chip);
+    });
+  }
+
+  private showError(message: string): void {
+    this.feedback.textContent = message;
+    this.feedback.setAttribute('role', 'alert');
+  }
+
+  private renderControls(): void {
+    const page = this.page;
+    const stale = this.queryIsStale();
+    if (!page) this.summary.textContent = this.initialReadFailed ? '内容雷达尚未成功读取。' : '正在读取内容雷达…';
+    else if (stale) this.summary.textContent = '筛选已变更，下面仍显示上次成功查询的结果。请点击“查询”。';
+    else {
+      const from = page.total === 0 ? 0 : page.offset + 1;
+      const to = page.offset + page.items.length;
+      this.summary.textContent = `共 ${page.total} 条，第 ${from}–${to} 条`;
+    }
+    const controlsLocked = this.controlsLocked();
+    this.search.disabled = controlsLocked;
+    this.contentType.disabled = controlsLocked;
+    this.status.disabled = controlsLocked;
+    this.root.querySelectorAll<HTMLButtonElement>('[data-toggle]').forEach((button) => { button.disabled = controlsLocked || this.loading; });
+    this.frozenRefresh.disabled = controlsLocked;
+    this.resetButton.disabled = controlsLocked;
+    this.refreshButton.disabled = controlsLocked || this.loading || !page;
+    this.retryButton.hidden = !this.retrySnapshot && !this.actionRecovery;
+    this.retryButton.disabled = this.authorizationFailed || this.loading || (!this.retrySnapshot && !this.actionRecovery);
+    this.previousButton.disabled = controlsLocked || this.loading || !page || page.offset === 0 || stale;
+    this.nextButton.disabled = controlsLocked || this.loading || !page || !page.hasMore || stale;
+  }
+}
+
+function installRadarListController(): void {
+  if (document.body.dataset.page !== 'radar') return;
+  let controller: RadarListController | undefined;
+  const attemptMount = (): void => {
+    if (controller || !frozenRadarLinks) return;
+    const root = document.querySelector<HTMLElement>('#stage.sec-radar');
+    const search = root?.querySelector<HTMLInputElement>('#fKeyword');
+    const contentType = root?.querySelector<HTMLSelectElement>('#fType');
+    const status = root?.querySelector<HTMLSelectElement>('#fStatus');
+    const frozenRefresh = root?.querySelector<HTMLButtonElement>('#fRefresh');
+    const rows = root?.querySelector<HTMLTableSectionElement>('#listRows');
+    const tableCard = rows?.closest('table')?.closest<HTMLElement>('.card');
+    if (!root || !search || !contentType || !status || !frozenRefresh || !tableCard) return;
+    controller = new RadarListController(root, frozenRadarLinks, search, contentType, status, frozenRefresh);
+    controller.mount(tableCard);
+    observer.disconnect();
+  };
+  const observer = new MutationObserver(attemptMount);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('pagehide', () => { observer.disconnect(); controller?.destroy(); }, { once: true });
+  attemptMount();
+}
+
+installRadarListRead();
+installRadarListShareGenerationGuard();
+installRadarListController();
 
 type RadarVisitor = {
   nickname?: string;

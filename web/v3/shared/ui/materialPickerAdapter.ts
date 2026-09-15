@@ -1,7 +1,7 @@
 import { SelectionSession, selectionKey, type SelectionItem, type SelectionLoader } from './selectionSession';
 import { focusedSelectionKey, installSelectionDialog, restoreSelectionFocus, type SelectionDialogController } from './selectionDialog';
 
-type MaterialType = 'image' | 'miniprogram' | 'attachment';
+export type MaterialType = 'image' | 'miniprogram' | 'attachment' | 'group_invite';
 type Json = Record<string, unknown>;
 
 export type MaterialPickerRecord = Json & {
@@ -68,7 +68,7 @@ type MaterialWindow = { AICRMMaterialPicker?: MaterialPicker };
 type InstalledPicker = { source: string; scope: string };
 
 const installedKey = Symbol.for('aicrm.v3.material-picker-adapter');
-const labels: Record<MaterialType, string> = { image: '图片', miniprogram: '小程序', attachment: 'PDF/附件' };
+const labels: Record<MaterialType, string> = { image: '图片', miniprogram: '小程序', attachment: 'PDF/附件', group_invite: '群邀请' };
 
 function runtime(): MaterialWindow { return window as unknown as MaterialWindow; }
 function escape(value: unknown): string { return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] || character); }
@@ -76,7 +76,7 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message.trim() : fallback;
 }
 function validID(value: number | string): number | null { const id = Number(value); return Number.isSafeInteger(id) && id > 0 ? id : null; }
-function isMaterialType(value: string): value is MaterialType { return value === 'image' || value === 'miniprogram' || value === 'attachment'; }
+function isMaterialType(value: string): value is MaterialType { return value === 'image' || value === 'miniprogram' || value === 'attachment' || value === 'group_invite'; }
 
 function normalize(raw: MaterialPickerRecord, fallbackType: MaterialType): Material | null {
   const metadata = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata as Json : {};
@@ -140,8 +140,9 @@ export function installMaterialPickerAdapter(config: MaterialPickerAdapterOption
   const adapter: MaterialPicker & { [installedKey]?: InstalledPicker } = {
     open(options: MaterialPickerOptions = {}): unknown {
       const type = String(options.type || 'image');
-      // Group invitation selection has command semantics of its own. Preserve
-      // its frozen caller route until a separate domain adapter owns it.
+      // Unknown caller types retain the frozen route. Every Media-owned
+      // material type, including group-invite library records, stays within
+      // this V3 temporary-selection adapter and never creates a binding.
       if (!isMaterialType(type)) return donorOpen(options);
       return openMaterialPicker(config, type, options);
     },

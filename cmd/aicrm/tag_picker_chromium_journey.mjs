@@ -10,8 +10,9 @@ const password = process.env.AICRM_TAG_PICKER_TEST_PASSWORD;
 const productID = process.env.AICRM_TAG_PICKER_TEST_PRODUCT_ID;
 const channelID = process.env.AICRM_TAG_PICKER_TEST_CHANNEL_ID;
 const tagID = process.env.AICRM_TAG_PICKER_TEST_TAG_ID;
+const channelStaffID = process.env.AICRM_TAG_PICKER_TEST_CHANNEL_STAFF_ID;
 const screenshotDir = process.env.AICRM_TAG_PICKER_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || '') || !username || !password || !/^[1-9]\d*$/.test(productID || '') || !/^[1-9]\d*$/.test(channelID || '') || !/^[1-9]\d*$/.test(tagID || '')) throw new Error('tag picker Chromium journey requires URL, credentials and fixture IDs');
+if (!/^https:\/\//.test(baseURL || '') || !username || !password || !/^[1-9]\d*$/.test(productID || '') || !/^[1-9]\d*$/.test(channelID || '') || !/^[1-9]\d*$/.test(tagID || '') || !/^[1-9]\d*$/.test(channelStaffID || '')) throw new Error('tag picker Chromium journey requires URL, credentials and fixture IDs');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function browserBinary() {
@@ -167,6 +168,42 @@ try {
   await waitFor(cdp, `!document.querySelector('[data-v3-selection-session="tag"]') && document.querySelector('[data-entry-tag-id]').value === ${JSON.stringify(tagID)}`, 'channel V3 picker did not update the existing entry tag draft');
   await evaluate(cdp, "document.querySelector('[data-save-channel]').click(); true");
   await waitFor(cdp, `fetch('/api/admin/channels/${channelID}',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>String(body.channel?.entry_tag_id)===${JSON.stringify(tagID)} && body.channel?.entry_tag_name==='Chromium 标签' && body.channel?.entry_tag_group_name==='Chromium 新客')`, 'normal channel save/readback did not persist selected entry tag');
+
+  // Channel staff uses the exact frozen add-assignee callback seam. The V3
+  // dialog supplies only the authorised local staff ID; cancellation and
+  // confirmation retain the frozen form as the sole draft/save owner.
+  await evaluate(cdp, "document.querySelector('[data-channel-admission-page] [data-add-channel-assignee]').click(); true");
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-key]'))", 'channel staff V3 dialog did not open from the frozen callback seam');
+  const staffDialogLayout = async (width, screenshotName = `channel-staff-picker-${width}.png`, expectDirectoryHint = true) => {
+    await setViewport(cdp, width);
+    const layout = await evaluate(cdp, `(() => { const mask=document.querySelector('[data-v3-selection-session="staff"]'); const dialog=mask?.querySelector('.aicrm-v3-staff-picker'); const meta=mask?.querySelector('.aicrm-v3-staff-picker__meta'); const selected=mask?.querySelector('[data-v3-staff-selected]'); const list=mask?.querySelector('[data-v3-staff-list]'); const footer=mask?.querySelector('.aicrm-v3-staff-picker__footer'); const confirm=mask?.querySelector('[data-v3-staff-confirm]'); const box=node=>node&&node.getBoundingClientRect(); return {width:document.documentElement.scrollWidth,dialog:box(dialog),meta:box(meta),hasDirectoryHint:Boolean(mask?.querySelector('.aicrm-v3-staff-picker__directory-hint')),selected:box(selected),list:box(list),footer:box(footer),confirm:box(confirm),selectedOverflow:selected&&getComputedStyle(selected).overflowY,listOverflow:list&&getComputedStyle(list).overflowY,footerDisplay:footer&&getComputedStyle(footer).display}; })()`);
+    if (!layout || layout.width > width + 1 || !layout.dialog || layout.dialog.width > width || layout.dialog.bottom > 900 || !layout.meta || layout.hasDirectoryHint !== expectDirectoryHint || !layout.selected || !layout.list || layout.list.height < 40 || layout.selectedOverflow !== 'auto' || layout.listOverflow !== 'auto' || !layout.footer || layout.footerDisplay !== 'flex' || !layout.confirm || layout.confirm.bottom > layout.dialog.bottom + 1) throw new Error(`channel staff dialog ${width}px is not operable: ${JSON.stringify(layout)}`);
+    await screenshot(cdp, screenshotName);
+  };
+  for (const width of [360, 420, 1280, 1440]) await staffDialogLayout(width);
+  const selectedStaff = await evaluate(cdp, `(() => { const row=Array.from(document.querySelectorAll('[data-v3-selection-session="staff"] [data-v3-staff-key]')).find(item=>String(item.textContent||'').includes('chromium-channel-staff')); if(!row) return false; row.click(); const confirm=document.querySelector('[data-v3-selection-session="staff"] [data-v3-staff-confirm]'); if(!confirm || confirm.disabled) return false; confirm.click(); return true; })()`);
+  if (!selectedStaff) throw new Error('channel staff dialog did not expose the authorised local staff record');
+  await waitFor(cdp, `!document.querySelector('[data-v3-selection-session="staff"]') && document.querySelector('[data-assignee-list]')?.textContent.includes('Chromium 渠道客服')`, 'channel staff confirmation did not update the original frozen draft');
+  // The preserved donor owns allocation semantics. Adding a second staff member
+  // leaves its ratio at zero until the operator explicitly assigns both rows;
+  // exercise that existing form rule before its normal Catalog save.
+  const setRatio = async (index, value) => {
+    const updated = await evaluate(cdp, `(() => { const field=document.querySelector('[data-assignee-field="ratio_percent"][data-index="${index}"]'); if(!field) return false; field.value=${JSON.stringify(String(value))}; field.dispatchEvent(new Event('input',{bubbles:true})); field.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
+    if (!updated) throw new Error(`channel ratio field ${index} did not remain available after staff selection`);
+  };
+  await setRatio(0, 50);
+  await setRatio(1, 50);
+  await evaluate(cdp, "document.querySelector('[data-save-channel]').click(); true");
+  await waitFor(cdp, `fetch('/api/admin/channels/${channelID}',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>Array.isArray(body.channel?.assignment_config_json?.assignees) && body.channel.assignment_config_json.assignees.some((item)=>String(item.staff_id)===${JSON.stringify(channelStaffID)}))`, 'normal channel save/readback did not persist the V3-selected local staff ID');
+
+  // The same V3 Host/CSS must keep its list as the flexible row when a caller
+  // has no bounded-directory hint. This remains a local dialog check: it does
+  // not change the saved channel draft or invoke any command.
+  await evaluate(cdp, `(() => { window.AICRMStaffPicker.open({ title: '无目录提示布局', source: 'channel_code.operation_members', scope: 'channel_code', selectedRecords: [], mode: 'multiple', limit: 5, loadPage: async () => ({ items: [{ source: 'channel_code.operation_members', staff_id: '98', user_id: 'chromium-layout-only', display_name: '布局验证员工', active: true }] }), onCommit: () => {} }); return true; })()`);
+  await waitFor(cdp, "Boolean(document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-key]'))", 'staff dialog without a directory hint did not open');
+  await staffDialogLayout(1280, 'channel-staff-picker-no-hint-1280.png', false);
+  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"staff\"] [data-v3-staff-cancel]').click(); true");
+  await waitFor(cdp, "!document.querySelector('[data-v3-selection-session=\"staff\"]')", 'staff dialog without a directory hint did not close');
 
   const css = cssStatus();
   if (!css || css.status !== 200 || !/text\/css/i.test(css.mime)) throw new Error(`selection dialog CSS was not delivered as HTTP 200 text/css: ${JSON.stringify({ css, responses: Object.fromEntries(responses) })}`);
