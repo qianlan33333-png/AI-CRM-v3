@@ -665,6 +665,28 @@
       ],
       "reason": "Record the Root-reviewed GroupOps plan-list bound-group projection in the active V3 OpenAPI authority after the current-main integration. Frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
       "review_reference": "Root review of GroupOps bound-count projection rebased to main e481e6dd on 2026-09-15"
+    },
+    {
+      "base_commit": "a53d60d280ec6284f6d1f1b1b48bff4390bcaaa1",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "b9214cb231f65a7b6cb67286631f1fd379827ad46750a7f98ede4bd3cd7e666e",
+          "head_sha256": "a208401173e3da65f88bca4549bc17f3ce85bec7efdfc088d4cc374f30122523"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "ae4a00225aeb39f5ec6cb06df38ac1f3b12c987132f7b78f6decf86c1ac93c7a",
+          "head_sha256": "c8de024f06ff5a795b59bb03745895ad89f7b4cfa5a9fb112cc9a7ac0ea63292"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "64caee6a45cd6ba5350c43aea7b98aa6061bfbb660673f5599c4df6210ff0a65",
+          "head_sha256": "5328e3a5c0b16e5f5f60d0bd2c11fb17c8a7961c39e6c641e7d442cc93808590"
+        }
+      ],
+      "reason": "Integrate the Root-reviewed overview canonical-payer contract with the current main GroupOps OpenAPI authority. The count is omitted when canonical-root resolution is unavailable; frozen donors remain unchanged. This declaration is subject to ordinary PR review and is not independent evidence of human approval.",
+      "review_reference": "Root review of #320 canonical-payer integration against main a53d60d2 on 2026-09-15"
     }
   ]
 }
