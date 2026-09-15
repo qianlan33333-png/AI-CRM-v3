@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,15 +191,31 @@ func radarIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(ctx)
 		t.Fatal(err)
 	}
+	var native *pgxpool.Pool
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			if native != nil {
+				native.Close()
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			if _, dropErr := admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE"); dropErr != nil {
+				t.Errorf("drop isolated Radar PostgreSQL schema %s: %v", schemaName, dropErr)
+			}
+			admin.Close(cleanupCtx)
+		})
+	}
+	// Register cleanup before parsing a pool or applying migrations, so every
+	// post-CREATE failure owns and removes only this random test schema.
+	t.Cleanup(cleanup)
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		admin.Close(ctx)
 		t.Fatal(err)
 	}
 	config.ConnConfig.RuntimeParams["search_path"] = schemaName
-	native, err := pgxpool.NewWithConfig(ctx, config)
+	native, err = pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		admin.Close(ctx)
 		t.Fatal(err)
 	}
 	_, file, _, ok := runtime.Caller(0)
@@ -214,13 +231,7 @@ func radarIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 			t.Fatalf("apply %s: %v", migrationName, execErr)
 		}
 	}
-	return native, func() {
-		native.Close()
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
-		admin.Close(cleanupCtx)
-	}
+	return native, cleanup
 }
 
 func TestPostgreSQLListBatchesPageStatisticsAndKeepsNoViewLastNull(t *testing.T) {
@@ -378,6 +389,103 @@ func TestPostgreSQLListBatchesPageStatisticsAndKeepsNoViewLastNull(t *testing.T)
 		if item.StatisticsStatus != "unavailable" || item.TotalLandings != nil || item.AuthorizedUsers != nil || item.ViewCount != nil || item.LastViewedAt != nil {
 			t.Fatalf("statistics failure leaked synthetic values: %+v", item)
 		}
+	}
+}
+
+func TestPostgreSQLListPagesServerFiltersAndEscapesURLSearch(t *testing.T) {
+	native, cleanup := radarIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC)
+	ids := make(map[int]int64, 21)
+	for index := 1; index <= 21; index++ {
+		name := fmt.Sprintf("Page %02d name", index)
+		title := fmt.Sprintf("Page %02d title", index)
+		destination := fmt.Sprintf("https://example.com/radar/%02d", index)
+		contentType := "link"
+		var mediaID any
+		status := "enabled"
+		switch index {
+		case 1:
+			name = "name needle"
+		case 2:
+			title = "title needle"
+		case 3:
+			destination = "https://example.com/url-needle"
+		case 4:
+			name = `escaped %_\ needle`
+		case 5:
+			contentType, destination, mediaID = "image", "", int64(8)
+		case 6:
+			status = "draft"
+		case 7:
+			status = "disabled"
+		}
+		publicCode := radar.PublicCode(fmt.Sprintf("rd_page_%016d", index))
+		content := radar.Content{Type: radar.ContentType(contentType), DestinationURL: destination}
+		if contentType == "image" {
+			content.DestinationURL = ""
+			content.MediaID = 8
+		}
+		updatedAt := now.Add(time.Duration(index) * time.Second)
+		if err := (radar.Link{ID: 1, PublicCode: publicCode, Name: name, Title: title, Content: content, AuthPolicy: radar.AuthPolicyUnionIDRequired, Status: radar.Status(status), Version: 1, CreatedBy: 1, UpdatedBy: 1, CreatedAt: updatedAt, UpdatedAt: updatedAt}).Validate(); err != nil {
+			t.Fatalf("fixture link %d violates Radar contract before SQL insert: %v", index, err)
+		}
+		var id int64
+		if err := native.QueryRow(ctx, `INSERT INTO radar_links(public_code,name,title,content_type,destination_url,media_id,auth_policy,status,created_by,updated_by,created_at,updated_at)
+			VALUES($1,$2,$3,$4,NULLIF($5,''),$6,'unionid_required',$7,1,1,$8,$8) RETURNING id`,
+			publicCode, name, title, contentType, destination, mediaID, status, updatedAt).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids[index] = id
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(query radarport.ListQuery) radarport.LinkPage {
+		t.Helper()
+		var page radarport.LinkPage
+		if err := uow.Within(ctx, func(tx context.Context) error {
+			var readErr error
+			page, readErr = NewPostgres().List(tx, query)
+			return readErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+	first := read(radarport.ListQuery{Limit: 20, Offset: 0})
+	if first.Total != 21 || len(first.Items) != 20 || !first.HasMore || first.Offset != 0 || first.Limit != 20 || first.Items[0].Link.ID != radar.RadarID(ids[21]) || first.Items[19].Link.ID != radar.RadarID(ids[2]) {
+		t.Fatalf("first page=%+v", first)
+	}
+	second := read(radarport.ListQuery{Limit: 20, Offset: 20})
+	if second.Total != 21 || len(second.Items) != 1 || second.HasMore || second.Offset != 20 || second.Items[0].Link.ID != radar.RadarID(ids[1]) {
+		t.Fatalf("second page=%+v", second)
+	}
+	for _, test := range []struct {
+		name  string
+		query radarport.ListQuery
+		id    int64
+	}{
+		{name: "name", query: radarport.ListQuery{Search: "name needle", Limit: 20}, id: ids[1]},
+		{name: "title", query: radarport.ListQuery{Search: "title needle", Limit: 20}, id: ids[2]},
+		{name: "destination url", query: radarport.ListQuery{Search: "url-needle", Limit: 20}, id: ids[3]},
+		{name: "escaped wildcard", query: radarport.ListQuery{Search: `%_\`, Limit: 20}, id: ids[4]},
+		{name: "content type", query: radarport.ListQuery{ContentType: radar.ContentTypeImage, Limit: 20}, id: ids[5]},
+		{name: "draft", query: radarport.ListQuery{Status: radar.StatusDraft, Limit: 20}, id: ids[6]},
+		{name: "disabled", query: radarport.ListQuery{Status: radar.StatusDisabled, Limit: 20}, id: ids[7]},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page := read(test.query)
+			if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Link.ID != radar.RadarID(test.id) {
+				t.Fatalf("query=%+v page=%+v", test.query, page)
+			}
+		})
 	}
 }
 

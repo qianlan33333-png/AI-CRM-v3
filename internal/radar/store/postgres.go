@@ -80,7 +80,7 @@ func (store *Postgres) List(ctx context.Context, query radarport.ListQuery) (rad
 	}
 	if query.Search != "" {
 		args = append(args, "%"+escapeLike(query.Search)+"%")
-		conditions = append(conditions, "(name ILIKE $"+strconv.Itoa(len(args))+" ESCAPE '\\' OR title ILIKE $"+strconv.Itoa(len(args))+" ESCAPE '\\')")
+		conditions = append(conditions, "(name ILIKE $"+strconv.Itoa(len(args))+" ESCAPE '\\' OR title ILIKE $"+strconv.Itoa(len(args))+" ESCAPE '\\' OR destination_url ILIKE $"+strconv.Itoa(len(args))+" ESCAPE '\\')")
 	}
 	if query.ContentType != "" {
 		add("content_type", query.ContentType)

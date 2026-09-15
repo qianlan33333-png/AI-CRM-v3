@@ -27,14 +27,46 @@ func (testSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.
 
 type testManager struct {
 	created radarport.CreateCommand
+	listed  radarport.ListQuery
 	page    radarport.LinkPage
 }
 
-func (m *testManager) List(context.Context, radarport.ListQuery) (radarport.LinkPage, error) {
+func (m *testManager) List(_ context.Context, query radarport.ListQuery) (radarport.LinkPage, error) {
+	m.listed = query
 	if m.page.Items != nil {
 		return m.page, nil
 	}
 	return radarport.LinkPage{Items: []radarport.LinkSummary{{Link: testLink(), StatisticsStatus: radarport.LinkStatisticsReady}}, Total: 1, Limit: 20}, nil
+}
+
+func TestAdminListPassesBoundedSearchContentTypeAndPageToExistingQuery(t *testing.T) {
+	manager := &testManager{page: radarport.LinkPage{Items: []radarport.LinkSummary{{Link: testLink(), StatisticsStatus: radarport.LinkStatisticsReady}}, Total: 21, Limit: 20, Offset: 20, HasMore: false}}
+	handler, err := NewHandler(manager, testQuery{}, testPublic{}, testSecurity{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/radar-links?search=Guide&content_type=pdf&status=enabled&limit=20&offset=20", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if manager.listed.Search != "Guide" || manager.listed.ContentType != radar.ContentTypePDF || manager.listed.Status != radar.StatusEnabled || manager.listed.Limit != 20 || manager.listed.Offset != 20 {
+		t.Fatalf("query=%+v", manager.listed)
+	}
+	var payload struct {
+		Total    int64 `json:"total"`
+		Limit    int32 `json:"limit"`
+		Offset   int32 `json:"offset"`
+		HasMore  bool  `json:"has_more"`
+		Local    bool  `json:"local_projection"`
+		External bool  `json:"real_external_call_executed"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Total != 21 || payload.Limit != 20 || payload.Offset != 20 || payload.HasMore || !payload.Local || payload.External {
+		t.Fatalf("payload=%+v", payload)
+	}
 }
 func (m *testManager) Get(context.Context, radar.RadarID) (radarport.LinkDetail, error) {
 	return radarport.LinkDetail{Link: testLink()}, nil
