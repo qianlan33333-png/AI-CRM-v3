@@ -31,7 +31,7 @@
 - V3 dialog 返回完整 `{ selected, added, removed }`。商品先验证**全部**选中记录都带有上述可信原图 URL，再原子地写回同一控制器草稿，因此后续分页的合法素材也能应用，而不受冻结 picker 首批目录限制。Radar 只把一条已验证记录注入本次原 callback 的输入；任一校验或 callback 失败都会抛出明确错误，V3 dialog 保持打开和草稿不变。商品的初始素材直读与 Radar 的 `loadDb` 编辑态读取均受 2.5 秒上限保护：每次商品按钮点击对同一页面／kind／原草稿单飞，路由、kind 或原草稿变化会废弃旧结果；Radar 对表单 key、内容类型和实际按钮代次做同样校验。异步旧读取超时、失败或迟到后不得打开或应用任何旧选择器。
 - 商品以整组 URL 一次替换页面草稿，原保存仍以该组值一次写入。Radar 的原 callback 只应用一项。调用方接受成功后 V3 session 才 commit/close；回调抛错、目录失权、取消或刷新失败均不自动重放和不假称回滚。
 - 重新打开应读取调用方当前草稿而非上次 dialog 的缓存；显式移除是临时草稿变化，取消仍恢复此前页面草稿。商品确认后可以移除、重开再加；Radar 继续沿用其页面原有“移除”操作。
-- 所有目录读取继续由页面显式授权：Radar 使用其 `image-library`／`attachment-library` scoped loader；商品保留当前 Media adapter 读取与原 callback 范围。没有全局目录兜底。
+- 所有目录读取继续由页面显式授权：Radar 使用其 `image-library`／`attachment-library` scoped loader；商品保留当前 Media adapter 读取与原 callback 范围。冻结 Radar callback 的旧泛目录读若返回 404，只在当前表单仍有效、且 V3 已精确授权该单条素材时注入该条记录；401/403/5xx 从不回退。没有全局目录兜底。
 
 ## 前端一致性和 Product Design 路由
 
@@ -48,8 +48,8 @@ Product Design `index` 路由与前端一致性组件索引要求扩展已验收
 ## 验收
 
 1. 商品普通／周期页：选两项、移除、取消、重新打开回显，保存后请求体和编辑页重读都保留相同原 URL 顺序；当前作用域目录未确认、失权或缺失的素材保持为不可选回显，确认时 dialog 留在当前草稿、页面不改；来自后续已授权分页的素材可以正常确认。
-2. Radar 图片／PDF：确认只更新单个表单草稿，取消不改，未确认/缺行/缺确认按钮失败保留；已有图片未打开 picker 就直接切 PDF、且存在同号 PDF 时，旧 ID 必须由原 remove 清除并阻止保存，只有新显式选择可应用；保存后从真实 GET/readback 展示保存记录。
-3. 目录分页、搜索、IME composition Enter／Escape、焦点回归、当前 401/403、旧请求迟到、缩略图失败继续复用共享 session 已有回归；商品额外覆盖双击单飞、预读后路由切换和原移除草稿变化，Radar 覆盖编辑态 `loadDb` 超时与迟到、表单路由切换。新调用方覆盖 `onCommit` 的整组原子回调边界。
+2. Radar 图片／PDF：确认只更新单个表单草稿，取消不改，未确认/缺行/缺确认按钮失败保留；真实 PostgreSQL Chromium Journey 从已保存图片的编辑页直接切 PDF，先确认同号图片已清除，再显式选择同号 PDF，最后通过原 Owner 保存和 GET 的 `attachment_id`（映射为表单 `target_type=pdf`／`media_item_id`）回读；旧 ID 不能被自动重解释为 PDF。
+3. 目录分页、搜索、IME composition Enter／Escape、焦点回归、当前 401/403、旧请求迟到、缩略图失败继续复用共享 session 已有回归；商品额外覆盖双击单飞、预读后路由切换和原移除草稿变化，Radar 覆盖编辑态 `loadDb` 超时与迟到、表单路由切换，以及只对 scoped 404 的单条授权 fallback（401/403/5xx 不回退）。新调用方覆盖 `onCommit` 的整组原子回调边界。
 4. 运行 TypeScript、Product/Radar DOM adapter tests、真实 PostgreSQL + Chromium Product/Radar journeys、串行 build/stage release closure。若 Darwin 环境跳过某真实 Chromium journey，报告为跳过并由 Linux CI gate 负责，不把 composition 结果描述为浏览器通过。
 
 不包含素材上传／持久化模型改造、Provider 效果、素材库呈现重构、状态示例页和其他页面的素材接入。

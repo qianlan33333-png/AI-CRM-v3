@@ -121,9 +121,9 @@ func TestPostgreSQLGroupOpsStandardHostChromiumJourney(t *testing.T) {
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*),coalesce(min(staff_id),0) FROM group_ops_plan_members WHERE plan_id=$1`, fixture.planID).Scan(&ownerCount, &ownerID); err != nil || ownerCount != 1 || ownerID != fixture.replacementStaffID {
 		t.Fatalf("browser owner persistence count=%d owner=%d err=%v", ownerCount, ownerID, err)
 	}
-	var radarMaterials int
-	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM radar_links WHERE title='Chromium V3 Radar material' AND content_type='image' AND media_id IS NOT NULL`).Scan(&radarMaterials); err != nil || radarMaterials != 1 {
-		t.Fatalf("browser Radar material persistence count=%d err=%v", radarMaterials, err)
+	var staleRadarImages int
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM radar_links WHERE title='Chromium V3 Radar material' AND content_type='image' AND media_id=$1`, fixture.radarImageID).Scan(&staleRadarImages); err != nil || staleRadarImages != 0 {
+		t.Fatalf("browser Radar type switch retained stale image count=%d image=%d err=%v", staleRadarImages, fixture.radarImageID, err)
 	}
 	var radarPDFMaterials int
 	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT count(*) FROM radar_links WHERE title='Chromium V3 Radar PDF material' AND content_type='pdf' AND media_id=$1`, fixture.radarAttachmentID).Scan(&radarPDFMaterials); err != nil || radarPDFMaterials != 1 {
