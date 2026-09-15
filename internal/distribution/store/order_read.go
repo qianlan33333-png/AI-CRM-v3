@@ -67,7 +67,12 @@ func (r *Repository) ReadOrderDistribution(ctx context.Context, orderIDs []int64
 		c.due_at,
 		(SELECT MAX(ae.occurred_at) FROM distribution_audit_events ae
 		 WHERE ae.aggregate_type='commission' AND ae.aggregate_id=c.id
-		   AND ae.event_type='distribution.settlement_paid.v1'),
+		   AND ae.event_type='distribution.settlement_paid.v1'
+		   AND EXISTS(
+			SELECT 1 FROM distribution_settlements s
+			WHERE s.commission_id=c.id
+			  AND s.settlement_reference=ae.payload->>'settlement_reference'
+		   )),
 		'CNY',
 		COALESCE(adjustments.items,'[]'::jsonb),
 		COALESCE(settlements.items,'[]'::jsonb),

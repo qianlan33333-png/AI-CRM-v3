@@ -301,6 +301,12 @@ func TestPostgreSQLCommissionListReadsPaidSystemConfirmationWithoutScanningMoney
 	if paidItem == nil || paidItem.PaidMinor != 100 || !paidItem.SettlementConfirmedAt.Equal(confirmed) || !paidItem.PaidAt.Equal(confirmed) {
 		t.Fatalf("paid list=%+v", page.Items)
 	}
+	// An audit may arrive later for the commission with an invalid settlement
+	// reference. It is not confirmation evidence for any persisted settlement
+	// and must not replace the order projection's last real confirmation time.
+	if _, err = pool.Exec(ctx, `INSERT INTO distribution_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,payload,occurred_at) VALUES('distribution.settlement_paid.v1','commission',$1,'fixture:late-wrong-reference','{"settlement_reference":"settlement:8301-not-persisted"}',$2)`, commissionID, confirmed.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	readTracer.Reset()
 	var byOrder map[int64][]distributionport.OrderDistributionLine
 	if err = uow.Within(ctx, func(tx context.Context) error {
