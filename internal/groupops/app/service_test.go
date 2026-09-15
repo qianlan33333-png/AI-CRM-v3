@@ -154,11 +154,22 @@ func TestListsAreDeterministicAndBounded(t *testing.T) {
 		t.Fatalf("page=%#v err=%v", page, err)
 	}
 	encoded, err := json.Marshal(page)
-	if err != nil || !strings.Contains(string(encoded), `"queue_count":0`) {
+	if err != nil || !strings.Contains(string(encoded), `"queue_count":0`) || !strings.Contains(string(encoded), `"bound_group_count":0`) {
 		t.Fatalf("encoded=%s err=%v", encoded, err)
 	}
 	if _, err := service.List(context.Background(), 101, 0); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("bounds err=%v", err)
+	}
+}
+
+func TestPlanListRejectsNegativeBoundGroupCount(t *testing.T) {
+	service, _, _ := newTestService()
+	detail, err := service.Create(context.Background(), groupopsport.CreatePlanCommand{Name: "invalid aggregate", Actor: 7, IdempotencyKey: "group-ops-invalid-aggregate-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validPlanList([]groupopsport.PlanListItem{{Plan: detail.Plan, BoundGroupCount: -1}}) {
+		t.Fatal("negative bound group count was accepted")
 	}
 }
 

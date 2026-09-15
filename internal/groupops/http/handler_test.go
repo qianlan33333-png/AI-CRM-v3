@@ -174,10 +174,11 @@ func TestGroupOpsPlanListReturnsResponsibleOwnerProjection(t *testing.T) {
 	}
 	var payload struct {
 		Items []struct {
-			Owner groupopsport.PlanOwner `json:"owner"`
+			Owner           groupopsport.PlanOwner `json:"owner"`
+			BoundGroupCount *int64                 `json:"bound_group_count"`
 		} `json:"items"`
 	}
-	if err = json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 || payload.Items[0].Owner.StaffID != 7 || payload.Items[0].Owner.SenderUserID != "wecom-owner" || payload.Items[0].Owner.DisplayName != "一号运营" || payload.Items[0].Owner.NameSource != "wecom_profile" || payload.Items[0].Owner.ProfileReadState != "ready" {
+	if err = json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 || payload.Items[0].Owner.StaffID != 7 || payload.Items[0].Owner.SenderUserID != "wecom-owner" || payload.Items[0].Owner.DisplayName != "一号运营" || payload.Items[0].Owner.NameSource != "wecom_profile" || payload.Items[0].Owner.ProfileReadState != "ready" || payload.Items[0].BoundGroupCount == nil || *payload.Items[0].BoundGroupCount != 0 {
 		t.Fatalf("payload=%s decoded=%+v err=%v", response.Body.String(), payload, err)
 	}
 }
