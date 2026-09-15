@@ -2,10 +2,32 @@ import { JSDOM } from "jsdom";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, "../../../..");
 const adapter = fs.readFileSync(path.join(here, "survey_operations.js"), "utf8");
+const committedSearch = (await build({
+  stdin: {
+    contents: "import { installCommittedTextSearch } from './web/v3/shared/ui/committedTextSearch'; installCommittedTextSearch();",
+    resolveDir: root,
+    sourcefile: "survey-qr-bridge-committed-search.ts",
+  },
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  target: "es2020",
+  write: false,
+  minify: true,
+  logLevel: "warning",
+})).outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const enter = (window, input, properties = {}) => {
+  const event = new window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", code: "Enter" });
+  Object.entries(properties).forEach(([name, value]) => Object.defineProperty(event, name, { value }));
+  input.dispatchEvent(event);
+  return event;
+};
 
 function legacyOpsFixture() {
   return `<!doctype html><body data-page="questionnaireOps"><div id="stage">
@@ -21,6 +43,7 @@ function qrPage() {
     runScripts: 'outside-only',
     pretendToBeVisual: true,
   });
+  dom.window.eval(committedSearch);
   dom.window.eval(adapter);
   return dom;
 }
@@ -59,7 +82,7 @@ dom.window.fetch = async (url, options = {}) => {
   ]})};
   return {ok:true,json:async()=>({items:[{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'queued',occurred_at:'2026-09-05T00:00:00Z'}],target_catalog_available:true,available_configuration_references:['push.v1','push.v2'],configuration_version:3,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{type:'old',custom_params:{legacy:'yes'}}}})};
 };
-dom.window.eval(adapter); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+dom.window.eval(committedSearch); dom.window.eval(adapter); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
 await wait(40);
 const frozenLogs = await dom.window.fetch('/admin/questionnaires/7/external-push-logs');
 const frozenPayload = await frozenLogs.json();
@@ -75,8 +98,30 @@ if (rawPosts !== 4 || !oldTest.textContent.includes('受控外推测试已创建
 dom.window.document.querySelector('[data-survey-log-scope="global"]').click(); await wait(5);
 const allText = dom.window.document.body.textContent;
 if (!allText.includes('已收到处理结果') || !allText.includes('处理结果待确认（不会自动重复发送）') || !allText.includes('当时未启用外推配置') || !allText.includes('尝试 2 次')) throw new Error('global true statuses and legacy attempt count were not rendered');
-const filter = dom.window.document.querySelector('[placeholder="测试记录 ID / 问卷 ID"]'); filter.focus(); filter.value = 'unknown'; filter.dispatchEvent(new dom.window.Event('input', {bubbles:true})); filter.value = 'unknown-'; filter.dispatchEvent(new dom.window.Event('input', {bubbles:true}));
-if (dom.window.document.activeElement !== filter || !dom.window.document.body.textContent.includes('处理结果待确认')) throw new Error('filter lost focus or could not accept multiple characters');
+let filter = dom.window.document.querySelector('[placeholder="测试记录 ID / 问卷 ID"]');
+filter.focus();
+filter.value = 'unknown';
+filter.dispatchEvent(new dom.window.Event('input', {bubbles:true}));
+filter.value = 'unknown-';
+filter.dispatchEvent(new dom.window.Event('input', {bubbles:true}));
+if (dom.window.document.activeElement !== filter || !dom.window.document.body.textContent.includes('处理结果待确认') || !dom.window.document.body.textContent.includes('已收到处理结果')) {
+  throw new Error('draft survey filter changed rows or lost focus before a committed search');
+}
+filter.value = 'unknown';
+filter.dispatchEvent(new dom.window.Event('input', {bubbles:true}));
+filter.dispatchEvent(new dom.window.CompositionEvent('compositionstart', {bubbles:true}));
+const candidateEnter = enter(dom.window, filter, {isComposing:true, keyCode:229});
+filter.dispatchEvent(new dom.window.CompositionEvent('compositionend', {bubbles:true}));
+if (candidateEnter.defaultPrevented || dom.window.document.activeElement !== filter || !dom.window.document.body.textContent.includes('已收到处理结果')) {
+  throw new Error('IME candidate Enter committed the survey filter');
+}
+await wait(5);
+enter(dom.window, filter);
+await wait(5);
+filter = dom.window.document.querySelector('[placeholder="测试记录 ID / 问卷 ID"]');
+if (!filter || dom.window.document.activeElement !== filter || filter.value !== 'unknown' || !dom.window.document.body.textContent.includes('处理结果待确认') || dom.window.document.body.textContent.includes('已收到处理结果')) {
+  throw new Error('ordinary Enter did not commit the survey filter and restore search focus');
+}
 const form = dom.window.document.querySelector('[data-survey-push-metadata]');
 form.elements.type.value = 'new'; form.querySelector('[data-param-name]').value = 'campaign'; form.querySelector('[data-param-value]').value = 'autumn'; dom.window.document.querySelector('#opsConfigurationReference').value = 'push.v2';
 form.dispatchEvent(new dom.window.Event('submit', {bubbles:true,cancelable:true})); await wait(25);
