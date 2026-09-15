@@ -60,6 +60,14 @@ try {
   assert.ok(stage.querySelector('.surface-feedback__spinner'));
   assert.equal(slowPageTimers.length, pageTimerCount, 'local readers retain their own retry and draft lifecycle; no generic reload timeout');
 
+  const table = dom.window.document.createElement('table');
+  const tableBody = dom.window.document.createElement('tbody');
+  const prior = dom.window.document.createElement('tr'); prior.innerHTML = '<td>已确认行</td>'; tableBody.append(prior); table.append(tableBody); stage.replaceChildren(table);
+  const tableState = dom.window.__AICRMSurfaceFeedback.tableReadState(tableBody, { state: 'error', message: '读取失败，已保留上次成功数据。', colSpan: 1, preserveRows: true, retry: { run() {} } });
+  assert.equal(tableState.dataset.surfaceTableReadState, 'error', 'shared surface feedback exposes the table read-state renderer');
+  assert.match(tableBody.textContent, /已确认行/, 'shared error state does not clear retained rows');
+  assert.ok(tableState.querySelector('button'), 'shared error state can expose a caller-owned retry action');
+
   const local = dom.window.document.createElement('div');
   dom.window.document.body.append(local);
   const handle = dom.window.__AICRMSurfaceFeedback.busy(local, { label: '正在保存' });

@@ -919,6 +919,13 @@ func AdminLayoutScreenshotDirectory() string {
 	return os.Getenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR")
 }
 
+// ChannelCenterScreenshotDirectory returns the optional evidence directory for
+// the authenticated Channel Center Chromium journey. It is test-only; callers
+// validate an absolute path before writing browser evidence.
+func ChannelCenterScreenshotDirectory() string {
+	return os.Getenv("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR")
+}
+
 // AccessGovernanceScreenshotDirectory returns the optional evidence directory
 // for the Access governance Chromium journey. The test validates filesystem
 // constraints before it writes the rendered screenshots.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ func TestPostgreSQLChannelCenterCommittedSearchChromiumJourney(t *testing.T) {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
 	fixture := newGroupOpsChromiumFixture(t)
+	screenshots := channelCenterScreenshotDirectory(t)
 	session, csrf := adminAccessLogin(t, fixture.application.handler, "groupops-browser-owner", "groupops-browser-owner-password")
 	for index, channel := range []struct{ name, code string }{
 		{name: "中文渠道 输入法验证", code: "ime-channel-cn"},
@@ -34,22 +36,56 @@ func TestPostgreSQLChannelCenterCommittedSearchChromiumJourney(t *testing.T) {
 		seedChannelCenterSearchChannel(t, fixture.application.handler, session, csrf, fixture.ownerStaffID, channel.name, channel.code, index+1)
 	}
 
+	runChannelCenterChromiumJourney(t, fixture.ctx, fixture.server.URL, screenshots, false)
+}
+
+// The browser has no fixture-side DOM injection here: the separate composed
+// PostgreSQL application returns an authorized, valid empty channel directory.
+func TestPostgreSQLChannelCenterEmptyDirectoryChromiumJourney(t *testing.T) {
+	if !platformconfig.ChromiumJourneyRequired() {
+		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
+	}
+	fixture := newGroupOpsChromiumFixture(t)
+	runChannelCenterChromiumJourney(t, fixture.ctx, fixture.server.URL, channelCenterScreenshotDirectory(t), true)
+}
+
+func channelCenterScreenshotDirectory(t *testing.T) string {
+	t.Helper()
+	screenshots := t.TempDir()
+	if configured := platformconfig.ChannelCenterScreenshotDirectory(); configured != "" {
+		if !filepath.IsAbs(configured) {
+			t.Fatal("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR must be absolute")
+		}
+		if err := os.MkdirAll(configured, 0o700); err != nil {
+			t.Fatalf("create Channel Center screenshot directory: %v", err)
+		}
+		screenshots = configured
+	}
+	return screenshots
+}
+
+func runChannelCenterChromiumJourney(t *testing.T, ctx context.Context, serverURL, screenshots string, expectEmpty bool) {
+	t.Helper()
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate Channel Center Chromium journey")
 	}
-	command := exec.CommandContext(fixture.ctx, "node", filepath.Join(filepath.Dir(source), "channel_center_search_chromium_journey.mjs"))
+	command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(source), "channel_center_search_chromium_journey.mjs"))
 	command.Env = append(os.Environ(),
-		"AICRM_CHANNEL_CENTER_TEST_URL="+fixture.server.URL,
+		"AICRM_CHANNEL_CENTER_TEST_URL="+serverURL,
 		"AICRM_CHANNEL_CENTER_TEST_USERNAME=groupops-browser-owner",
 		"AICRM_CHANNEL_CENTER_TEST_PASSWORD=groupops-browser-owner-password",
+		"AICRM_CHANNEL_CENTER_SCREENSHOT_DIR="+screenshots,
 	)
+	if expectEmpty {
+		command.Env = append(command.Env, "AICRM_CHANNEL_CENTER_EXPECT_EMPTY=1")
+	}
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "channel_center_search_chromium: SKIP_DEVTOOLS") {
 		t.Fatalf("Channel Center Chromium DevTools unexpectedly unavailable: %s", strings.TrimSpace(string(output)))
 	}
 	if err != nil || !strings.Contains(string(output), "channel_center_search_chromium: PASS") {
-		t.Fatalf("Channel Center committed-search Chromium journey err=%v output=%s", err, strings.TrimSpace(string(output)))
+		t.Fatalf("Channel Center Chromium journey err=%v output=%s", err, strings.TrimSpace(string(output)))
 	}
 }
 

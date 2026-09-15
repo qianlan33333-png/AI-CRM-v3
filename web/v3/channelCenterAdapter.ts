@@ -8,6 +8,7 @@ import { confirmBox, toast } from '../src/shared/ui/feedback';
 import { startChannelAdmissionHost } from './channelAdmissionHost';
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
 import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
+import { renderTableReadState } from './shared/ui/tableReadState';
 // @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
 import { AdminController } from '../src/admin/controller';
 
@@ -37,11 +38,118 @@ let channelListReadDepth = 0;
 let staffPickerSource: 'common' | 'channel' | null = null;
 let staffPickerTrigger: HTMLButtonElement | null = null;
 type ArchiveIntent = { payload: Record<string, unknown>; etag: string; key: string };
-type ChannelListController = { page: string; init(): Promise<void>; renderVals(): Record<string, unknown> };
+type ChannelListController = { page: string; db?: AdminDb; init(): Promise<void>; renderVals(): Record<string, unknown> };
 type ChannelListRow = Record<string, unknown> & { resourceId?: number; name?: string; code?: string; status?: string };
 const archiveIntents = new Map<string, ArchiveIntent>();
 const archiveBusy = new Set<string>();
 const confirmedArchivedChannelIDs = new Set<string>();
+type ChannelReadFailure = { message: string; authorizationRevoked: boolean };
+let channelHasSuccessfulRead = false;
+let channelAuthorizationRevoked = false;
+let channelReadFailure: ChannelReadFailure | null = null;
+let lastChannelListController: ChannelListController | null = null;
+let lastVisibleChannelRows: unknown[] = [];
+let lastChannelQuery = '';
+let channelReadGeneration = 0;
+let activeChannelReadGeneration = 0;
+let channelReadRetryPending = false;
+
+class ChannelReadSupersededError extends Error {}
+
+function readFailureStatus(error: unknown): number | undefined {
+  const status = Number((error as { status?: unknown } | null)?.status);
+  return Number.isSafeInteger(status) ? status : undefined;
+}
+
+function recordChannelReadSuccess(): void {
+  channelHasSuccessfulRead = true;
+  channelAuthorizationRevoked = false;
+  channelReadFailure = null;
+}
+
+function recordChannelReadFailure(error: unknown): void {
+  const status = readFailureStatus(error);
+  const authorizationRevoked = status === 401 || status === 403;
+  if (authorizationRevoked) {
+    // A later network/5xx callback must never revive a directory after the
+    // server revoked its authorization. Clear the in-memory controller cache
+    // as well as rendered rows; only a current successful read unlocks it.
+    channelAuthorizationRevoked = true;
+    lastVisibleChannelRows = [];
+    lastChannelQuery = '';
+    if (lastChannelListController?.db) lastChannelListController.db.rows.channels = [];
+    channelReadFailure = {
+      authorizationRevoked: true,
+      message: status === 401
+        ? '登录状态已失效，已清除当前已加载的渠道记录。请重新登录后刷新页面。'
+        : '当前账号没有查看渠道码中心的权限，已清除当前已加载的渠道记录。',
+    };
+  } else if (!channelAuthorizationRevoked && channelHasSuccessfulRead) {
+    channelReadFailure = {
+      authorizationRevoked: false,
+      message: '渠道列表暂时无法读取，已保留上次成功加载的当前页。',
+    };
+  }
+  const controller = lastChannelListController;
+  if (controller && channelReadFailure) renderChannelReadState(controller, lastVisibleChannelRows, lastChannelQuery);
+}
+
+function retryChannelRead(controller: ChannelListController, control: HTMLButtonElement): void {
+  if (channelReadRetryPending || channelAuthorizationRevoked) return;
+  channelReadRetryPending = true;
+  control.disabled = true;
+  control.setAttribute('aria-busy', 'true');
+  void controller.init().catch(() => undefined).finally(() => {
+    channelReadRetryPending = false;
+    if (control.isConnected) {
+      control.disabled = false;
+      control.removeAttribute('aria-busy');
+    }
+  });
+}
+
+function channelTableBody(): HTMLTableSectionElement | null {
+  return document.querySelector<HTMLTableSectionElement>('#stage table tbody');
+}
+
+function renderChannelReadState(controller: ChannelListController, visibleRows: unknown[], query: string): void {
+  lastChannelListController = controller;
+  lastVisibleChannelRows = channelAuthorizationRevoked ? [] : visibleRows;
+  lastChannelQuery = channelAuthorizationRevoked ? '' : query;
+  if (!channelHasSuccessfulRead) return;
+  queueMicrotask(() => {
+    // The donor list is mounted once. Still guard the deferred presentation so
+    // an old controller or a later navigation cannot write into another page.
+    if (document.body?.dataset.page !== 'channels' || lastChannelListController !== controller) return;
+    const body = channelTableBody();
+    if (!body) return;
+    if (channelAuthorizationRevoked && channelReadFailure) {
+      renderTableReadState(body, { state: 'error', message: channelReadFailure.message, colSpan: 6 });
+      return;
+    }
+    if (channelReadFailure) {
+      renderTableReadState(body, {
+        state: 'error', message: channelReadFailure.message, colSpan: 6, preserveRows: true,
+        retry: { run: (control) => retryChannelRead(controller, control) },
+      });
+      return;
+    }
+    if (visibleRows.length > 0) {
+      body.querySelectorAll('[data-surface-table-read-state]').forEach((node) => node.remove());
+      return;
+    }
+    const allRows = Array.isArray(controller.db?.rows.channels) ? controller.db.rows.channels : [];
+    if (allRows.length === 0) {
+      renderTableReadState(body, { state: 'empty', message: '当前已加载页暂无渠道，可通过右上角新建渠道创建。', colSpan: 6 });
+      return;
+    }
+    renderTableReadState(body, {
+      state: 'no-match',
+      message: query ? `当前已加载页未找到与“${query}”匹配的渠道。` : '当前已加载页暂无渠道。',
+      colSpan: 6,
+    });
+  });
+}
 
 const catalogWriteFields = [
   'channel_type', 'carrier_type', 'channel_name', 'channel_code', 'scene_value', 'qr_url', 'status', 'owner_staff_id', 'customer_channel', 'link_url', 'final_url',
@@ -193,11 +301,17 @@ function installStableChannelArchiveBinding(): void {
     if (this.page !== 'channels') return values;
     const rows = values.rows as Record<string, unknown> | undefined;
     if (!rows || !Array.isArray(rows.channels)) return values;
+    const visibleRows = rows.channels;
+    const query = typeof rows.channelQuery === 'string' ? rows.channelQuery : '';
+    renderChannelReadState(this, visibleRows, query);
+    if (channelAuthorizationRevoked) {
+      return { ...values, rows: { ...rows, channels: [] } };
+    }
     return {
       ...values,
       rows: {
         ...rows,
-        channels: rows.channels.map((value) => {
+        channels: visibleRows.map((value) => {
           if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
           const row = value as ChannelListRow;
           const channelID = String(row.resourceId ?? '');
@@ -361,11 +475,27 @@ function makePreviewDonorCompatible(payload: Record<string, unknown>): Record<st
   };
 }
 
+function malformedChannelCatalogResponse(): Response {
+  return new Response(JSON.stringify({ code: 'CHANNEL_CATALOG_RESPONSE_INVALID' }), {
+    status: 502,
+    headers: { 'Cache-Control': 'private, no-store', 'Content-Type': 'application/json' },
+  });
+}
+
+function isChannelCatalog(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  return Array.isArray(payload.channels) || Array.isArray(payload.items);
+}
+
 async function normalizeChannelResponse(response: Response, url: URL): Promise<Response> {
-  if (!response.ok || !String(response.headers.get('Content-Type')).toLowerCase().includes('application/json')) return response;
   if (url.pathname === '/api/admin/channels' && document.body?.dataset.page === 'channels') {
-    return responseWithJSON(response, donorCompatibleCatalog(await response.clone().json()));
+    if (!response.ok) return response;
+    const payload = await response.clone().json().catch(() => undefined);
+    if (!isChannelCatalog(payload)) return malformedChannelCatalogResponse();
+    return responseWithJSON(response, donorCompatibleCatalog(payload));
   }
+  if (!response.ok || !String(response.headers.get('Content-Type')).toLowerCase().includes('application/json')) return response;
   if (url.pathname.match(/^\/api\/admin\/channels\/[1-9][0-9]*\/acquisition-staff$/)) {
     const payload = await response.clone().json() as Record<string, unknown>;
     if (payload.provider_read_succeeded === false) {
@@ -530,9 +660,17 @@ function renderStaffPickerFailure(): void {
 // then completes through the donor controller as usual.
 api.loadDb = async (context) => {
   if (context?.page === 'channels') {
+    const generation = ++channelReadGeneration;
+    activeChannelReadGeneration = generation;
     channelListReadDepth += 1;
     try {
-      return await donorLoadDb(context);
+      const db = await donorLoadDb(context);
+      if (generation !== activeChannelReadGeneration) throw new ChannelReadSupersededError();
+      recordChannelReadSuccess();
+      return db;
+    } catch (error) {
+      if (generation === activeChannelReadGeneration && !(error instanceof ChannelReadSupersededError)) recordChannelReadFailure(error);
+      throw error;
     } finally {
       channelListReadDepth -= 1;
     }
