@@ -14,7 +14,7 @@
 | PR #324 | head `cedc7cb98afe920c91378319361ef44b44f5bf5b`，于 `2026-09-15T04:07:18Z` 合入 main | Radar 管理列表筛选分页；run `34926594842` 的 plan、preflight、backend、frontend、browser、archive-sdk、check、quality-report 全部 PASS，deploy 为 SKIPPED。同步前 #297 strict gate 为 `BEHIND`，本工作树已合入该最新 main。 |
 | 当前 PR | #297，分支 `codex/global-ui-governance-20260915`，独立工作树 `/private/tmp/aicrm-global-ui-governance-20260915` | 本次只改治理文档与规则入口；原目录只读保留，不改业务源码、不合并、不部署。 |
 | 部署开关 | `gh variable list` 未找到 `AICRM_ENABLE_ACTIONS_DEPLOY`；仓库变量当前只见 SSH 连接变量 | 没有部署证据。 |
-| 线上读回 | 生产 IAB 只读访问超时，未得到认证页面、API 或 provider 回执 | 不能称为已上线或生产验收。 |
+| 线上读回 | 正确正式站点 [`https://www.youcangogogo.com/admin`](https://www.youcangogogo.com/admin) 可达并重定向 `/login?next=%2Fadmin`；当前没有认证 session，认证读回待用户登录。此前 timeout 使用错误 hostname `www.youcangogo.com`，不能视为生产故障。 | 不能称为已上线或生产验收。 |
 
 PR #317 的 squash tree 同时承载了已关闭的 #287、#296、#300、#303、#305、#307、#310、#311、#315；这些 PR 的能力随 #317 进入 main，但各自原分支保留，不能再按“未合入”描述。main 在此之前还包含已合入的 #318、#319、#321、#323（#323 的 exact-ID 修复 merge commit 为 `22e24ddcf646252985257fe55370a8f5fe3890f9`），随后由 #324 合入 Radar 管理列表筛选分页。除明确列出的 main 事实外，其余本任务 PR 均未合入、未部署。
 
