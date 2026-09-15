@@ -27,6 +27,9 @@ let saved;
 let holdProductMetadata = false;
 const heldProductMetadata = [];
 let productMetadataCalls = 0;
+const uploadCalls = [];
+let holdUpload = false;
+const heldUploads = [];
 const diagnostics = [];
 function deferredProductMetadata(body, init, json) {
   productMetadataCalls += 1;
@@ -52,6 +55,7 @@ const dom = new JSDOM(page, {
   beforeParse(window) {
     window.__AICRM_TEST_MOCK__ = false;
     window.Request = Request; window.Response = Response; window.Headers = Headers;
+    if (!window.crypto.subtle && globalThis.crypto?.subtle) Object.defineProperty(window.crypto, 'subtle', { value: globalThis.crypto.subtle });
     window.AICRMStandardComponents = { ready: () => Promise.resolve() };
     window.fetch = async (input, init = {}) => {
       const raw = input instanceof Request ? input.url : String(input);
@@ -66,6 +70,18 @@ const dom = new JSDOM(page, {
       if (url.pathname === '/api/v1/products/101/local-entitlements') return json({ items: [] });
       if (url.pathname === '/api/v1/products' && method === 'GET') return json({ items: [initial], next_cursor: '' });
       if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return json({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', updated_at: '' });
+      if (url.pathname === '/api/admin/image-library/upload' && method === 'POST') {
+        const body = init.body;
+        const file = body && typeof body === 'object' && 'get' in body && typeof body.get === 'function' ? body.get('image') : null;
+        uploadCalls.push({ name: file && typeof file === 'object' && 'name' in file ? String(file.name) : '', key: new Headers(init.headers).get('Idempotency-Key') || '' });
+        const response = () => {
+          if (uploadCalls.length === 2) return json({ code: 'upload_temporarily_failed' }, 503);
+          const id = uploadCalls.length === 1 ? 41 : 42;
+          return json({ ok: true, item: { id, name: id === 41 ? '首张已确认图片' : '重试后图片', original_url: `/api/admin/image-library/${id}/variants/original`, thumb_320_url: `/api/admin/image-library/${id}/variants/thumb_320`, enabled: true } });
+        };
+        if (!holdUpload) return response();
+        return new Promise((resolve) => heldUploads.push(() => resolve(response())));
+      }
       if (url.pathname === '/api/admin/image-library/38') return deferredProductMetadata({ item: { id: 38, name: '待移除素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } }, init, json);
       if (url.pathname === '/api/admin/image-library/39') return deferredProductMetadata({ item: { id: 39, name: '保留字面 URL 素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true } }, init, json);
       if (url.pathname === '/api/admin/image-library/40') return deferredProductMetadata({ item: { id: 40, name: '后续新增素材', original_url: '/api/admin/image-library/40/variants/original', thumb_320_url: '/api/admin/image-library/40/variants/thumb_320', enabled: true } }, init, json);
@@ -135,6 +151,60 @@ releaseHeldProductMetadata();
 holdProductMetadata = false;
 await wait(30);
 assert.equal(document.querySelector('[data-v3-selection-session="material"]'), null, 'a delayed pre-open may not overwrite or open against a changed original product draft');
-assert.equal([...document.querySelectorAll('#product-media button')].filter((button) => button.textContent.trim() === '移除').length, 2, 'the original owner removal remains applied while V3 discards the stale pre-open');
+assert.equal(document.querySelectorAll('[data-v3-product-material-action="remove"]').length, 2, 'the active V3 product-material draft preserves the owner removal while V3 discards the stale pre-open');
+
+// Uploads use the typed Media receipt directly, append each success to this
+// open product draft, retain the active media dimension, and keep the failed
+// file's original idempotency key for a later explicit retry. The first file
+// must never be uploaded twice after the second file fails.
+const makeImage = (name, bytes) => {
+  const file = new dom.window.File([new Uint8Array(bytes)], name, { type: 'image/png', lastModified: 100 });
+  Object.defineProperty(file, 'arrayBuffer', { value: async () => new Uint8Array(bytes).buffer });
+  return file;
+};
+const firstUpload = makeImage('first.png', [1, 2, 3]);
+const retryUpload = makeImage('retry.png', [4, 5, 6]);
+const upload = document.querySelector('#pfImageUpload');
+assert.ok(upload instanceof dom.window.HTMLInputElement, 'product upload source input must remain mounted');
+const draftName = document.querySelector('#pfName');
+assert.ok(draftName instanceof dom.window.HTMLInputElement, 'product draft name input must remain mounted');
+draftName.value = '保持中的商品草稿';
+Object.defineProperty(upload, 'files', { configurable: true, value: [firstUpload, retryUpload] });
+upload.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => uploadCalls.length === 2 && document.querySelector('[data-v3-product-material-key="image:41"]'), 'the first upload must append before a later upload failure');
+assert.equal(document.querySelector('a[href="#product-media"]')?.getAttribute('aria-current'), 'step', 'upload must not switch the editor away from 页面素材');
+assert.equal(draftName.value, '保持中的商品草稿', 'upload must not rebuild or discard another current-dimension draft field');
+assert.deepEqual(uploadCalls.map((call) => call.name), ['first.png', 'retry.png'], 'the first batch issues one Media request per selected file until failure');
+assert.ok(uploadCalls.every((call) => call.key.startsWith('product-media-upload-')), 'each upload writes with a controlled idempotency key');
+const firstCount = uploadCalls.length;
+const retryFirst = makeImage('first.png', [1, 2, 3]);
+const retrySecond = makeImage('retry.png', [4, 5, 6]);
+Object.defineProperty(upload, 'files', { configurable: true, value: [retryFirst, retrySecond] });
+upload.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => uploadCalls.length === firstCount + 1 && document.querySelector('[data-v3-product-material-key="image:42"]'), 'a retry must reuse the failed file key and append its new typed receipt');
+assert.deepEqual(uploadCalls.map((call) => call.name), ['first.png', 'retry.png', 'retry.png'], 'a confirmed first file is reused from this editor session instead of being uploaded again');
+assert.equal(uploadCalls[2].key, uploadCalls[1].key, 'the failed file retry retains its original idempotency key');
+const moved = document.querySelector('[data-v3-product-material-key="image:42"] [data-v3-product-material-action="up"]');
+assert.ok(moved instanceof dom.window.HTMLButtonElement, 'the newly appended typed Media item exposes keyboard sorting');
+moved.focus(); moved.click();
+await waitFor(() => document.activeElement?.getAttribute('data-v3-product-material-action') === 'up' && document.activeElement?.closest('[data-v3-product-material-key]')?.getAttribute('data-v3-product-material-key') === 'image:42', 'sorting must restore focus to the same reachable row action');
+assert.equal(document.querySelector('a[href="#product-media"]')?.getAttribute('aria-current'), 'step', 'sorting must keep the active 页面素材 dimension');
+save.click();
+await waitFor(() => Array.isArray(saved?.images) && saved.images.includes('/api/admin/image-library/42/variants/original'), 'saving the current material dimension must serialize its reordered typed Media receipts');
+assert.ok(saved.images.indexOf('/api/admin/image-library/42/variants/original') < saved.images.indexOf('/api/admin/image-library/41/variants/original'), 'the current-dimension save preserves the displayed drag/button order');
+
+// A late upload from the former route can create a Media record, but it may
+// never attach that record to a different product's draft.
+holdUpload = true;
+const staleUpload = makeImage('late.png', [7, 8, 9]);
+Object.defineProperty(upload, 'files', { configurable: true, value: [staleUpload] });
+upload.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => heldUploads.length === 1, 'stale-route upload must reach its controllable Media request');
+dom.window.history.replaceState(null, '', '/admin/productForm.html?id=202');
+heldUploads.splice(0).forEach((release) => release());
+holdUpload = false;
+await wait(30);
+assert.equal(document.querySelector('[data-v3-product-material-key="image:42"]')?.isConnected, true, 'late former-product upload may not replace the current material draft');
+assert.equal(document.querySelector('[data-v3-product-material-key="image:43"]'), null, 'late former-product receipt must not attach to a new route');
 dom.window.close();
-console.log('product material owner URL ordering and opaque-draft preservation: PASS');
+console.log('product material owner URL ordering, typed upload, retry, sort, and stale-route isolation: PASS');
