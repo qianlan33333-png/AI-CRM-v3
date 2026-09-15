@@ -353,6 +353,21 @@ export interface HXCDashboardRefreshEnvelope {
  */
 export type PositiveID = number;
 
+export type GroupOpsWebhookErrorError = {
+  /**
+   * @minLength 1
+   * @maxLength 128
+   */
+  code: string;
+};
+
+export interface GroupOpsWebhookError {
+  ok: unknown;
+  error: GroupOpsWebhookErrorError;
+  provider_execution_eligible: unknown;
+  real_external_call_executed: unknown;
+}
+
 export interface ErrorResponse {
   ok?: false;
   error?: string;
@@ -521,6 +536,11 @@ export interface OpenPlatformV1Failure {
  * Dependency or provider unavailable
  */
 export type UnavailableResponse = ErrorResponse;
+
+/**
+ * Group Ops Webhook failure envelope; `error.code` is the stable caller-visible code and the two safety fields never prove a provider write or delivery.
+ */
+export type GroupOpsWebhookFailureResponse = GroupOpsWebhookError;
 
 /**
  * OAuth client-credential failure. `invalid_source_ip` and `https_required` are emitted before OAuth Basic authentication; all other listed OAuth failures use the same JSON shape.

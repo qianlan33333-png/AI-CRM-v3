@@ -14,6 +14,10 @@ const (
 	LocalProductDraft    LocalProductLifecycle = "draft"
 	LocalProductEnabled  LocalProductLifecycle = "enabled"
 	LocalProductDisabled LocalProductLifecycle = "disabled"
+	// LocalProductArchived is a retained terminal state. It removes a product
+	// from normal owner discovery and every new-sale entry point without
+	// deleting immutable order and receipt facts.
+	LocalProductArchived LocalProductLifecycle = "archived"
 )
 
 // LocalProduct is a closed projection for local lifecycle operations. The
@@ -59,6 +63,13 @@ type DeleteLocalProductCommand struct {
 	IdempotencyKey  string
 }
 
+type ArchiveLocalProductCommand struct {
+	ID              ID
+	ExpectedVersion int64
+	Actor           int64
+	IdempotencyKey  string
+}
+
 type DeleteLocalProductResult struct {
 	ProductID ID   `json:"product_id"`
 	Deleted   bool `json:"deleted"`
@@ -82,6 +93,9 @@ type LocalProductShare struct {
 type LocalProductLifecycleApplication interface {
 	SetLocalProductEnabled(context.Context, SetLocalProductEnabledCommand) (LocalProduct, error)
 	CopyLocalProduct(context.Context, CopyLocalProductCommand) (LocalProduct, error)
+	ArchiveLocalProduct(context.Context, ArchiveLocalProductCommand) (LocalProduct, error)
+	// DeleteLocalProduct remains the narrowly scoped legacy physical-delete
+	// operation for internal maintenance only. Owner-facing DELETE routes archive.
 	DeleteLocalProduct(context.Context, DeleteLocalProductCommand) (DeleteLocalProductResult, error)
 	ShareLocalProduct(context.Context, ID) (LocalProductShare, error)
 }

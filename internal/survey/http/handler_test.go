@@ -27,6 +27,33 @@ type publishVersionDefinitions struct {
 	publishCalls      int
 }
 
+type archiveDefinitions struct {
+	surveyport.DefinitionApplication
+	questionnaire  surveyport.Questionnaire
+	setStatusCalls int
+	getCalls       int
+	replayKey      string
+	replayResult   surveyport.Questionnaire
+}
+
+func (d *archiveDefinitions) Get(context.Context, surveyport.ID) (surveyport.Questionnaire, error) {
+	d.getCalls++
+	return d.questionnaire, nil
+}
+func (d *archiveDefinitions) SetStatus(_ context.Context, _ surveyport.ID, expected int64, status surveyport.QuestionnaireStatus, _ int64, key string) (surveyport.Questionnaire, error) {
+	d.setStatusCalls++
+	if key != "" && key == d.replayKey {
+		return d.replayResult, nil
+	}
+	if expected != d.questionnaire.Version || status != surveyport.StatusArchived {
+		return surveyport.Questionnaire{}, surveyport.ErrConflict
+	}
+	d.questionnaire.Status = status
+	d.questionnaire.Version++
+	d.replayKey, d.replayResult = key, d.questionnaire
+	return d.questionnaire, nil
+}
+
 func (d *publishVersionDefinitions) Get(context.Context, surveyport.ID) (surveyport.Questionnaire, error) {
 	return d.questionnaire, nil
 }
@@ -250,8 +277,42 @@ func TestDefinitionRequestStripsOnlyFrozenHiddenOrdinaryDefaults(t *testing.T) {
 func TestDefinitionResponseMarksDraftAsDisabledForFrozenEditor(t *testing.T) {
 	draft := definitionResponse(surveyport.Questionnaire{Status: surveyport.StatusDraft})
 	published := definitionResponse(surveyport.Questionnaire{Status: surveyport.StatusPublished})
-	if draft["is_disabled"] != true || draft["status"] != "disabled" || published["is_disabled"] != false || published["status"] != "active" {
-		t.Fatalf("frozen editor lifecycle DTO draft=%+v published=%+v", draft, published)
+	archived := definitionResponse(surveyport.Questionnaire{Status: surveyport.StatusArchived})
+	if draft["is_disabled"] != true || draft["status"] != "disabled" || published["is_disabled"] != false || published["status"] != "active" || archived["is_disabled"] != true || archived["status"] != "archived" {
+		t.Fatalf("frozen editor lifecycle DTO draft=%+v published=%+v archived=%+v", draft, published, archived)
+	}
+}
+
+func TestDefinitionDeleteArchivesWithFrozenVersionAndExactReplay(t *testing.T) {
+	definitions := &archiveDefinitions{questionnaire: surveyport.Questionnaire{ID: 7, Version: 4, Status: surveyport.StatusPublished}}
+	handler, err := NewHandler(definitions, &routeSurvey{}, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(nethttp.MethodDelete, "/api/admin/questionnaires/7", strings.NewReader(`{"expected_version":4}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "survey-definition-archive-http-0001")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != nethttp.StatusOK || definitions.questionnaire.Status != surveyport.StatusArchived || !strings.Contains(response.Body.String(), `"write_model_status":"archived"`) || strings.Contains(response.Body.String(), "hard_delete") {
+			t.Fatalf("attempt=%d archive response=%d body=%s state=%+v calls=%d", attempt, response.Code, response.Body.String(), definitions.questionnaire, definitions.setStatusCalls)
+		}
+	}
+	if definitions.getCalls != 0 {
+		t.Fatalf("DELETE must not replace the displayed version with a server GET, calls=%d", definitions.getCalls)
+	}
+	if definitions.setStatusCalls != 2 {
+		t.Fatalf("exact replay was not delegated with its original body/key calls=%d", definitions.setStatusCalls)
+	}
+
+	stale := httptest.NewRequest(nethttp.MethodDelete, "/api/admin/questionnaires/7", strings.NewReader(`{"expected_version":3}`))
+	stale.Header.Set("Content-Type", "application/json")
+	stale.Header.Set("Idempotency-Key", "survey-definition-archive-http-stale-0001")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, stale)
+	if response.Code != nethttp.StatusConflict || definitions.questionnaire.Version != 5 {
+		t.Fatalf("stale archive must preserve the later definition: status=%d body=%s state=%+v", response.Code, response.Body.String(), definitions.questionnaire)
 	}
 }
 

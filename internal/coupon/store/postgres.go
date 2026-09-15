@@ -86,6 +86,11 @@ func (r *Repository) List(ctx context.Context, limit, offset int32, search, stat
 	if status != "" {
 		args = append(args, status)
 		where = append(where, "status=$"+itoa(len(args)))
+	} else {
+		// The admin's ordinary management list is a live-definition surface.
+		// Archived rules remain readable by ID for claims and audit history, but
+		// must not look selectable for a new issue or public share.
+		where = append(where, "status<>'archived'")
 	}
 	args = append(args, limit, offset)
 	rows, e := tx.Query(ctx, `SELECT `+couponColumns+` FROM coupon_rules WHERE `+strings.Join(where, " AND ")+` ORDER BY updated_at DESC,id DESC LIMIT $`+itoa(len(args)-1)+` OFFSET $`+itoa(len(args)), args...)
@@ -131,6 +136,8 @@ func (r *Repository) Count(ctx context.Context, search, status string) (int64, e
 	if status != "" {
 		args = append(args, status)
 		where = append(where, "status=$"+itoa(len(args)))
+	} else {
+		where = append(where, "status<>'archived'")
 	}
 	var n int64
 	e = tx.QueryRow(ctx, `SELECT count(*) FROM coupon_rules WHERE `+strings.Join(where, " AND "), args...).Scan(&n)

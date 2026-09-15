@@ -74,7 +74,10 @@ func (r *Repository) List(ctx context.Context, limit, offset int32, search strin
 	if err != nil {
 		return nil, 0, err
 	}
-	where := `($1='' OR q.name ILIKE '%'||$1||'%' OR q.title ILIKE '%'||$1||'%' OR q.slug ILIKE '%'||$1||'%') AND ($2='' OR q.status=$2)`
+	// Archived definitions remain addressable by their retained historical
+	// records, but never appear in the default owner list. An explicit status
+	// query is reserved for historical/read-only administration.
+	where := `($1='' OR q.name ILIKE '%'||$1||'%' OR q.title ILIKE '%'||$1||'%' OR q.slug ILIKE '%'||$1||'%') AND (($2='' AND q.status<>'archived') OR q.status=$2)`
 	var total int64
 	if err = t.QueryRow(ctx, `SELECT count(*) FROM survey_questionnaires q WHERE `+where, search, string(status)).Scan(&total); err != nil {
 		return nil, 0, mapError(err)
@@ -112,6 +115,16 @@ func (r *Repository) List(ctx context.Context, limit, offset int32, search strin
 		items = append(items, baseItem.questionnaire)
 	}
 	return items, total, nil
+}
+
+func (r *Repository) LockQuestionnaireStatus(ctx context.Context, id surveyport.ID) (surveyport.QuestionnaireStatus, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return "", err
+	}
+	var status surveyport.QuestionnaireStatus
+	err = t.QueryRow(ctx, `SELECT status FROM survey_questionnaires WHERE id=$1 FOR UPDATE`, id).Scan(&status)
+	return status, mapError(err)
 }
 
 func (r *Repository) Get(ctx context.Context, id surveyport.ID, lock bool) (surveyport.Questionnaire, error) {

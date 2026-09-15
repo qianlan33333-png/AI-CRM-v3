@@ -22,3 +22,5 @@ v3 从新的 Schema 基线开始，不复制 production 或 V2 的完整 migrati
 - `0100_ai_assistant_machine_actor.sql`：AI Assistant 为认证 machine:<client_id> 保留可审计创建者与审计引用；数值管理员投影只为兼容保留，机器主体绝不映射为管理员。
 
 - `0150_channel_welcome_message_snapshots.sql`：Channel 拥有的欢迎语渲染密文快照与已接受 EER envelope 绑定；不增加队列或 Provider 写路径。
+- `0168_survey_questionnaire_archive.sql`：Survey 将问卷归档作为保留定义、答卷、回执和审计事实的终态；默认列表和公共读取不再暴露归档问卷。
+- `0169_survey_questionnaire_archive_receipts.sql`：Survey 为归档命令增加既有幂等收据类型；只扩展 Owner 生命周期，不改变任何历史或外部效果。

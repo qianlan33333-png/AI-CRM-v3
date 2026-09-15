@@ -119,7 +119,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		case http.MethodDelete:
 			if p, ok := h.mutate(w, r); ok {
-				h.command(w, r, p, couponport.ID(id), "delete")
+				// The admin's destructive control means an auditable archive. A
+				// physical draft delete cannot preserve the rule identity required
+				// by claim, redemption, and order history.
+				h.command(w, r, p, couponport.ID(id), "archive")
 			}
 		default:
 			method(w, "GET, PUT, DELETE")
@@ -392,7 +395,17 @@ func (h *Handler) upsert(w http.ResponseWriter, r *http.Request, p accessdomain.
 	writeJSON(w, 200, map[string]any{"ok": true, "coupon": v, "fallback_used": false, "real_external_call_executed": false})
 }
 func (h *Handler) command(w http.ResponseWriter, r *http.Request, p accessdomain.Principal, id couponport.ID, operation string) {
-	if decodeOptionalJSON(r, &struct{}{}) != nil {
+	expectedVersion := int64(0)
+	if operation == "archive" {
+		var body struct {
+			ExpectedVersion int64 `json:"expected_version"`
+		}
+		if decode(r, &body) != nil || body.ExpectedVersion < 1 {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		expectedVersion = body.ExpectedVersion
+	} else if decodeOptionalJSON(r, &struct{}{}) != nil {
 		writeError(w, 400, "invalid_request")
 		return
 	}
@@ -408,7 +421,7 @@ func (h *Handler) command(w http.ResponseWriter, r *http.Request, p accessdomain
 	case "stop":
 		c, err = h.rules.Stop(r.Context(), id, p.InternalID, key)
 	case "archive":
-		c, err = h.rules.Archive(r.Context(), id, p.InternalID, key)
+		c, err = h.rules.Archive(r.Context(), id, expectedVersion, p.InternalID, key)
 	case "copy":
 		c, err = h.rules.Copy(r.Context(), id, p.InternalID, key)
 	case "delete":

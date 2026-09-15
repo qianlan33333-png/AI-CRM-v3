@@ -19,6 +19,15 @@ export const saveEditorQuestionnaire=(id:number|null,payload:LegacyQuestionnaire
 };
 export const publishEditorQuestionnaire=(id:number,expectedVersion:number)=>request(`/api/admin/questionnaires/${id}/public-publish`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({expected_questionnaire_version:expectedVersion})});
 export const setEditorQuestionnaireDisabled=(id:number,disabled:boolean)=>request(`/api/admin/questionnaires/${id}/${disabled?'disable':'enable'}`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
-export const deleteEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}`,{method:'DELETE',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
+const archiveQuestionnaireKeys = new Map<string, string>();
+export const deleteEditorQuestionnaire=(id:number,expectedVersion:number)=>{
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+    return Promise.reject(new Error('缺少准确问卷版本，无法归档'));
+  }
+  const intent = `${id}:${expectedVersion}`;
+  const idempotencyKey = archiveQuestionnaireKeys.get(intent) || crypto.randomUUID();
+  archiveQuestionnaireKeys.set(intent, idempotencyKey);
+  return request(`/api/admin/questionnaires/${id}`,{method:'DELETE',headers:{'Content-Type':'application/json','Idempotency-Key':idempotencyKey},body:JSON.stringify({expected_version:expectedVersion})});
+};
 export const duplicateEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}/duplicate`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
 export const editorQuestionnaireExportUrl=(id:number)=>`/api/admin/questionnaires/${id}/export`;

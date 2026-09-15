@@ -18,6 +18,7 @@ func TestTargetReaderProjectsPersistedLifecycleForShareAndCheckout(t *testing.T)
 		{name: "persisted legacy enabled", status: "enabled", enabled: true, allowed: true},
 		{name: "draft", status: "draft"},
 		{name: "disabled", status: "disabled"},
+		{name: "archived", status: "archived"},
 		{name: "inconsistent explicit state", status: "active", enabled: true, explicit: productport.LocalProductDraft},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -39,6 +40,11 @@ func TestTargetReaderProjectsPersistedLifecycleForShareAndCheckout(t *testing.T)
 				}
 			} else if shareErr == nil || checkoutErr == nil {
 				t.Fatalf("unavailable product allowed: share=%v checkout=%v", shareErr, checkoutErr)
+			}
+			if tc.status == "archived" {
+				if _, err := reader.ReadProductTarget(context.Background(), productport.ProductOptionStandard, product.ID); err == nil {
+					t.Fatal("archived product remained available to a new Product target selection")
+				}
 			}
 		})
 	}

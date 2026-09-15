@@ -31,6 +31,7 @@ type PersistSubmission struct {
 
 type SubmissionStore interface {
 	Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error)
+	LockQuestionnaireStatus(context.Context, surveyport.ID) (surveyport.QuestionnaireStatus, error)
 	GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error)
 	CreateSubmission(context.Context, PersistSubmission) (surveyport.Submission, bool, error)
 	GetSubmissionByTokenDigest(context.Context, [32]byte) (surveyport.Submission, error)
@@ -554,7 +555,16 @@ func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, valu
 	now := s.now().UTC()
 	var stored surveyport.OperationConfiguration
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		var e error
+		// Lock only the owner lifecycle row. Archive and a new operation-
+		// configuration write therefore serialize without requiring a full
+		// definition read; retained configuration remains readable afterwards.
+		status, e := s.store.LockQuestionnaireStatus(tx, value.QuestionnaireID)
+		if e != nil {
+			return e
+		}
+		if status == surveyport.StatusArchived {
+			return surveyport.ErrNotFound
+		}
 		stored, e = s.store.SaveOperationConfiguration(tx, value, actor, now)
 		if e != nil {
 			return e
@@ -608,6 +618,13 @@ func (s *SubmissionService) QueueCompletionTest(ctx context.Context, qid surveyp
 		questionnaire, err := s.store.Get(tx, qid, false)
 		if err != nil {
 			return err
+		}
+		// A previously accepted test is replayed from its frozen snapshot above.
+		// A new test is a new external-effect intent and must stop once the
+		// questionnaire is archived. Draft and disabled configuration tests keep
+		// their established pre-publication behavior.
+		if questionnaire.Status == surveyport.StatusArchived {
+			return surveyport.ErrNotFound
 		}
 		configuration, err := s.store.GetOperationConfiguration(tx, qid)
 		if err != nil {

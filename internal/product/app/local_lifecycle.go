@@ -26,6 +26,7 @@ const (
 	LocalProductProjectionDraftStatus    = "draft"
 	LocalProductProjectionEnabledStatus  = "active"
 	LocalProductProjectionDisabledStatus = "disabled"
+	LocalProductProjectionArchivedStatus = "archived"
 )
 
 var ErrLocalProductDeleteNotAllowed = errors.New("local product can only delete an unreferenced draft")
@@ -122,6 +123,9 @@ func (service *LocalProductLifecycleService) SetLocalProductEnabled(ctx context.
 		if projected.Version != normalized.ExpectedVersion {
 			return ErrConflict
 		}
+		if projected.Lifecycle == productport.LocalProductArchived {
+			return ErrNotFound
+		}
 		if projected.Lifecycle == target {
 			result = projected
 			return service.completeLocalProductSnapshot(tx, receipt.ID, result, now)
@@ -195,6 +199,9 @@ func (service *LocalProductLifecycleService) CopyLocalProduct(ctx context.Contex
 		if sourceProjected.Version != normalized.ExpectedVersion {
 			return ErrConflict
 		}
+		if sourceProjected.Lifecycle == productport.LocalProductArchived {
+			return ErrNotFound
+		}
 		projection, projectionErr := localProductProjectionForLifecycle(nil, productport.LocalProductDraft)
 		if projectionErr != nil {
 			return projectionErr
@@ -228,6 +235,79 @@ func (service *LocalProductLifecycleService) CopyLocalProduct(ctx context.Contex
 			return ErrUnavailable
 		}
 		if eventErr := appendLocalProductLifecycleEvent(tx, service.events, "copy", result, sourceProjected.ID, normalized.Actor, reservation, now, productport.EventProductCreated); eventErr != nil {
+			return eventErr
+		}
+		return service.completeLocalProductSnapshot(tx, receipt.ID, result, now)
+	})
+	if err != nil {
+		return productport.LocalProduct{}, classifyLocalProductLifecycle(err)
+	}
+	return result, nil
+}
+
+// ArchiveLocalProduct preserves the product row and all downstream historical
+// facts, but makes the local product terminal for ordinary admin discovery,
+// new selection, public presentation, and checkout.
+func (service *LocalProductLifecycleService) ArchiveLocalProduct(ctx context.Context, command productport.ArchiveLocalProductCommand) (productport.LocalProduct, error) {
+	normalized, digest, err := normalizeLocalProductArchive(command)
+	if err != nil {
+		return productport.LocalProduct{}, err
+	}
+	if !localProductLifecycleReady(service) {
+		return productport.LocalProduct{}, ErrUnavailable
+	}
+	now := service.now().UTC()
+	if now.IsZero() {
+		return productport.LocalProduct{}, ErrUnavailable
+	}
+
+	reservation := localProductLifecycleReservation(normalized.Actor, normalized.IdempotencyKey, digest, now)
+	reservation.Operation = "archive"
+	var result productport.LocalProduct
+	err = service.uow.Within(ctx, func(tx context.Context) error {
+		receipt, owned, reserveErr := service.reserveLocalProductLifecycle(tx, reservation)
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if !owned {
+			replayed, decodeErr := decodeLocalProductSnapshot(receipt.ResultSnapshot)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			result = replayed
+			return nil
+		}
+
+		current, currentErr := service.store.GetForUpdate(tx, normalized.ID)
+		if currentErr != nil {
+			return currentErr
+		}
+		projected, currentErr := projectLocalProduct(current)
+		if currentErr != nil {
+			return currentErr
+		}
+		if projected.Version != normalized.ExpectedVersion {
+			return ErrConflict
+		}
+		if projected.Lifecycle == productport.LocalProductArchived {
+			result = projected
+			return service.completeLocalProductSnapshot(tx, receipt.ID, result, now)
+		}
+		projection, projectionErr := localProductProjectionForLifecycle(current.LegacyAdminProjection, productport.LocalProductArchived)
+		if projectionErr != nil {
+			return projectionErr
+		}
+		updated, updateErr := service.store.UpdateLocalProductLifecycle(tx, LocalProductLifecycleStoreUpdate{
+			ID: normalized.ID, ExpectedVersion: normalized.ExpectedVersion, LocalLifecycle: productport.LocalProductArchived, LegacyAdminProjection: projection,
+		}, now)
+		if updateErr != nil {
+			return updateErr
+		}
+		result, updateErr = projectLocalProduct(updated)
+		if updateErr != nil || !sameLocalProductBody(result, projected) || result.Version != projected.Version+1 || result.Lifecycle != productport.LocalProductArchived || result.Enabled {
+			return ErrUnavailable
+		}
+		if eventErr := appendLocalProductLifecycleEvent(tx, service.events, "archive", result, 0, normalized.Actor, reservation, now, productport.EventProductUpdated); eventErr != nil {
 			return eventErr
 		}
 		return service.completeLocalProductSnapshot(tx, receipt.ID, result, now)
@@ -460,6 +540,20 @@ func normalizeLocalProductDelete(command productport.DeleteLocalProductCommand) 
 	return command, sha256.Sum256(raw), nil
 }
 
+func normalizeLocalProductArchive(command productport.ArchiveLocalProductCommand) (productport.ArchiveLocalProductCommand, [32]byte, error) {
+	if !validLocalProductWriteIdentity(command.ID, command.ExpectedVersion, command.Actor, command.IdempotencyKey) {
+		return productport.ArchiveLocalProductCommand{}, [32]byte{}, ErrInvalidProduct
+	}
+	raw, err := json.Marshal(struct {
+		ID              productport.ID `json:"product_id"`
+		ExpectedVersion int64          `json:"expected_version"`
+	}{command.ID, command.ExpectedVersion})
+	if err != nil {
+		return productport.ArchiveLocalProductCommand{}, [32]byte{}, ErrInvalidProduct
+	}
+	return command, sha256.Sum256(raw), nil
+}
+
 func projectLocalProduct(product productport.Product) (productport.LocalProduct, error) {
 	if !validProduct(product) {
 		return productport.LocalProduct{}, ErrUnavailable
@@ -474,6 +568,8 @@ func projectLocalProduct(product productport.Product) (productport.LocalProduct,
 			lifecycle, enabled = productport.LocalProductDraft, false
 		case productport.LocalProductDisabled:
 			lifecycle, enabled = productport.LocalProductDisabled, false
+		case productport.LocalProductArchived:
+			lifecycle, enabled = productport.LocalProductArchived, false
 		case productport.LocalProductEnabled:
 			lifecycle, enabled = productport.LocalProductEnabled, true
 		default:
@@ -533,6 +629,11 @@ func localProductLifecycleFromProjection(raw json.RawMessage) (productport.Local
 			return "", false, ErrUnavailable
 		}
 		return productport.LocalProductDisabled, false, nil
+	case LocalProductProjectionArchivedStatus:
+		if projection.Enabled {
+			return "", false, ErrUnavailable
+		}
+		return productport.LocalProductArchived, false, nil
 	default:
 		return "", false, ErrUnavailable
 	}
@@ -559,6 +660,8 @@ func localProductProjectionForLifecycle(raw json.RawMessage, lifecycle productpo
 		status, enabled = LocalProductProjectionEnabledStatus, true
 	case productport.LocalProductDisabled:
 		status = LocalProductProjectionDisabledStatus
+	case productport.LocalProductArchived:
+		status = LocalProductProjectionArchivedStatus
 	default:
 		return nil, ErrInvalidProduct
 	}
@@ -587,7 +690,7 @@ func validLocalProductSnapshot(product productport.LocalProduct) bool {
 		return false
 	}
 	switch product.Lifecycle {
-	case productport.LocalProductDraft, productport.LocalProductDisabled:
+	case productport.LocalProductDraft, productport.LocalProductDisabled, productport.LocalProductArchived:
 		return !product.Enabled
 	case productport.LocalProductEnabled:
 		return product.Enabled
