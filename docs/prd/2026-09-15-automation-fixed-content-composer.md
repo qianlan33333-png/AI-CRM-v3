@@ -2,7 +2,7 @@
 
 - 状态：实施中
 - 目标页面：管理端 `/admin/agentEdit.html?id={agent_id}`，从 `/admin/automation-agents` 进入。
-- 依赖：共享组件整合 Draft PR #317（`SelectionSession`、`SelectionDialog`、`ContentComposer`、`ContentPresentation`、素材选择器）。
+- 复用：当前主线已接入的 `SelectionSession`、`SelectionDialog`、`ContentComposer`、`ContentPresentation` 与素材选择器。
 - 首批范围：已创建或刚创建并取得 ID 的 `fixed_script` Agent。欢迎语、AI 助手、公共页、企微侧边栏和动态 Agent 内容不在本 PR 范围。
 
 ## 1. 业务判断和事实边界
@@ -96,4 +96,4 @@
 5. 非 `fixed_script`、active 与 archived 状态不能通过 UI 绕过 Owner 边界。
 6. 定向 Node/TypeScript/manifest、冻结 Agent runtime Journey、真实 PostgreSQL + 独立 Chromium 页面验收；1280/1440 检查后台完整页面，360/420 只检查共享编辑器与固定内容局部容器。后台移动壳属于后续统一壳专项，不能以本页截图宣称完成。截图只证明本地页面/服务端读回，不证明发布或 Provider 送达。
 
-本 PR 不改变 Automation Owner、OpenAPI、Media 写入、发布、执行、外部效果、OneID、Prompt 语义或数据迁移。Draft PR 必须明确依赖共享整合 #317，且只声明本页真实接入。
+本 PR 不改变 Automation Owner、OpenAPI、Media 写入、发布、执行、外部效果、OneID、Prompt 语义或数据迁移；它沿用当前主线共享组件，只声明本页真实接入。

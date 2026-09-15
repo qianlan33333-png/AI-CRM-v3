@@ -201,10 +201,23 @@ assert.match(replacement.textContent, /当前 Agent 已启用，请先暂停，�
 assert.equal(replacement.querySelector('[data-v3-automation-edit-fixed-content]'), null, 'active Agent never exposes a bypass edit action');
 assert.equal(document.querySelector('#agentRolePrompt').value, '保留角色 Prompt', 'Host replacement continues to leave ordinary Prompt fields untouched');
 
+const archived = document.createElement('section');
+archived.dataset.agentMaterialsReadonly = '';
+archived.innerHTML = '<p data-stale>旧内容</p>';
+replacement.replaceWith(archived);
+globalThis.fetch = async (input, init = {}) => {
+  const url = new URL(String(input), dom.window.location.href);
+  if (url.pathname === '/api/admin/automation-agents/7') return new Response(JSON.stringify({ ok: true, agent: agent({ id: 7, status: 'archived' }) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (url.pathname === '/api/admin/image-library/11') return new Response(JSON.stringify({ image: { id: 11, name: '欢迎封面', enabled: true } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  return previousFetch(input, init);
+};
+await waitFor(() => /该 Agent 已归档，固定话术不可编辑。/.test(archived.textContent), 'archived Agent explains its unavailable state without reusing the active message');
+assert.equal(archived.querySelector('[data-v3-automation-edit-fixed-content]'), null, 'archived Agent never exposes a bypass edit action');
+
 const malformed = document.createElement('section');
 malformed.dataset.agentMaterialsReadonly = '';
 malformed.innerHTML = '<p data-stale>旧内容</p>';
-replacement.replaceWith(malformed);
+archived.replaceWith(malformed);
 globalThis.fetch = async (input, init = {}) => {
   const url = new URL(String(input), dom.window.location.href);
   if (url.pathname === '/api/admin/automation-agents/7') return new Response(JSON.stringify({ ok: true, agent: agent({ status: 'invalid-status' }) }), { status: 200, headers: { 'Content-Type': 'application/json' } });

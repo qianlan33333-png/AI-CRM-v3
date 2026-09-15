@@ -427,7 +427,10 @@ function mountContent(content: HTMLElement, agentID: number): MountedHost {
     if (detail.status === 'paused') {
       action.textContent = '编辑固定话术'; action.dataset.v3AutomationEditFixedContent = '1'; host.append(action);
     } else {
-      status.textContent = '当前 Agent 已启用，请先暂停，再修改固定话术。'; host.append(status);
+      status.textContent = detail.status === 'archived'
+        ? '该 Agent 已归档，固定话术不可编辑。'
+        : '当前 Agent 已启用，请先暂停，再修改固定话术。';
+      host.append(status);
     }
   };
 
