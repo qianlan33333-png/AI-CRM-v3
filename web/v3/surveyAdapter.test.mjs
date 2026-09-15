@@ -17,8 +17,10 @@ const bundle = await build({
   stdin: {
     contents: `import './web/v3/surveyAdapter';
       import { AdminController } from './web/src/admin/controller';
+      import { api } from './web/src/shared/api/client';
       import { mount } from './web/src/shared/ui/runtime';
       window.SurveyControllerFixture = AdminController;
+      window.SurveyApiFixture = api;
       window.SurveyMountFixture = mount;`,
     resolveDir: root,
     loader: 'ts',
@@ -113,6 +115,55 @@ try {
   assert.equal(calls[1].body, calls[0].body, 'retry retains the exact frozen CAS body');
   assert.equal(calls[1].headers['Idempotency-Key'], calls[0].headers['Idempotency-Key'], 'retry retains the exact idempotency key');
   assert.equal(dom.window.document.querySelectorAll('tbody tr').length, 0, 'successful readback removes the archived questionnaire from the rendered list');
+
+  const listItem = {
+    id: 12, name: 'directory-questionnaire', title: 'Directory questionnaire', status: 'active', is_disabled: false,
+    public_path: '/q/directory-questionnaire', assessment_enabled: false, created_at: '2026-09-15T00:00:00Z',
+    submission_count: 0, answer_display_mode: 'after_submit', assessment_config: {}, slug: 'directory-questionnaire',
+    questions: [], score_rules: [], version: 1,
+  };
+  let directoryMode = 'empty';
+  dom.window.fetch = async (url) => {
+    if (new URL(String(url), dom.window.location.href).pathname !== '/api/admin/questionnaires') throw new Error(`unexpected directory request: ${url}`);
+    if (directoryMode === '503') return new Response(JSON.stringify({ code: 'temporary_failure' }), { status: 503 });
+    if (directoryMode === '403') return new Response(JSON.stringify({ code: 'forbidden' }), { status: 403 });
+    return new Response(JSON.stringify({ items: directoryMode === 'empty' ? [] : [listItem] }), { status: 200 });
+  };
+  const readController = new dom.window.SurveyControllerFixture(dom.window.SurveyApiFixture, 'questionnaires');
+  await readController.init();
+  dom.window.SurveyMountFixture(dom.window.document.getElementById('stage'), transform(readFileSync(path.join(root, 'web/src/admin/templates/questionnaires.html'), 'utf8')), readController);
+  await pause();
+  assert.equal(dom.window.document.querySelector('[data-surface-table-read-state="empty"]')?.textContent, '当前暂无问卷，可通过右上角创建新问卷。', 'a confirmed empty directory renders the shared empty state');
+
+  directoryMode = 'one';
+  await readController.init();
+  readController.state.questionnaireQuery = 'absent';
+  readController.__render();
+  await pause();
+  assert.match(dom.window.document.querySelector('[data-surface-table-read-state="no-match"]')?.textContent || '', /未找到与“absent”匹配/, 'a local filter miss remains distinct from an empty directory');
+
+  readController.state.questionnaireQuery = '';
+  readController.__render();
+  await pause();
+  directoryMode = '503';
+  await assert.rejects(() => readController.init());
+  await pause();
+  const temporaryFailure = dom.window.document.querySelector('[data-surface-table-read-state="error"]');
+  assert.match(temporaryFailure?.textContent || '', /已保留上次成功加载的当前列表/, 'recoverable failure preserves the last authorized rows');
+  assert.ok([...dom.window.document.querySelectorAll('tbody tr')].some(row => row.textContent.includes('directory-questionnaire')), 'recoverable failure keeps the prior directory row visible');
+  directoryMode = 'one';
+  temporaryFailure.querySelector('button').click();
+  await pause();
+  await pause();
+  assert.equal(dom.window.document.querySelector('[data-surface-table-read-state]'), null, 'retry reuses controller init and clears its error notice after a successful read');
+
+  directoryMode = '403';
+  await assert.rejects(() => readController.init());
+  await pause();
+  const forbidden = dom.window.document.querySelector('[data-surface-table-read-state="error"]');
+  assert.match(forbidden?.textContent || '', /没有查看问卷列表的权限/, '403 clears stale directory data and explains the access boundary');
+  assert.equal(forbidden.querySelector('button'), null, 'authorization failure does not offer a retry against an unchanged access boundary');
+  assert.equal([...dom.window.document.querySelectorAll('tbody tr')].filter(row => !row.dataset.surfaceTableReadState).length, 0, '403 removes prior authorized rows');
 } finally {
   dom.window.close();
 }

@@ -6,7 +6,9 @@
 // whatever version happens to be current later.
 
 import { request } from '../src/api/transport';
+import { api } from '../src/shared/api/client';
 import { confirmBox, toast } from '../src/shared/ui/feedback';
+import { renderTableReadState } from './shared/ui/tableReadState';
 
 type QuestionnaireListRow = {
   resourceId?: number;
@@ -22,6 +24,7 @@ type QuestionnaireListRow = {
 type SurveyListController = {
   page: string;
   db: { rows: { questionnaires: QuestionnaireListRow[] } };
+  state?: { questionnaireQuery?: unknown; questionnaireStatus?: unknown };
   init(): Promise<void>;
   renderVals(): Record<string, unknown>;
 };
@@ -29,6 +32,144 @@ type ArchiveIntent = { expectedVersion: number; key: string; body: string };
 
 const archiveIntents = new Map<number, ArchiveIntent>();
 const archiving = new Set<number>();
+
+// The donor continues to own request timing, query semantics and all writes.
+// This seam records only completed questionnaire-directory outcomes so the
+// shared table presentation never guesses that an empty tbody is a success.
+type SurveyReadFailure = { message: string; authorizationRevoked: boolean };
+
+class SurveyReadSupersededError extends Error {
+  constructor() { super('问卷列表读取已被更新请求取代'); }
+}
+
+const donorLoadDb = api.loadDb.bind(api);
+let surveyReadGeneration = 0;
+let activeSurveyReadGeneration = 0;
+let surveyHasSuccessfulRead = false;
+let surveyAuthorizationRevoked = false;
+let surveyReadFailure: SurveyReadFailure | null = null;
+let surveyReadRetryPending = false;
+let lastSurveyListController: SurveyListController | null = null;
+let lastVisibleSurveyRows: QuestionnaireListRow[] = [];
+let lastSurveyQuery = '';
+let lastSurveyStatus = '';
+
+function surveyFailureStatus(error: unknown): number | undefined {
+  const status = Number((error as { status?: unknown } | null)?.status);
+  return Number.isSafeInteger(status) ? status : undefined;
+}
+
+function surveyFailureMessage(status: number | undefined): string {
+  if (status === 401) return '登录状态已失效，已清除当前已加载的问卷记录。请重新登录后刷新页面。';
+  if (status === 403) return '当前账号没有查看问卷列表的权限，已清除当前已加载的问卷记录。';
+  return '问卷列表暂时无法读取。';
+}
+
+function questionnaireTableBody(): HTMLTableSectionElement | null {
+  return document.querySelector<HTMLTableSectionElement>('#stage table tbody');
+}
+
+function currentSurveyFilters(controller: SurveyListController): { query: string; status: string } {
+  return {
+    query: typeof controller.state?.questionnaireQuery === 'string' ? controller.state.questionnaireQuery.trim() : '',
+    status: typeof controller.state?.questionnaireStatus === 'string' ? controller.state.questionnaireStatus : '',
+  };
+}
+
+function noMatchSurveyMessage(query: string, status: string): string {
+  if (query) return `当前已加载问卷中未找到与“${query}”匹配的记录。`;
+  if (status === 'enabled') return '当前已加载问卷中没有启用中的记录。';
+  if (status === 'disabled') return '当前已加载问卷中没有已停用的记录。';
+  return '当前已加载问卷中没有符合筛选条件的记录。';
+}
+
+function retrySurveyRead(controller: SurveyListController, control: HTMLButtonElement): void {
+  if (surveyReadRetryPending || surveyAuthorizationRevoked) return;
+  surveyReadRetryPending = true;
+  control.disabled = true;
+  control.setAttribute('aria-busy', 'true');
+  void controller.init().catch(() => undefined).finally(() => {
+    surveyReadRetryPending = false;
+    if (control.isConnected) {
+      control.disabled = false;
+      control.removeAttribute('aria-busy');
+    }
+  });
+}
+
+function renderSurveyReadState(controller: SurveyListController, visibleRows: QuestionnaireListRow[], query: string, status: string): void {
+  lastSurveyListController = controller;
+  if (!surveyAuthorizationRevoked) {
+    lastVisibleSurveyRows = visibleRows;
+    lastSurveyQuery = query;
+    lastSurveyStatus = status;
+  }
+  queueMicrotask(() => {
+    if (document.body?.dataset.page !== 'questionnaires' || lastSurveyListController !== controller) return;
+    const body = questionnaireTableBody();
+    if (!body) return;
+    if (surveyReadFailure) {
+      const preserveRows = surveyHasSuccessfulRead && !surveyAuthorizationRevoked;
+      renderTableReadState(body, {
+        state: 'error',
+        message: preserveRows ? `${surveyReadFailure.message}已保留上次成功加载的当前列表。` : surveyReadFailure.message,
+        colSpan: 5,
+        preserveRows,
+        retry: surveyAuthorizationRevoked ? undefined : { run: control => retrySurveyRead(controller, control) },
+      });
+      return;
+    }
+    if (!surveyHasSuccessfulRead) return;
+    if (visibleRows.length > 0) {
+      body.querySelectorAll('[data-surface-table-read-state]').forEach(node => node.remove());
+      return;
+    }
+    const allRows = Array.isArray(controller.db?.rows.questionnaires) ? controller.db.rows.questionnaires : [];
+    renderTableReadState(body, {
+      state: allRows.length === 0 ? 'empty' : 'no-match',
+      message: allRows.length === 0 ? '当前暂无问卷，可通过右上角创建新问卷。' : noMatchSurveyMessage(query, status),
+      colSpan: 5,
+    });
+  });
+}
+
+function recordSurveyReadSuccess(): void {
+  surveyHasSuccessfulRead = true;
+  surveyAuthorizationRevoked = false;
+  surveyReadFailure = null;
+}
+
+function recordSurveyReadFailure(error: unknown): void {
+  const status = surveyFailureStatus(error);
+  const authorizationRevoked = status === 401 || status === 403;
+  if (authorizationRevoked) {
+    surveyAuthorizationRevoked = true;
+    lastVisibleSurveyRows = [];
+    lastSurveyQuery = '';
+    lastSurveyStatus = '';
+    if (lastSurveyListController?.db) lastSurveyListController.db.rows.questionnaires = [];
+  }
+  if (surveyAuthorizationRevoked && !authorizationRevoked) return;
+  surveyReadFailure = { authorizationRevoked, message: surveyFailureMessage(status) };
+  const controller = lastSurveyListController;
+  if (controller) renderSurveyReadState(controller, lastVisibleSurveyRows, lastSurveyQuery, lastSurveyStatus);
+}
+
+api.loadDb = async context => {
+  if (context?.page !== 'questionnaires') return donorLoadDb(context);
+  const generation = ++surveyReadGeneration;
+  activeSurveyReadGeneration = generation;
+  try {
+    const db = await donorLoadDb(context);
+    if (generation !== activeSurveyReadGeneration) throw new SurveyReadSupersededError();
+    if (!Array.isArray(db?.rows?.questionnaires)) throw new Error('问卷目录响应不完整');
+    recordSurveyReadSuccess();
+    return db;
+  } catch (error) {
+    if (generation === activeSurveyReadGeneration && !(error instanceof SurveyReadSupersededError)) recordSurveyReadFailure(error);
+    throw error;
+  }
+};
 
 function idOf(row: QuestionnaireListRow): number {
   const id = Number(row.resourceId ?? row.id);
@@ -121,36 +262,39 @@ void (async () => {
         lockArchivedQuestionnaireDetail();
       }
       if (!renderedRows) return values;
+      const filters = currentSurveyFilters(this);
+      renderSurveyReadState(this, renderedRows, filters.query, filters.status);
+      const questionnaires = surveyAuthorizationRevoked ? [] : renderedRows.map((row) => {
+        const id = idOf(row);
+        const expectedVersion = versionOf(row);
+        const displayName = typeof row.internalName === 'string' && row.internalName.trim() ? row.internalName : row.name;
+        if (!id || !expectedVersion) {
+          return {
+            ...row,
+            delStyle: { fontSize: '13px', cursor: 'not-allowed', color: '#BBBFC4' },
+            del: () => toast('问卷版本信息暂不可用，请刷新列表后再归档。', true),
+          };
+        }
+        return {
+          ...row,
+          delStyle: { fontSize: '13px', cursor: 'pointer', color: '#D83931' },
+          del: () => {
+            const title = typeof row.title === 'string' && row.title.trim() ? row.title.trim() : displayName;
+            confirmBox(
+              '删除问卷',
+              `确认删除“${title}”吗？将停止新的公开提交，并从正常列表移除；已提交答卷、结果快照和审计记录会保留。`,
+              '确认删除',
+              true,
+              () => { void archiveQuestionnaire(this, id, expectedVersion); },
+            );
+          },
+        };
+      });
       return {
         ...values,
         rows: {
           ...values.rows,
-          questionnaires: renderedRows.map((row) => {
-            const id = idOf(row);
-            const expectedVersion = versionOf(row);
-            const displayName = typeof row.internalName === 'string' && row.internalName.trim() ? row.internalName : row.name;
-            if (!id || !expectedVersion) {
-              return {
-                ...row,
-                delStyle: { fontSize: '13px', cursor: 'not-allowed', color: '#BBBFC4' },
-                del: () => toast('问卷版本信息暂不可用，请刷新列表后再归档。', true),
-              };
-            }
-            return {
-              ...row,
-              delStyle: { fontSize: '13px', cursor: 'pointer', color: '#D83931' },
-              del: () => {
-                const title = typeof row.title === 'string' && row.title.trim() ? row.title.trim() : displayName;
-                confirmBox(
-                  '删除问卷',
-                  `确认删除“${title}”吗？将停止新的公开提交，并从正常列表移除；已提交答卷、结果快照和审计记录会保留。`,
-                  '确认删除',
-                  true,
-                  () => { void archiveQuestionnaire(this, id, expectedVersion); },
-                );
-              },
-            };
-          }),
+          questionnaires,
         },
       };
     } finally {
