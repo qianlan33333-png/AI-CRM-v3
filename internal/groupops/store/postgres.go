@@ -79,6 +79,7 @@ func (r *Repository) List(ctx context.Context, limit, offset int32) ([]groupopsp
 			ORDER BY pm.staff_id
 			LIMIT 1
 		) owner ON true
+		WHERE p.status<>'archived'
 		ORDER BY p.updated_at DESC,p.id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, err
@@ -104,7 +105,7 @@ func (r *Repository) Count(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	var count int64
-	err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_plans`).Scan(&count)
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM group_ops_plans WHERE status<>'archived'`).Scan(&count)
 	return count, err
 }
 

@@ -39,7 +39,18 @@ func (s *MemberGridWorkspaceService) reserveMemberGrid(ctx context.Context, oper
 	if err != nil {
 		return Receipt{}, false, ErrInvalidCursor
 	}
-	return s.store.Reserve(ctx, Reservation{Operation: "service_period_member_grid." + operation, ActorScope: "admin:" + strconv.FormatInt(actor.AdminUserID, 10), KeyDigest: sha256.Sum256([]byte(key)), PayloadDigest: sha256.Sum256(raw), CreatedAt: s.now().UTC()})
+	payloadDigest := sha256.Sum256(raw)
+	receipt, owned, err := s.store.Reserve(ctx, Reservation{Operation: "service_period_member_grid." + operation, ActorScope: "admin:" + strconv.FormatInt(actor.AdminUserID, 10), KeyDigest: sha256.Sum256([]byte(key)), PayloadDigest: payloadDigest, CreatedAt: s.now().UTC()})
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	if receipt.PayloadDigest != payloadDigest {
+		return Receipt{}, false, ErrConflict
+	}
+	// Product Store returns owned=true for the caller that inserted the receipt.
+	// Workspace commands use the second result as replay=true, so invert it at
+	// this boundary before callers decide whether to mutate or replay.
+	return receipt, !owned, nil
 }
 func (s *MemberGridWorkspaceService) replayMemberGrid(receipt Receipt, target any) error {
 	if receipt.State != "completed" || len(receipt.ResultSnapshot) == 0 || json.Unmarshal(receipt.ResultSnapshot, target) != nil {
@@ -127,7 +138,7 @@ func (s *MemberGridWorkspaceService) CreateView(ctx context.Context, c productpo
 		if replay {
 			return s.replayMemberGrid(receipt, &out)
 		}
-		if _, e := s.store.GetServicePeriodProductForUpdate(tx, c.ProductID); e != nil {
+		if e := s.lockWritableMemberGridProduct(tx, c.ProductID); e != nil {
 			return e
 		}
 		allowed, authErr := s.memberGridWriteAllowed(tx, c.ProductID, c.Actor, false)
@@ -160,7 +171,7 @@ func (s *MemberGridWorkspaceService) UpdateView(ctx context.Context, c productpo
 		if replay {
 			return s.replayMemberGrid(receipt, &out)
 		}
-		if _, e := s.store.GetServicePeriodProductForUpdate(tx, c.ProductID); e != nil {
+		if e := s.lockWritableMemberGridProduct(tx, c.ProductID); e != nil {
 			return e
 		}
 		allowed, authErr := s.memberGridWriteAllowed(tx, c.ProductID, c.Actor, false)
@@ -193,7 +204,7 @@ func (s *MemberGridWorkspaceService) DeleteView(ctx context.Context, c productpo
 		if replay {
 			return s.replayMemberGrid(receipt, &out)
 		}
-		if _, e := s.store.GetServicePeriodProductForUpdate(tx, c.ProductID); e != nil {
+		if e := s.lockWritableMemberGridProduct(tx, c.ProductID); e != nil {
 			return e
 		}
 		allowed, authErr := s.memberGridWriteAllowed(tx, c.ProductID, c.Actor, false)
@@ -226,7 +237,7 @@ func (s *MemberGridWorkspaceService) CreateCollaborator(ctx context.Context, c p
 		if replay {
 			return s.replayMemberGrid(receipt, &out)
 		}
-		if _, e := s.store.GetServicePeriodProductForUpdate(tx, c.ProductID); e != nil {
+		if e := s.lockWritableMemberGridProduct(tx, c.ProductID); e != nil {
 			return e
 		}
 		active, directoryErr := s.staff.ActiveMemberGridStaff(tx, c.AdminUserID)
@@ -259,7 +270,7 @@ func (s *MemberGridWorkspaceService) UpdateCollaborator(ctx context.Context, c p
 		if replay {
 			return s.replayMemberGrid(receipt, &out)
 		}
-		if _, e := s.store.GetServicePeriodProductForUpdate(tx, c.ProductID); e != nil {
+		if e := s.lockWritableMemberGridProduct(tx, c.ProductID); e != nil {
 			return e
 		}
 		out, e = s.store.UpdateMemberGridCollaborator(tx, productport.MemberGridCollaborator{ID: c.CollaboratorID, ProductID: c.ProductID, Permission: c.Permission, Version: c.ExpectedVersion, UpdatedBy: c.Actor.AdminUserID, UpdatedAt: s.now().UTC()})
@@ -285,7 +296,7 @@ func (s *MemberGridWorkspaceService) DeleteCollaborator(ctx context.Context, c p
 		if replay {
 			return s.replayMemberGrid(receipt, &out)
 		}
-		if _, e := s.store.GetServicePeriodProductForUpdate(tx, c.ProductID); e != nil {
+		if e := s.lockWritableMemberGridProduct(tx, c.ProductID); e != nil {
 			return e
 		}
 		out, e = s.store.DeleteMemberGridCollaborator(tx, c.ProductID, c.CollaboratorID, c.ExpectedVersion)
@@ -329,7 +340,7 @@ func (s *MemberGridWorkspaceService) SetShare(ctx context.Context, c productport
 			}
 			return e
 		}
-		if _, e := s.store.GetServicePeriodProductForUpdate(tx, c.ProductID); e != nil {
+		if e := s.lockWritableMemberGridProduct(tx, c.ProductID); e != nil {
 			return e
 		}
 		previous, e := s.store.GetMemberGridShare(tx, c.ProductID)
@@ -371,6 +382,32 @@ func (s *MemberGridWorkspaceService) ResolveShare(ctx context.Context, token str
 	err = s.uow.Within(ctx, func(tx context.Context) error { out, err = s.store.GetMemberGridShareByToken(tx, token); return err })
 	return out, classify(err)
 }
+
+// lockWritableMemberGridProduct deliberately keeps archived service-period
+// products readable through the historical grid APIs, while serializing every
+// new workspace mutation with the owner product row and refusing a terminal
+// archived lifecycle before a view, collaborator, or public share can change.
+func (s *MemberGridWorkspaceService) lockWritableMemberGridProduct(ctx context.Context, id productport.ID) error {
+	product, err := s.store.GetServicePeriodProductForUpdate(ctx, id)
+	if err != nil {
+		return err
+	}
+	// GetServicePeriodProductForUpdate already restricts the product kind. For a
+	// mutation gate the durable terminal marker is sufficient: even a malformed
+	// old projection carrying service_period_archived must not reopen sharing or
+	// workspace writes while historical reads remain available.
+	var projection struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(product.LegacyAdminProjection, &projection) != nil {
+		return ErrUnavailable
+	}
+	if projection.Status == ServicePeriodProjectionArchivedStatus {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func readyGrid(s *MemberGridWorkspaceService, id productport.ID, a productport.MemberGridActor) bool {
 	return s != nil && s.uow != nil && s.store != nil && s.events != nil && id > 0 && a.AdminUserID > 0
 }

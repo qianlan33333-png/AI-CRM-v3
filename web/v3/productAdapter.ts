@@ -7,8 +7,9 @@ import { api } from '../src/shared/api/client';
 import { AdminController } from '../src/admin/controller';
 import { apiRequestOptions } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
-import { productPageDto, type AdminReadContext } from '../src/api/admin';
+import { emptyAdminDb, productPageDto, type AdminReadContext } from '../src/api/admin';
 import { downloadQr, renderQr } from '../src/admin/sections/qr';
+import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
 
@@ -60,10 +61,38 @@ async function readJSON(path: string): Promise<unknown> {
   return payload;
 }
 
+type ArchivedProductEditor = { id: number; prefix: 'pf' | 'spf' };
+
+function archivedProductEditor(value: unknown, editor: ArchivedProductEditor): boolean {
+  const raw = object(value);
+  const product = object(raw.product || value);
+  const id = Number(editor.prefix === 'pf' ? product.id || product.resourceId : product.service_product_id || product.id || product.resourceId);
+  if (!Number.isSafeInteger(id) || id !== editor.id) return false;
+  // Ordinary and service-period detail endpoints expose the normalized
+  // lifecycle. `archived` is retained as a compatibility check for the
+  // service-period response while aliases still serve historical URLs.
+  return product.lifecycle === 'archived' || product.archived === true;
+}
+
+function archivedProductEditorTerminal(editor: ArchivedProductEditor): AdminDb {
+  const template = document.getElementById('tpl') as HTMLTemplateElement | null;
+  if (!template) throw new Error('商品页面模板不可用');
+  const label = editor.prefix === 'pf' ? '普通商品' : '周期商品';
+  const listURL = editor.prefix === 'pf' ? '/admin/wechat-pay/products' : '/admin/service-period-products';
+  // The frozen runtime captures #tpl before reading data and mounts it only
+  // after loadDb resolves. Replacing that captured fragment here therefore
+  // yields a terminal page without mounting a transient form or any of its
+  // save, share, external-push, or member-grid actions.
+  template.innerHTML = `<section data-v3-archived-product-editor role="alert" style="margin:24px;padding:24px;border:1px solid #DEE0E3;border-radius:8px;background:#fff;display:grid;gap:12px;max-width:680px"><h1 style="margin:0;font-size:18px;color:#1F2329">该商品已删除</h1><p style="margin:0;color:#646A73;line-height:1.6">该${label}已从新的选择和购买入口移除。既有订单、权益和审计历史仍会保留。</p><p style="margin:0"><a href="${listURL}" style="color:var(--accent,#3370ff)">返回${label}管理</a></p></section>`;
+  return emptyAdminDb();
+}
+
 let loadedProducts: ProductProjection[] = [];
 const openedProductPayloads = new Map<number, RecordValue>();
 const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
 const productLifecycleKeys = new Map<string, string>();
+type ProductArchiveIntent = { key: string; body: string };
+const productArchiveIntents = new Map<string, ProductArchiveIntent>();
 
 type ProductSaveContext = {
   productID?: number;
@@ -101,6 +130,39 @@ function productLifecycleKey(productID: number, version: number, enabled: boolea
     productLifecycleKeys.set(identity, key);
   }
   return key;
+}
+
+type ProductArchiveRow = { resourceId?: number; version?: number; name?: string };
+type ProductArchiveController = { init(): Promise<void>; db: { rows: { products: ProductArchiveRow[]; spProducts: ProductArchiveRow[] } } };
+
+async function archiveProduct(controller: ProductArchiveController, kind: 'ordinary' | 'service-period', row: ProductArchiveRow): Promise<void> {
+  const id = Number(row.resourceId);
+  const version = Number(row.version);
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(version) || version < 1) {
+    throw new Error('商品缺少打开时版本，请刷新后再删除');
+  }
+  const identity = `${kind}:${id}:${version}`;
+  let intent = productArchiveIntents.get(identity);
+  if (!intent) {
+    intent = { key: newIdempotencyKey(`${kind === 'ordinary' ? 'product' : 'service-product'}-archive`), body: JSON.stringify({ expected_version: version }) };
+    productArchiveIntents.set(identity, intent);
+  }
+  const endpoint = kind === 'ordinary'
+    ? `/api/admin/wechat-pay/products/${id}`
+    : `/api/admin/service-period-products/${id}`;
+  const response = await fetch(endpoint, apiRequestOptions({
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.key },
+    body: intent.body,
+  }));
+  if (!response.ok) throw new Error(`商品删除失败（HTTP ${response.status}）`);
+  await controller.init();
+  const rows = kind === 'ordinary' ? controller.db.rows.products : controller.db.rows.spProducts;
+  if (rows.some((item) => Number(item.resourceId) === id)) {
+    throw new Error('删除已受理，但列表回读仍显示该商品；请刷新后核对');
+  }
+  productArchiveIntents.delete(identity);
+  showMessage(kind === 'ordinary' ? '商品已删除，已停止新的公开购买。' : '周期商品已删除，已停止新的公开购买和成员发放。', true);
 }
 
 function stableProductSaveKeys(input: Parameters<typeof api.saveProduct>[0]): { subjectKey: string; externalPushKey: string } {
@@ -564,14 +626,22 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
     // The byte-frozen donor loader couples Product forms to the whole Channel
     // catalog. Compose the form from independent local reads so malformed
     // imported Channel rows cannot hide an otherwise valid Product definition.
-    const [db, imageDb, tagDb, channelDb, rawProduct, rawExternalPush] = await Promise.all([
+    const dependencies = Promise.all([
       donorLoadDb(page('products')),
       donorLoadDb(page('images')),
       donorLoadDb(page('tags')),
       optionalChannels,
-      readJSON(`/api/v1/products/${productID}`),
       readJSON(`/api/admin/wechat-pay/products/${productID}/external-push`),
     ]);
+    // Keep the normal editor's independent reads concurrent, while letting an
+    // archived direct URL resolve to its terminal page even if a current-only
+    // catalog or external configuration reader no longer serves that item.
+    void dependencies.catch(() => undefined);
+    const rawProduct = await readJSON(`/api/v1/products/${productID}`);
+    if (archivedProductEditor(rawProduct, { id: productID, prefix: 'pf' })) {
+      return archivedProductEditorTerminal({ id: productID, prefix: 'pf' });
+    }
+    const [db, imageDb, tagDb, channelDb, rawExternalPush] = await dependencies;
     db.rows.images = imageDb.rows.images;
     db.tagGroups = tagDb.tagGroups;
     db.wecomTags = tagDb.wecomTags;
@@ -596,6 +666,13 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
   }
 
   const db = await donorLoadDb(context);
+  if (context?.page === 'spProductForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
+    const productID = Number(context.id);
+    const current = db.rows.spProducts[0];
+    if (archivedProductEditor(current, { id: productID, prefix: 'spf' })) {
+      return archivedProductEditorTerminal({ id: productID, prefix: 'spf' });
+    }
+  }
   if (context?.page !== 'products') return db;
   let rawItems: unknown[];
   rawItems = list(object(await readJSON('/api/v1/products')).items);
@@ -1617,8 +1694,10 @@ api.saveImageItem = (originalName, patch) => runAction(takeProductUploadInput() 
 type ProductController = {
   page: string;
   db: AdminDb;
+  init(): Promise<void>;
   goto(page: string, query?: string): void;
   qs(): URLSearchParams;
+  renderVals(): Record<string, unknown>;
 };
 const productController = AdminController.prototype as unknown as ProductController;
 const donorProductQuery = productController.qs;
@@ -1649,3 +1728,51 @@ productController.goto = function (page, query = '') {
   }
   showMessage(`已保存当前维度，服务端版本 ${saved.version}`, true);
 };
+
+const donorProductRenderVals = productController.renderVals;
+productController.renderVals = function renderProductListWithArchiveActions() {
+  const values = donorProductRenderVals.call(this) as { rows?: { products?: ProductArchiveRow[]; spProducts?: ProductArchiveRow[] } };
+  if ((this.page !== 'products' && this.page !== 'spProducts') || !values.rows) return values;
+  const ordinaryRows = values.rows.products || [];
+  const serviceRows = values.rows.spProducts || [];
+  return {
+    ...values,
+    rows: {
+      ...values.rows,
+      products: this.page === 'products' ? ordinaryRows.map((row) => ({
+        ...row,
+        del: () => confirmBox(
+          '删除商品',
+          `确认删除“${row.name || '未命名商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买；已支付订单、权益和审计记录会保留。`,
+          '确认删除',
+		  true,
+		  () => { void archiveProduct(this, 'ordinary', row).catch((error) => showMessage(error instanceof Error ? error.message : '商品删除失败')); },
+        ),
+      })) : ordinaryRows,
+      spProducts: this.page === 'spProducts' ? serviceRows.map((row) => ({
+        ...row,
+        archive: () => confirmBox(
+          '删除周期商品',
+          `确认删除“${row.name || '未命名周期商品'}”吗？删除后会从正常列表和新的购买、选择入口移除，停止新的公开购买和成员发放；既有成员权益、订单和审计记录会保留。`,
+          '确认删除',
+		  true,
+		  () => { void archiveProduct(this, 'service-period', row).catch((error) => showMessage(error instanceof Error ? error.message : '周期商品删除失败')); },
+        ),
+      })) : serviceRows,
+    },
+  };
+};
+
+// The service-period table is a byte-frozen donor template. Reuse its one
+// archive action and only relabel the mounted DOM so the owner sees the same
+// “删除” verb as ordinary products; the owner command remains Archive.
+function relabelServiceProductDeleteAction(): void {
+  if (typeof document === 'undefined' || !document.body || document.body.dataset.page !== 'spProducts') return;
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
+    if (button.textContent?.trim() === '归档') button.textContent = '删除';
+  }
+}
+const serviceProductDeleteLabelObserver = new MutationObserver(relabelServiceProductDeleteAction);
+serviceProductDeleteLabelObserver.observe(document, { childList: true, subtree: true });
+window.addEventListener('pagehide', () => serviceProductDeleteLabelObserver.disconnect(), { once: true });
+relabelServiceProductDeleteAction();

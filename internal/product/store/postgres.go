@@ -105,12 +105,27 @@ func mapDatabaseError(err error) error {
 	return err
 }
 
-func ordinaryStatusSQL() string {
+// ordinaryProductKindStatusSQL identifies the ordinary Product projection
+// without imposing its current visibility. Historical target/name readers and
+// retained configuration reads use this classification so an archived Product
+// is not presented as a nonexistent reference.
+func ordinaryProductKindStatusSQL() string {
 	return `legacy_admin_projection->>'status' NOT IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived')`
+}
+
+func ordinaryStatusSQL() string {
+	return ordinaryProductKindStatusSQL() + ` AND COALESCE(legacy_admin_projection->>'status','')<>'archived'`
 }
 
 func servicePeriodStatusSQL() string {
 	return `legacy_admin_projection->>'status' IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived')`
+}
+
+// visibleServicePeriodStatusSQL excludes retained archived rows from ordinary
+// owner lists and every new-selection reader. Direct service-period reads keep
+// servicePeriodStatusSQL so historical projections remain available.
+func visibleServicePeriodStatusSQL() string {
+	return `legacy_admin_projection->>'status' IN ('service_period_draft','service_period_enabled','service_period_disabled')`
 }
 
 func (r *Repository) List(ctx context.Context, after *productport.ID, limit int32) ([]productport.Product, error) {
@@ -208,12 +223,15 @@ func (r *Repository) ListProductOptions(ctx context.Context, query productport.P
 		return productport.ProductOptionPage{}, ErrInvalid
 	}
 
-	statusSQL := "TRUE"
+	// The unqualified chooser is still a current/new-selection reader. It must
+	// filter both owner projections; otherwise an archived item reappears as
+	// soon as the consumer omits product_type.
+	statusSQL := `(` + ordinaryStatusSQL() + `) OR (` + visibleServicePeriodStatusSQL() + `)`
 	switch query.ProductType {
 	case productport.ProductOptionStandard:
 		statusSQL = ordinaryStatusSQL()
 	case productport.ProductOptionServicePeriod:
-		statusSQL = servicePeriodStatusSQL()
+		statusSQL = visibleServicePeriodStatusSQL()
 	}
 	whereSQL := "currency='CNY' AND (" + statusSQL + ")"
 	args := make([]any, 0, 3)
@@ -281,7 +299,7 @@ func (r *Repository) ReadProductTargets(ctx context.Context, references []produc
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `SELECT id,name,'standard'::text AS product_type FROM products
-WHERE id=ANY($1::bigint[]) AND `+ordinaryStatusSQL()+`
+WHERE id=ANY($1::bigint[]) AND `+ordinaryProductKindStatusSQL()+`
 UNION ALL
 SELECT id,name,'service_period'::text AS product_type FROM products
 WHERE id=ANY($2::bigint[]) AND `+servicePeriodStatusSQL(), standardIDs, servicePeriodIDs)
@@ -508,10 +526,10 @@ func (r *Repository) ListServicePeriodProducts(ctx context.Context, limit, offse
 		return nil, 0, ErrInvalid
 	}
 	var total int64
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM products WHERE `+servicePeriodStatusSQL()).Scan(&total); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM products WHERE `+visibleServicePeriodStatusSQL()).Scan(&total); err != nil {
 		return nil, 0, mapDatabaseError(err)
 	}
-	rows, err := tx.Query(ctx, `SELECT `+productColumns+` FROM products WHERE `+servicePeriodStatusSQL()+` ORDER BY id LIMIT $1 OFFSET $2`, limit, offset)
+	rows, err := tx.Query(ctx, `SELECT `+productColumns+` FROM products WHERE `+visibleServicePeriodStatusSQL()+` ORDER BY id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, 0, mapDatabaseError(err)
 	}
@@ -701,6 +719,16 @@ func serviceKindStatus(kind productport.ExternalPushProductKind) string {
 	if kind == productport.ExternalPushServicePeriod {
 		return servicePeriodStatusSQL()
 	}
+	return ordinaryProductKindStatusSQL()
+}
+
+// visibleServiceKindStatus is used only by a prospective external-push write
+// or test. Historical configuration GETs intentionally use serviceKindStatus
+// above so an archived Product remains explainable after it leaves discovery.
+func visibleServiceKindStatus(kind productport.ExternalPushProductKind) string {
+	if kind == productport.ExternalPushServicePeriod {
+		return visibleServicePeriodStatusSQL()
+	}
 	return ordinaryStatusSQL()
 }
 
@@ -729,7 +757,7 @@ func (r *Repository) readExternalPushConfiguration(ctx context.Context, id produ
 		// configuration before the application performs its CAS check.
 		var lockedID int64
 		err = tx.QueryRow(ctx, `SELECT p.id FROM products AS p
-WHERE p.id=$1 AND `+serviceKindStatus(kind)+` FOR UPDATE`, int64(id)).Scan(&lockedID)
+WHERE p.id=$1 AND `+visibleServiceKindStatus(kind)+` FOR UPDATE`, int64(id)).Scan(&lockedID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
 		}
@@ -817,7 +845,7 @@ func (r *Repository) SaveCommerceExternalPushConfiguration(ctx context.Context, 
 		return productport.ExternalPushConfiguration{}, ErrInvalid
 	}
 	var productID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM products WHERE id=$1 AND `+serviceKindStatus(value.ProductKind)+` FOR UPDATE`, int64(value.ProductID)).Scan(&productID)
+	err = tx.QueryRow(ctx, `SELECT id FROM products WHERE id=$1 AND `+visibleServiceKindStatus(value.ProductKind)+` FOR UPDATE`, int64(value.ProductID)).Scan(&productID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
 	}

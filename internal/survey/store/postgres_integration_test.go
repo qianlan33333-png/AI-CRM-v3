@@ -660,7 +660,7 @@ func TestPostgreSQLSyntheticCompletionTerminalReplayKeepsExecutionFacts(t *testi
 	}
 }
 
-func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T) {
+func TestPostgreSQLArchiveRetainsChildrenAndBlocksOperationConfigurationWritesAtomically(t *testing.T) {
 	native, cleanup := surveyIntegrationPool(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -670,7 +670,7 @@ func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
-	var questionnaireID, versionID int64
+	var questionnaireID, versionID, questionID, optionID int64
 	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Imported status questionnaire','Imported status questionnaire','','survey','all_in_one','imported-status-questionnaire','disabled',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
 		t.Fatal(err)
 	}
@@ -678,6 +678,12 @@ func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T
 		t.Fatal(err)
 	}
 	if _, err := native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1 WHERE id=$2`, versionID, questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,sort_order) VALUES($1,'single_choice','Retained question',0) RETURNING id`, versionID).Scan(&questionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,sort_order) VALUES($1,$2,'Retained option',0) RETURNING id`, questionID, versionID).Scan(&optionID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -697,22 +703,78 @@ func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := surveyapp.NewService(uow, repository)
+	definitions := surveyapp.NewService(uow, repository)
+	submissions := surveyapp.NewSubmissionService(uow, repository, cipher)
+	configured, err := submissions.SaveOperationConfiguration(ctx, surveyport.OperationConfiguration{
+		QuestionnaireID: surveyport.ID(questionnaireID), CompletionNavigationRef: "retained-navigation",
+		ExternalPushEnabled: true, ExternalPushConfigurationRef: "retained-push",
+		ExternalPushMetadata: json.RawMessage(`{"retained":true}`), Version: 0,
+	}, actorID, "survey-config-retained-before-archive-0001")
+	if err != nil || configured.Version != 1 {
+		t.Fatalf("configure before archive=%+v err=%v", configured, err)
+	}
 
-	updated, err := service.SetStatus(ctx, surveyport.ID(questionnaireID), 1, surveyport.StatusPublished, actorID, "survey-enable-integration-0001")
+	updated, err := definitions.SetStatus(ctx, surveyport.ID(questionnaireID), 1, surveyport.StatusPublished, actorID, "survey-enable-integration-0001")
 	if err != nil {
 		t.Fatalf("enable imported questionnaire: %v", err)
 	}
 	if updated.Status != surveyport.StatusPublished || updated.Version != 2 {
 		t.Fatalf("updated=%+v", updated)
 	}
-	for table, want := range map[string]int64{"survey_operation_receipts": 1, "survey_audit_events": 1, "survey_outbox": 1} {
+	archived, err := definitions.SetStatus(ctx, surveyport.ID(questionnaireID), updated.Version, surveyport.StatusArchived, actorID, "survey-archive-integration-0002")
+	if err != nil || archived.Status != surveyport.StatusArchived || archived.Version != 3 {
+		t.Fatalf("archive=%+v err=%v", archived, err)
+	}
+	replay, err := definitions.SetStatus(ctx, surveyport.ID(questionnaireID), updated.Version, surveyport.StatusArchived, actorID, "survey-archive-integration-0002")
+	if err != nil || replay.ID != archived.ID || replay.Version != archived.Version || replay.Status != surveyport.StatusArchived {
+		t.Fatalf("archive replay=%+v err=%v", replay, err)
+	}
+
+	page, err := definitions.List(ctx, 20, 0, "", "")
+	if err != nil || page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("archived questionnaire remained in default list=%+v err=%v", page, err)
+	}
+	historical, err := definitions.Get(ctx, surveyport.ID(questionnaireID))
+	if err != nil || historical.Status != surveyport.StatusArchived || len(historical.Questions) != 1 || len(historical.Questions[0].Options) != 1 || historical.Questions[0].ID != surveyport.ID(questionID) || historical.Questions[0].Options[0].ID != surveyport.ID(optionID) {
+		t.Fatalf("archived historical definition=%+v err=%v", historical, err)
+	}
+	if _, err = submissions.ReadPublic(ctx, "imported-status-questionnaire"); !errors.Is(err, surveyport.ErrNotFound) {
+		t.Fatalf("archived questionnaire public read error=%v", err)
+	}
+	retained, err := submissions.GetOperationConfiguration(ctx, surveyport.ID(questionnaireID))
+	if err != nil || retained.Version != configured.Version || retained.CompletionNavigationRef != configured.CompletionNavigationRef || retained.ExternalPushConfigurationRef != configured.ExternalPushConfigurationRef || !retained.ExternalPushEnabled || string(retained.ExternalPushMetadata) != string(configured.ExternalPushMetadata) {
+		t.Fatalf("retained configuration=%+v err=%v", retained, err)
+	}
+	blocked := retained
+	blocked.ExternalPushConfigurationRef = "must-not-write"
+	blocked.ExternalPushMetadata = json.RawMessage(`{"retained":false}`)
+	if _, err = submissions.SaveOperationConfiguration(ctx, blocked, actorID, "survey-config-after-archive-0003"); !errors.Is(err, surveyport.ErrNotFound) {
+		t.Fatalf("archived configuration write error=%v", err)
+	}
+	afterBlocked, err := submissions.GetOperationConfiguration(ctx, surveyport.ID(questionnaireID))
+	if err != nil || afterBlocked.Version != retained.Version || afterBlocked.ExternalPushConfigurationRef != retained.ExternalPushConfigurationRef || string(afterBlocked.ExternalPushMetadata) != string(retained.ExternalPushMetadata) {
+		t.Fatalf("blocked write changed historical configuration=%+v err=%v", afterBlocked, err)
+	}
+	for table, want := range map[string]int64{"survey_operation_receipts": 2, "survey_audit_events": 3, "survey_outbox": 3} {
 		var got int64
 		if err := native.QueryRow(ctx, `SELECT count(*) FROM `+table).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
 		if got != want {
 			t.Fatalf("%s count=%d want=%d", table, got, want)
+		}
+	}
+	for query, want := range map[string]int64{
+		`SELECT count(*) FROM survey_operation_configurations WHERE questionnaire_id=` + fmt.Sprint(questionnaireID): 1,
+		`SELECT count(*) FROM survey_definition_questions WHERE definition_version_id=` + fmt.Sprint(versionID):      1,
+		`SELECT count(*) FROM survey_definition_options WHERE definition_version_id=` + fmt.Sprint(versionID):        1,
+	} {
+		var got int64
+		if err := native.QueryRow(ctx, query).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("retained history query %q count=%d want=%d", query, got, want)
 		}
 	}
 }
@@ -965,7 +1027,7 @@ func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql", "0090_survey_oauth_state_redirect.sql", "0091_survey_assessment_business_keys.sql", "0099_survey_historical_external_projection.sql"} {
+	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql", "0090_survey_oauth_state_redirect.sql", "0091_survey_assessment_business_keys.sql", "0099_survey_historical_external_projection.sql", "0168_survey_questionnaire_archive.sql", "0169_survey_questionnaire_archive_receipts.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migrationName))
 		if readErr != nil {
 			t.Fatal(readErr)

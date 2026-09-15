@@ -38,11 +38,18 @@ func (reader *TargetReader) ReadProductTarget(ctx context.Context, kind productp
 		if err != nil {
 			return productport.ProductOption{}, err
 		}
+		local, err := projectLocalProduct(item)
+		if err != nil || local.Lifecycle == productport.LocalProductArchived {
+			return productport.ProductOption{}, ErrNotFound
+		}
 		return productport.ProductOption{ID: item.ID, Code: item.ProductCode, ProductType: productport.ProductOptionStandard, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, CoverURL: publicProductCardCover(item)}, nil
 	case productport.ProductOptionServicePeriod:
 		item, err := reader.period.GetServicePeriodProduct(ctx, id)
 		if err != nil {
 			return productport.ProductOption{}, err
+		}
+		if item.Archived {
+			return productport.ProductOption{}, ErrNotFound
 		}
 		return productport.ProductOption{ID: item.ServiceProductID, Code: item.ProductCode, ProductType: productport.ProductOptionServicePeriod, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, CoverURL: servicePeriodCardCover(item)}, nil
 	default:

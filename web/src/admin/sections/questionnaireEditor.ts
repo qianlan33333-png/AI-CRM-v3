@@ -1175,6 +1175,40 @@ function resetDraft(data = null, options = {}) {
   renderWorkspace();
 }
 
+function isArchivedQuestionnaire(questionnaire = state.questionnaire) {
+  return String(questionnaire?.status || '').toLowerCase() === 'archived';
+}
+
+function applyArchivedQuestionnaireReadOnlyState() {
+  if (!isArchivedQuestionnaire()) return;
+  if (editorPageSubtitleEl) editorPageSubtitleEl.textContent = '问卷已归档，定义仅供历史查看。';
+  const controls = document.querySelectorAll([
+    '#inspector-body input',
+    '#inspector-body textarea',
+    '#inspector-body select',
+    '#inspector-body button',
+    '#preview-head button',
+    '#preview-questions button',
+    '#preview-rules-wrap button',
+    '.phone-stage input',
+    '.phone-stage textarea',
+    '.phone-stage select',
+    '.phone-stage button',
+    '#save-btn',
+    '#reset-btn',
+    '#add-single',
+    '#add-multi',
+    '#add-textarea',
+    '#add-mobile',
+    '#add-rule',
+    '#open-assessment-settings',
+  ].join(','));
+  controls.forEach((control) => {
+    control.disabled = true;
+    control.setAttribute('aria-disabled', 'true');
+  });
+}
+
 function sourceQuestionnaireIdFromTemplateGroup(group) {
   const matched = String(group?.id || '').match(/^questionnaire_template_(\d+)$/);
   return matched ? Number(matched[1]) : '';
@@ -1367,6 +1401,7 @@ function startNewQuestionnaire(options = {}) {
 }
 
 async function toggleQuestionnaire(item) {
+  if (isArchivedQuestionnaire(item)) throw new Error('问卷已归档，定义仅供历史查看');
   await setEditorQuestionnaireDisabled(item.id, !item.is_disabled);
   showToast(item.is_disabled ? '问卷已启用' : '问卷已停用');
   await loadList();
@@ -1376,8 +1411,9 @@ async function toggleQuestionnaire(item) {
 }
 
 async function deleteQuestionnaireItem(item) {
-  if (!window.confirm('删除后不可恢复，确认删除该问卷吗？')) return;
-  await deleteEditorQuestionnaire(item.id);
+  const expectedVersion = Number(item?.version ?? state.questionnaire?.version);
+  if (!window.confirm('删除后，问卷会从正常列表和新的填写入口移除；历史答卷、结果和导出记录会保留。确认删除该问卷吗？')) return;
+  await deleteEditorQuestionnaire(item.id, expectedVersion);
   if (state.currentId === item.id) {
     window.location.assign(editorConfig.backHref);
     return;
@@ -1388,6 +1424,7 @@ async function deleteQuestionnaireItem(item) {
 
 async function duplicateQuestionnaire(item) {
   if (!item?.id) return;
+  if (isArchivedQuestionnaire(item)) throw new Error('问卷已归档，定义仅供历史查看');
   if (!confirmDiscardChanges()) return;
   if (!window.confirm(`复制问卷“${item.name || item.title || '未命名问卷'}”？复制后会生成一份默认停用的新问卷。`)) return;
   const data = await duplicateEditorQuestionnaire(item.id);
@@ -1535,7 +1572,7 @@ function renderEditorSecondaryActions() {
     return;
   }
   editorSecondaryActionsEl.innerHTML = state.currentId ? `
-      <button id="editor-duplicate-btn" type="button" class="btn ghost">复制问卷</button>
+      ${isArchivedQuestionnaire() ? '' : '<button id="editor-duplicate-btn" type="button" class="btn ghost">复制问卷</button>'}
       <button id="editor-export-btn" type="button" class="btn ghost">下载数据</button>
     ` : '';
   const duplicateBtn = document.getElementById('editor-duplicate-btn');
@@ -1554,9 +1591,9 @@ function renderTopbar() {
   topbarTitleEl.textContent = editorConfig.defaultAssessment ? pageKind : title;
   const topbarSubtitleEl = document.getElementById('topbar-subtitle');
   if (topbarSubtitleEl) {
-    topbarSubtitleEl.textContent = editorConfig.defaultAssessment
-      ? '基础信息、设置维度、结果配置、H5 预览 / 发布按步骤配置。'
-      : '';
+    topbarSubtitleEl.textContent = isArchivedQuestionnaire()
+      ? '问卷已归档，定义仅供历史查看。'
+      : (editorConfig.defaultAssessment ? '基础信息、设置维度、结果配置、H5 预览 / 发布按步骤配置。' : '');
   }
   if (editorPageTitleEl) {
     editorPageTitleEl.textContent = pageKind;
@@ -1687,20 +1724,19 @@ function mountTagPicker(host, selectedTagIds, onChange, target) {
 
 function renderQuestionnaireInspector() {
   inspectorTitleEl.textContent = '问卷设置';
-  inspectorSubtitleEl.textContent = '编辑当前问卷的基础信息。';
-  const deleteDisabled = !state.persistedIsDisabled;
+  const archived = isArchivedQuestionnaire();
+  inspectorSubtitleEl.textContent = archived ? '问卷已归档，定义仅供历史查看。' : '编辑当前问卷的基础信息。';
   const assessmentGroup = assessmentTemplateGroups()[0] || null;
-  const deleteSection = state.currentId ? `
+  const deleteSection = state.currentId && !archived ? `
     <section class="config-group danger-zone">
       <button
         id="delete-questionnaire-btn"
         type="button"
         class="link-btn danger"
-        ${deleteDisabled ? 'disabled title="请先停用后删除"' : ''}
       >
         删除此问卷
       </button>
-      ${deleteDisabled ? '<p>请先停用问卷后再删除。</p>' : ''}
+      <p>删除会停止新的填写入口，历史答卷和结果保留。</p>
     </section>
   ` : '';
   inspectorBodyEl.innerHTML = `
@@ -1790,6 +1826,7 @@ function renderQuestionnaireInspector() {
       deleteQuestionnaireItem({
         id: state.currentId,
         name: questionnaireDisplayName(state.questionnaire),
+        version: state.questionnaire.version,
       }).catch((error) => showToast(error.message || '删除失败，请稍后重试', true));
     });
   }
@@ -3608,6 +3645,7 @@ function renderAssessmentTemplateWorkspaceV2() {
   else renderAssessmentPreviewPage();
   renderList();
   updateDraftIndicator();
+  applyArchivedQuestionnaireReadOnlyState();
 }
 
 function renderInspector() {
@@ -3663,6 +3701,7 @@ function renderWorkspace() {
   renderPreview();
   renderInspector();
   renderList();
+  applyArchivedQuestionnaireReadOnlyState();
 }
 
 function addQuestion(type) {
@@ -3890,6 +3929,7 @@ function validateOtherOptionsBeforeSave() {
 }
 
 async function saveQuestionnaire() {
+  if (isArchivedQuestionnaire()) throw new Error('问卷已归档，定义仅供历史查看');
   validateAssessmentConfigBeforeSave();
   validateOtherOptionsBeforeSave();
   const wasEditing = Boolean(state.currentId);

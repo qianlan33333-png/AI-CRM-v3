@@ -10,6 +10,8 @@ import { AdminController } from '../src/admin/controller';
 import { api } from '../src/shared/api/client';
 // @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
 import type { AdminDb } from '../src/shared/api/types';
+// @ts-ignore Frozen donor view materialized by prepare-donor-source-views.
+import { confirmBox, toast } from '../src/shared/ui/feedback';
 import { formatShanghaiDateTime, shanghaiDateTimeLocalToRFC3339 } from './adminDateTime';
 
 export {};
@@ -59,6 +61,10 @@ function bodyText(input: RequestInfo | URL, init?: RequestInit): string {
 function couponMutation(url: URL, method: string): boolean {
   return method !== 'GET' && /^\/api\/admin\/coupons(?:\/[1-9][0-9]*(?:\/(?:publish|stop|copy|archive))?)?$/.test(url.pathname);
 }
+function couponArchiveMutation(url: URL, method: string): boolean {
+  return (method === 'DELETE' && /^\/api\/admin\/coupons\/[1-9][0-9]*$/.test(url.pathname))
+    || (method === 'POST' && /^\/api\/admin\/coupons\/[1-9][0-9]*\/archive$/.test(url.pathname));
+}
 function couponWrite(url: URL, method: string): boolean {
   return (method === 'POST' && url.pathname === '/api/admin/coupons') || (method === 'PUT' && /^\/api\/admin\/coupons\/[1-9][0-9]*$/.test(url.pathname));
 }
@@ -95,8 +101,16 @@ function objectList(value: unknown, keys: string[]): Json[] {
   return [];
 }
 function positiveCouponID(value: unknown): number | undefined {
-  const id = Number(value);
+  const id = typeof value === 'number' ? value : typeof value === 'string' && /^[1-9][0-9]*$/.test(value) ? Number(value) : NaN;
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+function archiveExpectedVersion(body: string): number | undefined {
+  try {
+    const payload = asJson(JSON.parse(body));
+    return positiveCouponID(payload.expected_version);
+  } catch {
+    return undefined;
+  }
 }
 function exactCouponTargetNames(coupon: Json): string {
   const refs = Array.isArray(coupon.target_refs) ? coupon.target_refs.map(String) : [];
@@ -193,6 +207,15 @@ function normalizeCouponWriteBody(url: URL, method: string, body: string): { bod
   return { body: JSON.stringify(payload) };
 }
 
+function normalizeCouponArchiveBody(url: URL, method: string, body: string): { body?: string; error?: Response } {
+  if (!couponArchiveMutation(url, method)) return { body };
+  const expectedVersion = archiveExpectedVersion(body);
+  if (!expectedVersion) {
+    return { error: jsonResponse(400, { code: 'invalid_request', message: '删除请求缺少有效的版本；未提交任何修改。' }) };
+  }
+  return { body: JSON.stringify({ expected_version: expectedVersion }) };
+}
+
 // The frozen coupon controller and the original editor both call fetch.  This
 // one scoped transport gives every lifecycle mutation an original stable key,
 // including DELETE, and refuses a changed create payload after an unknown
@@ -203,7 +226,9 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (method === 'GET' && url.pathname === '/api/admin/coupons/product-options') return normalizeProductOptions(await nativeFetch(input, init));
   if (method === 'GET' && url.pathname === '/api/admin/coupons') return rememberCouponPresentations(await nativeFetch(input, init));
   if (!couponMutation(url, method)) return nativeFetch(input, init);
-  const normalized = normalizeCouponWriteBody(url, method, bodyText(input, init));
+  const normalized = couponArchiveMutation(url, method)
+    ? normalizeCouponArchiveBody(url, method, bodyText(input, init))
+    : normalizeCouponWriteBody(url, method, bodyText(input, init));
   if (normalized.error) return normalized.error;
   const body = normalized.body || ''; const operation = fingerprint(method, url, body);
   if (method === 'POST' && url.pathname === '/api/admin/coupons' && unresolvedCreate && unresolvedCreate !== operation) {
@@ -231,6 +256,13 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
       }
       unresolvedCreate = null; createdCouponIDs.set(operation, id);
     }
+  } else if (couponArchiveMutation(url, method) && response.ok) {
+    const receiptID = createdID(await response.clone().json().catch(() => null));
+    const expectedID = positiveCouponID(url.pathname.match(/^\/api\/admin\/coupons\/([1-9][0-9]*)/)?.[1]);
+    if (!expectedID || receiptID !== expectedID) {
+      return jsonResponse(503, { code: 'ARCHIVE_OUTCOME_UNKNOWN', message: '删除结果无法确认；请保持本次删除操作后重试或先返回列表核对。' });
+    }
+    mutationKeys.delete(operation);
   } else if (response.ok) {
     // A key is shared only while this intent is pending.  Once the lifecycle
     // command is confirmed, a later deliberate transition (publish -> stop ->
@@ -260,6 +292,7 @@ function responseMessage(payload: unknown, status: number): string {
     case 'not_found': return '优惠券不存在或已删除，请返回列表核对。';
     case 'conflict': return '优惠券内容已变化，请返回列表核对后重试。';
     case 'CREATE_OUTCOME_UNKNOWN': return '优惠券保存结果未知；请保持内容不变后重试，或先返回列表核对。';
+    case 'ARCHIVE_OUTCOME_UNKNOWN': return '删除结果无法确认；请保持本次删除操作后重试或先返回列表核对。';
   }
   switch (status) {
     case 400: return '请检查优惠券内容后重新保存。';
@@ -413,8 +446,57 @@ function removeCouponTimeZoneLabels(): void {
 function couponStatusLabel(value: unknown): string {
   return ({
     draft: '草稿', published: '已发布', scheduled: '未到领取时间', active: '可领取', sold_out: '已领完',
-    ended: '已结束', stopped: '已停用', archived: '已归档', deleted: '已删除',
+    ended: '已结束', stopped: '已停用', archived: '已删除', deleted: '已删除',
   } as Record<string, string>)[String(value)] || '状态待确认';
+}
+
+async function deleteCouponFromList(controller: AdminController, couponID: number, expectedVersion: number): Promise<void> {
+  let accepted = false;
+  try {
+    const response = await window.fetch(`/api/admin/coupons/${couponID}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_version: expectedVersion }),
+      credentials: 'same-origin',
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(responseMessage(payload, response.status));
+    if (createdID(payload) !== couponID) throw new Error('删除结果无法确认；请保持本次删除操作后重试或先返回列表核对。');
+    accepted = true;
+    await controller.init();
+    if (controller.db.rows.coupons.some((coupon) => coupon.resourceId === couponID)) {
+      throw new Error('删除已被服务器接受，但当前列表仍显示该优惠券；请重新读取列表核对。');
+    }
+    toast('优惠券已删除');
+  } catch (error) {
+    if (accepted) {
+      const confirmedButVisible = error instanceof Error && error.message.startsWith('删除已被服务器接受')
+        ? error.message
+        : '删除已确认，但列表读取失败；请重新读取列表核对。';
+      toast(confirmedButVisible, true);
+      return;
+    }
+    toast(error instanceof Error ? error.message : '优惠券删除失败，请稍后重试。', true);
+  }
+}
+
+function couponDeleteAction(controller: AdminController, row: Json): () => void {
+  const couponID = positiveCouponID(row.resourceId);
+  const expectedVersion = positiveCouponID(row.version);
+  const name = typeof row.name === 'string' && row.name.trim() ? row.name.trim() : '该优惠券';
+  return () => {
+    if (!couponID || !expectedVersion) {
+      toast('优惠券缺少可确认的版本，无法删除。请重新读取列表后再试。', true);
+      return;
+    }
+    confirmBox(
+      '删除优惠券',
+      `删除「${name}」将归档该优惠券，停止新的领取和后续使用；已下单、已核销和订单历史会保留。确认删除？`,
+      '确认删除',
+      true,
+      () => { void deleteCouponFromList(controller, couponID, expectedVersion); },
+    );
+  };
 }
 
 function installCouponPageMobileLayout(): void {
@@ -471,7 +553,24 @@ function installCouponListBridge(): void {
       ...values,
       rows: {
         ...rows,
-        coupons: rows.coupons.map((coupon) => ({ ...asJson(coupon), displayStatus: couponStatusLabel(asJson(coupon).displayStatus) })),
+        coupons: rows.coupons.map((coupon) => {
+          const row = asJson(coupon);
+          const archived = row.status === 'archived' || row.displayStatus === 'archived';
+          const readonlyActions = archived
+            ? { edit: () => undefined, shareIt: () => undefined, copyIt: () => undefined, toggle: () => undefined, archive: () => undefined, del: () => undefined }
+            : { archive: couponDeleteAction(this, row), del: () => undefined };
+          return {
+            ...row,
+            displayStatus: couponStatusLabel(row.displayStatus),
+            // The immutable list template exposes both archive and draft-delete
+            // callbacks. This V3 seam gives the surviving visible action one
+            // frozen id/version pair and removes the duplicate in the DOM
+            // projection below; it never asks the controller to infer a new
+            // version before writing. Archived records retain only their data
+            // route, which the frozen controller already owns.
+            ...readonlyActions,
+          };
+        }),
       },
     };
   };
@@ -481,6 +580,28 @@ function installCouponListBridge(): void {
     });
     const table = document.querySelector<HTMLTableElement>('#stage table');
     if (!table) return;
+    table.querySelectorAll('tbody tr').forEach((row) => {
+      if (!(row instanceof HTMLTableRowElement)) return;
+      const actions = [...row.querySelectorAll<HTMLAnchorElement>('a')];
+      const archived = row.cells[5]?.textContent?.trim() === '已删除';
+      if (archived) {
+        // The frozen template has no archived-only branch. Keep its existing
+        // history/data callback and remove every lifecycle/edit/share action
+        // from historical records rather than leaving a guaranteed 409 path.
+        actions.filter((node) => node.textContent?.trim() !== '数据').forEach((node) => node.remove());
+        return;
+      }
+      const archive = actions.find((node) => node.textContent?.trim() === '归档');
+      const draftDelete = actions.find((node) => node.textContent?.trim() === '删除草稿');
+      if (archive) {
+        archive.textContent = '删除';
+        (archive as HTMLAnchorElement & { __dcBound?: boolean }).__dcBound = true;
+        archive.dataset.capabilityState = 'real';
+        archive.removeAttribute('aria-description');
+        archive.dataset.couponAction = 'delete';
+      }
+      draftDelete?.remove();
+    });
     table.dataset.couponPresentationList = 'true';
     table.style.minWidth = '860px';
     const card = table.parentElement;

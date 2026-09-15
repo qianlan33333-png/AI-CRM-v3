@@ -218,7 +218,7 @@
   }
 
   function statusText(status) {
-    const map = { active: "启用", draft: "草稿", disabled: "停用", archived: "已归档" };
+    const map = { active: "启用", draft: "草稿", disabled: "停用", archived: "已删除" };
     return map[status] || status || "-";
   }
 
@@ -797,7 +797,7 @@
     if (planIsArchived(state.plan) && archivedWriteActions.has(action)) {
       state.showGroupPicker = false;
       state.showNodeModal = false;
-      state.notice = "计划已归档，不能修改或重新启用";
+      state.notice = "计划已删除，不能修改或重新启用";
       return renderDetail();
     }
     const activeWriteActions = new Set([
@@ -1213,14 +1213,14 @@
     }
     const current = state.plans.find((item) => Number(item.id) === listAction.id && Number(item.revision) === listAction.revision);
     const label = current && current.plan_name ? `「${current.plan_name}」` : "该计划";
-    if (!window.confirm(`确认归档${label}？归档后仍保留在列表中。`)) return;
+    if (!window.confirm(`确认删除${label}？删除后将从正常列表移除，已接受的执行和投递历史会保留。`)) return;
     state.changingPlanId = listAction.id;
-    state.notice = "归档中";
+    state.notice = "删除中";
     state.noticeIsError = false;
     renderList(state.lastTotal || state.plans.length, state.queueCount || 0);
     try {
       const archived = await requestJson(routes.apiPlan(listAction.id), { method: "DELETE", body: { expected_revision: listAction.revision } });
-      confirmedWritePlan(archived, listAction.id, "archived", "归档");
+      confirmedWritePlan(archived, listAction.id, "archived", "删除");
       state.writeReadbackPlanId = listAction.id;
       const readback = await loadListPage({ snapshot: listSnapshot(), preserveView: true, allowOnePageBack: true });
       if (!readback.published) {
@@ -1228,11 +1228,11 @@
         state.noticeIsError = true;
         return;
       }
-      state.notice = "已归档";
+      state.notice = "已删除";
       state.noticeIsError = false;
     } catch (error) {
       await Promise.allSettled([requestJson(routes.apiPlan(listAction.id)), loadListPage({ snapshot: listSnapshot(), preserveView: true })]);
-      state.notice = requestErrorMessage(error, "归档失败，请重试");
+      state.notice = requestErrorMessage(error, "删除失败，请重试");
       state.noticeIsError = true;
     } finally {
       state.changingPlanId = 0;
@@ -1911,12 +1911,12 @@
               <a class="group-ops__button group-ops__button--primary" href="${escapeHtml(routes.plan(plan.id))}">编辑</a>
               ${
                 planIsArchived(plan)
-                  ? '<span class="group-ops__chip group-ops__chip--neutral">归档终态</span>'
+                  ? '<span class="group-ops__chip group-ops__chip--neutral">已删除（终态）</span>'
                   : plan.status === "active"
                     ? `<button class="group-ops__button" type="button" data-action="disable-plan" ${actionAttributes}>${state.changingPlanId === Number(plan.id) ? "停用中" : "停用"}</button>`
                     : `<button class="group-ops__button" type="button" data-action="enable-plan" ${actionAttributes}>${state.changingPlanId === Number(plan.id) ? "启用中" : "启用"}</button>`
               }
-              ${planIsArchived(plan) ? "" : `<button class="group-ops__button group-ops__button--danger" type="button" data-action="delete-plan" ${actionAttributes}>归档</button>`}
+              ${planIsArchived(plan) ? "" : `<button class="group-ops__button group-ops__button--danger" type="button" data-action="delete-plan" ${actionAttributes}>删除</button>`}
             </div>
           </td>
         </tr>`;
@@ -2316,7 +2316,7 @@
         </div>
         <div class="group-ops__webhook-panel">
           ${configured || !editable ? "" : `<div class="group-ops__row-actions">${actionButton("生成 Webhook 地址", "save-webhook", "group-ops__button--primary", planMutationLocked())}</div>`}
-          ${configured ? "" : archived ? '<div class="group-ops__empty">计划已归档，Webhook 配置保持只读。</div>' : planIsActive(state.plan) ? `<div class="group-ops__empty">${escapeHtml(activePlanLockMessage())}</div>` : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
+          ${configured ? "" : archived ? '<div class="group-ops__empty">计划已删除，Webhook 配置保持只读。</div>' : planIsActive(state.plan) ? `<div class="group-ops__empty">${escapeHtml(activePlanLockMessage())}</div>` : '<div class="group-ops__empty">点击生成地址，即可复制本计划的接收网址。</div>'}
           ${configured && planIsActive(state.plan) ? `<div class="group-ops__notice">${escapeHtml(activePlanLockMessage())}</div>` : ""}
           ${configured ? `
           <div class="group-ops__notice">地址已配置；无需预设节点。每个动态请求提供话术和已绑定群的子集，调用仍需签名配置和启用计划。</div>
@@ -2375,7 +2375,7 @@
       <section class="group-ops__panel${state.activeDetailPanel === "basic" ? " is-active" : ""}" id="panel-basic">
         <div class="group-ops__panel-title-row">
           <h3>基础配置</h3>
-          <span class="group-ops__pill">${archived ? "已归档" : active ? `已启用 · 当前版本 v${escapeHtml(state.plan.revision)}` : "可保存"}</span>
+          <span class="group-ops__pill">${archived ? "已删除" : active ? `已启用 · 当前版本 v${escapeHtml(state.plan.revision)}` : "可保存"}</span>
         </div>
         <div class="group-ops__form-grid">
           <div class="group-ops__field group-ops__field--full">
@@ -2384,7 +2384,7 @@
           </div>
           <label class="group-ops__field">
             <span>状态</span>
-            ${active ? `<div class="group-ops__member-current">已启用 · 当前版本 v${escapeHtml(state.plan.revision)}</div>` : archived ? '<select name="status" disabled><option value="archived" selected>已归档（终态）</option></select>' : `<select name="status"${saving ? " disabled" : ""}>
+            ${active ? `<div class="group-ops__member-current">已启用 · 当前版本 v${escapeHtml(state.plan.revision)}</div>` : archived ? '<select name="status" disabled><option value="archived" selected>已删除（终态）</option></select>' : `<select name="status"${saving ? " disabled" : ""}>
               ${statusOptions}
             </select>`}
           </label>
@@ -2401,7 +2401,7 @@
           </label>
         </div>
         <div class="group-ops__panel-actions">
-          ${archived ? '<div class="group-ops__notice">计划已归档，不能修改或重新启用。</div>' : active ? `<div class="group-ops__notice">${escapeHtml(activePlanLockMessage())}</div>` : `${renderRefreshOwnerGroupsButton()}${actionButton(state.savingPlan ? "保存中" : "保存基础配置", "save-plan", "group-ops__button--primary", saving)}`}
+          ${archived ? '<div class="group-ops__notice">计划已删除，不能修改或重新启用。</div>' : active ? `<div class="group-ops__notice">${escapeHtml(activePlanLockMessage())}</div>` : `${renderRefreshOwnerGroupsButton()}${actionButton(state.savingPlan ? "保存中" : "保存基础配置", "save-plan", "group-ops__button--primary", saving)}`}
         </div>
       </section>
     `;
