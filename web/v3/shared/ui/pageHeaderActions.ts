@@ -136,6 +136,17 @@ function restoreRelocatedActions(host: HTMLElement): void {
   }
 }
 
+/**
+ * Indicates whether this owner's relocated controls still have live source
+ * positions. A Host uses this after a donor redraw replaces the source with a
+ * loading/error state, before replacement controls are available.
+ */
+export function pageHeaderActionElementsHaveConnectedOrigins(owner: string, elements: readonly HTMLElement[]): boolean {
+  return elements.length > 0 && elements.every((element) =>
+    element.dataset.pageHeaderActionElement === owner && Boolean(relocatedActionOrigins.get(element)?.parentNode?.isConnected),
+  );
+}
+
 function refocus(element: HTMLElement | undefined): void {
   if (!element?.isConnected || !(element instanceof HTMLElement)) return;
   // Moving a focused, domain-owned command through a marker temporarily
