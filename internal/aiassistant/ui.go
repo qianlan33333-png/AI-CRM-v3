@@ -15,7 +15,7 @@ import (
 type PageRenderer func(http.ResponseWriter, *http.Request, string, string, Assets) error
 type Assets struct {
 	TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS, PageHeaderActionHostJS string
-	DonorScripts                                                                []string
+	DonorScripts                                                                                        []string
 }
 type uiHandler struct {
 	dist   string
