@@ -11,8 +11,8 @@
 
 ## 范围与边界
 
-- **OneID：不涉及。** 已有会话解析为既有分销员 Customer，只在
-  `d.customer_id` 范围读取其佣金。
+- **OneID：读取既有 canonical customer。** 已有可信会话提供既有 Customer 范围，只在
+  `d.customer_id` 范围读取其佣金；本项不新增身份解析、建客、归属或合并。
 - **持久化／外部效果：不涉及。** 仅改 Distribution Owner 的稳定只读投影；用户页继续消费主线已存在的
   `settlement_confirmed_at` / `paid_at` 兼容字段，不写入结算、审计、订单或 Provider。
 - **确认事实：** `paid_at` 只取同一 `commission_id` 下、payload 的
