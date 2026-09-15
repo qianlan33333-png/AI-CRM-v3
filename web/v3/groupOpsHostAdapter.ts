@@ -137,8 +137,8 @@ async function nativeRequest(url: string, options: Json = {}, onOperationsConfli
         else revisions.delete(planID);
       }
     }
-    const error = new Error(responseMessage(data, `HTTP ${response.status}`)) as Error & { status?: number };
-    error.status = response.status;
+    const error = new Error(responseMessage(data, `HTTP ${response.status}`)) as Error & { status?: number; payload?: Json };
+    Object.assign(error, { status: response.status, payload: data });
     throw error;
   }
   return data;
@@ -165,19 +165,54 @@ function boundGroupCount(value: Json): number | null {
     throw new Error("计划绑定群数数据无效");
   return count;
 }
+function requiredIdentifier(value: unknown, message: string): number {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value))) throw new Error(message);
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(message);
+  return number;
+}
+function requiredNumericPositiveInteger(value: unknown, message: string): number {
+  if (typeof value !== "number") throw new Error(message);
+  const number = value;
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(message);
+  return number;
+}
+function requiredNumericNonNegativeInteger(value: unknown, message: string): number {
+  if (typeof value !== "number") throw new Error(message);
+  const number = value;
+  if (!Number.isSafeInteger(number) || number < 0) throw new Error(message);
+  return number;
+}
+function requestedPlanPage(url: URL): { limit: number; offset: number } {
+  const hasLimit = url.searchParams.has("limit");
+  const hasOffset = url.searchParams.has("offset");
+  if (!hasLimit && !hasOffset) return { limit: 50, offset: 0 };
+  if (!hasLimit || !hasOffset) throw new Error("计划列表页码请求无效");
+  const limit = requiredIdentifier(url.searchParams.get("limit"), "计划列表页码请求无效");
+  const offsetValue = url.searchParams.get("offset");
+  if (offsetValue === null || !/^(?:0|[1-9][0-9]*)$/.test(offsetValue)) throw new Error("计划列表页码请求无效");
+  const offset = Number(offsetValue);
+  if (!Number.isSafeInteger(offset)) throw new Error("计划列表页码请求无效");
+  if (limit !== 50 || offset > 1000000) throw new Error("计划列表页码请求无效");
+  return { limit, offset };
+}
 function plan(value: Json, publishRevision = true): Json {
-  const id = Number(value.plan_id);
+  const id = requiredIdentifier(value.plan_id, "计划列表 ID 数据无效");
+  const revision = requiredNumericPositiveInteger(value.revision, "计划列表版本数据无效");
   const count = boundGroupCount(value);
-  if (publishRevision) revisions.set(id, Number(value.revision || 0));
+  const queueCount = Object.prototype.hasOwnProperty.call(value, "queue_count")
+    ? requiredNumericNonNegativeInteger(value.queue_count, "计划通知排队数据无效")
+    : 0;
+  if (publishRevision) revisions.set(id, revision);
   return {
     id,
     plan_name: value.name,
     plan_code: `v3-${id}`,
     plan_type: value.plan_type || "standard",
     status: value.status === "paused" ? "disabled" : value.status,
-    revision: Number(value.revision || 0),
+    revision,
     ...planOwner(value),
-    queue_count: Number(value.queue_count || 0),
+    queue_count: queueCount,
     bound_group_count: count,
     today_estimated_reach: null,
     updated_at: value.updated_at,
@@ -331,6 +366,11 @@ async function groupsForPlan(id: number, source?: Pick<InitialDetailReadEpoch, '
   // whole-directory crawl while the detail or node form is loading.
   return (value.group_assets || []).map((asset: Json) => groupView(asset, known.get(String(asset.asset_reference || ''))));
 }
+async function expectedRevision(body: Json, id: number): Promise<number> {
+  if (Object.prototype.hasOwnProperty.call(body, "expected_revision"))
+    return requiredNumericPositiveInteger(body.expected_revision, "计划版本数据无效");
+  return revision(id);
+}
 function newInitialDetailReadEpoch(id: number): InitialDetailReadEpoch {
   const generation = (detailReadGenerations.get(id) || 0) + 1;
   detailReadGenerations.set(id, generation);
@@ -422,20 +462,39 @@ function summarizeGroups(rows: Json[]): Json {
 async function requestJson(url: string, options: Json = {}): Promise<Json> {
   const method = String(options.method || "GET").toUpperCase();
   const body = options.body || {};
-  const match = url.match(/\/plans\/(\d+)/);
+  const parsedURL = new URL(url, window.location.origin);
+  const match = parsedURL.pathname.match(/\/plans\/(\d+)/);
   const id = match ? Number(match[1]) : 0;
-  if (id && method !== 'GET') invalidateInitialDetailRead(id);
-  if (url === `${base}/plans` && method === "GET") {
-    const data = await nativeRequest(url);
+  if (id && method !== "GET") invalidateInitialDetailRead(id);
+  if (parsedURL.pathname === `${base}/plans` && method === "GET") {
+    const requested = requestedPlanPage(parsedURL);
+    const data = await nativeRequest(url, { signal: options.signal && typeof options.signal === "object" ? options.signal as AbortSignal : undefined });
     if (!Array.isArray(data.items)) throw new Error("计划列表数据无效");
+    const total = requiredNumericNonNegativeInteger(data.total, "计划列表总数数据无效");
+    const limit = requiredNumericPositiveInteger(data.limit, "计划列表页码数据无效");
+    const offset = requiredNumericNonNegativeInteger(data.offset, "计划列表页码数据无效");
+    if (limit !== requested.limit || offset !== requested.offset || typeof data.has_more !== "boolean" || data.items.length > limit)
+      throw new Error("计划列表页码数据无效");
     // Parse the complete page before publishing any row revision. A malformed
     // later row must not advance CAS for an earlier row that remains visible
     // after the list read fails.
-    data.items.forEach((item: Json) => boundGroupCount(item));
-    const items = data.items.map((item: Json) => plan(item));
+    data.items.forEach((item: Json) => {
+      boundGroupCount(item);
+      requiredIdentifier(item.plan_id, "计划列表 ID 数据无效");
+      requiredNumericPositiveInteger(item.revision, "计划列表版本数据无效");
+      requiredNumericNonNegativeInteger(item.queue_count, "计划通知排队数据无效");
+    });
+    // A page only publishes into the Standard controller's local snapshot.
+    // Detail reads retain the existing revision cache; a list response must
+    // not advance CAS for a row whose page was never rendered.
+    const items = data.items.map((item: Json) => plan(item, false));
     return {
       ...data,
       items,
+      total,
+      limit,
+      offset,
+      has_more: data.has_more,
       queue_count: items.reduce(
         (sum, item) => sum + Number(item.queue_count || 0),
         0,
@@ -469,12 +528,12 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   if (id && /\/enable$/.test(url))
     return nativeRequest(`${base}/plans/${id}/enable`, {
       method: "POST",
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (id && /\/disable$/.test(url))
     return nativeRequest(`${base}/plans/${id}/disable`, {
       method: "POST",
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (id && /\/groups$/.test(url) && method === 'GET') {
     const claimed = claimInitialDetailRead(id, 'groups');
@@ -588,7 +647,7 @@ async function requestJson(url: string, options: Json = {}): Promise<Json> {
   if (id && url === `${base}/plans/${id}` && method === "DELETE")
     return nativeRequest(url, {
       method,
-      body: { expected_revision: await revision(id) },
+      body: { expected_revision: await expectedRevision(body, id) },
     });
   if (
     id &&
