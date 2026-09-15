@@ -36,6 +36,23 @@ async function waitForPolicy(cdp, expected, page) {
   }
   throw new Error(`policy readback mismatch ${page} expected=${JSON.stringify(expected)} actual=${JSON.stringify(await policySnapshot(cdp))}`);
 }
+async function assertProductTagToggleStyle(cdp, page) {
+  await wait(cdp, "Boolean(document.querySelector('[data-product-tag-enabled]'))", `product tag toggle did not load ${page}`);
+  const state = await value(cdp, `(async () => {
+    const enabled=document.querySelector('[data-product-tag-enabled]');
+    if (!(enabled instanceof HTMLInputElement)) throw new Error('product tag toggle missing');
+    enabled.checked=false; enabled.dispatchEvent(new Event('change',{bubbles:true}));
+    await new Promise(resolve => setTimeout(resolve, 180));
+    const uncheckedBackground=getComputedStyle(enabled).backgroundColor;
+    const uncheckedTransform=getComputedStyle(enabled,'::before').transform;
+    enabled.checked=true; enabled.dispatchEvent(new Event('change',{bubbles:true}));
+    await new Promise(resolve => setTimeout(resolve, 180));
+    return {checked:enabled.checked,uncheckedBackground,uncheckedTransform,checkedBackground:getComputedStyle(enabled).backgroundColor,checkedTransform:getComputedStyle(enabled,'::before').transform};
+  })()`);
+  if (!state?.checked || state.uncheckedBackground !== 'rgb(203, 213, 225)' || state.checkedBackground !== 'rgb(51, 112, 255)' || state.uncheckedTransform !== 'none' || state.checkedTransform !== 'matrix(1, 0, 0, 1, 18, 0)') throw new Error(`product tag checked switch style did not apply ${page}: ${JSON.stringify(state)}`);
+  await capturePolicyForm(cdp, `tag-toggle-checked-${page}`);
+  await value(cdp, "(() => { const enabled=document.querySelector('[data-product-tag-enabled]'); enabled.checked=false; enabled.dispatchEvent(new Event('change',{bubbles:true})); return true; })()");
+}
 async function savePolicy(cdp, enabledState, rate, waitDays, page) {
   await value(cdp, `(() => {
     const enabled=document.querySelector('[data-distribution-policy-enabled]');
@@ -57,6 +74,7 @@ async function saveOtherDimension(cdp, id, page, expectedPolicy) {
   const visible = await value(cdp, `(() => { const panel=document.getElementById(${JSON.stringify(id)}); const policy=document.querySelector('[data-distribution-policy]'); return {has_policy_in_panel:Boolean(panel?.querySelector('[data-distribution-policy]')), policy_parent:policy?.parentElement?.id || '', has_application:Boolean(document.querySelector('[data-distribution-application-entry],[data-distribution-application-link],[data-distribution-application-qr],[data-distribution-application-pending]'))}; })()`);
   assert.equal(visible.has_policy_in_panel, false, `${id} must not render distribution controls`);
   assert.equal(visible.has_application, false, `${id} must not render a distributor application entry`);
+  if (id.endsWith('wecom')) await assertProductTagToggleStyle(cdp, id);
   // External push owns separate configuration. With its disabled, unchanged
   // fixture it emits no Product command, so this policy journey verifies its
   // absence and policy readback without inventing a completed product save.

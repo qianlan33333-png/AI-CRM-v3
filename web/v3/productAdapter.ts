@@ -1271,19 +1271,10 @@ function productTagCatalogLoadFailure(response: Response): Error {
   return error;
 }
 
-function installProductPickerStyles(): void {
-  if (document.getElementById('product-picker-styles')) return;
-  const style = document.createElement('style');
-  style.id = 'product-picker-styles';
-  style.textContent = `[data-product-standard-tag-picker] input[type=checkbox]{appearance:none;position:relative;width:42px;height:24px;border:0;border-radius:20px;background:#cbd5e1;cursor:pointer;flex-shrink:0}[data-product-tag-enabled]:before{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:white;transition:transform .15s}[data-product-standard-tag-picker] input:checked{background:#3370ff}[data-product-tag-enabled:checked]:before{transform:translateX(18px)}[data-product-tag-summary]{line-height:1.8;padding:12px;background:#f7f9fc;border-radius:8px}`;
-  document.head.appendChild(style);
-}
-
 function mountProductTagPicker(): void {
   if (typeof document === 'undefined' || !document.body) return;
   const prefix = document.body.dataset.page === 'productForm' ? 'pf' : document.body.dataset.page === 'spProductForm' ? 'spf' : '';
   if (!prefix) return;
-  installProductPickerStyles();
   if (prefix === 'spf') mountPeriodicTagDimension();
   const input = document.getElementById(`${prefix}WecomTagging`) as HTMLTextAreaElement | null;
   const panel = document.getElementById(prefix === 'pf' ? 'product-wecom' : 'sp-wecom');
