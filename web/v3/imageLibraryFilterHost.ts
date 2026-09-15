@@ -6,6 +6,7 @@ import { deleteLegacyImage, getLegacyImage, getLegacyImageList } from "../src/ap
 import { ApiError, apiRequestOptions, unwrapGenerated } from "../src/api/transport";
 import type { ImageItem } from "../src/shared/api/types";
 import { installCommittedTextSearch } from "./shared/ui/committedTextSearch";
+import { renderMaterialThumbnail } from "./shared/ui/materialThumbnailPresentation";
 
 installCommittedTextSearch();
 
@@ -357,10 +358,35 @@ class ImageLibraryHost {
   private card(item: ImageItem): HTMLElement {
     const card = document.createElement("article");
     card.style.cssText = `background:#fff;border:1px solid #DEE0E3;border-radius:8px;overflow:hidden;${item.enabled ? "" : "opacity:.55"}`;
-    const preview = document.createElement("img");
-    preview.src = item.thumbnailUrl || "";
-    preview.alt = item.name;
-    preview.style.cssText = "display:block;width:100%;height:128px;object-fit:cover;background:#EFF4FF;border-bottom:1px solid #EFF0F1;cursor:pointer";
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.dataset.imageLibraryThumbnail = "true";
+    preview.setAttribute("aria-label", `查看图片素材：${item.name}`);
+    preview.style.cssText = "display:grid;place-items:center;position:relative;width:100%;height:128px;padding:0;border:0;background:#EFF4FF;border-bottom:1px solid #EFF0F1;overflow:hidden;cursor:pointer;color:#646A73;font:inherit";
+    const thumbnail = renderMaterialThumbnail(preview, {
+      url: item.thumbnailUrl,
+      alt: item.name,
+      loadingLabel: "加载图片…",
+      unavailableLabel: "图片预览暂不可用",
+      noURLLabel: "暂无图片预览",
+      imageDisplay: "block",
+      loadingDisplay: "grid",
+      fallbackDisplay: "grid",
+    });
+    for (const status of [thumbnail.loading, thumbnail.fallback]) {
+      status.style.position = "absolute";
+      status.style.inset = "0";
+      status.style.placeItems = "center";
+      status.style.padding = "12px";
+      status.style.fontSize = "12px";
+      status.style.textAlign = "center";
+      status.style.background = "#EFF4FF";
+    }
+    if (thumbnail.image) {
+      thumbnail.image.style.width = "100%";
+      thumbnail.image.style.height = "128px";
+      thumbnail.image.style.objectFit = "cover";
+    }
     preview.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
     const body = document.createElement("div");
     body.style.cssText = "padding:10px 12px";

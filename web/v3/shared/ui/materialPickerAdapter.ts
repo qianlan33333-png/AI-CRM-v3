@@ -1,5 +1,6 @@
 import { SelectionSession, selectionKey, type SelectionItem, type SelectionLoader } from './selectionSession';
 import { focusedSelectionKey, installSelectionDialog, restoreSelectionFocus, type SelectionDialogController } from './selectionDialog';
+import { renderMaterialThumbnail } from './materialThumbnailPresentation';
 
 export type MaterialType = 'image' | 'miniprogram' | 'attachment' | 'group_invite';
 type Json = Record<string, unknown>;
@@ -243,16 +244,22 @@ function openMaterialPicker(config: MaterialPickerAdapterOptions, type: Material
       const selected = session.isDraftSelected(key);
       const unavailable = Boolean(item.disabledReason);
       const disabled = Boolean(applying || snapshot.readonlyReason || (!selected && unavailable));
-      const thumbnail = item.value.thumbnail_url
-        ? `<img src="${escape(item.value.thumbnail_url)}" alt="" data-v3-material-preview><span class="aicrm-material-picker__preview-unavailable" data-v3-material-preview-unavailable hidden>预览暂不可用</span>`
-        : `<span>${labels[type]}</span>`;
-      return `<button class="aicrm-material-picker__item${selected ? ' is-selected' : ''}${unavailable ? ' is-disabled' : ''}" type="button" data-v3-material-key="${escape(key)}" aria-pressed="${selected ? 'true' : 'false'}"${disabled ? ' disabled' : ''}><span class="aicrm-material-picker__thumb">${thumbnail}</span><span class="aicrm-material-picker__title">${escape(item.value.title)}</span><span class="aicrm-material-picker__subtitle">${escape(item.value.subtitle || '')}</span>${item.disabledReason ? `<span class="aicrm-material-picker__subtitle">${escape(item.disabledReason)}</span>` : ''}</button>`;
+      return `<button class="aicrm-material-picker__item${selected ? ' is-selected' : ''}${unavailable ? ' is-disabled' : ''}" type="button" data-v3-material-key="${escape(key)}" aria-pressed="${selected ? 'true' : 'false'}"${disabled ? ' disabled' : ''}><span class="aicrm-material-picker__thumb" data-v3-material-thumbnail></span><span class="aicrm-material-picker__title">${escape(item.value.title)}</span><span class="aicrm-material-picker__subtitle">${escape(item.value.subtitle || '')}</span>${item.disabledReason ? `<span class="aicrm-material-picker__subtitle">${escape(item.disabledReason)}</span>` : ''}</button>`;
     }).join('');
-    for (const preview of grid.querySelectorAll<HTMLImageElement>('[data-v3-material-preview]')) {
-      preview.addEventListener('error', () => {
-        preview.hidden = true;
-        const unavailablePreview = preview.parentElement?.querySelector<HTMLElement>('[data-v3-material-preview-unavailable]');
-        if (unavailablePreview) unavailablePreview.hidden = false;
+    for (const [index, item] of rows.entries()) {
+      const thumbnail = grid.querySelectorAll<HTMLElement>('[data-v3-material-thumbnail]')[index];
+      if (!thumbnail) continue;
+      renderMaterialThumbnail(thumbnail, {
+        url: item.value.thumbnail_url,
+        imageDisplay: 'block',
+        loadingDisplay: 'grid',
+        fallbackDisplay: 'grid',
+        loadingLabel: '加载预览…',
+        unavailableLabel: '预览暂不可用',
+        noURLLabel: labels[type],
+        imageDataAttribute: 'data-v3-material-preview',
+        fallbackDataAttribute: 'data-v3-material-preview-unavailable',
+        fallbackClassName: 'aicrm-material-picker__preview-unavailable',
       });
     }
     more.hidden = !snapshot.nextCursor;
