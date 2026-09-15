@@ -49,6 +49,11 @@ let channelReadFailure: ChannelReadFailure | null = null;
 let lastChannelListController: ChannelListController | null = null;
 let lastVisibleChannelRows: unknown[] = [];
 let lastChannelQuery = '';
+let channelReadGeneration = 0;
+let activeChannelReadGeneration = 0;
+let channelReadRetryPending = false;
+
+class ChannelReadSupersededError extends Error {}
 
 function readFailureStatus(error: unknown): number | undefined {
   const status = Number((error as { status?: unknown } | null)?.status);
@@ -64,18 +69,42 @@ function recordChannelReadSuccess(): void {
 function recordChannelReadFailure(error: unknown): void {
   const status = readFailureStatus(error);
   const authorizationRevoked = status === 401 || status === 403;
-  if (!channelHasSuccessfulRead) return;
-  channelAuthorizationRevoked = authorizationRevoked;
-  channelReadFailure = {
-    authorizationRevoked,
-    message: status === 401
-      ? '登录状态已失效，已清除当前已加载的渠道记录。请重新登录后刷新页面。'
-      : status === 403
-        ? '当前账号没有查看渠道码中心的权限，已清除当前已加载的渠道记录。'
-        : '渠道列表暂时无法读取，已保留上次成功加载的当前页。',
-  };
+  if (authorizationRevoked) {
+    // A later network/5xx callback must never revive a directory after the
+    // server revoked its authorization. Clear the in-memory controller cache
+    // as well as rendered rows; only a current successful read unlocks it.
+    channelAuthorizationRevoked = true;
+    lastVisibleChannelRows = [];
+    lastChannelQuery = '';
+    if (lastChannelListController?.db) lastChannelListController.db.rows.channels = [];
+    channelReadFailure = {
+      authorizationRevoked: true,
+      message: status === 401
+        ? '登录状态已失效，已清除当前已加载的渠道记录。请重新登录后刷新页面。'
+        : '当前账号没有查看渠道码中心的权限，已清除当前已加载的渠道记录。',
+    };
+  } else if (!channelAuthorizationRevoked && channelHasSuccessfulRead) {
+    channelReadFailure = {
+      authorizationRevoked: false,
+      message: '渠道列表暂时无法读取，已保留上次成功加载的当前页。',
+    };
+  }
   const controller = lastChannelListController;
-  if (controller) renderChannelReadState(controller, lastVisibleChannelRows, lastChannelQuery);
+  if (controller && channelReadFailure) renderChannelReadState(controller, lastVisibleChannelRows, lastChannelQuery);
+}
+
+function retryChannelRead(controller: ChannelListController, control: HTMLButtonElement): void {
+  if (channelReadRetryPending || channelAuthorizationRevoked) return;
+  channelReadRetryPending = true;
+  control.disabled = true;
+  control.setAttribute('aria-busy', 'true');
+  void controller.init().catch(() => undefined).finally(() => {
+    channelReadRetryPending = false;
+    if (control.isConnected) {
+      control.disabled = false;
+      control.removeAttribute('aria-busy');
+    }
+  });
 }
 
 function channelTableBody(): HTMLTableSectionElement | null {
@@ -84,10 +113,13 @@ function channelTableBody(): HTMLTableSectionElement | null {
 
 function renderChannelReadState(controller: ChannelListController, visibleRows: unknown[], query: string): void {
   lastChannelListController = controller;
-  lastVisibleChannelRows = visibleRows;
-  lastChannelQuery = query;
+  lastVisibleChannelRows = channelAuthorizationRevoked ? [] : visibleRows;
+  lastChannelQuery = channelAuthorizationRevoked ? '' : query;
   if (!channelHasSuccessfulRead) return;
   queueMicrotask(() => {
+    // The donor list is mounted once. Still guard the deferred presentation so
+    // an old controller or a later navigation cannot write into another page.
+    if (document.body?.dataset.page !== 'channels' || lastChannelListController !== controller) return;
     const body = channelTableBody();
     if (!body) return;
     if (channelAuthorizationRevoked && channelReadFailure) {
@@ -97,7 +129,7 @@ function renderChannelReadState(controller: ChannelListController, visibleRows: 
     if (channelReadFailure) {
       renderTableReadState(body, {
         state: 'error', message: channelReadFailure.message, colSpan: 6, preserveRows: true,
-        retry: { run: () => { void controller.init().catch(() => undefined); } },
+        retry: { run: (control) => retryChannelRead(controller, control) },
       });
       return;
     }
@@ -459,16 +491,9 @@ function isChannelCatalog(value: unknown): value is Record<string, unknown> {
 
 async function normalizeChannelResponse(response: Response, url: URL): Promise<Response> {
   if (url.pathname === '/api/admin/channels' && document.body?.dataset.page === 'channels') {
-    if (!response.ok) {
-      recordChannelReadFailure({ status: response.status });
-      return response;
-    }
+    if (!response.ok) return response;
     const payload = await response.clone().json().catch(() => undefined);
-    if (!isChannelCatalog(payload)) {
-      recordChannelReadFailure({ status: 502 });
-      return malformedChannelCatalogResponse();
-    }
-    recordChannelReadSuccess();
+    if (!isChannelCatalog(payload)) return malformedChannelCatalogResponse();
     return responseWithJSON(response, donorCompatibleCatalog(payload));
   }
   if (!response.ok || !String(response.headers.get('Content-Type')).toLowerCase().includes('application/json')) return response;
@@ -619,6 +644,8 @@ function renderStaffPickerFailure(): void {
 // read with the exact saved channel's acquisition-staff catalog; the picker
 // then completes through the donor controller as usual.
 api.loadDb = async (context) => {
+  const generation = context?.page === 'channels' ? ++channelReadGeneration : 0;
+  if (generation) activeChannelReadGeneration = generation;
   try {
     if (context?.page === 'channelForm') {
       const db = await donorLoadDb(context);
@@ -642,9 +669,13 @@ api.loadDb = async (context) => {
       }
     }
     const db = await donorLoadDb(context);
+    if (generation) {
+      if (generation !== activeChannelReadGeneration) throw new ChannelReadSupersededError();
+      recordChannelReadSuccess();
+    }
     return db;
   } catch (error) {
-    if (context?.page === 'channels') recordChannelReadFailure(error);
+    if (generation && generation === activeChannelReadGeneration && !(error instanceof ChannelReadSupersededError)) recordChannelReadFailure(error);
     throw error;
   }
 };
@@ -669,13 +700,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   const mutation = url.origin === location.origin ? channelMutation(url, method) : null;
   const headers = new Headers(init?.headers || request?.headers);
   if (!mutation || headers.has('If-Match')) {
-    let response: Response;
-    try {
-      response = await donorFetch(input, init);
-    } catch (error) {
-      if (url.origin === location.origin && method === 'GET' && url.pathname === '/api/admin/channels' && document.body?.dataset.page === 'channels') recordChannelReadFailure(error);
-      throw error;
-    }
+    const response = await donorFetch(input, init);
     if (url.origin !== location.origin) return response;
     if (method === 'POST' && channelAssetPath(url)) return waitForAsset(response, url, headers, init?.credentials || request?.credentials || 'same-origin');
     return normalizeChannelResponse(response, url);

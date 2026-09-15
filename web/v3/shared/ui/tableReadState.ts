@@ -12,7 +12,7 @@ export type TableReadStateOptions = {
   colSpan: number;
   /** Keep previously rendered, authorized rows and add an adjacent notice. */
   preserveRows?: boolean;
-  retry?: { label?: string; run(): void };
+  retry?: { label?: string; run(control: HTMLButtonElement): void };
 };
 
 const marker = '[data-surface-table-read-state]';
@@ -36,7 +36,7 @@ export function renderTableReadState(body: HTMLTableSectionElement, options: Tab
     retry.type = 'button';
     retry.className = 'surface-feedback__table-read-state-retry';
     retry.textContent = options.retry.label || '重新读取';
-    retry.addEventListener('click', options.retry.run);
+    retry.addEventListener('click', () => options.retry?.run(retry));
     cell.append(retry);
   }
   row.append(cell);

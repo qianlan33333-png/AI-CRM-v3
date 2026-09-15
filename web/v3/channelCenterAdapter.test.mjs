@@ -196,8 +196,8 @@ async function waitForIn(window, check, message) {
   throw new Error(message);
 }
 
-async function createReadStateFixture(initialMode = 'success') {
-  const fixture = { mode: initialMode, listReads: 0, writes: 0, archived: false };
+async function createReadStateFixture(initialMode = 'success', initialRows = [readStateChannel()]) {
+  const fixture = { mode: initialMode, listReads: 0, writes: 0, archivedIDs: new Set(), rows: initialRows, listPlans: [] };
   const dom = new JSDOM(`<!doctype html><body data-page="channels"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">渠道码中心</h1></div></header><template id="tpl">${template}</template><main id="stage"></main></body>`, {
     url: 'https://test.invalid/admin/channels', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
     beforeParse(window) {
@@ -208,14 +208,20 @@ async function createReadStateFixture(initialMode = 'success') {
         const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method)).toUpperCase();
         if (url.pathname === '/api/admin/channels' && method === 'GET') {
           fixture.listReads += 1;
-          if (fixture.mode === 'malformed') return new Response(JSON.stringify({ unexpected: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-          if (fixture.mode === '401' || fixture.mode === '403' || fixture.mode === '503') return new Response(JSON.stringify({ code: fixture.mode }), { status: Number(fixture.mode), headers: { 'Content-Type': 'application/json' } });
-          if (fixture.mode === 'network') throw new TypeError('channel list network unavailable');
-          if (fixture.mode === 'empty') return new Response(JSON.stringify({ channels: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-          return new Response(JSON.stringify({ channels: [{ ...readStateChannel(), status: fixture.archived ? 'archived' : 'active' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          const plan = fixture.listPlans.shift() || fixture.mode;
+          if (typeof plan === 'function') return plan();
+          if (plan === 'malformed') return new Response(JSON.stringify({ unexpected: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          if (plan === '401' || plan === '403' || plan === '503') return new Response(JSON.stringify({ code: plan }), { status: Number(plan), headers: { 'Content-Type': 'application/json' } });
+          if (plan === 'network') throw new TypeError('channel list network unavailable');
+          if (plan === 'empty') return new Response(JSON.stringify({ channels: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          return new Response(JSON.stringify({ channels: fixture.rows.map((row) => ({ ...row, status: fixture.archivedIDs.has(String(row.id)) ? 'archived' : 'active' })) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
-        if (url.pathname === '/api/admin/channels/21' && method === 'GET') return new Response(JSON.stringify({ channel: { ...readStateChannel(), status: fixture.archived ? 'archived' : 'active' } }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"21"' } });
-        if (url.pathname === '/api/admin/channels/21' && method === 'PATCH') { fixture.writes += 1; fixture.archived = true; return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
+        const id = url.pathname.match(/^\/api\/admin\/channels\/([1-9][0-9]*)$/)?.[1];
+        if (id && method === 'GET') {
+          const row = fixture.rows.find((candidate) => String(candidate.id) === id);
+          if (row) return new Response(JSON.stringify({ channel: { ...row, status: fixture.archivedIDs.has(id) ? 'archived' : 'active' } }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: `"${id}"` } });
+        }
+        if (id && method === 'PATCH') { fixture.writes += 1; fixture.archivedIDs.add(id); return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
         return new Response(JSON.stringify({ code: 'NOT_FOUND' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
       };
     },
@@ -286,3 +292,72 @@ for (const mode of ['malformed', '503', 'network', '401', '403']) {
 }
 
 console.log('channel list read-state and authorization contract: PASS');
+
+function raceChannel(id, name) {
+  return { ...channel(id, 'active', name), id, channel_name: name, channel_code: `race-${id}` };
+}
+
+function archiveActionIn(window, name) {
+  return [...window.document.querySelectorAll('a')].find((node) => node.textContent === '归档' && node.closest('tr')?.textContent?.includes(name));
+}
+
+async function createRetainedFailureFixture() {
+  const result = await createReadStateFixture('success', [raceChannel(21, '乱序渠道甲'), raceChannel(22, '乱序渠道乙')]);
+  const { dom, fixture } = result;
+  await waitForIn(dom.window, () => archiveActionIn(dom.window, '乱序渠道甲'), 'race fixture must render both active rows');
+  fixture.listPlans.push('503');
+  await confirmIn(dom.window, archiveActionIn(dom.window, '乱序渠道甲'), 'a retained failure still begins with the original archive confirmation');
+  await waitForIn(dom.window, () => dom.window.document.querySelector('[data-surface-table-read-state="error"] button'), '503 retains rows and exposes the single-flight retry');
+  return result;
+}
+
+async function runOutOfOrderRace(oldOutcome, newerOutcome, expectation) {
+  const { dom, fixture } = await createRetainedFailureFixture();
+  try {
+    let settleOld;
+    fixture.listPlans.push(() => new Promise((resolve, reject) => { settleOld = () => {
+      if (oldOutcome === 'network') reject(new TypeError('late channel list network unavailable'));
+      else if (oldOutcome === '401') resolve(new Response(JSON.stringify({ code: '401' }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
+      else resolve(new Response(JSON.stringify({ channels: fixture.rows }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }; }), newerOutcome);
+    const retry = dom.window.document.querySelector('[data-surface-table-read-state="error"] button');
+    retry.click();
+    await waitForIn(dom.window, () => fixture.listReads === 3 && retry.disabled, 'retry starts one current list read and disables its own control');
+    await confirmIn(dom.window, archiveActionIn(dom.window, '乱序渠道乙'), 'a newer channel refresh starts while the older retry is unresolved');
+    await waitForIn(dom.window, () => expectation.beforeSettle(dom.window), 'newer channel read determines the visible state before old response settles');
+    settleOld();
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 20));
+    const search = dom.window.document.querySelector('input[aria-label="搜索渠道名称"]');
+    search.focus(); search.value = '乱序'; search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    search.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 20));
+    expectation.afterSettle(dom.window);
+  } finally { dom.window.close(); }
+}
+
+// Current ownership wins both ways: a late success/network result cannot undo
+// a newer 401, and a late 401 cannot clear a newer authorized read. The final
+// Enter also proves the frozen controller cannot redraw a cleared snapshot.
+await runOutOfOrderRace('success', '401', {
+  beforeSettle: (window) => window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent?.includes('已清除当前已加载的渠道记录'),
+  afterSettle: (window) => {
+    assert.equal(window.document.querySelector('tbody')?.textContent?.includes('乱序渠道甲'), false, 'late success after 401 cannot redraw old authorized rows');
+    assert.match(window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent || '', /已清除当前已加载的渠道记录/);
+  },
+});
+await runOutOfOrderRace('network', '401', {
+  beforeSettle: (window) => window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent?.includes('已清除当前已加载的渠道记录'),
+  afterSettle: (window) => {
+    assert.equal(window.document.querySelector('tbody')?.textContent?.includes('乱序渠道乙'), false, 'late network failure after 401 cannot restore old rows on search');
+    assert.match(window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent || '', /已清除当前已加载的渠道记录/);
+  },
+});
+await runOutOfOrderRace('401', 'success', {
+  beforeSettle: (window) => window.document.querySelector('tbody')?.textContent?.includes('乱序渠道乙') && !window.document.querySelector('[data-surface-table-read-state="error"]'),
+  afterSettle: (window) => {
+    assert.ok(window.document.querySelector('tbody')?.textContent?.includes('乱序渠道乙'), 'newer successful read remains visible after late 401');
+    assert.equal(window.document.querySelector('[data-surface-table-read-state="error"]'), null, 'late 401 cannot clear newer authorized data');
+  },
+});
+
+console.log('channel list read ownership race contract: PASS');
