@@ -30,4 +30,4 @@ GitHub 本仓参考已核实：`d2eda003` 的 `cmd/aicrm/composition.go` 使用�
 
 1. `GET /r/{public_code}` 的成功 viewer CSP 含唯一 `connect-src 'self'`。
 2. CSP 保留所有原有 source 指令；不出现 `*`、跨源 URL、放宽后的 script 或 frame 指令。
-3. HTTP 回归证明 viewer 仍输出既有同源 event URL；实际 UTF-8 Chromium 验收由 remaining-pages tree 合并本修复后运行，必须确认四个公共页中的 Radar 图片/PDF 事件网络请求为 200，且 Radar Owner 记录 `image_loaded` 或 `pdf_opened`。
+3. HTTP 回归证明 viewer 仍输出既有同源 event URL；实际 UTF-8 Chromium 验收由 remaining-pages tree 合并本修复后运行，覆盖三个公共页和一个后台页，并确认 Radar 图片/PDF 事件网络请求为 200，且 Radar Owner 记录 `image_loaded` 或 `pdf_opened`。
