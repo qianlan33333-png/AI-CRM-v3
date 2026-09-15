@@ -48,11 +48,12 @@ function text(value: string | undefined, fallback: string): string {
  */
 export function openConfirmationDialog(options: ConfirmationDialogOptions): Promise<ConfirmationDialogResult> {
   return new Promise((resolve) => {
-    const structuredFields = Boolean(options.fields?.length);
-    const fields = structuredFields
-      ? options.fields
+    const explicitFields = options.fields ?? [];
+    const structuredFields = explicitFields.length > 0;
+    const fields: ConfirmationField[] = structuredFields
+      ? explicitFields
       : options.reason
-        ? [{ name: 'reason', label: text(options.reason.label, options.reason.required ? '请说明原因（必填）' : '补充原因（可选）'), placeholder: options.reason.placeholder, required: options.reason.required, maxLength: options.reason.maxLength, kind: 'textarea' as const }]
+        ? [{ name: 'reason', label: text(options.reason.label, options.reason.required ? '请说明原因（必填）' : '补充原因（可选）'), placeholder: options.reason.placeholder, required: options.reason.required, maxLength: options.reason.maxLength, kind: 'textarea' }]
         : [];
     if (fields.some((field) => !/^[a-z][a-z0-9_]*$/.test(field.name)) || new Set(fields.map((field) => field.name)).size !== fields.length) {
       throw new Error('确认字段配置无效');
@@ -94,14 +95,19 @@ export function openConfirmationDialog(options: ConfirmationDialogOptions): Prom
       const caption = document.createElement('span');
       caption.textContent = field.label;
       const kind = field.kind || 'textarea';
-      const control: HTMLTextAreaElement | HTMLInputElement = kind === 'textarea' ? document.createElement('textarea') : document.createElement('input');
-      if (kind === 'textarea') control.rows = 3;
-      else {
-        control.type = 'text';
+      let control: HTMLTextAreaElement | HTMLInputElement;
+      if (kind === 'textarea') {
+        const textarea = document.createElement('textarea');
+        textarea.rows = 3;
+        control = textarea;
+      } else {
+        const input = document.createElement('input');
+        input.type = 'text';
         if (kind === 'positive-integer') {
-          control.inputMode = 'numeric';
-          control.pattern = '[0-9]*';
+          input.inputMode = 'numeric';
+          input.pattern = '[0-9]*';
         }
+        control = input;
       }
       control.name = field.name;
       control.placeholder = text(field.placeholder, kind === 'positive-integer' ? '请输入正整数' : '请输入内容');
