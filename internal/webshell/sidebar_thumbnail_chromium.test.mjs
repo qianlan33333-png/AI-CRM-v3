@@ -114,6 +114,8 @@ try {
 
   let jssdkResourceMode = "serve";
   const materialFaults = new Map();
+  const productFaults = [];
+  let phoneBindingFault = null;
   await cdp.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
     const calls = [];
     const agentAPIs = [];
@@ -142,7 +144,12 @@ try {
       on() {}, call() {},
     }});
   })();` });
-  await cdp.call("Fetch.enable", { patterns: [{ urlPattern: weComJSSDKURL }, { urlPattern: "*://*/api/sidebar/v2/materials*" }] });
+  await cdp.call("Fetch.enable", { patterns: [
+    { urlPattern: weComJSSDKURL },
+    { urlPattern: "*://*/api/sidebar/v2/materials*" },
+    { urlPattern: "*://*/api/sidebar/v2/products*" },
+    { urlPattern: "*://*/api/sidebar/v2/phone-binding*" },
+  ] });
   cdp.on("Fetch.requestPaused", (params) => {
     void (async () => {
       const requestURL = String(params.request?.url || "");
@@ -160,6 +167,28 @@ try {
         return;
       }
       const materialURL = new URL(requestURL);
+      if (materialURL.pathname === "/api/sidebar/v2/phone-binding" && phoneBindingFault) {
+        const fault = phoneBindingFault;
+        phoneBindingFault = null;
+        await cdp.call("Fetch.fulfillRequest", {
+          requestId: params.requestId,
+          responseCode: fault.status,
+          responseHeaders: [{ name: "Content-Type", value: "application/json; charset=utf-8" }],
+          body: Buffer.from(JSON.stringify({ error: "forbidden" })).toString("base64"),
+        });
+        return;
+      }
+      if (materialURL.pathname === "/api/sidebar/v2/products" && productFaults.length) {
+        const fault = productFaults.shift();
+        if (fault.delayMs) await delay(fault.delayMs);
+        await cdp.call("Fetch.fulfillRequest", {
+          requestId: params.requestId,
+          responseCode: 200,
+          responseHeaders: [{ name: "Content-Type", value: "application/json; charset=utf-8" }],
+          body: Buffer.from(JSON.stringify(fault.body)).toString("base64"),
+        });
+        return;
+      }
       const materialFault = materialURL.pathname === "/api/sidebar/v2/materials" ? materialFaults.get(materialURL.searchParams.get("q") || "") : null;
       if (materialFault) {
         if (materialFault.delayMs) await delay(materialFault.delayMs);
@@ -392,27 +421,48 @@ try {
   await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=materials]")?.click(); true');
   await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5', "same-document retry did not load fresh materials");
 
-  // A delayed 403 from an old panel request clears that old signed scope. Its
-  // exact promise may settle after the cache map has been reset, but a
-  // same-document retry and new material read must stay ready and must not be
-  // overwritten by the stale response.
-  const staleContextStart = requestRecords.length;
-  materialFaults.set("old-context", { status: 403, delayMs: 240 });
-  await evaluate(cdp, '(()=>{const input=document.querySelector("[data-material-search-input]");input.value="old-context";document.querySelector("[data-material-search-form]").requestSubmit();return true})()');
-  for (let attempt = 0; attempt < 80 && !requestRecords.slice(staleContextStart).some((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials" && new URL(record.url).searchParams.get("q") === "old-context"); attempt += 1) await delay(50);
-  if (!requestRecords.slice(staleContextStart).some((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials" && new URL(record.url).searchParams.get("q") === "old-context")) throw new Error("old-context request did not start");
-  await waitFor(cdp, 'document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext==="invalid" && Boolean(document.querySelector("[data-v3-sidebar-retry-context]"))', "old-context 403 did not clear its current sidebar context");
+  // A successful panel response can outlive the customer that initiated it.
+  // Start an old delayed product read, revoke the current scope with a phone
+  // 403, retry in the same document, and start a distinct delayed read under
+  // the new scope. While the old promise settles, reopening the panel must
+  // join the new pending promise rather than create a third request or paint
+  // the old product into the renewed customer surface.
+  const productPayload = (id, name) => ({ items: [{ id, name, price_minor: 100, currency: "CNY", product_type: "standard", public_url: "" }], total: 1, next_cursor: "" });
+  const latePanelStart = requestRecords.length;
+  productFaults.push({ delayMs: 900, body: productPayload("old-panel", "旧上下文商品") });
+  await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=products]")?.click(); true');
+  for (let attempt = 0; attempt < 80 && requestRecords.slice(latePanelStart).filter((record) => new URL(record.url).pathname === "/api/sidebar/v2/products").length < 1; attempt += 1) await delay(50);
+  if (requestRecords.slice(latePanelStart).filter((record) => new URL(record.url).pathname === "/api/sidebar/v2/products").length !== 1) throw new Error("old product panel request did not start");
+  phoneBindingFault = { status: 403 };
+  await evaluate(cdp, '(()=>{document.querySelector("#change-mobile-button")?.click();const input=document.querySelector("#mobile-input");input.value="13800138000";document.querySelector("#confirm-mobile-button")?.click();return true})()');
+  await waitFor(cdp, 'document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext==="invalid" && Boolean(document.querySelector("[data-v3-sidebar-retry-context]")) && document.querySelector("#mobile-modal")?.classList.contains("hidden") && document.querySelector("#mobile-input")?.disabled && document.querySelector("#confirm-mobile-button")?.disabled', "phone 403 did not clear the modal and current context");
+  productFaults.push({ delayMs: 1200, body: productPayload("new-panel", "新上下文商品") });
   await evaluate(cdp, 'document.querySelector("[data-v3-sidebar-retry-context]")?.click(); true');
-  await waitFor(cdp, 'document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext==="ready" && Boolean(document.querySelector("#tabs button[data-tab=materials]:not([disabled])"))', "same-document retry after old response did not establish a new context");
-  materialFaults.delete("old-context");
-  const freshReadStart = requestRecords.length;
+  await waitFor(cdp, 'document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext==="ready" && Boolean(document.querySelector("#tabs button[data-tab=products]:not([disabled])"))', "phone 403 same-document retry did not establish the new context");
+  await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=products]")?.click(); true');
+  for (let attempt = 0; attempt < 80 && requestRecords.slice(latePanelStart).filter((record) => new URL(record.url).pathname === "/api/sidebar/v2/products").length < 2; attempt += 1) await delay(50);
+  if (requestRecords.slice(latePanelStart).filter((record) => new URL(record.url).pathname === "/api/sidebar/v2/products").length !== 2) throw new Error("new-context product panel request did not start");
+  await delay(980);
+  await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=profile]")?.click();document.querySelector("#tabs button[data-tab=products]")?.click(); true');
+  const productReadsWhileNewPending = requestRecords.slice(latePanelStart).filter((record) => new URL(record.url).pathname === "/api/sidebar/v2/products");
+  if (productReadsWhileNewPending.length !== 2) throw new Error("old panel finally removed the new pending request " + JSON.stringify(productReadsWhileNewPending));
+  await waitFor(cdp, 'document.body.textContent.includes("新上下文商品") && !document.body.textContent.includes("旧上下文商品")', "late old product response polluted the renewed panel");
+
+  // Preserve the complementary late-403 fact: a request started under the
+  // old token that reports forbidden only after a fresh Bridge retry cannot
+  // revoke the renewed scope.
+  const old403Start = requestRecords.length;
+  materialFaults.set("old-context", { status: 403, delayMs: 240 });
   await evaluate(cdp, 'document.querySelector("#tabs button[data-tab=materials]")?.click(); true');
-  await waitFor(cdp, 'document.querySelectorAll("[data-material-card]").length===5 && document.querySelector("[data-material-search-input]")?.value===""', "new fetch after stale context retry did not render the fresh panel");
-  const freshReads = requestRecords.slice(freshReadStart).filter((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials");
-  if (freshReads.length !== 1) throw new Error("same-document retry must issue one new material request " + JSON.stringify(freshReads));
+  await waitFor(cdp, 'Boolean(document.querySelector("[data-material-search-input]"))', "late 403 material panel did not open");
+  await evaluate(cdp, '(()=>{const input=document.querySelector("[data-material-search-input]");input.value="old-context";document.querySelector("[data-material-search-form]").requestSubmit();return true})()');
+  for (let attempt = 0; attempt < 80 && !requestRecords.slice(old403Start).some((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials" && new URL(record.url).searchParams.get("q") === "old-context"); attempt += 1) await delay(50);
+  if (!requestRecords.slice(old403Start).some((record) => new URL(record.url).pathname === "/api/sidebar/v2/materials" && new URL(record.url).searchParams.get("q") === "old-context")) throw new Error("old-context 403 request did not start");
+  await evaluate(cdp, 'window.__AICRMSidebarBridge.retry().then(()=>true)');
   await delay(320);
-  const freshAfterOld403 = JSON.parse(await evaluate(cdp, 'JSON.stringify({context:document.querySelector("#sidebar-workbench-root")?.dataset.v3SidebarContext,cards:document.querySelectorAll("[data-material-card]").length,query:document.querySelector("[data-material-search-input]")?.value||""})'));
-  if (freshAfterOld403.context !== "ready" || freshAfterOld403.cards !== 5 || freshAfterOld403.query !== "") throw new Error("old response polluted the renewed panel " + JSON.stringify(freshAfterOld403));
+  const freshAfterOld403 = await evaluate(cdp, 'window.__AICRMSidebarBridge.request("/api/sidebar/v2/materials?limit=5&offset=0&q=Chromium").then(()=>true).catch(()=>false)');
+  if (!freshAfterOld403) throw new Error("late old 403 revoked the renewed sidebar context");
+  materialFaults.delete("old-context");
 
   if (!sidebarCSP.includes("img-src 'self' data: blob:")) throw new Error("sidebar CSP did not permit its scoped thumbnail blob URL");
   if (![...successfulResources].some((pathname) => /^\/sidebar-assets\/sidebarHost-/.test(pathname)) || ![...successfulResources].some((pathname) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(pathname)) || ![...successfulResources].some((pathname) => /^\/sidebar-assets\/sidebarImageResourceLoader-/.test(pathname)) || !successfulResources.has("/api/sidebar/v2/bootstrap") || !successfulResources.has("/api/sidebar/v2/materials") || ![...successfulResources].some((pathname) => /\/variants\/thumb_320$/.test(pathname))) throw new Error("sidebar Host/standard overlay resources did not use the actual scoped thumbnail route");
