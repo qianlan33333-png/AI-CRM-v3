@@ -89,7 +89,7 @@ func newAudienceConfirmationChromiumFixture(t *testing.T) *audienceConfirmationC
 	repository := filepath.Clean(filepath.Join(filepath.Dir(fixture.script), "..", ".."))
 	prepareAudienceConfirmationChromiumArtifacts(t, repository)
 	screenshots := t.TempDir()
-	if configured := os.Getenv("AICRM_AUDIENCE_CONFIRMATION_SCREENSHOT_DIR"); configured != "" {
+	if configured := platformconfig.AudienceConfirmationScreenshotDirectory(); configured != "" {
 		if !filepath.IsAbs(configured) {
 			t.Fatal("AICRM_AUDIENCE_CONFIRMATION_SCREENSHOT_DIR must be absolute")
 		}

@@ -931,6 +931,13 @@ func ComponentStatesScreenshotDirectory() string {
 	return os.Getenv("AICRM_COMPONENT_STATES_SCREENSHOT_DIR")
 }
 
+// AudienceConfirmationScreenshotDirectory returns the optional evidence
+// directory for the Audience confirmation Chromium journey. The test validates
+// filesystem constraints before it writes rendered screenshots.
+func AudienceConfirmationScreenshotDirectory() string {
+	return os.Getenv("AICRM_AUDIENCE_CONFIRMATION_SCREENSHOT_DIR")
+}
+
 // NamedDatabaseURL is restricted to explicit target and read-only source roles
 // used by controlled offline migrations. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment
