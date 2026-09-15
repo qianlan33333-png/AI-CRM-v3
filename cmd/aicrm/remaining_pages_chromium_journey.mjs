@@ -110,7 +110,7 @@ try {
   for (const width of [375, 390, 430]) {
     await resize(width); await visit(`/shared/service-period-member-grid#${encodeURIComponent(gridToken)}`);
     await waitFor(cdp, "document.querySelector('#spGridBody tr[data-record-id]')", `member grid public share did not load at ${width}`);
-    await waitFor(cdp, "document.querySelector('#spResultSummary')?.textContent?.trim() === '已加载 1 行'", `member grid unknown total must show its loaded row at ${width}`);
+    await waitFor(cdp, "document.querySelector('#spResultSummary')?.textContent?.trim() === '当前显示 1 行'", `member grid unknown total must show its visible row at ${width}`);
     assert.equal(await evaluate(cdp, `document.body.textContent.includes(${JSON.stringify(gridToken)})`), false, "member-grid token must not render into page text");
     await noOverflow(`member grid ${width}`); await capture(`member-grid-${width}.png`);
   }
