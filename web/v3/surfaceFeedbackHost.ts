@@ -1,9 +1,10 @@
 /** Browser-only presentation. No transport interception or write retries. */
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
+import { renderTableReadState } from './shared/ui/tableReadState';
 export {};
 type BusyOptions = { label?: string; initial?: boolean };
 declare global {
-  interface Window { __AICRMSurfaceFeedback?: { busy(target: Element, options?: BusyOptions): { clear(): void } }; }
+  interface Window { __AICRMSurfaceFeedback?: { busy(target: Element, options?: BusyOptions): { clear(): void }; tableReadState: typeof renderTableReadState; }; }
 }
 const loadingText = /^(?:正在读取页面数据|正在读取汇总|正在读取配置|正在加载页面|页面加载中|加载中)(?:…|\.{3})?$/;
 const roots = '#stage, #screen, #sidebar-workbench-root, .admin-page';
@@ -97,7 +98,7 @@ window.addEventListener('error', event => {
 function install(): void {
   installCommittedTextSearch();
   if (window.__AICRMSurfaceFeedback) return;
-  window.__AICRMSurfaceFeedback = { busy };
+  window.__AICRMSurfaceFeedback = { busy, tableReadState: renderTableReadState };
   document.querySelectorAll(roots).forEach(inspect);
   document.querySelectorAll(roots).forEach(root => root.querySelectorAll(':scope > .surface-feedback__busy--initial').forEach(watchInitial));
   if (resourceFailed) resourceFailure();

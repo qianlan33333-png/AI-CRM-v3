@@ -182,3 +182,107 @@ try {
 }
 
 console.log('channel list stable-resource archive binding: PASS');
+
+function readStateChannel() {
+  return channel(21, 'active', '渠道读取回归');
+}
+
+async function waitForIn(window, check, message) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const value = check();
+    if (value) return value;
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
+
+async function createReadStateFixture(initialMode = 'success') {
+  const fixture = { mode: initialMode, listReads: 0, writes: 0, archived: false };
+  const dom = new JSDOM(`<!doctype html><body data-page="channels"><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">渠道码中心</h1></div></header><template id="tpl">${template}</template><main id="stage"></main></body>`, {
+    url: 'https://test.invalid/admin/channels', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
+    beforeParse(window) {
+      window.Request = Request; window.Response = Response; window.Headers = Headers;
+      window.document.cookie = 'aicrm_csrf=fixture-csrf; Path=/';
+      window.fetch = async (input, init = {}) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+        const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method)).toUpperCase();
+        if (url.pathname === '/api/admin/channels' && method === 'GET') {
+          fixture.listReads += 1;
+          if (fixture.mode === 'malformed') return new Response(JSON.stringify({ unexpected: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          if (fixture.mode === '401' || fixture.mode === '403' || fixture.mode === '503') return new Response(JSON.stringify({ code: fixture.mode }), { status: Number(fixture.mode), headers: { 'Content-Type': 'application/json' } });
+          if (fixture.mode === 'network') throw new TypeError('channel list network unavailable');
+          if (fixture.mode === 'empty') return new Response(JSON.stringify({ channels: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          return new Response(JSON.stringify({ channels: [{ ...readStateChannel(), status: fixture.archived ? 'archived' : 'active' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.pathname === '/api/admin/channels/21' && method === 'GET') return new Response(JSON.stringify({ channel: { ...readStateChannel(), status: fixture.archived ? 'archived' : 'active' } }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"21"' } });
+        if (url.pathname === '/api/admin/channels/21' && method === 'PATCH') { fixture.writes += 1; fixture.archived = true; return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
+        return new Response(JSON.stringify({ code: 'NOT_FOUND' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      };
+    },
+  });
+  dom.window.eval(adapter);
+  return { dom, fixture };
+}
+
+async function confirmIn(window, action, message) {
+  action.click();
+  await waitForIn(window, () => window.document.querySelector('#fb-mask')?.hidden === false, message);
+  window.document.querySelector('#fb-ok').click();
+}
+
+// A valid empty array is the only successful empty state. It is a bounded
+// server page, so copy deliberately says "当前已加载页" rather than all data.
+{
+  const { dom } = await createReadStateFixture('empty');
+  try {
+    await waitForIn(dom.window, () => dom.window.document.querySelector('[data-surface-table-read-state="empty"]'), 'valid empty catalog must render an explicit table state');
+    assert.match(dom.window.document.querySelector('[data-surface-table-read-state="empty"]')?.textContent || '', /当前已加载页暂无渠道/);
+  } finally { dom.window.close(); }
+}
+
+// A committed ordinary Enter filters only the loaded server page. IME drafting
+// and candidate Enter leave rows and focus untouched.
+{
+  const { dom } = await createReadStateFixture();
+  try {
+    await waitForIn(dom.window, () => dom.window.document.querySelector('tbody tr')?.textContent?.includes('渠道读取回归'), 'initial valid catalog must render its row');
+    const search = dom.window.document.querySelector('input[aria-label="搜索渠道名称"]');
+    search.focus(); search.value = '候选';
+    search.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }));
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    search.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true }));
+    search.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+    assert.ok(dom.window.document.querySelector('tbody tr')?.textContent?.includes('渠道读取回归'), 'IME candidate Enter cannot turn a draft into a no-match result');
+    assert.equal(dom.window.document.activeElement?.getAttribute('aria-label'), '搜索渠道名称', 'IME candidate Enter preserves the input focus');
+    search.value = '不存在'; search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    search.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+    await waitForIn(dom.window, () => dom.window.document.querySelector('[data-surface-table-read-state="no-match"]'), 'ordinary Enter must render the committed-query no-match state');
+    assert.match(dom.window.document.querySelector('[data-surface-table-read-state="no-match"]')?.textContent || '', /当前已加载页未找到与“不存在”匹配的渠道/);
+    assert.equal(dom.window.document.activeElement?.getAttribute('aria-label'), '搜索渠道名称', 'committed search redraw restores the search focus');
+  } finally { dom.window.close(); }
+}
+
+// The real archive path is the refresh regression seam. A later ordinary
+// failure preserves already authorized rows, while authorization loss clears
+// them rather than leaking an old directory.
+for (const mode of ['malformed', '503', 'network', '401', '403']) {
+  const { dom, fixture } = await createReadStateFixture();
+  try {
+    await waitForIn(dom.window, () => [...dom.window.document.querySelectorAll('a')].find((node) => node.textContent === '归档'), `${mode}: active archive action must mount`);
+    fixture.mode = mode;
+    await confirmIn(dom.window, [...dom.window.document.querySelectorAll('a')].find((node) => node.textContent === '归档'), `${mode}: archive still uses the existing confirmation`);
+    await waitForIn(dom.window, () => dom.window.document.querySelector('[data-surface-table-read-state="error"]'), `${mode}: failed refresh must be expressed as an error state`);
+    assert.equal(fixture.writes, 1, `${mode}: archive regression still issues its one confirmed CAS write`);
+    if (mode === '401' || mode === '403') {
+      assert.equal(dom.window.document.querySelector('tbody')?.textContent?.includes('渠道读取回归'), false, `${mode}: authorization loss clears stale channel rows`);
+      assert.match(dom.window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent || '', /已清除当前已加载的渠道记录/);
+    } else {
+      assert.ok(dom.window.document.querySelector('tbody')?.textContent?.includes('渠道读取回归'), `${mode}: ordinary read failure retains the last authorized channel row`);
+      assert.match(dom.window.document.querySelector('[data-surface-table-read-state="error"]')?.textContent || '', /已保留上次成功加载的当前页/);
+      assert.ok(dom.window.document.querySelector('[data-surface-table-read-state="error"] button'), `${mode}: retained rows expose an explicit refresh action`);
+    }
+  } finally { dom.window.close(); }
+}
+
+console.log('channel list read-state and authorization contract: PASS');
