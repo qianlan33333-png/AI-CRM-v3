@@ -142,7 +142,7 @@ dialog.aicrm-content-composer-mask[data-v3-content-top-layer="1"]::backdrop {
 .aicrm-content-presentation__material img,
 .aicrm-content-presentation__supplement img,
 .aicrm-content-presentation__thumbnail-fallback,
-.aicrm-material-thumbnail__loading { display: block; inline-size: 48px !important; block-size: 48px !important; max-inline-size: 48px !important; max-block-size: 48px !important; border-radius: 7px; object-fit: cover; background: #eef2f6; }
+.aicrm-content-presentation__visual .aicrm-material-thumbnail__loading { display: block; inline-size: 48px !important; block-size: 48px !important; max-inline-size: 48px !important; max-block-size: 48px !important; border-radius: 7px; object-fit: cover; background: #eef2f6; }
 .aicrm-content-presentation__visual [hidden] { display: none !important; }
 .aicrm-material-thumbnail__loading { display: grid; place-items: center; color: #667085; font-size: 12px; text-align: center; }
 .aicrm-content-presentation__thumbnail-fallback { display: grid; place-items: center; color: #667085; font-size: 12px; text-align: center; }
