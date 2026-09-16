@@ -246,6 +246,17 @@ func TestSurveyCompletionProviderRejectsNonPublicTargetsBeforeExecution(t *testi
 		"https://[::1]/complete",
 		"https://[fc00::1]/complete",
 		"https://user:secret@public.example.test/complete",
+		"https://2130706433/complete",
+		"https://127.1/complete",
+		"https://127.1.1/complete",
+		"https://0177.0.0.1/complete",
+		"https://0x7f000001/complete",
+		"https://127.0x0.1/complete",
+		"https://0300.0250.0001.0001/complete",
+		"https://１２７.０.０.１/complete",
+		"https://127。0。0。1/complete",
+		"https://０x７ｆ０００００１/complete",
+		"https://１２７.０x０.１/complete",
 	} {
 		t.Run(endpoint, func(t *testing.T) {
 			target := SurveyCompletionTarget{Reference: "unsafe-target", Endpoint: endpoint, SigningKey: []byte(strings.Repeat("s", 32)), ClientID: "survey-v3-test", Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary"}

@@ -23,3 +23,27 @@ func TestSafePublicCompletionURLAcceptsSupportedDestinations(t *testing.T) {
 		}
 	}
 }
+
+func TestValidPublicCompletionURLNormalizesUnicodeHostsBeforePublicCheck(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "full width loopback", url: "https://１２７.０.０.１/finished"},
+		{name: "ideographic full stops", url: "https://127。0。0。1/finished"},
+		{name: "full width full stops", url: "https://127．0．0．1/finished"},
+		{name: "half width ideographic full stops", url: "https://127｡0｡0｡1/finished"},
+		{name: "full width octal", url: "https://０１７７.０.０.１/finished"},
+		{name: "full width hexadecimal", url: "https://０x７ｆ０００００１/finished"},
+		{name: "full width mixed radix", url: "https://１２７.０x０.１/finished"},
+		{name: "international public domain", url: "https://例え.テスト/finished", want: true},
+		{name: "width mapped public domain", url: "https://ｅxample.com/finished", want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ValidPublicCompletionURL(test.url); got != test.want {
+				t.Fatalf("ValidPublicCompletionURL(%q)=%t want %t", test.url, got, test.want)
+			}
+		})
+	}
+}
