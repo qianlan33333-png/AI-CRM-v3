@@ -95,10 +95,36 @@ function transformRoot(root, document) {
   for (const template of root.querySelectorAll('template')) transformRoot(template.content, document);
 }
 
+function canonicalizeScriptAsyncAttribute(source) {
+  const located = new JSDOM(source, { includeNodeLocations: true });
+  const ranges = [];
+  const collect = (root) => {
+    for (const script of root.querySelectorAll('script')) {
+      if (!script.hasAttribute('async')) continue;
+      const location = located.nodeLocation(script)?.startTag;
+      if (location) ranges.push(location);
+    }
+    for (const template of root.querySelectorAll('template')) collect(template.content);
+  };
+  collect(located.window.document);
+  let output = source;
+  for (const range of ranges.sort((left, right) => right.startOffset - left.startOffset)) {
+    const tag = output.slice(range.startOffset, range.endOffset);
+    output = output.slice(0, range.startOffset) + tag.replace(/\sasync=""(?=\s|>|\/>)/g, ' async') + output.slice(range.endOffset);
+  }
+  located.window.close();
+  return output;
+}
+
 export function rewriteAdminTerminology(documentHTML) {
   const dom = new JSDOM(documentHTML);
   transformRoot(dom.window.document, dom.window.document);
-  const output = dom.serialize();
+  // JSDOM writes boolean attributes as `async=""`. The browser treats both
+  // spellings identically, but these generated pages are staged through a
+  // byte-checked shell contract which retains the donor's `async` spelling.
+  // JSDOM source locations limit this to parsed script start tags, so code,
+  // CSS, comments, and other data literals are never rewritten.
+  const output = canonicalizeScriptAsyncAttribute(dom.serialize());
   dom.window.close();
   return output;
 }

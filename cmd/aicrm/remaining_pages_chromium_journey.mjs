@@ -65,8 +65,8 @@ try {
     await waitFor(cdp, "document.querySelector('[data-message-archive-entry]')", "message archive entry did not mount");
     assert.equal(await evaluate(cdp, "document.querySelectorAll('.admin-page-title').length"), 1, "archive entry must keep one shared page title");
     assert.equal(await evaluate(cdp, "document.querySelectorAll('[data-message-archive-entry] h2').length"), 0, "archive entry must not duplicate the shared title");
-    assert.equal(await evaluate(cdp, "document.querySelector('.admin-topbar a[href=\"/admin/customers\"]')?.textContent?.trim()"), "选择客户", "archive entry must keep customer selection in the shared header");
-    assert.match(await evaluate(cdp, "document.querySelector('[data-message-archive-entry]')?.textContent || ''"), /先从现有客户目录选择客户/, "archive entry must not invent a global list");
+    assert.equal(await evaluate(cdp, "document.querySelector('.admin-topbar a[href=\"/admin/customers\"]')?.textContent?.trim()"), "选择用户", "archive entry must keep user selection in the shared header");
+    assert.match(await evaluate(cdp, "document.querySelector('[data-message-archive-entry]')?.textContent || ''"), /先从现有用户目录选择用户/, "archive entry must not invent a global list");
     await noOverflow(`archive entry ${width}`); await capture(`archive-entry-${width}.png`);
   }
   for (const width of [1280, 1440]) {
