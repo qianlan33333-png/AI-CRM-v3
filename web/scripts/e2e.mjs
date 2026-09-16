@@ -23,6 +23,7 @@ const TEST_BUNDLES = {
   productHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/productAdapter.ts')),
   orderHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/orderAdapter.ts')),
   questionnaireEditor: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/sections/questionnaireEditor.ts')),
+  surveyOperationsHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/surveyOperationsHost.ts')),
   h5: await buildTestBrowserBundle(path.join(ROOT, 'src/h5/main.ts')),
   sidebar: await buildTestBrowserBundle(path.join(ROOT, 'v3/sidebar/main.ts')),
   memberGridShare: (await build({ entryPoints: [path.join(ROOT, 'v3/memberGridFeedbackHost.ts')], bundle: true, write: false, format: 'iife', plugins: [memberGridPresentationPlugin] })).outputFiles[0].text,
@@ -150,6 +151,25 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
   return { dom, trace };
 }
 
+async function loadSurveyOperations(id = 1) {
+  const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
+  return new JSDOM(`<!doctype html><body data-page="questionnaireOps"><main id="stage"></main><script>${TEST_BUNDLES.surveyOperationsHost}</script></body>`, {
+    url: `http://localhost/admin/questionnaireOps.html?id=${id}`,
+    runScripts: 'dangerously',
+    pretendToBeVisual: true,
+    beforeParse(window) {
+      window.Headers = Headers;
+      window.fetch = async (input) => {
+        const url = new URL(String(input), window.location.origin);
+        if (url.pathname === `/api/admin/questionnaires/${id}`) return json({ questionnaire: { id, title: '运营验收问卷', slug: 'ops-e2e', public_path: '/q/ops-e2e', is_disabled: false, submission_count: 3 } });
+        if (url.pathname === `/api/admin/questionnaires/${id}/operations`) return json({ questionnaire_id: id, configuration_version: 2, provider_enabled: true, completion: { enabled: true, mode: 'lead_qr', lead_channel_id: 49, lead_qr_title: '扫码继续', lead_qr_subtitle: '添加顾问', completion_target: {} }, external_push: { enabled: true, webhook_url: 'https://hooks.example.test/survey', type: 'subscription', day: 30, frequency: 1, remark: '问卷激活', custom_params: { source: 'survey' } } });
+        if (url.pathname === '/api/admin/channels') return json({ channels: [{ channel_id: 49, channel_name: '问卷渠道', status: 'active', carrier_type: 'qrcode', qrcode_asset_id: 9, qrcode_status: 'active', qr_url: 'https://cdn.example.test/survey-qr.png' }] });
+        return json({ code: 'unexpected_questionnaire_operations_request' }, 500);
+      };
+    },
+  });
+}
+
 async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, customerDetailHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false, ownerHandoffHttp = false } = {}) {
   const file = path.join(DIST, rel);
   // ownerMig is served by the Go Webshell Host, not the unrelated historical
@@ -163,6 +183,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     const bundle = name.startsWith('sidebar') ? TEST_BUNDLES.sidebar : TEST_BUNDLES[name];
     return `<script>${productHttp ? TEST_BUNDLES.productHost : bundle}</script>`;
   });
+  html = html.replace(/<script type="module" src="[^"]*assets\/surveyOperationsHost-[^"]+\.js"><\/script>/, `<script>${TEST_BUNDLES.surveyOperationsHost}</script>`);
   if (rel === 'sidebar/index.html') html = html.replace(/<script src="[^"]*assets\/sidebarImageResourceLoader-[^"]+\.js"><\/script>/, `<script>${SIDEBAR_IMAGE_RESOURCE_LOADER}</script>`);
   // ownerMig's Host is a separately served V3 adapter. Inline the exact built
   // adapter here so this regression executes the frozen donor mount rather
@@ -192,6 +213,18 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       if (h5WeChat) Object.defineProperty(window.navigator, 'userAgent', { value: 'MicroMessenger/8.0', configurable: true });
       // Mock 仅由 DOM 回归测试显式注入；浏览器默认运行态不会走此路径。
       window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || customerDetailHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp || ownerHandoffHttp);
+      if (rel === 'admin/questionnaireOps.html' && id != null) {
+        window.Headers = Headers;
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
+        window.fetch = async (input) => {
+          const url = new URL(String(input), window.location.origin);
+          if (url.pathname === `/api/admin/questionnaires/${id}`) return json({ questionnaire: { id, title: '运营验收问卷', slug: 'ops-e2e', public_path: '/q/ops-e2e', is_disabled: false, submission_count: 3 } });
+          if (url.pathname === `/api/admin/questionnaires/${id}/operations`) return json({ questionnaire_id: id, configuration_version: 2, provider_enabled: true, completion: { enabled: true, mode: 'lead_qr', lead_channel_id: 49, lead_qr_title: '扫码继续', lead_qr_subtitle: '添加顾问', completion_target: {} }, external_push: { enabled: true, webhook_url: 'https://hooks.example.test/survey', type: 'subscription', day: 30, frequency: 1, remark: '问卷激活', custom_params: { source: 'survey' } } });
+          if (url.pathname === '/api/admin/channels') return json({ channels: [{ channel_id: 49, channel_name: '问卷渠道', status: 'active', carrier_type: 'qrcode', qrcode_asset_id: 9, qrcode_status: 'active', qr_url: 'https://cdn.example.test/survey-qr.png' }] });
+          return json({ code: 'unexpected_questionnaire_operations_request' }, 500);
+        };
+        return;
+      }
       if (ownerHandoffHttp) {
         window.Headers = Headers;
         const staff = [
@@ -2181,9 +2214,9 @@ console.log('admin/wecom-tags.html（新建标签测试 Mock 建行）');
 
 console.log('admin/questionnaireOps.html?id=1（旧版同款问卷提交后动作与外部推送）');
 {
-  const dom = await loadPage('admin/questionnaireOps.html', { id: 1 });
+  const dom = await loadSurveyOperations(1);
   const d = dom.window.document;
-  await sleep(100);
+  await waitFor(() => !!d.querySelector('.qo-page'), 3500);
   ok('问卷运营页使用旧版同款布局与两个独立维度', !!d.querySelector('.qo-page') && !!d.querySelector('.qo-summary-grid') && d.querySelectorAll('.qo-nav button').length === 2);
   ok('二维码卡片展示渠道选择器与标题副标题', !!d.querySelector('#qo-lead-channel') && !!d.querySelector('[data-qr-title]') && !!d.querySelector('[data-qr-subtitle]'));
   click(dom, d.querySelector('[data-mode="redirect"]'));
