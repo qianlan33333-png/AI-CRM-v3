@@ -43,9 +43,10 @@ var (
 	ErrCommercePushConflict = errors.New("commerce push intent conflict")
 )
 
-// CommercePushIdentity selects one already-verified, explicitly scoped OneID
-// value. The value is used only in memory while building or sending a frozen
-// payload and never enters EER, an audit row, or a log.
+// CommercePushIdentity selects one explicitly scoped OneID value. Non-phone
+// values use the generic verified reader. Phone is a separate, CN11-only
+// vault read and must still be active and verified; it never falls through the
+// generic reader or an administrator phone-reveal path.
 type CommercePushIdentity struct {
 	Kind  identitydomain.Kind `json:"kind"`
 	Scope string              `json:"scope"`
@@ -216,13 +217,22 @@ type CommercePushService struct {
 	uow            platformport.UnitOfWork
 	effects        effectport.TransactionalAccepter
 	products       productport.ExternalPushConfigurationReader
-	identities     identityport.ExternalIdentityValueReader
+	identities     commercePushIdentityReader
 	targets        CommercePushTargetResolver
 	cipher         CommercePayloadCipher
 	now            func() time.Time
 }
 
-func NewCommercePushService(pool *pgxpool.Pool, uow platformport.UnitOfWork, effects effectport.TransactionalAccepter, products productport.ExternalPushConfigurationReader, identities identityport.ExternalIdentityValueReader, targets CommercePushTargetResolver, cipher CommercePayloadCipher) (*CommercePushService, error) {
+// commercePushIdentityReader keeps phone out of the generic external-identity
+// seam. The protected target has already selected its fixed identity scope;
+// this reader can only materialize a value transiently while the current
+// payment UoW accepts its encrypted Outbound intent and audit facts.
+type commercePushIdentityReader interface {
+	identityport.ExternalIdentityValueReader
+	identityport.VerifiedOutboundPhoneReader
+}
+
+func NewCommercePushService(pool *pgxpool.Pool, uow platformport.UnitOfWork, effects effectport.TransactionalAccepter, products productport.ExternalPushConfigurationReader, identities commercePushIdentityReader, targets CommercePushTargetResolver, cipher CommercePayloadCipher) (*CommercePushService, error) {
 	if pool == nil || uow == nil || effects == nil || products == nil || identities == nil || targets == nil {
 		return nil, ErrCommercePushInvalid
 	}
@@ -583,16 +593,19 @@ func (s *CommercePushService) paidPayload(ctx context.Context, event orderport.P
 	if err != nil {
 		return nil, false, err
 	}
-	buyerPhone, err := s.optionalIdentity(ctx, event.Order.PayerCustomerID, target.BuyerPhone)
+	buyerPhone, buyerPhoneUnavailable, err := s.optionalPhone(ctx, event.Order.PayerCustomerID, target.BuyerPhone)
 	if err != nil {
 		return nil, false, err
 	}
 	// The frozen sender emits the configured beneficiary selector when it has a
 	// trusted value and otherwise preserves the old empty-string behavior. It
 	// never derives a phone from order metadata or an unverified identity.
-	beneficiaryPhone, err := s.optionalIdentity(ctx, event.Order.BeneficiaryCustomerID, target.BeneficiaryPhone)
+	beneficiaryPhone, beneficiaryPhoneUnavailable, err := s.optionalPhone(ctx, event.Order.BeneficiaryCustomerID, target.BeneficiaryPhone)
 	if err != nil {
 		return nil, false, err
+	}
+	if buyerPhoneUnavailable || beneficiaryPhoneUnavailable {
+		return nil, true, nil
 	}
 	order := struct {
 		ID         string `json:"id"`
@@ -661,8 +674,29 @@ func (s *CommercePushService) optionalIdentity(ctx context.Context, customerID *
 	if customerID == nil || *customerID < 1 {
 		return "", nil
 	}
+	if selector.Kind == identitydomain.KindPhone {
+		return "", ErrCommercePushInvalid
+	}
 	value, _, err := s.identities.VerifiedExternalIdentityValue(ctx, customerdomain.CustomerID(*customerID), selector.Kind, selector.Scope)
 	return value, err
+}
+
+// optionalPhone deliberately has different absence semantics from generic
+// external identities. A configured phone selector without a single verified
+// vault fact must not produce a partly populated Provider payload; its
+// enclosing paid event records planned_identity_unavailable instead.
+func (s *CommercePushService) optionalPhone(ctx context.Context, customerID *int64, selector CommercePushIdentity) (string, bool, error) {
+	if selector.Kind == "" && selector.Scope == "" {
+		return "", false, nil
+	}
+	if selector.Kind != identitydomain.KindPhone || selector.Scope != "phone:cn11" || customerID == nil || *customerID < 1 {
+		return "", true, nil
+	}
+	value, found, err := s.identities.VerifiedOutboundPhone(ctx, customerdomain.CustomerID(*customerID), selector.Scope)
+	if err != nil {
+		return "", false, err
+	}
+	return value, !found, nil
 }
 func commerceUTC(at time.Time) string { return at.UTC().Format(time.RFC3339) }
 func commerceShanghai(at time.Time) string {

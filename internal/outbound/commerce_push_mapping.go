@@ -7,6 +7,7 @@ import (
 	"errors"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -99,12 +100,24 @@ func (s *CommercePushService) PreviewLegacyCommercePushWithin(ctx context.Contex
 
 func commerceLegacyPaidPreviewPayload(productID int64, productName string, target CommercePushTarget) (json.RawMessage, error) {
 	event := orderport.PaidEvent{OrderID: 1, OccurredAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	event.Order = orderdomain.Snapshot{ID: 1, MerchantOrderNo: "sample-order", ProviderTransactionNo: "sample-transaction", Amount: orderdomain.Money{AmountMinor: 990, Currency: "CNY"}}
+	previewCustomerID := int64(1)
+	event.Order = orderdomain.Snapshot{ID: 1, MerchantOrderNo: "sample-order", ProviderTransactionNo: "sample-transaction", PayerCustomerID: &previewCustomerID, BeneficiaryCustomerID: &previewCustomerID, Amount: orderdomain.Money{AmountMinor: 990, Currency: "CNY"}}
 	item := orderdomain.ItemSnapshot{LineNo: 1, ProductID: &productID, ProductName: productName, UnitAmountMinor: 990}
-	// Deliberately absent Customer IDs keep every legacy identity placeholder
-	// empty without consulting a live identity service. Only shape is previewed.
-	raw, _, err := (&CommercePushService{}).paidPayload(context.Background(), event, item, target, "sample-delivery")
+	// The fixture reader supplies no identities and cannot invoke a Vault or
+	// Provider. It preserves the legacy preview's payload shape without
+	// weakening the real paid event's configured-phone gate.
+	raw, _, err := (&CommercePushService{identities: commercePreviewIdentityReader{}}).paidPayload(context.Background(), event, item, target, "sample-delivery")
 	return raw, err
+}
+
+type commercePreviewIdentityReader struct{}
+
+func (commercePreviewIdentityReader) VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error) {
+	return "", true, nil
+}
+
+func (commercePreviewIdentityReader) VerifiedOutboundPhone(context.Context, customerdomain.CustomerID, string) (string, bool, error) {
+	return "", true, nil
 }
 
 func commerceMappingMode(mapping *productport.FieldMapping) string {

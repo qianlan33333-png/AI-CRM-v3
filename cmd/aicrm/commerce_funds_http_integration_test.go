@@ -141,8 +141,6 @@ func (r commerceFundsPushIdentityReader) VerifiedExternalIdentityValue(_ context
 		return "", false, nil
 	}
 	switch {
-	case kind == identitydomain.KindPhone && scope == "phone:cn11":
-		return "13800138000", true, nil
 	case kind == identitydomain.KindWeComExternalUserID && scope == "wecom-corp:commerce-fixture":
 		return "fixture-buyer", true, nil
 	case kind == identitydomain.KindMPOpenID && scope == "wechat-app:commerce-fixture":
@@ -154,7 +152,15 @@ func (r commerceFundsPushIdentityReader) VerifiedExternalIdentityValue(_ context
 	}
 }
 
+func (r commerceFundsPushIdentityReader) VerifiedOutboundPhone(_ context.Context, customerID customerdomain.CustomerID, scope string) (string, bool, error) {
+	if int64(customerID) != r.customerID || scope != "phone:cn11" {
+		return "", false, nil
+	}
+	return "13800138000", true, nil
+}
+
 var _ identityport.ExternalIdentityValueReader = commerceFundsPushIdentityReader{}
+var _ identityport.VerifiedOutboundPhoneReader = commerceFundsPushIdentityReader{}
 
 type commerceFundsPushTargets struct{ target outbound.CommercePushTarget }
 
