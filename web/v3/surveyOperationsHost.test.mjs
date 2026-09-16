@@ -18,12 +18,13 @@ const operation = { configuration_version: 3, provider_enabled: true, completion
 const dom = new JSDOM('<!doctype html><body data-page="questionnaireOps"><main id="stage"><div>旧配置页</div></main></body>', { url: 'https://crm.example/admin/questionnaireOps.html?id=9', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
   window.__request = async (requestPath, options = {}) => {
     calls.push({ path: requestPath, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null });
-    if (requestPath === '/api/admin/questionnaires/9') return { id: 9, title: '入群问卷', slug: 'join', submission_count: 12, is_disabled: false, public_path: '/q/join' };
-    if (requestPath === '/api/admin/questionnaires/9/operations') return structuredClone(operation);
-    if (requestPath.startsWith('/api/admin/channels')) return { channels: [{ channel_id: 7, channel_name: '训练营渠道', status: 'active', carrier_type: 'qrcode', qrcode_asset_id: 18, qrcode_status: 'active', qr_url: 'https://cdn.example/qr.png' }] };
-    if (requestPath.endsWith('/operations/completion')) return structuredClone(operation);
-    if (requestPath.endsWith('/operations/external-push')) return { ...structuredClone(operation), configuration_version: 4 };
-    if (requestPath.endsWith('/operations/external-push/test')) return { test_run_id: 81, status: 'queued' };
+    const response = (value) => ({ json: async () => structuredClone(value) });
+    if (requestPath === '/api/admin/questionnaires/9') return response({ id: 9, title: '入群问卷', slug: 'join', submission_count: 12, is_disabled: false, public_path: '/q/join' });
+    if (requestPath === '/api/admin/questionnaires/9/operations') return response(operation);
+    if (requestPath.startsWith('/api/admin/channels')) return response({ channels: [{ channel_id: 7, channel_name: '训练营渠道', status: 'active', carrier_type: 'qrcode', qrcode_asset_id: 18, qrcode_status: 'active', qr_url: 'https://cdn.example/qr.png' }] });
+    if (requestPath.endsWith('/operations/completion')) return response(operation);
+    if (requestPath.endsWith('/operations/external-push')) return response({ ...structuredClone(operation), configuration_version: 4 });
+    if (requestPath.endsWith('/operations/external-push/test')) return response({ test_run_id: 81, status: 'queued' });
     throw new Error(`unexpected request ${requestPath}`);
   };
 }});

@@ -644,7 +644,7 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 	}
 	dist := surveyJourneyBuiltDist(t, root)
 	ui := surveymodule.NewModuleRegistration().UIBinding(dist, func(writer http.ResponseWriter, request *http.Request, page, donor string, assets surveymodule.UIAssets) error {
-		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, SurveyHostJS: assets.SurveyHostJS})
+		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, SurveyHostJS: assets.SurveyHostJS, OperationsHostJS: assets.OperationsHostJS, OperationsCSS: assets.OperationsCSS})
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/admin/questionnaires", ui)

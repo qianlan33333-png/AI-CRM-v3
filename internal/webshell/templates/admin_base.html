@@ -143,12 +143,17 @@
   {{range .SurveyAssets.StandardCSS}}<link rel="stylesheet" href="{{.}}">{{end}}
   <script type="module" src="{{.SurveyAssets.StandardHostJS}}"></script>
   <script type="module" src="{{.SurveyAssets.EditorJS}}"></script>
+  {{else if eq .SurveyPage "questionnaireOps"}}
+  <link rel="stylesheet" href="{{.SurveyAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.SurveyAssets.LabsCSS}}">
+  <link rel="stylesheet" href="{{.SurveyAssets.OperationsCSS}}">
+  <script type="module" src="{{.SurveyAssets.OperationsHostJS}}"></script>
   {{else}}
   <link rel="stylesheet" href="{{.SurveyAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.SurveyAssets.LabsCSS}}">
   {{if .SurveyAssets.SurveyHostJS}}<script type="module" src="{{.SurveyAssets.SurveyHostJS}}"></script>{{else}}<script type="module" src="{{.SurveyAssets.AdminJS}}"></script>{{end}}
   {{end}}
-  <script defer src="/static/admin_console/survey_operations.js?v=survey-bridge-v2"></script>
+  {{if ne .SurveyPage "questionnaireOps"}}<script defer src="/static/admin_console/survey_operations.js?v=survey-bridge-v2"></script>{{end}}
   {{end}}
   {{if .OperationCycles}}
   <link rel="stylesheet" href="{{.OperationAssets.TokensCSS}}">

@@ -10,12 +10,19 @@ const list = (value: unknown): AnyMap[] => Array.isArray(value) ? value.map(obje
 const key = (scope: string): string => `${scope}-${globalThis.crypto?.randomUUID?.() || Date.now()}`;
 
 async function write(path: string, method: string, payload?: unknown): Promise<AnyMap> {
-  return object(await request(path, {
+  return readResponse(await request(path, {
     method,
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key('survey-ops') },
     ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
   }));
 }
+
+async function readResponse(value: unknown): Promise<AnyMap> {
+  const candidate = value as { json?: () => Promise<unknown> };
+  return object(typeof candidate?.json === 'function' ? await candidate.json() : value);
+}
+
+async function read(path: string): Promise<AnyMap> { return readResponse(await request(path)); }
 
 function operationRoot(): HTMLElement {
   const root = document.createElement('div');
@@ -78,7 +85,7 @@ function addParam(root: HTMLElement, name = '', value = ''): void { const row = 
 async function mount(): Promise<void> {
   const stage = document.getElementById('stage'); if (!stage || !Number.isSafeInteger(qid) || qid < 1) return;
   const root = operationRoot(); stage.replaceChildren(root);
-  const [detailRaw, opsRaw, channelsRaw] = await Promise.all([request(`/api/admin/questionnaires/${qid}`), request(`/api/admin/questionnaires/${qid}/operations`), request('/api/admin/channels?limit=300&status=active')]);
+  const [detailRaw, opsRaw, channelsRaw] = await Promise.all([read(`/api/admin/questionnaires/${qid}`), read(`/api/admin/questionnaires/${qid}/operations`), read('/api/admin/channels?limit=100&status=active')]);
   const detailCarrier = object(detailRaw); const detail = object(detailCarrier.questionnaire || detailCarrier); let ops = object(opsRaw); const completion = object(ops.completion); const push = object(ops.external_push); const target = object(completion.completion_target); const metadata = object(push.metadata);
   const title = text(detail.title || detail.name) || `问卷 ${qid}`; el<HTMLElement>(root, '[data-title]').textContent = title; el<HTMLElement>(root, '[data-status]').textContent = detail.is_disabled ? '已停用' : '启用中'; el<HTMLElement>(root, '[data-count]').textContent = text(detail.submission_count || 0);
   const publicPath = text(detail.public_path) || `/q/${encodeURIComponent(text(detail.slug))}`; el<HTMLAnchorElement>(root, '[data-open]').href = publicPath; el<HTMLAnchorElement>(root, '[data-logs]').href = `/admin/questionnaires/${qid}/external-push-logs`;

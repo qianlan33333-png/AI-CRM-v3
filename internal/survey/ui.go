@@ -15,6 +15,7 @@ import (
 
 type UIAssets struct {
 	TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS, StandardHostJS, SurveyHostJS string
+	OperationsHostJS, OperationsCSS                                                string
 	StandardCSS                                                                    []string
 }
 
@@ -165,6 +166,12 @@ func surveyAssets(dist string) (UIAssets, error) {
 		return UIAssets{}, err
 	}
 	if assets.SurveyHostJS, err = get("surveyHost"); err != nil {
+		return UIAssets{}, err
+	}
+	if assets.OperationsHostJS, err = get("surveyOperationsHost"); err != nil {
+		return UIAssets{}, err
+	}
+	if assets.OperationsCSS, err = get("surveyOperationsStyles"); err != nil {
 		return UIAssets{}, err
 	}
 	if assets.EditorJS, err = get("questionnaireEditor"); err != nil {

@@ -7,8 +7,8 @@ const base = process.env.AICRM_SURVEY_BROWSER_URL;
 const username = process.env.AICRM_SURVEY_BROWSER_USERNAME;
 const password = process.env.AICRM_SURVEY_BROWSER_PASSWORD;
 const questionnaireID = process.env.AICRM_SURVEY_BROWSER_QUESTIONNAIRE_ID;
-const target = process.env.AICRM_SURVEY_BROWSER_TARGET;
-if (!/^https:\/\//.test(base || '') || !username || !password || !/^[1-9][0-9]*$/.test(questionnaireID || '') || !/^[A-Za-z0-9._:-]{1,128}$/.test(target || '')) throw new Error('survey Chromium journey configuration is invalid');
+const webhook = process.env.AICRM_SURVEY_BROWSER_WEBHOOK;
+if (!/^https:\/\//.test(base || '') || !username || !password || !/^[1-9][0-9]*$/.test(questionnaireID || '') || !/^https:\/\//.test(webhook || '')) throw new Error('survey Chromium journey configuration is invalid');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const chrome = () => {
@@ -67,44 +67,30 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"]'))", 'login did not render');
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`, 'submit login');
   await waitFor(cdp, "location.pathname === '/admin/questionnaireOps.html'", 'login did not reach questionnaire operations');
-  // The Host now renders the target and metadata even while disabled. Use
-  // the visible tab, owned switch and single header save, as an operator does.
-  await waitFor(cdp, "Boolean(document.querySelector('[data-survey-push-metadata]')) && document.querySelector('[data-survey-push-enabled]')?.checked === false", 'disabled operations configuration did not render');
-  await evaluate(cdp, "(() => { [...document.querySelectorAll('button')].find(item=>item.textContent.includes('外部推送')&&!item.textContent.includes('保存')).click(); return true; })()", 'open external push tab');
-  await waitFor(cdp, `(() => { const select=document.querySelector('#opsConfigurationReference'); return select?.tagName === 'SELECT' && [...select.options].some((item) => item.value===${JSON.stringify(target)}); })()`, 'target selector did not load the configured target');
+  await waitFor(cdp, "Boolean(document.querySelector('.qo-page')) && document.querySelector('[data-push-enabled]')?.checked === false", 'legacy-parity operations configuration did not render');
+  await evaluate(cdp, "document.querySelector('[data-tab=\"push\"]')?.click(); true", 'open external push tab');
+  await waitFor(cdp, "Boolean(document.querySelector('#qo-push-url')) && Boolean(document.querySelector('[data-save-current]'))", 'legacy external push fields did not render');
   await evaluate(cdp, `(() => {
-    const form=document.querySelector('[data-survey-push-metadata]'), toggle=document.querySelector('[data-survey-push-enabled]');
-    const select=document.querySelector('#opsConfigurationReference'); select.value=${JSON.stringify(target)}; select.dispatchEvent(new Event('change',{bubbles:true}));
-    toggle.checked=true; toggle.dispatchEvent(new Event('change',{bubbles:true}));
-    form.elements.type.value='browser_saved_type'; form.dispatchEvent(new Event('input',{bubbles:true}));
-    const button=[...document.querySelectorAll('button')].find(item=>!form.contains(item)&&item.textContent.trim()==='保存当前维度');
-    if(!button || !form.querySelector('button[type="submit"]').hidden) throw new Error('single header save missing');
-    button.click(); button.click(); return true;
-  })()`, 'enable and save target with metadata');
-  await waitFor(cdp, "document.querySelector('[data-survey-push-save-status]')?.textContent === '已保存当前维度'", 'visible configuration save confirmation did not render');
+    const set=(selector,value)=>{const node=document.querySelector(selector);if(!node)throw new Error('missing '+selector);node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));};
+    const toggle=document.querySelector('[data-push-enabled]'); toggle.checked=true; toggle.dispatchEvent(new Event('change',{bubbles:true}));
+    set('[data-webhook]',${JSON.stringify(webhook)}); set('[data-push-type]','subscription'); set('[data-expires]','2147483000'); set('[data-day]','45'); set('[data-frequency]','2'); set('[data-remark]','browser parity');
+    if(!document.querySelector('[data-param-name]'))document.querySelector('[data-add-param]').click();
+    set('[data-param-name]','campaign'); set('[data-param-value]','survey-browser');
+    document.querySelector('[data-save-current]').click(); return true;
+  })()`, 'enable and save legacy external push fields');
+  await waitFor(cdp, "document.querySelector('[data-toast]')?.textContent === '外部推送已保存'", 'visible configuration save confirmation did not render');
   if(cdp.saveRequests!==1) throw new Error('header save request count='+cdp.saveRequests);
   const reloadMarker = 'survey-journey-reload';
   await evaluate(cdp, `window.__surveyJourneyReloadMarker=${JSON.stringify(reloadMarker)}; location.reload(); true`, "reload saved configuration");
-  await waitFor(cdp, `document.readyState === 'complete' && window.__surveyJourneyReloadMarker !== ${JSON.stringify(reloadMarker)} && document.querySelector('#opsConfigurationReference')?.tagName === 'SELECT' && document.querySelector('#opsConfigurationReference').value===${JSON.stringify(target)}`, 'saved target did not reload');
-  await waitFor(cdp, "document.querySelector('[data-survey-push-enabled]')?.checked === true && document.querySelector('[data-survey-push-metadata]')?.elements.type.value === 'browser_saved_type'", 'saved enabled state or metadata did not reload');
-  await evaluate(cdp, "[...document.querySelectorAll('button')].find(item=>item.textContent.includes('外部推送')&&!item.textContent.includes('保存')).click(); true", 'reopen external push tab');
-  await waitFor(cdp, "Boolean(document.querySelector('button[data-survey-host-test-push]')) && Boolean(document.querySelector('[data-survey-push-metadata]'))", 'Host did not remount after reopening saved push tab');
-  await evaluate(cdp, "(() => { const button=[...document.querySelectorAll('button')].find((item) => item.dataset.surveyHostTestPush === 'true'); if (!button) throw new Error('controlled test button is unavailable'); button.click(); return true; })()", 'open controlled test confirmation');
-  await waitFor(cdp, "Boolean(document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]'))", 'controlled test confirmation did not render');
-  await evaluate(cdp, "document.querySelector('[data-survey-host-test-confirmation] button[data-survey-host-test-confirm]').click(); true", 'confirm controlled test');
-  await waitFor(cdp, "document.querySelector('button[data-survey-host-test-push]')?.dataset.surveyHostTestReceipt === 'queued' && document.querySelector('button[data-survey-host-test-push]')?.textContent.includes('等待处理结果')", 'controlled test receipt did not render');
-  await waitFor(cdp, "Boolean(document.querySelector('input[data-survey-log-search]'))", 'V3 local survey-log search did not render');
-  await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); input.value='definitely-no-survey-log'; input.dispatchEvent(new Event('input',{bubbles:true})); return document.querySelector('[data-survey-host-logs]').textContent.includes('没有匹配的测试记录。'); })()", 'type survey log draft');
-  await delay(80);
-  if (await evaluate(cdp, "document.querySelector('[data-survey-host-logs]')?.textContent.includes('没有匹配的测试记录。')")) throw new Error('survey log draft filtered before an explicit Enter');
-  const surveyCandidate = await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}); Object.defineProperty(event,'keyCode',{value:229}); input.dispatchEvent(event); return event.defaultPrevented; })()", 'survey log IME candidate Enter');
-  if (surveyCandidate) throw new Error('survey log IME candidate Enter was consumed as a search');
-  await delay(20);
-  if (await evaluate(cdp, "document.querySelector('[data-survey-host-logs]')?.textContent.includes('没有匹配的测试记录。')")) throw new Error('survey log IME candidate Enter filtered local records');
-  await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}); input.dispatchEvent(event); return event.defaultPrevented; })()", 'submit survey local log search');
-  await waitFor(cdp, "document.querySelector('[data-survey-host-logs]')?.textContent.includes('没有匹配的测试记录。')", 'ordinary Enter did not apply the local survey-log filter');
-  await evaluate(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); input.value=''; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); return true; })()", 'clear survey local log search');
-  await waitFor(cdp, "(() => { const input=document.querySelector('input[data-survey-log-search]'); const text=document.querySelector('[data-survey-host-logs]')?.textContent || ''; return input?.value === '' && !text.includes('没有匹配的测试记录。'); })()", 'empty Enter did not restore the actual survey-log source state');
+  await waitFor(cdp, `document.readyState === 'complete' && window.__surveyJourneyReloadMarker !== ${JSON.stringify(reloadMarker)} && Boolean(document.querySelector('.qo-page'))`, 'saved configuration page did not reload');
+  await evaluate(cdp, "document.querySelector('[data-tab=\"push\"]')?.click(); true", 'reopen external push tab');
+  await waitFor(cdp, `document.querySelector('[data-webhook]')?.value === ${JSON.stringify(webhook)}`, 'saved webhook did not reload');
+  const savedFields = await evaluate(cdp, `(() => ({enabled:document.querySelector('[data-push-enabled]')?.checked, webhook:document.querySelector('[data-webhook]')?.value, type:document.querySelector('[data-push-type]')?.value, expires:document.querySelector('[data-expires]')?.value, day:document.querySelector('[data-day]')?.value, frequency:document.querySelector('[data-frequency]')?.value, remark:document.querySelector('[data-remark]')?.value, paramName:document.querySelector('[data-param-name]')?.value, paramValue:document.querySelector('[data-param-value]')?.value}))()`, 'read saved legacy push fields');
+  const expectedFields = { enabled:true, webhook, type:'subscription', expires:'2147483000', day:'45', frequency:'2', remark:'browser parity', paramName:'campaign', paramValue:'survey-browser' };
+  if (JSON.stringify(savedFields) !== JSON.stringify(expectedFields)) throw new Error('saved legacy push fields mismatch=' + JSON.stringify(savedFields));
+  await evaluate(cdp, "document.querySelector('[data-test]').click(); true", 'queue controlled test push');
+  await waitFor(cdp, "document.querySelector('[data-toast]')?.textContent.startsWith('测试推送已排队')", 'controlled test receipt did not render');
+  if(cdp.saveRequests!==2) throw new Error('test push save request count='+cdp.saveRequests);
   console.log('survey_completion_chromium: PASS');
   socket.close();
 } catch (error) {

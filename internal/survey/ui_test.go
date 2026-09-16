@@ -17,7 +17,7 @@ func surveyTestDist(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"tokens.css", "labs.css", "admin.js", "editor.js", "editor.css", "h5.js", "standard-host.js", "survey-host.js"} {
+	for _, name := range []string{"tokens.css", "labs.css", "admin.js", "editor.js", "editor.css", "h5.js", "standard-host.js", "survey-host.js", "survey-operations.js", "survey-operations.css"} {
 		if err := os.WriteFile(filepath.Join(dist, "assets", name), []byte(name), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -28,7 +28,7 @@ func surveyTestDist(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dist, "assets", "standard-components", "wecom_tag_picker.css"), []byte("tag"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","questionnaireEditor":"assets/editor.js","questionnaireEditorStyles":"assets/editor.css","h5":"assets/h5.js","standardComponentsHost":"assets/standard-host.js","surveyHost":"assets/survey-host.js"},"files":{"assets/standard-components/wecom_tag_picker.css":{}}}`
+	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","questionnaireEditor":"assets/editor.js","questionnaireEditorStyles":"assets/editor.css","h5":"assets/h5.js","standardComponentsHost":"assets/standard-host.js","surveyHost":"assets/survey-host.js","surveyOperationsHost":"assets/survey-operations.js","surveyOperationsStyles":"assets/survey-operations.css"},"files":{"assets/standard-components/wecom_tag_picker.css":{}}}`
 	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +56,9 @@ func TestSurveyUIUsesFrozenFragmentAndV3Assets(t *testing.T) {
 		}
 		if assets.SurveyHostJS != "/survey-assets/survey-host.js" {
 			t.Fatalf("survey host=%q", assets.SurveyHostJS)
+		}
+		if assets.OperationsHostJS != "/survey-assets/survey-operations.js" || assets.OperationsCSS != "/survey-assets/survey-operations.css" {
+			t.Fatalf("survey operations host=%q css=%q", assets.OperationsHostJS, assets.OperationsCSS)
 		}
 		w.WriteHeader(200)
 		return nil
