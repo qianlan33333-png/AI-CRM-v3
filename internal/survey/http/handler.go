@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -664,24 +663,7 @@ func completionLocation(slug string, action surveyport.CompletionAction) string 
 }
 
 func safeCompletionRedirectURL(raw string) bool {
-	if len(raw) == 0 || len(raw) > 2048 || strings.ContainsAny(raw, "\\\r\n\t") {
-		return false
-	}
-	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
-		return true
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.Port() != "" && parsed.Port() != "443" {
-		return false
-	}
-	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
-		return false
-	}
-	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
-		return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified())
-	}
-	return true
+	return surveyport.SafePublicCompletionURL(raw)
 }
 
 func (h *Handler) surveySession(r *http.Request) (surveyport.SubmissionIdentity, bool) {

@@ -53,24 +53,7 @@ func parseSurveyCompletionTarget(raw json.RawMessage) (surveyCompletionTarget, e
 	return surveyCompletionTarget{}, surveyport.ErrInvalid
 }
 func safeStoredSurveyRedirect(raw string) bool {
-	if raw == "" || len(raw) > 2048 || strings.ContainsAny(raw, "\\\r\n\t") {
-		return false
-	}
-	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
-		return true
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.Port() != "" && parsed.Port() != "443" {
-		return false
-	}
-	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
-		return false
-	}
-	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
-		return !blockedSurveyIP(ip)
-	}
-	return true
+	return surveyport.SafePublicCompletionURL(raw)
 }
 func safeSurveyProviderURL(raw string) bool {
 	if !safeStoredSurveyRedirect(raw) || strings.HasPrefix(raw, "/") {

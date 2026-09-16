@@ -428,6 +428,11 @@ func TestCompletionLocationFallsBackToDoneCarrier(t *testing.T) {
 	if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "https://safe.example.test/complete#fragment"}); got != "/h5/done.html?slug=growth" {
 		t.Fatalf("fragment redirect location=%q", got)
 	}
+	for _, raw := range []string{"https://2130706433/complete", "https://127.1/complete", "https://0177.0.0.1/complete", "https://0x7f000001/complete", "https://0300.0250.0001.0001/complete"} {
+		if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: raw}); got != "/h5/done.html?slug=growth" {
+			t.Fatalf("legacy IPv4 redirect=%q location=%q", raw, got)
+		}
+	}
 }
 
 func TestOperationMetadataPUTRequiresCSRFAndCurrentConfigurationVersion(t *testing.T) {
