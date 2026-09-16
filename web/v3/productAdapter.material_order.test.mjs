@@ -69,7 +69,7 @@ const dom = new JSDOM(page, {
       }
       if (url.pathname === '/api/v1/products/101/local-entitlements') return json({ items: [] });
       if (url.pathname === '/api/v1/products' && method === 'GET') return json({ items: [initial], next_cursor: '' });
-      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return json({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', updated_at: '' });
+      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return json({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {}, custom_params_json: '{}', updated_at: '' });
       if (url.pathname === '/api/admin/image-library/upload' && method === 'POST') {
         const body = init.body;
         const file = body && typeof body === 'object' && 'get' in body && typeof body.get === 'function' ? body.get('image') : null;

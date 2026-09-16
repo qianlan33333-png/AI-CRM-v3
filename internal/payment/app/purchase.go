@@ -49,6 +49,7 @@ func (s *Service) standardPurchaseWithin(ctx context.Context, customerID, produc
 	if state.Owned {
 		result.State = "owned"
 		result.PaidOrderID = state.PaidOrderID
+		result.MerchantOrderNo = state.MerchantOrderNo
 		result.CanPurchase = false
 	} else if state.Pending {
 		result.State = "pending"
@@ -79,6 +80,9 @@ func (s *Service) PurchaseStatus(ctx context.Context, token, kind string, id int
 			customer = actor.PayerCustomerID
 		}
 		result, err = s.standardPurchaseWithin(tx, customer, id, product.Code, 0, false)
+		if err == nil && result.State == "owned" && (result.PaidOrderID < 1 || result.MerchantOrderNo == "") {
+			return paymentport.ErrUnavailable
+		}
 		return err
 	})
 	return result, classify(err)

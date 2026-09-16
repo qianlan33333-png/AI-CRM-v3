@@ -141,9 +141,3 @@ func commerceExecutionHeaderValues(execution CommercePushExecution, body []byte)
 	}
 	return "", "", false
 }
-
-// Only legacy mode treats the Product deadline as a local delivery gate.
-// Custom mapping fixed values are transport data, never a sending schedule.
-func commerceLegacyPushExpired(configuration productport.ExternalPushConfiguration, now time.Time) bool {
-	return configuration.FieldMapping == nil && configuration.ExpiresAtTS != nil && *configuration.ExpiresAtTS <= now.Unix()
-}

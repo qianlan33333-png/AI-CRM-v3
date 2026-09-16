@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { fileURLToPath } from "node:url";
 import { buildTestBrowserBundle } from "../scripts/test-browser-bundle.mjs";
 
 const sleep = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -7,8 +8,8 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
   headers: { "Content-Type": "application/json" },
 });
-const imageHost = await buildTestBrowserBundle(new URL("./imageLibraryFilterHost.ts", import.meta.url).pathname);
-const materialHost = await buildTestBrowserBundle(new URL("./materialSaveAdapter.ts", import.meta.url).pathname);
+const imageHost = await buildTestBrowserBundle(fileURLToPath(new URL("./imageLibraryFilterHost.ts", import.meta.url)));
+const materialHost = await buildTestBrowserBundle(fileURLToPath(new URL("./materialSaveAdapter.ts", import.meta.url)));
 
 function item(id, name, enabled = true) {
   return {

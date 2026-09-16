@@ -213,8 +213,17 @@ func (s *Service) ReservePaymentWithin(ctx context.Context, id int64) (domain.Sn
 	return snapshot, nil
 }
 
+// ReadCheckoutSnapshotWithin exposes only the immutable native-checkout fact
+// to an in-transaction consumer. It does not create a second Unit of Work.
+func (s *Service) ReadCheckoutSnapshotWithin(ctx context.Context, orderID int64) (orderport.CheckoutSnapshot, error) {
+	if !ready(s) || orderID < 1 {
+		return orderport.CheckoutSnapshot{}, orderport.ErrNotFound
+	}
+	return s.store.ReadCheckoutSnapshot(ctx, orderID)
+}
+
 func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderport.PaymentOrderCommand) (domain.Snapshot, error) {
-	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validPromotionContext(command.PromotionContext) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
+	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validPostPurchaseAction(command.PostPurchaseAction) || !validPromotionContext(command.PromotionContext) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
 		return domain.Snapshot{}, orderport.ErrConflict
 	}
 	productID := command.ProductID
@@ -426,12 +435,20 @@ func validPaymentProductType(kind string, durationDays int32) bool {
 	return (kind == "standard_product" && durationDays == 0) || (kind == "service_period" && durationDays > 0)
 }
 
+func validPostPurchaseAction(raw json.RawMessage) bool {
+	return len(raw) == 0 || len(raw) <= 8<<10 && json.Valid(raw)
+}
+
 func validPromotionContext(value string) bool {
 	return len(value) <= 512 && value == strings.TrimSpace(value) && strings.IndexFunc(value, func(r rune) bool { return r < 0x21 || r > 0x7e }) < 0
 }
 
 func (s *Service) reserveCheckout(ctx context.Context, command orderport.PaymentOrderCommand, at time.Time) (orderport.CheckoutSnapshot, error) {
-	snapshot := orderport.CheckoutSnapshot{ProductType: command.ProductType, ProductID: command.ProductID, ProductCode: command.ProductCode, ProductName: command.ProductName, ProductVersion: command.ProductVersion, ServicePeriodDurationDays: command.ServicePeriodDurationDays, GrossAmountMinor: command.UnitAmountMinor, PayableAmountMinor: command.UnitAmountMinor, Currency: command.Currency, ReservedAt: at}
+	postPurchaseAction := append([]byte(nil), command.PostPurchaseAction...)
+	if len(postPurchaseAction) == 0 {
+		postPurchaseAction = []byte(`{}`)
+	}
+	snapshot := orderport.CheckoutSnapshot{ProductType: command.ProductType, ProductID: command.ProductID, ProductCode: command.ProductCode, ProductName: command.ProductName, ProductVersion: command.ProductVersion, ServicePeriodDurationDays: command.ServicePeriodDurationDays, GrossAmountMinor: command.UnitAmountMinor, PayableAmountMinor: command.UnitAmountMinor, Currency: command.Currency, PostPurchaseAction: postPurchaseAction, ReservedAt: at}
 	if s.coupons == nil {
 		return snapshot, nil
 	}

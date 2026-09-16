@@ -715,6 +715,18 @@ func validExternalKind(kind productport.ExternalPushProductKind) bool {
 	return kind == productport.ExternalPushWeChatPay || kind == productport.ExternalPushServicePeriod
 }
 
+func validExternalPushTestDeliveryID(value string) bool {
+	if !strings.HasPrefix(value, "commerce_test_") || len(value) != len("commerce_test_")+32 {
+		return false
+	}
+	for _, character := range value[len("commerce_test_"):] {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func serviceKindStatus(kind productport.ExternalPushProductKind) string {
 	if kind == productport.ExternalPushServicePeriod {
 		return servicePeriodStatusSQL()
@@ -934,7 +946,7 @@ func (r *Repository) ListCommerceExternalPushTests(ctx context.Context, id produ
 	if id < 1 || !validExternalKind(kind) || limit < 1 || limit > 20 {
 		return nil, ErrInvalid
 	}
-	rows, err := tx.Query(ctx, `SELECT product_id,product_kind,effect_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at
+	rows, err := tx.Query(ctx, `SELECT product_id,product_kind,effect_id,delivery_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at
 FROM product_external_push_tests WHERE product_id=$1 AND product_kind=$2
 ORDER BY created_at DESC,id DESC LIMIT $3`, int64(id), string(kind), limit)
 	if err != nil {
@@ -944,7 +956,7 @@ ORDER BY created_at DESC,id DESC LIMIT $3`, int64(id), string(kind), limit)
 	values := make([]productport.ExternalPushTest, 0, limit)
 	for rows.Next() {
 		var value productport.ExternalPushTest
-		if err = rows.Scan(&value.ProductID, &value.ProductKind, &value.EffectID, &value.State, &value.ProviderAccepted, &value.DeliveryProven, &value.RealExternalCallExecuted, &value.AutoRetryAllowed, &value.CreatedAt); err != nil {
+		if err = rows.Scan(&value.ProductID, &value.ProductKind, &value.EffectID, &value.DeliveryID, &value.State, &value.ProviderAccepted, &value.DeliveryProven, &value.RealExternalCallExecuted, &value.AutoRetryAllowed, &value.CreatedAt); err != nil {
 			return nil, mapDatabaseError(err)
 		}
 		value.UpdatedAt = value.CreatedAt
@@ -961,13 +973,13 @@ func (r *Repository) CreateCommerceExternalPushTest(ctx context.Context, value p
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}
-	if value.ProductID < 1 || !validExternalKind(value.ProductKind) || receiptID < 1 || value.EffectID == "" || len(configurationDigest) != 32 {
+	if value.ProductID < 1 || !validExternalKind(value.ProductKind) || receiptID < 1 || value.EffectID == "" || !validExternalPushTestDeliveryID(value.DeliveryID) || len(configurationDigest) != 32 {
 		return productport.ExternalPushTest{}, ErrInvalid
 	}
 	var result productport.ExternalPushTest
-	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_tests(product_id,product_kind,configuration_digest,receipt_id,effect_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at)
-VALUES($1,$2,$3,$4,$5,$6,FALSE,FALSE,FALSE,FALSE,$7)
-RETURNING product_id,product_kind,effect_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at`, int64(value.ProductID), string(value.ProductKind), configurationDigest[:], receiptID, value.EffectID, value.State, value.CreatedAt.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.EffectID, &result.State, &result.ProviderAccepted, &result.DeliveryProven, &result.RealExternalCallExecuted, &result.AutoRetryAllowed, &result.CreatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_tests(product_id,product_kind,configuration_digest,receipt_id,effect_id,delivery_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,FALSE,FALSE,FALSE,FALSE,$8)
+RETURNING product_id,product_kind,effect_id,delivery_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at`, int64(value.ProductID), string(value.ProductKind), configurationDigest[:], receiptID, value.EffectID, value.DeliveryID, value.State, value.CreatedAt.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.EffectID, &result.DeliveryID, &result.State, &result.ProviderAccepted, &result.DeliveryProven, &result.RealExternalCallExecuted, &result.AutoRetryAllowed, &result.CreatedAt)
 	if err != nil {
 		return productport.ExternalPushTest{}, mapDatabaseError(err)
 	}

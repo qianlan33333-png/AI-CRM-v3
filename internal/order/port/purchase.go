@@ -13,9 +13,10 @@ type StandardPurchaseQuery struct {
 	Lock                    bool
 }
 type StandardPurchaseState struct {
-	PaidOrderID int64
-	Owned       bool
-	Pending     bool
+	PaidOrderID     int64
+	MerchantOrderNo string
+	Owned           bool
+	Pending         bool
 }
 type StandardPurchaseReader interface {
 	ReadStandardPurchaseWithin(context.Context, StandardPurchaseQuery) (StandardPurchaseState, error)

@@ -51,6 +51,7 @@ import (
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
+	producthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/http"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 )
@@ -552,7 +553,7 @@ FROM outbound_commerce_push_intents intent WHERE intent.order_paid_event_id=$1`,
 	}
 }
 
-func TestPostgreSQLExpiredPaidOrderPlansConfigExpiredCommercePushOnce(t *testing.T) {
+func TestPostgreSQLExpiredPaidOrderContinuesToTargetResolutionOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -632,7 +633,11 @@ func TestPostgreSQLExpiredPaidOrderPlansConfigExpiredCommercePushOnce(t *testing
   (SELECT count(*) FROM outbound_commerce_push_audit_events audit WHERE audit.intent_id=intent.id),
   (SELECT count(*) FROM outbound_commerce_push_outbox outbox WHERE outbox.intent_id=intent.id)
 FROM outbound_commerce_push_intents intent WHERE intent.order_paid_event_id=$1`, paidEventID, effectport.KindCommerceProductPush).Scan(&state, &targetReference, &revision, &effects, &audits, &outbox)
-	if err != nil || state != "planned_config_expired" || targetReference != "push-expired-reference" || revision != 1 || effects != 0 || audits != 1 || outbox != 1 {
+	// The resolver fixture deliberately has no matching target. Reaching this
+	// state proves expires_at_ts is persisted metadata rather than a paid-event
+	// delivery gate; the former planner would have stopped at
+	// planned_config_expired before target lookup.
+	if err != nil || state != "planned_target_unavailable" || targetReference != "push-expired-reference" || revision != 1 || effects != 0 || audits != 1 || outbox != 1 {
 		t.Fatalf("expired paid intent state/ref/revision/effects/audits/outbox=%q/%q/%d/%d/%d/%d err=%v", state, targetReference, revision, effects, audits, outbox, err)
 	}
 }
@@ -1477,4 +1482,180 @@ func commerceFundsCallbackRequest(path string, body []byte, headers http.Header)
 		request.Header[key] = append([]string(nil), values...)
 	}
 	return request
+}
+
+// TestPostgreSQLProductExternalPushTestHTTPReturnsReceiverDeliveryID runs the
+// admin test-button POST through Product's real HTTP handler, then executes
+// its accepted EER effect against a local loopback-only receiver. The returned
+// correlation value must be the same legacy delivery_id the receiver sees;
+// accepted state itself remains distinct from Provider delivery proof.
+func TestPostgreSQLProductExternalPushTestHTTPReturnsReceiverDeliveryID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	products, err := productstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var productID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection)
+VALUES('push-test-delivery-id','测试推送回执商品',1200,'CNY',1,1,'{"schema_version":1,"status":"enabled","enabled":true}'::jsonb) RETURNING id`).Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+
+	var receiverLock sync.Mutex
+	var receiverDeliveryID string
+	receiver := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, readErr := io.ReadAll(http.MaxBytesReader(writer, request.Body, 64<<10))
+		if readErr != nil {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var payload struct {
+			DeliveryID string `json:"delivery_id"`
+		}
+		if json.Unmarshal(body, &payload) != nil || payload.DeliveryID == "" || request.Header.Get("X-AICRM-Delivery-Id") != payload.DeliveryID {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		receiverLock.Lock()
+		receiverDeliveryID = payload.DeliveryID
+		receiverLock.Unlock()
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer receiver.Close()
+
+	target := outbound.CommercePushTarget{
+		Reference: "product-test-delivery-target", Slot: "product-test-delivery-slot", Endpoint: receiver.URL + "/legacy/test", SigningKey: []byte("product-test-delivery-signing-key"), Version: "legacy-v1", TenantID: "aicrm", AllowLoopbackHTTP: true,
+		BuyerID:          outbound.CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:commerce-fixture"},
+		BuyerOpenID:      outbound.CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:commerce-fixture"},
+		BuyerUnionID:     outbound.CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:commerce-fixture"},
+		BuyerPhone:       outbound.CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
+		BeneficiaryPhone: outbound.CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
+	}
+	if err = outbound.ValidateCommercePushTarget(target); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, saveErr := products.SaveCommerceExternalPushConfiguration(tx, productport.ExternalPushConfiguration{
+			ProductID: productport.ID(productID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: target.Reference,
+			PushType: "paid_notify", CustomParams: map[string]any{"fixture": "test"},
+		}, time.Now().UTC())
+		return saveErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	workers := river.NewWorkers()
+	effectsModule := effects.NewModuleRegistration()
+	if err = effectsModule.RegisterWorkers(workers); err != nil {
+		t.Fatal(err)
+	}
+	insertClient, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectStore, err := effects.NewRepository(pool, insertClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := outbound.NewCommercePayloadAESGCM(base64.RawStdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := &commerceFundsPushTargets{target: target}
+	commerce, err := outbound.NewCommercePushService(pool, uow, effectStore, commerceFundsProductConfigurationReader{repository: products}, commerceFundsPushIdentityReader{}, targets, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion, err := outbound.NewCommercePushCompletionSink(commerce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = effectStore.SetCompletionSink(completion); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := outbound.NewCommercePushProvider(true, commerce, targets, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := &commerceFundsProductPushEvents{}
+	external, err := productapp.NewCommerceExternalPushService(uow, products, commerce, commerce, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := producthttp.NewHandler(memberGridPGCatalog{}, memberGridPGLifecycle{}, memberGridPGService{}, external, commerceFundsSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/api/admin/wechat-pay/products/" + strconv.FormatInt(productID, 10) + "/external-push/test"
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "product-test-delivery-http-0001")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("test-button POST status=%d body=%s", response.Code, response.Body.String())
+	}
+	var accepted productport.ExternalPushTest
+	if err = json.Unmarshal(response.Body.Bytes(), &accepted); err != nil || accepted.EffectID == "" || !strings.HasPrefix(accepted.DeliveryID, "commerce_test_") {
+		t.Fatalf("test-button response=%s accepted=%#v err=%v", response.Body.String(), accepted, err)
+	}
+
+	replayRequest := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+	replayRequest.Header.Set("Content-Type", "application/json")
+	replayRequest.Header.Set("Idempotency-Key", "product-test-delivery-http-0001")
+	replay := httptest.NewRecorder()
+	handler.ServeHTTP(replay, replayRequest)
+	var replayed productport.ExternalPushTest
+	if replay.Code != http.StatusAccepted || json.Unmarshal(replay.Body.Bytes(), &replayed) != nil || replayed.DeliveryID != accepted.DeliveryID || replayed.EffectID != accepted.EffectID {
+		t.Fatalf("test-button replay status=%d body=%s first=%#v replay=%#v", replay.Code, replay.Body.String(), accepted, replayed)
+	}
+
+	var effectID, generation, riverJobID int64
+	if err = pool.QueryRow(ctx, `SELECT effect.id,effect.generation,job.river_job_id
+FROM external_effects effect
+JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation
+WHERE effect.id=substring($1 FROM 5)::bigint`, accepted.EffectID).Scan(&effectID, &generation, &riverJobID); err != nil {
+		t.Fatal(err)
+	}
+	if err = effectStore.RunAttempt(ctx, effectID, generation, riverJobID, provider); err != nil {
+		t.Fatal(err)
+	}
+	receiverLock.Lock()
+	receivedDeliveryID := receiverDeliveryID
+	receiverLock.Unlock()
+	if receivedDeliveryID != accepted.DeliveryID {
+		t.Fatalf("test-button response delivery_id=%q receiver delivery_id=%q", accepted.DeliveryID, receivedDeliveryID)
+	}
+
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, path, nil))
+	var listed struct {
+		Items []productport.ExternalPushTest `json:"items"`
+	}
+	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &listed) != nil || len(listed.Items) != 1 || listed.Items[0].DeliveryID != accepted.DeliveryID || listed.Items[0].DeliveryProven {
+		t.Fatalf("test-button readback status=%d body=%s listed=%#v", read.Code, read.Body.String(), listed)
+	}
 }

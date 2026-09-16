@@ -31,9 +31,9 @@ import (
 
 // TestPostgreSQLProductExternalPushChromiumJourney uses the real Access
 // login/CSRF flow and the frozen ordinary- and service-period-product forms
-// with their V3 Host. It proves that textarea JSON is preserved through
-// browser -> HTTP -> Product PostgreSQL -> immutable synthetic Provider
-// payload without a JavaScript number round-trip. It then uses the normal
+// with their V3 Host. It proves that the legacy key/value panel preserves
+// raw JSON values through browser -> HTTP -> Product PostgreSQL -> immutable
+// synthetic Provider payload without a JavaScript number round-trip. It then uses the normal
 // EER/River worker against the reserved .invalid fixture target and manually
 // refreshes the Host until the durable result is outcome_unknown. No legacy
 // receiver can be reached from that target; the separate CommerceFunds journey
@@ -84,18 +84,19 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 
 	fixture := newProductExternalPushChromiumFixture(t)
 	outerSession, outerCSRF := adminAccessLogin(t, fixture.application.handler, "product-browser-owner", "product-browser-owner-password")
-	// Seed an existing legacy configuration through its owner HTTP contract.
-	// Fresh revision-zero editors now correctly start in field-mapping mode.
+	// Seed the old Product configuration through its owner HTTP contract. The
+	// high-precision nested JSON is deliberately present before the browser
+	// edits an unrelated key/value row: this catches UI round trips through a
+	// JavaScript Number without reintroducing the retired JSON editor.
 	for _, path := range []string{
 		"/api/admin/wechat-pay/products/" + strconv.FormatInt(fixture.productID, 10) + "/external-push",
 		"/api/admin/service-period-products/" + strconv.FormatInt(fixture.serviceProductID, 10) + "/external-push",
 	} {
-		response := productExternalPushAdminMutation(t, fixture.application.handler, http.MethodPut, path, `{"enabled":true,"url":"https://commerce-browser.invalid","configuration_reference":"browser-push-target","type":"paid_notify","day":null,"frequency":null,"expires_at_ts":null,"remark":"legacy fixture","custom_params":{},"expected_revision":0}`, outerSession, outerCSRF, "browser-seed-legacy-config-"+strconv.FormatInt(int64(len(path)), 10))
+		response := productExternalPushAdminMutation(t, fixture.application.handler, http.MethodPut, path, `{"enabled":true,"webhook_url":"https://commerce-browser.invalid","configuration_reference":"browser-push-target","push_type":"paid_notify","day":null,"frequency":null,"expires_at_ts":null,"remark":"legacy fixture","custom_params":{"count":9007199254740993,"nested":[{"inner":9007199254740993}],"flag":false},"expected_revision":0}`, outerSession, outerCSRF, "browser-seed-legacy-config-"+strconv.FormatInt(int64(len(path)), 10))
 		if response.Code != http.StatusOK {
 			t.Fatalf("seed legacy push status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
-	exactParams := "{\"count\":9007199254740993,\"nested\":[{\"inner\":9007199254740993}],\"flag\":false}"
 	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
 	command.Env = append(os.Environ(),
 		"AICRM_PRODUCT_PUSH_TEST_URL="+fixture.server.URL,
@@ -106,7 +107,6 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		"AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID="+strconv.FormatInt(fixture.materialFirstID, 10),
 		"AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID="+strconv.FormatInt(fixture.materialLaterID, 10),
 		"AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
-		"AICRM_PRODUCT_PUSH_TEST_PARAMS="+exactParams,
 	)
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "product_external_push_chromium: SKIP_DEVTOOLS") {

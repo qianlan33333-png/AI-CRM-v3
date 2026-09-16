@@ -27,7 +27,7 @@ const dom = new JSDOM(page, { url: 'https://test.invalid/admin/spProductForm.htm
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href); const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     calls.push({ path: url.pathname, method, body: typeof init.body === 'string' ? init.body : '' }); const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
     if (url.pathname === '/api/admin/service-period-products' && method === 'POST') return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: ['/api/admin/image-library/39/variants/original'], admin_projection: projection, distribution_policy: { enabled: true, commission_rate_basis_points: 2345, wait_days: 9, version: 1 }, version: 1 } }, 201);
-    if (url.pathname === '/api/admin/service-period-products/201/external-push') return json({ product_id: 201, product_kind: 'service_period', enabled: false, configuration_reference: '', updated_at: '2026-09-08T00:00:00Z' });
+    if (url.pathname === '/api/admin/service-period-products/201/external-push') return json({ product_id: 201, product_kind: 'service_period', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {}, custom_params_json: '{}', updated_at: '2026-09-08T00:00:00Z' });
     if (url.pathname === '/api/admin/service-period-products/201') {
       if (method === 'PUT') { assert.equal(JSON.parse(init.body).duration_days, 90, 'preserve persisted duration required by backend'); assert.equal(JSON.parse(init.body).expected_version, version); version += 1; }
       return json({ product: { duration_days: 90, service_product_id: 201, product_code: 'sp-media', name: '周期素材', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, version } });
@@ -81,8 +81,8 @@ const actionEnabled = document.querySelector('[data-product-purchase-enabled]');
 actionEnabled.checked = true; actionEnabled.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
 const qrMode = document.querySelector('input[name="spfPurchaseActionMode"][value="qr"]');
 qrMode.checked = true; qrMode.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
-assert.notEqual(dom.window.getComputedStyle(document.getElementById('spfLeadQrTitle').parentElement).display, 'none');
-assert.equal(dom.window.getComputedStyle(document.getElementById('spfCompletionRedirectUrl').parentElement).display, 'none');
+assert.equal(document.querySelector('[data-product-purchase-lead]').hidden, false, 'QR mode must reveal the parity lead fields');
+assert.equal(document.querySelector('[data-product-purchase-redirect]').hidden, true, 'QR mode must hide parity redirect fields');
 actionEnabled.checked = false; actionEnabled.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
 document.querySelector('a[href="#sp-media"]').click();
 

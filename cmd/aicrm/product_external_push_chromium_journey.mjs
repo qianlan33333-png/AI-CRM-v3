@@ -11,7 +11,6 @@ const serviceProductID = process.env.AICRM_PRODUCT_PUSH_TEST_SERVICE_PRODUCT_ID;
 const materialFirstID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_FIRST_ID;
 const materialLaterID = process.env.AICRM_PRODUCT_PUSH_TEST_MATERIAL_LATER_ID;
 const historicalOrderReference = process.env.AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER;
-const exactParams = process.env.AICRM_PRODUCT_PUSH_TEST_PARAMS;
 const screenshotDirectory = process.env.AICRM_PRODUCT_PUSH_SCREENSHOT_DIR;
 // The Product owner derives a stable per-product endpoint reference from the
 // target submitted to its admin command. Browser checks must use the owner's
@@ -20,8 +19,7 @@ const productConfigurationReference = `product-endpoint:wechat_pay:${productID}`
 // The fixture input intentionally has a different key order. Go persists an
 // object and returns its canonical map text. Keep this as literal JSON rather
 // than parsing it in JavaScript: JSON.parse would round the 64-bit integer.
-const canonicalParams = '{"count":9007199254740993,"flag":false,"nested":[{"inner":9007199254740993}]}';
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(materialFirstID || "") || !/^[1-9][0-9]*$/.test(materialLaterID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !exactParams) {
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(materialFirstID || "") || !/^[1-9][0-9]*$/.test(materialLaterID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "")) {
   throw new Error("product external push Chromium journey requires HTTPS URL, credentials, ordinary and service-period product ids, historical order, and JSON");
 }
 
@@ -34,6 +32,14 @@ async function captureProductMaterialScreens(cdp, prefix) {
     const image = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     await fs.writeFile(path.join(screenshotDirectory, `${prefix}-${width}.png`), Buffer.from(image.data, 'base64'), { mode: 0o600 });
   }
+}
+
+async function capturePaymentActionPanel(cdp, prefix) {
+  if (!screenshotDirectory) return;
+  await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
+  await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+  const image = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  await fs.writeFile(path.join(screenshotDirectory, `${prefix}-1440x1100.png`), Buffer.from(image.data, 'base64'), { mode: 0o600 });
 }
 // Do not embed a regular expression in a Runtime.evaluate template string:
 // JavaScript string escaping would turn `\s` into a literal `s`. Cookie order
@@ -199,37 +205,27 @@ try {
   });
   const browserSaveDiagnostic = async () => {
     const page = await evaluate(cdp, `(() => {
-      const panel = document.querySelector('[data-external-push-configuration]');
-      const save = document.querySelector('[data-external-push-configuration-save]');
+      const panel = document.querySelector('[data-product-parity-push]');
+      const save = panel?.querySelector('[data-product-parity-push-save]');
+      const result = panel?.querySelector('[data-product-parity-push-result]')?.textContent || '';
       const toast = document.querySelector('#product-v3-toast');
-      const status = panel?.querySelector('[data-external-push-configuration-status]')?.textContent || '';
       const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '='));
-      const version = status.match(/^配置版本 (\\d+)$/);
-      const knownStatus = status === '正在读取配置…' ? 'configuration_loading'
-        : version ? 'configuration_version_' + version[1]
-        : status === '外推配置响应不完整' ? 'configuration_response_invalid'
-        : /^外推请求失败（HTTP \d+）$/.test(status) ? 'configuration_http_error'
-        : status ? 'configuration_status_other' : 'configuration_status_empty';
-      const toastText = String(toast?.textContent || '');
-      const knownToast = toastText === '外推配置尚未读取完成' ? 'configuration_not_loaded'
-        : toastText === '外推业务参数已保存；未发送外部请求。' ? 'configuration_saved'
-        : toastText ? 'toast_other' : 'toast_empty';
       return {
         path: location.pathname,
-        status: knownStatus,
-        toast: knownToast,
+        result: result ? 'push_result_present' : 'push_result_empty',
+        toast: String(toast?.textContent || '') ? 'toast_present' : 'toast_empty',
         saveDisabled: Boolean(save && save.disabled),
         adminCSRF: hasCookie('aicrm_admin_csrf'),
         compatCSRF: hasCookie('aicrm_csrf'),
         anchor: Boolean(document.querySelector(location.pathname.endsWith('/admin/wechat-pay/spProductForm.html') ? '#sp-push' : '#product-push')),
-        hostPanel: Boolean(document.querySelector('#product-v3-external-push-test')),
-        businessBinding: Boolean(document.querySelector(location.pathname.endsWith('/admin/wechat-pay/spProductForm.html') ? '#spfExternalPushEnabled' : '#pfExternalPushEnabled')),
+        hostPanel: Boolean(panel),
+        retiredPanelAbsent: !document.querySelector('[data-external-push-configuration]') && !document.querySelector('#product-v3-external-push-custom-params'),
         productHostAsset: Array.from(document.scripts).some((script) => String(script.src || '').includes('/product-assets/')),
         frozenAdminEntry: Array.from(document.scripts).some((script) => String(script.src || '').includes('/assets/')),
       };
     })()`);
     const routes = responses.join(',') || 'none';
-    return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} binding=${page?.businessBinding === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
+    return `path=${page?.path || 'unknown'} result=${page?.result || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} retired_panel_absent=${page?.retiredPanelAbsent === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
   };
 
   const assertProductEditorHeader = async (kind, title, returnLabel) => {
@@ -277,7 +273,8 @@ try {
   await evaluate(cdp, "(() => { document.querySelector('input[name=\"username\"]').value=" + JSON.stringify(username) + "; document.querySelector('input[name=\"password\"]').value=" + JSON.stringify(password) + "; document.querySelector('form[action=\"/login\"]').requestSubmit(); return true; })()");
   await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html'", "login did not reach frozen product form");
 
-  const hostReady = "Boolean(document.querySelector('[data-external-push-configuration]')) && Boolean(document.querySelector('#product-v3-external-push-custom-params'))";
+  const hostReady = "Boolean(document.querySelector('[data-product-parity-push]')) && !document.querySelector('[data-external-push-configuration]') && !document.querySelector('#product-v3-external-push-custom-params')";
+  const pushReady = hostReady + " && !document.querySelector('[data-product-parity-push-save]')?.disabled";
   try {
     await waitFor(cdp, hostReady, "product Host did not render");
   } catch (_) {
@@ -345,17 +342,13 @@ try {
   // Wait for the first revision rather than racing the closure that owns the
   // configuration snapshot used for CAS in the save handler.
   try {
-    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "product configuration did not load");
+    await waitFor(cdp, pushReady, "product configuration did not load");
   } catch (_) {
     throw new Error("product configuration did not load " + await browserSaveDiagnostic());
   }
   const configurationBeforeMaterial = await evaluate(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>({enabled:body?.enabled===true,reference:body?.configuration_reference===" + JSON.stringify(productConfigurationReference) + "?'expected':body?.configuration_reference===''?'empty':'other'}))");
   if (!configurationBeforeMaterial?.enabled || configurationBeforeMaterial?.reference !== 'expected') {
     throw new Error('product lifecycle changed the seeded external-push configuration ' + JSON.stringify(configurationBeforeMaterial || {}));
-  }
-  const productFrozenBinding = await evaluate(cdp, "(()=>{const enabled=document.querySelector('#pfExternalPushEnabled');const references=[...document.querySelectorAll('#pfExternalPushReference')].filter((node)=>node instanceof HTMLInputElement);return {enabled:enabled instanceof HTMLSelectElement&&enabled.value==='true',references:{expected:references.filter((node)=>node.value===" + JSON.stringify(productConfigurationReference) + ").length,empty:references.filter((node)=>node.value==='').length,other:references.filter((node)=>node.value!==''&&node.value!==" + JSON.stringify(productConfigurationReference) + ").length}}})()");
-  if (!productFrozenBinding?.enabled || productFrozenBinding?.references?.expected !== 1 || productFrozenBinding.references.empty !== 0 || productFrozenBinding.references.other !== 0) {
-    throw new Error('product configuration did not synchronize the frozen product draft ' + JSON.stringify(productFrozenBinding || {}));
   }
   // The V3 caller reads its own paged, authorised Media catalogue. Pick an
   // item from the first page, remove it in the temporary dialog, then confirm
@@ -408,8 +401,8 @@ try {
   if (!productSortMoved) throw new Error('product material sort did not preserve the active row action');
   await evaluate(cdp, "Array.from(document.querySelectorAll('#product-media button')).find((button)=>button.textContent?.trim()==='保存当前维度').click(); true");
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度')", 'product material owner save did not complete');
-  await waitFor(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Number(body?.revision)===2)", 'product material owner save did not advance the original external-push CAS revision');
-  const preservedAfterMaterialSave = await evaluate(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>({enabled:body?.enabled===true,reference:body?.configuration_reference===" + JSON.stringify(productConfigurationReference) + "?'expected':body?.configuration_reference===''?'empty':'other',url:body?.url==='https://commerce-browser.invalid',type:body?.type==='paid_notify',params:body?.custom_params_json==='{}'}))");
+  await waitFor(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>Number(body?.revision)===1)", 'product material owner save changed the independent external-push revision');
+  const preservedAfterMaterialSave = await evaluate(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>({enabled:body?.enabled===true,reference:body?.configuration_reference===" + JSON.stringify(productConfigurationReference) + "?'expected':body?.configuration_reference===''?'empty':'other',url:body?.webhook_url==='https://commerce-browser.invalid',type:body?.push_type==='paid_notify',params:typeof body?.custom_params_json==='string'&&body.custom_params_json.includes('9007199254740993')&&!body.custom_params_json.includes('9007199254740992')&&body.custom_params_json.includes('inner')}))");
   if (preservedAfterMaterialSave?.reference !== 'expected') {
     throw new Error('product material owner save changed the external-push reference ' + JSON.stringify(preservedAfterMaterialSave || {}));
   }
@@ -419,64 +412,41 @@ try {
   const uploadedProductID = Number(String(uploadedProduct).slice('image:'.length));
   const expectedProductImages = [`/api/admin/image-library/${uploadedProductID}/variants/original`, `/api/admin/image-library/${materialLaterID}/variants/original`];
   await waitFor(cdp, "fetch('/api/v1/products/" + productID + "',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>JSON.stringify(body?.images)===" + JSON.stringify(JSON.stringify(expectedProductImages)) + ")",  'product material owner save/readback did not preserve the uploaded typed receipt and chosen order');
-  // Field-variable filtering belongs to the mounted V3 mapping editor. It
-  // filters locally only after explicit Enter; preview/save remain unchanged.
-  const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');const panel=document.querySelector('#product-push');if(!(tab instanceof HTMLAnchorElement)||!(panel instanceof HTMLElement))return false;tab.click();return true})()");
+  // The legacy V3 mapping conversion/editor and its JSON textarea are retired.
+  // The API may still contain historical mapping data, but the current Product
+  // panel must not offer a second editor for it.
+  const retiredMappingAbsent = await evaluate(cdp, "!document.querySelector('[data-mapping-conversion]') && !document.querySelector('[data-fm-rows]') && !document.querySelector('#product-v3-external-push-test') && !document.querySelector('[data-external-push-configuration]') && !document.querySelector('#product-v3-external-push-custom-params')");
+  if (!retiredMappingAbsent) throw new Error('retired external-push mapping controls remained mounted');
+  const productPushTabOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#product-push\"]');if(!(tab instanceof HTMLAnchorElement))return false;tab.click();return Boolean(document.querySelector('[data-product-parity-push]'))})()");
   if (!productPushTabOpened) throw new Error('product external-push tab was unavailable');
-  await waitFor(cdp, "(()=>{const panel=document.querySelector('#product-push');const conversion=[...(panel?.querySelectorAll('button')||[])].find(item=>item.textContent?.trim()==='转换为字段映射');return Boolean(panel&&conversion&&panel.getClientRects().length&&getComputedStyle(panel).visibility!=='hidden')})()", "product external-push tab did not become visible before field-mapping conversion");
-  const conversionOpened = await evaluate(cdp, "(()=>{const panel=document.querySelector('#product-push');const button=[...(panel?.querySelectorAll('button')||[])].find(item=>item.textContent?.trim()==='转换为字段映射');if(!button)return false;button.click();return true})()");
-  if (!conversionOpened) throw new Error('product field-mapping conversion entry was unavailable');
-  await waitFor(cdp, "Boolean(document.querySelector('[data-mapping-conversion]'))", "product field-mapping conversion preview did not open");
-  await evaluate(cdp, "[...document.querySelectorAll('[data-mapping-conversion] button')].find(item=>item.textContent?.trim()==='确认转换').click(); true");
-  await waitFor(cdp, "Boolean(document.querySelector('[data-fm-rows] .fm-row'))", "product field-mapping editor did not mount");
-  const mappingSearchCandidate = await evaluate(cdp, `(()=>{
-    const row=document.querySelector('[data-fm-rows] .fm-row');
-    const source=row?.querySelectorAll('select')[0];
-    if (!(source instanceof HTMLSelectElement)) return null;
-    source.value='variable'; source.dispatchEvent(new Event('change',{bubbles:true}));
-    const picker=row.querySelector('button.fm-variable'); picker?.click();
-    const input=row.querySelector('[data-field-mapping-variable-search]');
-    if (!(input instanceof HTMLInputElement)) return null;
-    const choices=()=>row.querySelectorAll('.fm-choice').length;
-    const before=choices(); input.focus(); const focused=document.activeElement===input; input.value='付款';
-    input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
-    input.dispatchEvent(new FocusEvent('blur',{bubbles:true}));
-    input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
-    input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
-    const candidate=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter',isComposing:true});
-    Object.defineProperty(candidate,'keyCode',{value:229}); input.dispatchEvent(candidate);
-    return {before,after:choices(),focused,prevented:candidate.defaultPrevented};
-  })()`);
-  if (!mappingSearchCandidate || !mappingSearchCandidate.focused || mappingSearchCandidate.prevented || mappingSearchCandidate.before !== 3 || mappingSearchCandidate.after !== 3) throw new Error('product field-mapping IME candidate altered variable choices or did not receive focus');
-  await evaluate(cdp, "document.querySelector('[data-field-mapping-variable-search]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); true");
-  await waitFor(cdp, "document.querySelectorAll('[data-fm-rows] .fm-choice').length===1 && document.querySelector('[data-fm-rows] .fm-choice')?.textContent.includes('付款人昵称')", "product field-mapping ordinary Enter did not filter variables");
-  const mappingSearchFocus = await evaluate(cdp, "(()=>{const input=document.querySelector('[data-field-mapping-variable-search]');return Boolean(input&&document.activeElement===input&&input.value==='付款')})()");
-  if (!mappingSearchFocus) throw new Error('product field-mapping Enter did not retain query focus');
-  await cdp.call("Page.navigate", { url: baseURL + productPath });
+  const highPrecisionBeforeEdit = await evaluate(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-product-parity-param-row]')];const value=(key)=>rows.find(row=>row.querySelector('[data-product-parity-param-key]')?.value===key)?.querySelector('[data-product-parity-param-value]')?.value||'';return {count:value('count'),nested:value('nested'),flag:value('flag')}})()");
+  if (highPrecisionBeforeEdit?.count !== '9007199254740993' || highPrecisionBeforeEdit?.nested !== '[{\"inner\":9007199254740993}]' || highPrecisionBeforeEdit?.flag !== 'false') throw new Error('legacy custom_params lost typed values before edit ' + JSON.stringify(highPrecisionBeforeEdit || {}));
+  await capturePaymentActionPanel(cdp, 'ordinary-push');
+  const ordinaryParamAdded = await evaluate(cdp, "(()=>{const panel=document.querySelector('[data-product-parity-push]');const add=panel?.querySelector('[data-product-parity-push-add]');if(!(add instanceof HTMLButtonElement))return false;add.click();const rows=[...panel.querySelectorAll('[data-product-parity-param-row]')];const row=rows.at(-1);const key=row?.querySelector('[data-product-parity-param-key]');const value=row?.querySelector('[data-product-parity-param-value]');if(!(key instanceof HTMLInputElement)||!(value instanceof HTMLInputElement))return false;key.value='campaign';key.dispatchEvent(new Event('input',{bubbles:true}));value.value='browser-control';value.dispatchEvent(new Event('input',{bubbles:true}));return true})()");
+  if (!ordinaryParamAdded) throw new Error('ordinary key/value custom parameter entry was unavailable');
+  await evaluate(cdp, "(()=>{const panel=document.querySelector('[data-product-parity-push]');const type=panel?.querySelector('[data-product-parity-push-type]');const day=panel?.querySelector('[data-product-parity-push-day]');const frequency=panel?.querySelector('[data-product-parity-push-frequency]');const expires=panel?.querySelector('[data-product-parity-push-expires]');const remark=panel?.querySelector('[data-product-parity-push-remark]');if(!(type instanceof HTMLInputElement)||!(day instanceof HTMLInputElement)||!(frequency instanceof HTMLInputElement)||!(expires instanceof HTMLInputElement)||!(remark instanceof HTMLTextAreaElement))return false;type.value='member_open';day.value='30';frequency.value='1';expires.value='2147483647';remark.value='browser preserves typed parameters';panel.querySelector('[data-product-parity-push-save]')?.click();return true})()");
   try {
-    await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 2'", "product form did not reset after local mapping search proof");
+    await waitFor(cdp, "document.querySelector('[data-product-parity-push-result]')?.textContent === '配置已保存'", 'browser configuration save did not finish');
   } catch (_) {
-    throw new Error("product form did not reset after local mapping search proof " + await browserSaveDiagnostic());
+    throw new Error('browser configuration save did not finish ' + await browserSaveDiagnostic());
   }
-  await evaluate(cdp, "(() => { document.querySelector('a[href=\"#product-push\"]')?.click(); const enabled=document.querySelector('#pfExternalPushEnabled'); const reference=document.querySelector('#pfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-url').value='https://commerce-browser.invalid'; document.querySelector('#product-v3-external-push-type').value='member_open'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; (Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')) || document.querySelector('[data-external-push-configuration-save]')).click(); return true; })()");
-  try {
-    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '3' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "browser configuration save did not finish");
-  } catch (_) {
-    throw new Error("browser configuration save did not finish " + await browserSaveDiagnostic());
-  }
-  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "browser save changed typed custom JSON before reload");
+  const highPrecisionSaved = await evaluate(cdp, "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>({revision:Number(body?.revision),raw:String(body?.custom_params_json||''),campaign:body?.custom_params?.campaign}))");
+  if (highPrecisionSaved?.revision !== 2 || highPrecisionSaved?.campaign !== 'browser-control' || !highPrecisionSaved.raw.includes('9007199254740993') || highPrecisionSaved.raw.includes('9007199254740992') || highPrecisionSaved.raw.split('9007199254740993').length < 3) throw new Error('browser save rounded or replaced legacy typed custom_params ' + JSON.stringify(highPrecisionSaved || {}));
 
-  await cdp.call("Page.navigate", { url: baseURL + productPath });
-  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html' && " + hostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded product Host did not preserve exact JSON text or expiry");
-  await evaluate(cdp, "document.querySelector('[data-external-push-test=\"run\"]').click(); true");
-  await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('测试已受理，等待受控投递')", "synthetic test was not accepted through Product HTTP");
-  const terminalTimeline = "document.querySelector('[data-external-push-timeline]')?.textContent.includes('结果未知，需按原投递 ID 对账')";
+  await cdp.call('Page.navigate', { url: baseURL + productPath });
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/productForm.html' && " + pushReady, 'reloaded Product Host did not resolve external-push configuration');
+  const highPrecisionAfterReload = await evaluate(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-product-parity-param-row]')];const value=(key)=>rows.find(row=>row.querySelector('[data-product-parity-param-key]')?.value===key)?.querySelector('[data-product-parity-param-value]')?.value||'';return {count:value('count'),nested:value('nested'),campaign:value('campaign'),expires:document.querySelector('[data-product-parity-push-expires]')?.value||''}})()");
+  if (highPrecisionAfterReload?.count !== '9007199254740993' || highPrecisionAfterReload?.nested !== '[{\"inner\":9007199254740993}]' || highPrecisionAfterReload?.campaign !== 'browser-control' || highPrecisionAfterReload?.expires !== '2147483647') throw new Error('reloaded Product panel changed legacy typed custom_params ' + JSON.stringify(highPrecisionAfterReload || {}));
+  await evaluate(cdp, "document.querySelector('[data-product-parity-push-test]')?.click(); true");
+  await waitFor(cdp, "document.querySelector('[data-product-parity-push-result]')?.textContent.includes('delivery_id: commerce_test_')", 'synthetic test did not return its legacy delivery_id through Product HTTP');
+  const acceptedTestResult = await evaluate(cdp, "document.querySelector('[data-product-parity-push-result]')?.textContent||''");
+  if (!acceptedTestResult.includes('测试推送') || acceptedTestResult.includes('业务已送达')) throw new Error('test push UI claimed delivery from local acceptance ' + acceptedTestResult);
+  const terminalTestStatus = "fetch('/api/admin/wechat-pay/products/" + productID + "/external-push/test',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>{const item=body?.items?.[0];return item?.state==='outcome_unknown'&&item?.delivery_proven===false&&typeof item?.delivery_id==='string'&&item.delivery_id.startsWith('commerce_test_')})";
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    await evaluate(cdp, "document.querySelector('[data-external-push-test=\"refresh\"]')?.click(); true");
-    if (await evaluate(cdp, terminalTimeline)) break;
+    if (await evaluate(cdp, terminalTestStatus)) break;
     await delay(250);
   }
-  if (!await evaluate(cdp, terminalTimeline)) throw new Error("manual refresh did not display the durable unknown terminal result");
+  if (!await evaluate(cdp, terminalTestStatus)) throw new Error('external-push test status did not reach the durable unknown result without a delivery claim');
 
   // The frozen service-period form has separate donor bindings and a separate
   // Host endpoint. Save and reload it through the outer application handler
@@ -484,18 +454,13 @@ try {
   const serviceProductPath = "/admin/wechat-pay/spProductForm.html?id=" + serviceProductID;
   await cdp.call("Page.navigate", { url: baseURL + serviceProductPath });
   await waitFor(cdp, "location.pathname === '/admin/wechat-pay/spProductForm.html'", "navigation did not reach frozen service-period product form");
-  const serviceHostReady = hostReady + " && Boolean(document.querySelector('#spfExternalPushEnabled'))";
+  const serviceHostReady = pushReady;
   try {
     await waitFor(cdp, serviceHostReady, "service-period product Host did not render");
   } catch (_) {
     throw new Error("service-period product Host did not render " + await browserSaveDiagnostic());
   }
   await assertProductEditorHeader('service-period', '编辑周期商品', '返回周期商品管理');
-  try {
-    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 1'", "service-period product configuration did not load");
-  } catch (_) {
-    throw new Error("service-period product configuration did not load " + await browserSaveDiagnostic());
-  }
   // The service-period editor uses a separate frozen callback. Exercise its
   // real file input too: the receipt must remain in the active media draft and
   // must not reset this form before its owner explicitly saves.
@@ -509,15 +474,24 @@ try {
   await cdp.call('DOM.setFileInputFiles', { files: [serviceUploadPath], nodeId: serviceUploadNode.nodeId });
   await waitFor(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-v3-product-material-list] [data-v3-product-material-key]')];const tab=document.querySelector('a[href=\"#sp-media\"]');return rows.length===1&&tab?.getAttribute('aria-current')==='step'&&document.querySelector('#spfDescription')?.value==='Chromium service material draft remains active'})()", 'service-period upload reset the current media dimension or did not append its typed receipt');
   await captureProductMaterialScreens(cdp, 'service-material-draft');
-  await evaluate(cdp, "(() => { document.querySelector('a[href=\"#sp-push\"]')?.click(); const enabled=document.querySelector('#spfExternalPushEnabled'); const reference=document.querySelector('#spfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-url').value='https://commerce-browser.invalid'; document.querySelector('#product-v3-external-push-type').value='member_renew'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='service browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; (Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='保存当前维度' && !button.closest('#product-push') && !button.closest('#sp-push')) || document.querySelector('[data-external-push-configuration-save]')).click(); return true; })()");
+  // The service-period form reuses the same frozen panel contract. Preserve
+  // its pre-existing raw high-precision values while adding one independent
+  // key/value and verify readback after a route reload.
+  const servicePushOpened = await evaluate(cdp, "(()=>{const tab=document.querySelector('a[href=\"#sp-push\"]');if(!(tab instanceof HTMLAnchorElement))return false;tab.click();return Boolean(document.querySelector('[data-product-parity-push]'))})()");
+  if (!servicePushOpened) throw new Error('service-period external-push tab was unavailable');
+  await capturePaymentActionPanel(cdp, 'service-period-push');
+  const serviceParamAdded = await evaluate(cdp, "(()=>{const panel=document.querySelector('[data-product-parity-push]');const count=[...panel.querySelectorAll('[data-product-parity-param-row]')].find(row=>row.querySelector('[data-product-parity-param-key]')?.value==='count')?.querySelector('[data-product-parity-param-value]')?.value;if(count!=='9007199254740993')return false;const add=panel.querySelector('[data-product-parity-push-add]');if(!(add instanceof HTMLButtonElement))return false;add.click();const row=[...panel.querySelectorAll('[data-product-parity-param-row]')].at(-1);const key=row?.querySelector('[data-product-parity-param-key]');const value=row?.querySelector('[data-product-parity-param-value]');if(!(key instanceof HTMLInputElement)||!(value instanceof HTMLInputElement))return false;key.value='service_campaign';key.dispatchEvent(new Event('input',{bubbles:true}));value.value='browser-service';value.dispatchEvent(new Event('input',{bubbles:true}));const type=panel.querySelector('[data-product-parity-push-type]');const expires=panel.querySelector('[data-product-parity-push-expires]');if(!(type instanceof HTMLInputElement)||!(expires instanceof HTMLInputElement))return false;type.value='member_renew';expires.value='2147483647';panel.querySelector('[data-product-parity-push-save]')?.click();return true})()");
+  if (!serviceParamAdded) throw new Error('service-period key/value panel did not preserve or add typed parameters');
   try {
-    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.dataset.configurationRevision === '2' && document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置已保存'", "service-period browser configuration save did not finish");
+    await waitFor(cdp, "document.querySelector('[data-product-parity-push-result]')?.textContent === '配置已保存'", 'service-period browser configuration save did not finish');
   } catch (_) {
-    throw new Error("service-period browser configuration save did not finish " + await browserSaveDiagnostic());
+    throw new Error('service-period browser configuration save did not finish ' + await browserSaveDiagnostic());
   }
-  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "service-period browser save changed typed custom JSON before reload");
-  await cdp.call("Page.navigate", { url: baseURL + serviceProductPath });
-  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/spProductForm.html' && " + serviceHostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded service-period Host did not preserve exact JSON text or expiry");
+  await cdp.call('Page.navigate', { url: baseURL + serviceProductPath });
+  await waitFor(cdp, "location.pathname === '/admin/wechat-pay/spProductForm.html' && " + pushReady, 'reloaded service-period Host did not resolve external-push configuration');
+  const servicePrecisionAfterReload = await evaluate(cdp, "(()=>{const rows=[...document.querySelectorAll('[data-product-parity-param-row]')];const value=(key)=>rows.find(row=>row.querySelector('[data-product-parity-param-key]')?.value===key)?.querySelector('[data-product-parity-param-value]')?.value||'';return {count:value('count'),nested:value('nested'),campaign:value('service_campaign'),expires:document.querySelector('[data-product-parity-push-expires]')?.value||''}})()");
+  if (servicePrecisionAfterReload?.count !== '9007199254740993' || servicePrecisionAfterReload?.nested !== '[{\"inner\":9007199254740993}]' || servicePrecisionAfterReload?.campaign !== 'browser-service' || servicePrecisionAfterReload?.expires !== '2147483647') throw new Error('service-period reload changed typed custom_params ' + JSON.stringify(servicePrecisionAfterReload || {}));
+
 
   const historicalOrderPath = "/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference);
   await cdp.call("Page.navigate", { url: baseURL + historicalOrderPath });

@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -152,6 +153,10 @@ type CheckoutProduct struct {
 	LeadQRTitle            string
 	LeadQRSubtitle         string
 	CompletionBlocksLeadQR bool
+	// PostPurchaseAction is Product's canonical, buyer-facing action snapshot.
+	// Payment carries it unchanged into Order's immutable checkout fact; it is
+	// never supplied by the browser or interpreted by Order.
+	PostPurchaseAction json.RawMessage
 	// ServicePeriodDurationDays is positive only for a service_period item.
 	// It is frozen by the Order checkout snapshot before payment begins.
 	ServicePeriodDurationDays int32

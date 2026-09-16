@@ -95,6 +95,14 @@ type publicCommerceTrustedH5Session struct {
 }
 
 func issuePublicCommerceTrustedH5Session(t *testing.T, fixture *productExternalPushChromiumFixture) publicCommerceTrustedH5Session {
+	return issuePublicCommerceTrustedH5SessionWithKey(t, fixture, "public-commerce-browser-h5-session-0001")
+}
+
+// issuePublicCommerceTrustedH5SessionWithKey represents a renewed H5 OAuth
+// session for the same verified OneID subject. A terminal checkout remains
+// readable to the original session while a subsequent service-period purchase
+// must use a new, not-yet-consumed session.
+func issuePublicCommerceTrustedH5SessionWithKey(t *testing.T, fixture *productExternalPushChromiumFixture, idempotencyKey string) publicCommerceTrustedH5Session {
 	t.Helper()
 	if fixture == nil || fixture.application == nil || fixture.application.paymentSession == nil {
 		t.Fatal("public commerce fixture has no composed Payment session service")
@@ -114,7 +122,7 @@ func issuePublicCommerceTrustedH5Session(t *testing.T, fixture *productExternalP
 		t.Fatal(err)
 	}
 	issued, err := fixture.application.paymentSession.IssueTrusted(fixture.ctx, paymentsession.IssueCommand{
-		Fact: openID, UnionID: unionID, IdempotencyKey: "public-commerce-browser-h5-session-0001",
+		Fact: openID, UnionID: unionID, IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		t.Fatal(err)

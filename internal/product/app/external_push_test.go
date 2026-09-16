@@ -270,11 +270,11 @@ func TestCommerceExternalPushTestCreatesOnlyAcceptedLocalEERFactAndReplays(t *te
 		configs:  map[productport.ID]productport.ExternalPushConfiguration{52: {ProductID: 52, ProductKind: productport.ExternalPushServicePeriod, Enabled: true, ConfigurationReference: "service-period-notify-52", Revision: 1, UpdatedAt: updated}},
 		receipts: map[string]Receipt{},
 	}
-	effects := &commerceExternalPushTestEffects{result: productport.ExternalPushTest{ProductID: 52, ProductKind: productport.ExternalPushServicePeriod, EffectID: "eer_1", State: "accepted", CreatedAt: updated}}
+	effects := &commerceExternalPushTestEffects{result: productport.ExternalPushTest{ProductID: 52, ProductKind: productport.ExternalPushServicePeriod, EffectID: "eer_1", DeliveryID: "commerce_test_0123456789abcdef0123456789abcdef", State: "accepted", CreatedAt: updated}}
 	service, _ := newCommerceExternalPushTestService(store, effects)
 	command := productport.QueueExternalPushTestCommand{ProductID: 52, ProductKind: productport.ExternalPushServicePeriod, Actor: 9, IdempotencyKey: "commerce-push-test-0001"}
 	first, err := service.QueueExternalPushTest(context.Background(), command)
-	if err != nil || first.EffectID != "eer_1" || first.State != "accepted" || first.ProviderAccepted || first.DeliveryProven || first.RealExternalCallExecuted || first.AutoRetryAllowed || len(store.tests) != 1 || effects.calls != 1 {
+	if err != nil || first.EffectID != "eer_1" || first.DeliveryID != "commerce_test_0123456789abcdef0123456789abcdef" || first.State != "accepted" || first.ProviderAccepted || first.DeliveryProven || first.RealExternalCallExecuted || first.AutoRetryAllowed || len(store.tests) != 1 || effects.calls != 1 {
 		t.Fatalf("first=%#v tests=%#v effects=%d err=%v", first, store.tests, effects.calls, err)
 	}
 	if effects.inputs[0].ProductID != 52 || effects.inputs[0].ProductKind != productport.ExternalPushServicePeriod || effects.inputs[0].ConfigurationReference != "service-period-notify-52" || effects.inputs[0].ConfigurationRevision != 1 || effects.inputs[0].ReceiptKeyDigest == ([32]byte{}) {
@@ -301,7 +301,7 @@ func TestCommerceExternalPushTestFailsClosedWithoutConfigurationOrWithDeliveryCl
 	}
 	store.configs[61] = productport.ExternalPushConfiguration{ProductID: 61, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "commerce-push-config-61", Revision: 1, UpdatedAt: time.Date(2026, 8, 25, 11, 0, 0, 0, time.UTC)}
 	command.IdempotencyKey = "commerce-push-test-0003"
-	effects.result = productport.ExternalPushTest{ProductID: 61, ProductKind: productport.ExternalPushWeChatPay, EffectID: "eer_74", State: "accepted", ProviderAccepted: true, CreatedAt: time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)}
+	effects.result = productport.ExternalPushTest{ProductID: 61, ProductKind: productport.ExternalPushWeChatPay, EffectID: "eer_74", DeliveryID: "commerce_test_fedcba98765432100123456789abcdef", State: "accepted", ProviderAccepted: true, CreatedAt: time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)}
 	if _, err := service.QueueExternalPushTest(context.Background(), command); !errors.Is(err, ErrUnavailable) || effects.calls != 1 || len(store.tests) != 0 {
 		t.Fatalf("delivery claim error=%v effects=%d tests=%d", err, effects.calls, len(store.tests))
 	}
@@ -492,5 +492,42 @@ func TestCommerceMappingExplicitSwitchPreservationCASAndReplay(t *testing.T) {
 	}
 	if commerceExternalPushConfigurationDigest(first) == commerceExternalPushConfigurationDigest(last) {
 		t.Fatal("mode not included in configuration snapshot digest")
+	}
+}
+
+func TestCommerceExternalPushTestReplaysLegacyReceiptWithoutDeliveryID(t *testing.T) {
+	updated := time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC)
+	command := productport.QueueExternalPushTestCommand{ProductID: 83, ProductKind: productport.ExternalPushWeChatPay, Actor: 7, IdempotencyKey: "commerce-push-legacy-test-replay-0001"}
+	payloadDigest := commerceExternalPushTestDigest(command)
+	reservation := commerceExternalPushReservation(commerceExternalPushTestOperation, command.Actor, command.IdempotencyKey, payloadDigest, updated)
+	legacy := struct {
+		ProductID                productport.ID                      `json:"product_id"`
+		ProductKind              productport.ExternalPushProductKind `json:"product_kind"`
+		EffectID                 string                              `json:"effect_id"`
+		State                    string                              `json:"state"`
+		AttemptCount             int32                               `json:"attempt_count"`
+		ProviderAccepted         bool                                `json:"provider_accepted"`
+		DeliveryProven           bool                                `json:"delivery_proven"`
+		RealExternalCallExecuted bool                                `json:"real_external_call_executed"`
+		AutoRetryAllowed         bool                                `json:"auto_retry_allowed"`
+		CreatedAt                time.Time                           `json:"created_at"`
+		UpdatedAt                time.Time                           `json:"updated_at"`
+	}{83, productport.ExternalPushWeChatPay, "eer_83", "accepted", 0, false, false, false, false, updated, time.Time{}}
+	snapshot, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &commerceExternalPushTestStore{
+		products: map[productport.ID]productport.ExternalPushProductKind{83: productport.ExternalPushWeChatPay},
+		receipts: map[string]Receipt{commerceExternalPushTestReceiptKey(reservation): {
+			ID: 1, Operation: reservation.Operation, ActorScope: reservation.ActorScope, KeyDigest: reservation.KeyDigest,
+			PayloadDigest: payloadDigest, State: "completed", ResultSnapshot: snapshot,
+		}},
+	}
+	effects := &commerceExternalPushTestEffects{}
+	service, _ := newCommerceExternalPushTestService(store, effects)
+	replayed, err := service.QueueExternalPushTest(context.Background(), command)
+	if err != nil || replayed.EffectID != "eer_83" || replayed.DeliveryID != "" || effects.calls != 0 || len(store.tests) != 0 {
+		t.Fatalf("legacy test replay=%#v effects=%d tests=%d err=%v", replayed, effects.calls, len(store.tests), err)
 	}
 }

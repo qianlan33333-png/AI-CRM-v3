@@ -284,14 +284,14 @@ func (service *CommerceExternalPushService) QueueExternalPushTest(
 		if acceptErr != nil {
 			return acceptErr
 		}
-		if !validExternalPushTest(effect, command.ProductID, command.ProductKind) {
+		if !validExternalPushTest(effect, command.ProductID, command.ProductKind) || !validCommerceExternalPushTestDeliveryID(effect.DeliveryID) {
 			return ErrUnavailable
 		}
 		result, readErr = service.store.CreateCommerceExternalPushTest(tx, effect, configurationDigest, receipt.ID)
 		if readErr != nil {
 			return readErr
 		}
-		if !validExternalPushTest(result, command.ProductID, command.ProductKind) || result.EffectID != effect.EffectID || result.State != effect.State {
+		if !validExternalPushTest(result, command.ProductID, command.ProductKind) || result.EffectID != effect.EffectID || result.DeliveryID != effect.DeliveryID || result.State != effect.State {
 			return ErrUnavailable
 		}
 		if eventErr := service.appendEvent(tx, productport.EventExternalPushTestAccepted, command.ProductID, command.ProductKind, command.Actor, reservation.KeyDigest, map[string]any{
@@ -604,6 +604,18 @@ func validCommerceExternalPushTestStatus(value productport.ExternalPushTestStatu
 	default:
 		return false
 	}
+}
+
+func validCommerceExternalPushTestDeliveryID(value string) bool {
+	if !strings.HasPrefix(value, "commerce_test_") || len(value) != len("commerce_test_")+32 {
+		return false
+	}
+	for _, character := range value[len("commerce_test_"):] {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validCommerceExternalPushEffectID(value string) bool {

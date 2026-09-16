@@ -32,11 +32,13 @@ type PaidPurchaseActionStore interface {
 }
 
 type PaidPurchaseActionService struct {
-	guidanceOrders orderport.Query
-	uow            platformport.UnitOfWork
-	store          PaidPurchaseActionStore
-	tags           customerport.TagCommandSubmitter
-	now            func() time.Time
+	guidanceOrders    orderport.Query
+	checkoutSnapshots orderport.CheckoutSnapshotReader
+	urlLinks          *CompletionURLLinkResolver
+	uow               platformport.UnitOfWork
+	store             PaidPurchaseActionStore
+	tags              customerport.TagCommandSubmitter
+	now               func() time.Time
 }
 
 func NewPaidPurchaseActionService(uow platformport.UnitOfWork, store PaidPurchaseActionStore, tags customerport.TagCommandSubmitter) (*PaidPurchaseActionService, error) {
@@ -44,6 +46,17 @@ func NewPaidPurchaseActionService(uow platformport.UnitOfWork, store PaidPurchas
 		return nil, ErrUnavailable
 	}
 	return &PaidPurchaseActionService{uow: uow, store: store, tags: tags, now: time.Now}, nil
+}
+
+// SetCheckoutSnapshotReader receives the Order-owned immutable checkout fact
+// through its stable Port. It is optional only for old composition tests;
+// production composition binds it before native paid events can be consumed.
+func (s *PaidPurchaseActionService) SetCheckoutSnapshotReader(reader orderport.CheckoutSnapshotReader) error {
+	if s == nil || reader == nil || s.checkoutSnapshots != nil {
+		return ErrUnavailable
+	}
+	s.checkoutSnapshots = reader
+	return nil
 }
 
 // ConsumePaidEventWithin is the Product side of Order's first-paid fan-out.
@@ -74,16 +87,48 @@ func (s *PaidPurchaseActionService) ConsumePaidEventWithin(ctx context.Context, 
 	} else if !errors.Is(readErr, productport.ErrProductReadNotFound) {
 		return classify(readErr)
 	}
-	product, err := s.store.GetForUpdate(ctx, productport.ID(event.CheckoutProductID))
-	if err != nil {
-		return classify(err)
+	productID, productVersion := productport.ID(event.CheckoutProductID), int64(0)
+	var configuration paidPurchaseConfiguration
+	checkoutSnapshot := false
+	if s.checkoutSnapshots != nil {
+		checkout, checkoutErr := s.checkoutSnapshots.ReadCheckoutSnapshotWithin(ctx, event.OrderID)
+		if checkoutErr == nil {
+			if checkout.OrderID != event.OrderID || checkout.ProductID != event.CheckoutProductID || checkout.ProductVersion < 1 {
+				return ErrConflict
+			}
+			if checkoutPaidPurchaseActionSet(checkout.PostPurchaseAction) {
+				frozen, frozenErr := paidPurchaseConfigFromProjection(checkout.PostPurchaseAction)
+				if frozenErr != nil {
+					return ErrConflict
+				}
+				configuration, checkoutSnapshot, productVersion = frozen, true, checkout.ProductVersion
+			}
+		} else if !errors.Is(checkoutErr, orderport.ErrNotFound) {
+			return classify(checkoutErr)
+		}
 	}
-	if !validProduct(product) {
+	// The buyer action is now immutable at checkout. A later product edit must
+	// never block or replace it; current Product is consulted only for the
+	// pre-existing Customer tag behavior.
+	product, productErr := s.store.GetForUpdate(ctx, productID)
+	if productErr != nil || !validProduct(product) {
+		if !checkoutSnapshot {
+			if productErr != nil {
+				return classify(productErr)
+			}
+			return ErrUnavailable
+		}
+	} else if current, currentErr := paidPurchaseConfigFromProjection(product.LegacyAdminProjection); currentErr == nil {
+		if checkoutSnapshot {
+			configuration.TagIDs, configuration.TagState = current.TagIDs, current.TagState
+		} else {
+			configuration, productVersion = current, product.Version
+		}
+	} else if !checkoutSnapshot {
+		return currentErr
+	}
+	if !checkoutSnapshot && productVersion < 1 {
 		return ErrUnavailable
-	}
-	configuration, err := paidPurchaseConfigFromProjection(product.LegacyAdminProjection)
-	if err != nil {
-		return err
 	}
 	createdAt := event.OccurredAt.UTC()
 	if createdAt.IsZero() {
@@ -92,8 +137,8 @@ func (s *PaidPurchaseActionService) ConsumePaidEventWithin(ctx context.Context, 
 	action := productport.PaidPurchaseAction{
 		OrderPaidEventID: event.ID,
 		OrderID:          event.OrderID,
-		ProductID:        product.ID,
-		ProductVersion:   product.Version,
+		ProductID:        productID,
+		ProductVersion:   productVersion,
 		SourceDigest:     event.SourceDigest,
 		Enabled:          configuration.Enabled,
 		Mode:             configuration.Mode,
@@ -101,6 +146,8 @@ func (s *PaidPurchaseActionService) ConsumePaidEventWithin(ctx context.Context, 
 		LeadQRTitle:      configuration.LeadQRTitle,
 		LeadQRSubtitle:   configuration.LeadQRSubtitle,
 		RedirectURL:      configuration.RedirectURL,
+		CompletionTarget: configuration.CompletionTarget,
+		CheckoutSnapshot: checkoutSnapshot,
 		TagState:         configuration.TagState,
 		CreatedAt:        createdAt,
 	}
@@ -141,6 +188,11 @@ func (s *PaidPurchaseActionService) ConsumePaidEventWithin(ctx context.Context, 
 	return nil
 }
 
+func checkoutPaidPurchaseActionSet(raw json.RawMessage) bool {
+	var projection map[string]json.RawMessage
+	return len(raw) > 0 && json.Unmarshal(raw, &projection) == nil && projection["purchase_action_enabled"] != nil
+}
+
 // ReadPaidPurchaseAction is Product's narrow read side. Payment verifies the
 // trusted session and paid checkout before it can call this method.
 func (s *PaidPurchaseActionService) ReadPaidPurchaseAction(ctx context.Context, orderID int64) (productport.PaidPurchaseAction, error) {
@@ -167,6 +219,7 @@ type paidPurchaseConfiguration struct {
 	Mode                                     productport.PaidPurchaseActionMode
 	LeadChannelID                            int64
 	LeadQRTitle, LeadQRSubtitle, RedirectURL string
+	CompletionTarget                         json.RawMessage
 	TagIDs                                   []int64
 	TagState                                 string
 }
@@ -183,6 +236,7 @@ func paidPurchaseConfigFromProjection(raw json.RawMessage) (paidPurchaseConfigur
 		LeadQRTitle           string          `json:"lead_qr_title"`
 		LeadQRSubtitle        string          `json:"lead_qr_subtitle"`
 		CompletionRedirectURL string          `json:"completion_redirect_url"`
+		CompletionTarget      json.RawMessage `json:"completion_target"`
 		Tagging               json.RawMessage `json:"wecom_tagging"`
 	}
 	if json.Unmarshal(canonical, &projection) != nil {
@@ -198,6 +252,18 @@ func paidPurchaseConfigFromProjection(raw json.RawMessage) (paidPurchaseConfigur
 			}
 			result.Mode, result.LeadChannelID = productport.PaidPurchaseActionQR, *projection.LeadChannelID
 		case string(productport.PaidPurchaseActionRedirect):
+			target, targetErr := completionTargetFromProjection(projection.CompletionTarget)
+			if targetErr != nil {
+				return paidPurchaseConfiguration{}, ErrInvalidProduct
+			}
+			if target.Enabled && target.TargetType == "h5" {
+				result.Mode, result.RedirectURL = productport.PaidPurchaseActionRedirect, target.H5URL
+				break
+			}
+			if target.Enabled && target.TargetType == "url_link" {
+				result.Mode, result.RedirectURL, result.CompletionTarget = productport.PaidPurchaseActionRedirect, target.FallbackURL, completionURLLinkSnapshot(target)
+				break
+			}
 			if !validPaidPurchaseRedirect(projection.CompletionRedirectURL) {
 				return paidPurchaseConfiguration{}, ErrInvalidProduct
 			}
@@ -278,11 +344,18 @@ func validPaidPurchaseAction(value productport.PaidPurchaseAction) bool {
 	}
 	switch value.Mode {
 	case productport.PaidPurchaseActionNone:
-		return !value.Enabled && value.LeadChannelID == 0 && value.RedirectURL == "" && paidPurchaseTagStateValid(value.TagState)
+		return !value.Enabled && value.LeadChannelID == 0 && value.RedirectURL == "" && len(value.CompletionTarget) == 0 && paidPurchaseTagStateValid(value.TagState)
 	case productport.PaidPurchaseActionQR:
-		return value.Enabled && value.LeadChannelID > 0 && value.RedirectURL == "" && paidPurchaseTagStateValid(value.TagState)
+		return value.Enabled && value.LeadChannelID > 0 && value.RedirectURL == "" && len(value.CompletionTarget) == 0 && paidPurchaseTagStateValid(value.TagState)
 	case productport.PaidPurchaseActionRedirect:
-		return value.Enabled && value.LeadChannelID == 0 && validPaidPurchaseRedirect(value.RedirectURL) && paidPurchaseTagStateValid(value.TagState)
+		if !value.Enabled || value.LeadChannelID != 0 || !paidPurchaseTagStateValid(value.TagState) {
+			return false
+		}
+		if len(value.CompletionTarget) == 0 {
+			return validPaidPurchaseRedirect(value.RedirectURL)
+		}
+		target, err := completionTargetFromProjection(value.CompletionTarget)
+		return err == nil && target.Enabled && target.TargetType == "url_link" && target.FallbackURL == value.RedirectURL
 	default:
 		return false
 	}

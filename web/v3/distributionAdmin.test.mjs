@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
+import { fileURLToPath } from 'node:url';
 import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
 
-const bundle = await buildTestBrowserBundle(new URL('./distributionAdmin.ts', import.meta.url).pathname);
+const bundle = await buildTestBrowserBundle(fileURLToPath(new URL('./distributionAdmin.ts', import.meta.url)));
 const delay = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check, message) { for (let attempt = 0; attempt < 100; attempt++) { if (check()) return; await delay(); } throw new Error(message); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });

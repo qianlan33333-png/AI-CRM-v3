@@ -674,6 +674,9 @@ func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error
 	if !jsonKind(defaults["completion_target"], "object", "null") || !jsonKind(defaults["wecom_tagging"], "object", "array", "null") || !jsonKind(defaults["slices"], "array") {
 		return nil, ErrInvalidProduct
 	}
+	if _, err := completionTargetFromProjection(defaults["completion_target"]); err != nil {
+		return nil, ErrInvalidProduct
+	}
 	if !validExplicitPaidPurchaseTagging(defaults["wecom_tagging"]) {
 		return nil, ErrInvalidProduct
 	}
@@ -695,8 +698,12 @@ func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error
 				return nil, ErrInvalidProduct
 			}
 		case string(productport.PaidPurchaseActionRedirect):
+			target, targetErr := completionTargetFromProjection(defaults["completion_target"])
+			if targetErr != nil {
+				return nil, ErrInvalidProduct
+			}
 			var redirectURL string
-			if json.Unmarshal(defaults["completion_redirect_url"], &redirectURL) != nil || !validPaidPurchaseRedirect(redirectURL) {
+			if json.Unmarshal(defaults["completion_redirect_url"], &redirectURL) != nil || !target.Enabled && !validPaidPurchaseRedirect(redirectURL) {
 				return nil, ErrInvalidProduct
 			}
 		}

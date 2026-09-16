@@ -12,15 +12,14 @@ func (s *PaidPurchaseActionService) SetPaidGuidanceOrderReader(orders orderport.
 	s.guidanceOrders = orders
 }
 
-// ReadPaidPurchaseGuidance returns a presentation projection only. An existing
-// enabled snapshot wins; missing/none snapshots may use today's explicit
-// configuration after rechecking the paid Order and exact Product reference.
-// It never stores a snapshot, consumes a paid event, or submits tag/push work.
+// ReadPaidPurchaseGuidance returns a presentation projection only. It always
+// rechecks the current Order settlement before exposing a stored action: a
+// full refund revokes every QR, redirect and URL Link result. Missing/legacy
+// none snapshots may then use today's explicit configuration after rechecking
+// the exact Product reference. It never stores a snapshot, consumes a paid
+// event, or submits tag/push work.
 func (s *PaidPurchaseActionService) ReadPaidPurchaseGuidance(ctx context.Context, orderID int64) (productport.PaidPurchaseAction, error) {
 	original, err := s.ReadPaidPurchaseAction(ctx, orderID)
-	if err == nil && original.Mode != productport.PaidPurchaseActionNone {
-		return original, nil
-	}
 	if err != nil && !errors.Is(err, productport.ErrProductReadNotFound) && !errors.Is(err, ErrNotFound) {
 		return productport.PaidPurchaseAction{}, err
 	}
@@ -33,6 +32,9 @@ func (s *PaidPurchaseActionService) ReadPaidPurchaseGuidance(ctx context.Context
 	}
 	if order.ID != orderID || (order.Status != orderdomain.StatusPaid && order.Status != orderdomain.StatusPartiallyRefunded) || (order.RefundedMinor > 0 && order.RefundedMinor >= order.Amount.AmountMinor) || len(order.Items) != 1 {
 		return productport.PaidPurchaseAction{}, productport.ErrProductReadUnavailable
+	}
+	if err == nil && (original.Mode != productport.PaidPurchaseActionNone || original.CheckoutSnapshot) {
+		return original, nil
 	}
 	item := order.Items[0]
 	if item.ProductCode == "" {
@@ -64,7 +66,7 @@ func (s *PaidPurchaseActionService) ReadPaidPurchaseGuidance(ctx context.Context
 		if e != nil {
 			return e
 		}
-		result = productport.PaidPurchaseAction{OrderID: orderID, ProductID: product.ID, ProductVersion: product.Version, Enabled: config.Enabled, Mode: config.Mode, LeadChannelID: config.LeadChannelID, LeadQRTitle: config.LeadQRTitle, LeadQRSubtitle: config.LeadQRSubtitle, RedirectURL: config.RedirectURL}
+		result = productport.PaidPurchaseAction{OrderID: orderID, ProductID: product.ID, ProductVersion: product.Version, Enabled: config.Enabled, Mode: config.Mode, LeadChannelID: config.LeadChannelID, LeadQRTitle: config.LeadQRTitle, LeadQRSubtitle: config.LeadQRSubtitle, RedirectURL: config.RedirectURL, CompletionTarget: config.CompletionTarget}
 		return nil
 	})
 	return result, readErr
