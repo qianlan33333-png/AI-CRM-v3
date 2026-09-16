@@ -1442,43 +1442,21 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "19ce90a3e10d717afbc4a9321a77a4151381d047f348ec6af357f0f332b0ebdf",
-          "head_sha256": "e1b231a32ef8d5821d3e5a8253345ca5c461e5ee1ccd360bd7047841d24471a3"
-        },
-        {
-          "path": "web/donor-sources/source-index.json",
-          "base_sha256": "eedcdb6f08279c6ad598fbf4a6dffc31af989d0b71eb9e00843d0ffb82cd2977",
-          "head_sha256": "36be6c82deb2767ebac1c19f5588c555e6978246252002ece13dff5009328246"
-        },
-        {
-          "path": "web/donor-sources/source-lock.json",
-          "base_sha256": "8955e54a923cd24d55f081cf4e0cb76ae27bd361ce89bb2a27363be1562db63e",
-          "head_sha256": "a4356197ce519efeffe73c225f4721adaa3ce0069a89c739c65721e0d2dbe980"
-        }
-      ],
-      "reason": "Authorize the public Survey completion and operations contract: opaque safe navigation, legacy external-push configuration, release migration closure, and a minimal normal-submit receipt without a result token. Identity continues to read canonical Customer only; Provider writes remain in the existing External Effects and Outbound path.",
-      "review_reference": "User instructions in this Codex thread: implement the approved questionnaire single-submit and completion PRD, align the actual operations API, and do not expose a normal completion result token. This is product authorization only; ordinary PR review and required CI remain pending."
-    },
-    {
-      "base_commit": "cb2ad0f58eb04f4e785fd36087fc139910d7381d",
-      "changes": [
-        {
-          "path": "api/openapi.yaml",
-          "base_sha256": "e1b231a32ef8d5821d3e5a8253345ca5c461e5ee1ccd360bd7047841d24471a3",
           "head_sha256": "53fa0b1257e40a1a2fdf979351cabb36c4f067b92a379f37b931a6f212bb1e2e"
         },
         {
           "path": "web/donor-sources/source-index.json",
-          "base_sha256": "36be6c82deb2767ebac1c19f5588c555e6978246252002ece13dff5009328246",
+          "base_sha256": "eedcdb6f08279c6ad598fbf4a6dffc31af989d0b71eb9e00843d0ffb82cd2977",
           "head_sha256": "e9a6de8de9c81d4605b18c259bfec1b23a74c6502b0d29828fd29439b0839308"
         },
         {
           "path": "web/donor-sources/source-lock.json",
-          "base_sha256": "a4356197ce519efeffe73c225f4721adaa3ce0069a89c739c65721e0d2dbe980",
+          "base_sha256": "8955e54a923cd24d55f081cf4e0cb76ae27bd361ce89bb2a27363be1562db63e",
           "head_sha256": "670f173cd84c685fba478552bab573b7ca77407b604b2b9c1fb8e26633110f55"
         }
       ],
-      "reason": "Restore the top-level legacy Survey result token for result-query clients while keeping the nested receipt and completion H5 flow token-free.",
-      "review_reference": "User instruction in this Codex thread: preserve existing result-query compatibility with a nonempty top-level result_token, keep the nested receipt hidden, and do not show or use result links in the completion H5 flow. Ordinary PR review and required CI remain pending."
+      "reason": "Authorize the public Survey completion and operations contract: opaque safe navigation, legacy external-push configuration, release migration closure, a minimal nested completion receipt without a result token, and the retained top-level result-query compatibility token. Identity continues to read canonical Customer only; Provider writes remain in the existing External Effects and Outbound path.",
+      "review_reference": "User instructions in this Codex thread: implement the approved questionnaire single-submit and completion PRD, align the actual operations API, do not expose a normal completion token in the nested receipt or H5 flow, and preserve existing result-query compatibility with a nonempty top-level result_token. This is product authorization only; ordinary PR review and required CI remain pending."
     }
   ]
 }
