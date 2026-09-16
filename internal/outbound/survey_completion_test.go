@@ -237,6 +237,7 @@ func TestSurveyCompletionProviderRejectsNonPublicTargetsBeforeExecution(t *testi
 	for _, endpoint := range []string{
 		"http://public.example.test/complete",
 		"https://localhost/complete",
+		"https://receiver.localhost/complete",
 		"https://receiver.local/complete",
 		"https://127.0.0.1/complete",
 		"https://10.0.0.8/complete",

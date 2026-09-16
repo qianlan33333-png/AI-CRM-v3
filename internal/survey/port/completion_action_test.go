@@ -16,6 +16,18 @@ func TestSafePublicCompletionURLRejectsLegacyIPv4Forms(t *testing.T) {
 	}
 }
 
+func TestSafePublicCompletionURLRejectsLocalhostNames(t *testing.T) {
+	for _, raw := range []string{
+		"https://localhost/complete",
+		"https://foo.localhost/complete",
+		"https://receiver.LOCALHOST./complete",
+	} {
+		if SafePublicCompletionURL(raw) {
+			t.Fatalf("localhost completion URL accepted: %q", raw)
+		}
+	}
+}
+
 func TestSafePublicCompletionURLAcceptsSupportedDestinations(t *testing.T) {
 	for _, raw := range []string{"/same-origin/complete", "https://example.com/complete", "https://subdomain.127.example/complete"} {
 		if !SafePublicCompletionURL(raw) {

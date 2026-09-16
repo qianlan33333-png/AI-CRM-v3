@@ -71,7 +71,7 @@ func ValidPublicCompletionHost(raw string) bool {
 		return false
 	}
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if host == "" || host == "localhost" || strings.HasSuffix(host, ".local") {
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
 		return false
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
