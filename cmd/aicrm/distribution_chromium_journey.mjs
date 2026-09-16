@@ -241,11 +241,19 @@ try {
     // for the actual source control rather than treating selector presence as
     // evidence that a user can submit a retry.
     await wait(cdp, `(()=>{const button=${expression};if(!(button instanceof HTMLButtonElement)||button.disabled)return false;button.scrollIntoView({block:'center',inline:'center'});const rect=button.getBoundingClientRect(),style=getComputedStyle(button),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&button.contains(hit)})()`, 'recovery action did not become visible after its owner readback');
-    // Resolve the point from the same rendered source node after two frames.
-    // Re-evaluating a text-only selector after an owner redraw could target an
-    // obsolete button that no longer occupies the tested hit point.
-    const point = await value(cdp, `new Promise(resolve=>{const button=${expression};if(!(button instanceof HTMLButtonElement)){resolve(null);return;}button.scrollIntoView({block:'center',inline:'center'});requestAnimationFrame(()=>requestAnimationFrame(()=>{const rect=button.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);resolve({x:rect.left+rect.width/2,y:rect.top+rect.height/2,visible:rect.width>0&&rect.height>0&&button.contains(hit)});}));})`);
+    // The owner refresh can replace this row between CDP calls. Resolve a
+    // stable, current row after two frames, then preserve the journey's native
+    // CDP mouse path. A detached text match must never supply coordinates.
+    let point;
+    const pointDeadline = Date.now() + 8000;
+    do {
+      // A normal owner readback may redraw one final time. Poll only the
+      // current DOM identity; this loop never dispatches a business action.
+      point = await value(cdp, `new Promise(resolve=>{const ready=()=>{const button=${expression};const row=button?.closest(${JSON.stringify(`[data-exception="${id}"]`)});if(!(button instanceof HTMLButtonElement)||button.disabled||!button.isConnected||!(row instanceof HTMLElement)||!row.isConnected)return null;button.scrollIntoView({block:'center',inline:'center'});const rect=button.getBoundingClientRect(),style=getComputedStyle(button),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2),visible=rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&button.contains(hit);return visible?{button,row,x:rect.left+rect.width/2,y:rect.top+rect.height/2}:null;};requestAnimationFrame(()=>{const first=ready();requestAnimationFrame(()=>{const current=ready();if(!first||!current||current.button!==first.button||current.row!==first.row){resolve({visible:false,reason:'replaced'});return;}resolve({x:current.x,y:current.y,visible:true,row:current.row.dataset.exception||''});});});})`);
+      if (!point?.visible && Date.now() < pointDeadline) await sleep(50);
+    } while (!point?.visible && Date.now() < pointDeadline);
     assert.equal(point?.visible, true, `登记追回 retry control was not reachable after settle: ${JSON.stringify(point)}`);
+    assert.equal(point?.row, String(id), `登记追回 retry control detached from its current exception row: ${JSON.stringify(point)}`);
     await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
     await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
   };

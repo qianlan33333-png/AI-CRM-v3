@@ -152,6 +152,26 @@ func TestDisabledPublicLinkIsGone(t *testing.T) {
 	}
 }
 
+func TestPublicViewerCSPAllowsOnlySameOriginEventTracking(t *testing.T) {
+	handler, err := NewHandler(&testManager{}, testQuery{}, testPublic{}, testSecurity{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/r/rd_abcdefghijklmnopqrstuv", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	policy := response.Header().Get("Content-Security-Policy")
+	wantPolicy := "default-src 'none'; img-src 'self'; frame-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+	if policy != wantPolicy {
+		t.Fatalf("viewer CSP=%q want=%q", policy, wantPolicy)
+	}
+	if !strings.Contains(response.Body.String(), "'/api/public/radar/'+code+'/events'") {
+		t.Fatalf("viewer no longer contains the existing same-origin tracking endpoint: %s", response.Body.String())
+	}
+}
+
 func TestAdminListMapsMeasuredAndUnavailableStatisticsWithoutFallbacks(t *testing.T) {
 	lastViewedAt := time.Date(2026, 9, 12, 9, 30, 0, 0, time.UTC)
 	manager := &testManager{page: radarport.LinkPage{Items: []radarport.LinkSummary{

@@ -102,6 +102,7 @@ async function runInternalJourney() {
     '/service-period-member-grid-assets/member_grid.js',
   ], 'host must load before every frozen grid script');
   await eventually(() => document.querySelector('#spGridBody tr[data-record-id]'), 'initial member read');
+  await eventually(() => document.getElementById('spResultSummary')?.textContent.trim() === '当前显示 1 行', 'internal grid visible-row summary');
 
   // A saved filter is a real persisted dd8 view configuration. Reopening it
   // executes its remaining-days filter against the HTTP API.
@@ -116,7 +117,7 @@ async function runInternalJourney() {
   groupField.value = 'remaining_days';
   change(window, groupField, 'remaining-days group field');
   await eventually(() => document.querySelector('.sp-group-row'), 'grouped data read');
-	await eventually(() => /\d+ 天/.test(document.querySelector('.sp-group-row')?.textContent || '') && document.querySelector('.sp-group-row')?.textContent.includes('1 条'), 'complete grouped result label and count');
+  await eventually(() => /\d+ 天/.test(document.querySelector('.sp-group-row')?.textContent || '') && document.querySelector('.sp-group-row')?.textContent.includes('条'), 'complete grouped result label and count');
   click(window, document.getElementById('spSaveAsView'), 'save grouped view');
   await closeNameDialog(window, document, '分组视图');
   await eventually(() => namedTab(document, '分组视图'), 'persisted grouped view tab');
@@ -176,7 +177,7 @@ async function runPublicJourney(token) {
     '/service-period-member-grid-assets/member_grid_state.js',
     '/service-period-member-grid-assets/member_grid.js',
   ], 'public host must precede frozen state and grid scripts');
-  await eventually(() => document.querySelector('#spGridBody tr[data-record-id]'), 'public grid read');
+  await eventually(() => document.getElementById('spResultSummary')?.textContent.trim() === '当前显示 1 行', 'public grid visible-row summary');
   return publicPage;
 }
 

@@ -147,6 +147,56 @@ async function rememberCouponPresentations(response: Response): Promise<Response
   return response;
 }
 
+function couponClaimTimestamp(value: unknown): Date | null {
+  if (typeof value !== 'string' || !value.trim() || formatShanghaiDateTime(value) === '未提供') return null;
+  const instant = new Date(value);
+  return Number.isNaN(instant.getTime()) ? null : instant;
+}
+function couponClaimTime(value: unknown, missing: string): string {
+  return couponClaimTimestamp(value) ? formatShanghaiDateTime(value) : missing;
+}
+function couponClaimValidWindow(start: unknown, end: unknown): string {
+  const from = couponClaimTimestamp(start); const until = couponClaimTimestamp(end);
+  if (!from || !until || until.getTime() <= from.getTime()) return '有效期待确认';
+  return `${formatShanghaiDateTime(start)} 至 ${formatShanghaiDateTime(end)}`;
+}
+function couponClaimStatus(value: unknown, validFrom: unknown, validUntil: unknown): string {
+  const status = typeof value === 'string' ? value.toLowerCase() : '';
+  if (status === 'reserved') return '已预占';
+  if (status === 'redeemed') return '已使用';
+  if (status === 'expired') return '已过期';
+  if (status === 'cancelled') return '已取消';
+  if (status !== 'claimed' && status !== 'available') return '待确认';
+  const from = couponClaimTimestamp(validFrom); const until = couponClaimTimestamp(validUntil);
+  if (!from || !until || until.getTime() <= from.getTime()) return '待确认';
+  const now = Date.now();
+  if (now < from.getTime()) return '待生效';
+  return now < until.getTime() ? '可用' : '已过期';
+}
+function couponClaimPresentation(value: unknown): Json {
+  const claim = asJson(value);
+  return {
+    ...claim,
+    // This is a browser-local couponData display DTO over a cloned successful
+    // response. The native server response and every non-couponData route keep
+    // their canonical lifecycle and timestamps unchanged.
+    status: couponClaimStatus(claim.status, claim.valid_from, claim.valid_until),
+    claimed_at: couponClaimTime(claim.claimed_at, '领取时间待确认'),
+    valid_window: couponClaimValidWindow(claim.valid_from, claim.valid_until),
+    used_at: claim.redeemed_at == null ? undefined : couponClaimTime(claim.redeemed_at, '核销时间待确认'),
+  };
+}
+async function normalizeCouponClaimPresentations(response: Response): Promise<Response> {
+  if (!response.ok || document.body.dataset.page !== 'couponData') return response;
+  const payload = await response.clone().json().catch(() => null) as Json | null;
+  if (!payload) return response;
+  const claims = Array.isArray(payload.claims) ? payload.claims : Array.isArray(payload.items) ? payload.items : null;
+  if (!claims) return response;
+  const items = claims.map(couponClaimPresentation);
+  const headers = new Headers(response.headers); headers.delete('Content-Length'); headers.set('Content-Type', 'application/json');
+  return new Response(JSON.stringify({ ...payload, claims: items, items }), { status: response.status, statusText: response.statusText, headers });
+}
+
 function couponDateSnapshotKey(id: string): string { return `coupon-date:${id}`; }
 function couponControlValue(raw: unknown): string {
   const displayed = formatShanghaiDateTime(raw);
@@ -225,6 +275,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (url.origin !== location.origin) return nativeFetch(input, init);
   if (method === 'GET' && url.pathname === '/api/admin/coupons/product-options') return normalizeProductOptions(await nativeFetch(input, init));
   if (method === 'GET' && url.pathname === '/api/admin/coupons') return rememberCouponPresentations(await nativeFetch(input, init));
+  if (method === 'GET' && /^\/api\/admin\/coupons\/[1-9][0-9]*\/claims$/.test(url.pathname)) return normalizeCouponClaimPresentations(await nativeFetch(input, init));
   if (!couponMutation(url, method)) return nativeFetch(input, init);
   const normalized = couponArchiveMutation(url, method)
     ? normalizeCouponArchiveBody(url, method, bodyText(input, init))
@@ -624,6 +675,75 @@ function installCouponListBridge(): void {
   applyPresentation();
 }
 
+function couponDataWindow(coupon: Json): string {
+  const start = couponClaimTimestamp(coupon.claimStartsAt);
+  const end = couponClaimTimestamp(coupon.claimEndsAt);
+  if (!start || !end || end.getTime() <= start.getTime()) return '有效期待确认';
+  return `${formatShanghaiDateTime(coupon.claimStartsAt)} 至 ${formatShanghaiDateTime(coupon.claimEndsAt)}`;
+}
+
+function couponDataScope(coupon: Json): string {
+  const refs = Array.isArray(coupon.targetRefs) ? coupon.targetRefs : [];
+  return refs.length ? `指定商品（${refs.length}项）` : '适用商品暂不可用';
+}
+
+function couponDataIssuedTotal(coupon: Json): string | null {
+  const parts = typeof coupon.issue === 'string' ? coupon.issue.split('/').map((part) => part.trim()) : [];
+  return parts.length === 2 && /^[0-9]+$/.test(parts[1]) ? parts[1] : null;
+}
+
+function couponDataStats(page: Json, coupon: Json): unknown {
+  const claims = Array.isArray(page.claims) ? page.claims.map(asJson) : [];
+  if (!Array.isArray(page.stats)) return page.stats;
+  const hasUnconfirmedClaim = claims.some((claim) => claim.status === '待确认');
+  const issuedTotal = couponDataIssuedTotal(coupon);
+  return page.stats.map((value) => {
+    const stat = asJson(value);
+    if (stat.label === '累计领取') return issuedTotal ? { ...stat, sub: `发行 ${issuedTotal}` } : stat;
+    if (!hasUnconfirmedClaim || (stat.label !== '当前可用' && stat.label !== '已过期')) return stat;
+    const suffix = typeof stat.sub === 'string' && stat.sub ? `${stat.sub}；当前页含待确认记录` : '当前页含待确认记录';
+    return { ...stat, value: '—', sub: suffix };
+  });
+}
+
+function applyCouponDataLabels(): void {
+  document.querySelectorAll<HTMLElement>('#stage div').forEach((node) => {
+    const text = node.textContent?.trim();
+    if (text === '有效期' && !node.dataset.v3CouponDataClaimLabel) {
+      node.dataset.v3CouponDataClaimLabel = 'claim-window';
+      node.textContent = '领取时间';
+    }
+    if (text === '发行量 / 已领取' && !node.dataset.v3CouponDataIssueLabel) {
+      node.dataset.v3CouponDataIssueLabel = 'claim-total';
+      node.textContent = '已领取 / 发行量';
+    }
+  });
+}
+
+function installCouponDataPresentationBridge(): void {
+  if (document.body.dataset.page !== 'couponData') return;
+  const prototype = AdminController.prototype as unknown as { renderVals(this: { page: string }): Json };
+  const donorRenderVals = prototype.renderVals;
+  prototype.renderVals = function couponDataRenderVals() {
+    const values = donorRenderVals.call(this);
+    const page = asJson(values.couponDataPage);
+    const coupon = asJson(page.coupon);
+    if (this.page !== 'couponData' || api.mode !== 'http' || !Object.keys(coupon).length) return values;
+    return {
+      ...values,
+      couponDataPage: {
+        ...page,
+        // The Controller database retains the canonical lifecycle for route
+        // and edit decisions. This copy is only the frozen template's view.
+        coupon: { ...coupon, status: couponStatusLabel(coupon.status), scope: couponDataScope(coupon), window: couponDataWindow(coupon) },
+        stats: couponDataStats(page, coupon),
+      },
+    };
+  };
+  new MutationObserver(applyCouponDataLabels).observe(document.documentElement, { childList: true, subtree: true });
+  applyCouponDataLabels();
+}
+
 async function mountCouponEditor(): Promise<void> {
   if (mounted || mountFailed || document.body.dataset.page !== 'couponForm') return;
   const stage = document.querySelector<HTMLElement>('#stage');
@@ -651,6 +771,7 @@ new MutationObserver(() => { void mountCouponEditor(); }).observe(document.docum
 installCouponPageMobileLayout();
 void mountCouponEditor();
 installCouponListBridge();
+installCouponDataPresentationBridge();
 
 const couponRuntime = window as Window & { __AICRM_TEST_COUPON_ADAPTER_ONLY__?: boolean };
 if (!couponRuntime.__AICRM_TEST_COUPON_ADAPTER_ONLY__ && (document.body.dataset.page === 'coupons' || document.body.dataset.page === 'couponData')) {

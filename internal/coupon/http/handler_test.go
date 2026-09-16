@@ -266,13 +266,14 @@ func TestCouponProductOptionsAndExcludedClaims(t *testing.T) {
 
 func TestCouponClaimListUsesDedicatedMaskedReadPort(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	h, err := NewHandlerWithClaims(&fakeRules{item: couponFixture()}, fakeOptions{}, fakeClaims{page: couponport.AdminCouponClaimPage{Items: []couponport.AdminCouponClaim{{ClaimID: 9, CustomerID: 11, CouponID: 3, Status: "available", ClaimNoMasked: "***7", ClaimedAt: now}}, Total: 1}}, fakeSecurity{})
+	from, until := now.Add(-time.Hour), now.Add(time.Hour)
+	h, err := NewHandlerWithClaims(&fakeRules{item: couponFixture()}, fakeOptions{}, fakeClaims{page: couponport.AdminCouponClaimPage{Items: []couponport.AdminCouponClaim{{ClaimID: 9, CustomerID: 11, CouponID: 3, Status: "available", ClaimNoMasked: "***7", ClaimedAt: now, ValidFrom: &from, ValidUntil: &until}}, Total: 1}}, fakeSecurity{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/3/claims?limit=10&offset=0", nil))
-	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"claim_no_masked":"***7"`) || strings.Contains(r.Body.String(), "unionid") {
+	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"claim_no_masked":"***7"`) || !strings.Contains(r.Body.String(), `"valid_from":"2026-01-02T02:04:05Z"`) || !strings.Contains(r.Body.String(), `"valid_until":"2026-01-02T04:04:05Z"`) || strings.Contains(r.Body.String(), "unionid") {
 		t.Fatalf("claims status=%d body=%s", r.Code, r.Body.String())
 	}
 }
