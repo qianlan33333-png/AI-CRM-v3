@@ -424,7 +424,17 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 	parts := strings.Split(tail, "/")
 	slug := parts[0]
 	if len(parts) == 1 && r.Method == http.MethodGet {
-		if _, ok := h.requireResolvedSurveySession(w, r); !ok {
+		identity, ok := h.requireResolvedSurveySession(w, r)
+		if !ok {
+			return
+		}
+		status, err := h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		if status.Submitted {
+			writeAlreadySubmitted(w, status.CompletionAction)
 			return
 		}
 		q, err := h.submissions.ReadPublic(r.Context(), slug)
@@ -454,10 +464,15 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 		}
 		receipt, err := h.submissions.Submit(r.Context(), surveyport.SubmitCommand{Slug: slug, DefinitionVersion: body.Version, SubmissionKey: body.SubmissionKey, Answers: body.Answers, Identity: identity, SourceChannel: body.SourceChannel, CampaignID: body.CampaignID, StaffID: body.StaffID})
 		if err != nil {
+			var duplicate *surveyport.AlreadySubmittedError
+			if errors.As(err, &duplicate) {
+				writeAlreadySubmitted(w, duplicate.CompletionAction)
+				return
+			}
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 201, map[string]any{"receipt": receipt, "result_token": receipt.ResultToken})
+		writeJSON(w, 201, map[string]any{"receipt": receipt, "result_token": receipt.ResultToken, "completion_action": receipt.CompletionAction})
 		return
 	}
 	method(w, "GET or POST")
@@ -558,6 +573,15 @@ func (h *Handler) publicEntry(w http.ResponseWriter, r *http.Request, slug strin
 	}
 	identity, resolved := h.surveySession(r)
 	if resolved && identity.State == surveyport.IdentityResolved {
+		status, statusErr := h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
+		if statusErr != nil {
+			resultError(w, statusErr)
+			return
+		}
+		if status.Submitted {
+			http.Redirect(w, r, completionLocation(slug, status.CompletionAction), http.StatusSeeOther)
+			return
+		}
 		display := "all"
 		if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
 			display = "one"
@@ -600,8 +624,31 @@ func (h *Handler) oauthSession(w http.ResponseWriter, r *http.Request) {
 	if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
 		display = "one"
 	}
+	status := surveyport.PublicSubmissionStatus{CompletionAction: surveyport.DefaultCompletionAction()}
+	if identity.State == surveyport.IdentityResolved && identity.CustomerID != nil {
+		status, err = h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display})
+	writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display, "submitted": status.Submitted, "completion_action": status.CompletionAction})
+}
+
+func completionLocation(slug string, action surveyport.CompletionAction) string {
+	if action.Type == surveyport.CompletionActionRedirect && safeCompletionRedirectURL(action.RedirectURL) {
+		return action.RedirectURL
+	}
+	return "/h5/done.html?slug=" + url.QueryEscape(slug)
+}
+
+func safeCompletionRedirectURL(raw string) bool {
+	if len(raw) == 0 || len(raw) > 2048 {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == ""
 }
 
 func (h *Handler) surveySession(r *http.Request) (surveyport.SubmissionIdentity, bool) {
@@ -1240,6 +1287,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]any{"ok": false, "code": code, "message": code})
 }
+func writeAlreadySubmitted(w http.ResponseWriter, action surveyport.CompletionAction) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "code": "already_submitted", "message": "already_submitted", "completion_action": action})
+}
 func resultError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, surveyport.ErrInvalid):
@@ -1248,6 +1299,8 @@ func resultError(w http.ResponseWriter, err error) {
 		writeError(w, 404, "questionnaire_not_found")
 	case errors.Is(err, surveyport.ErrConflict):
 		writeError(w, 409, "definition_version_conflict")
+	case errors.Is(err, surveyport.ErrAlreadySubmitted):
+		writeAlreadySubmitted(w, surveyport.DefaultCompletionAction())
 	case errors.Is(err, surveyport.ErrReferenced):
 		writeError(w, 409, "questionnaire_has_history")
 	default:

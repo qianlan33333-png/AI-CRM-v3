@@ -56,31 +56,43 @@ func TestPostgreSQLPublicSurveyPresentationChromiumJourney(t *testing.T) {
 		t.Fatalf("public Survey Chromium journey err=%v output=%s", err, strings.TrimSpace(string(output)))
 	}
 	var browser struct {
-		SubmissionID         int64 `json:"submission_id"`
-		RecoverySubmissionID int64 `json:"recovery_submission_id"`
+		SuccessSubmissionRequests  int `json:"success_submission_requests"`
+		RecoverySubmissionRequests int `json:"recovery_submission_requests"`
 	}
 	for _, line := range strings.Split(string(output), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), `{"submission_id":`) {
+		if strings.HasPrefix(strings.TrimSpace(line), `{"success_submission_requests":`) {
 			err = json.Unmarshal([]byte(line), &browser)
 			break
 		}
 	}
-	if err != nil || browser.SubmissionID < 1 || browser.RecoverySubmissionID < 1 {
-		t.Fatalf("public Survey browser result is incomplete: success=%d recovery=%d err=%v", browser.SubmissionID, browser.RecoverySubmissionID, err)
+	if err != nil || browser.SuccessSubmissionRequests != 1 || browser.RecoverySubmissionRequests != 2 {
+		t.Fatalf("public Survey browser submit counts are incomplete: success=%d recovery=%d err=%v", browser.SuccessSubmissionRequests, browser.RecoverySubmissionRequests, err)
 	}
-	stored, err := fixture.submissions.GetSubmission(fixture.ctx, surveyport.ID(browser.SubmissionID))
+	var successWrites int
+	if err = fixture.native.QueryRow(fixture.ctx, `SELECT count(*) FROM survey_submissions WHERE questionnaire_id=$1`, fixture.success.ID).Scan(&successWrites); err != nil || successWrites != 1 {
+		t.Fatalf("submitted-survey revisit writes=%d err=%v", successWrites, err)
+	}
+	var successSubmissionID int64
+	if err = fixture.native.QueryRow(fixture.ctx, `SELECT id FROM survey_submissions WHERE questionnaire_id=$1`, fixture.success.ID).Scan(&successSubmissionID); err != nil {
+		t.Fatalf("Survey Owner success submission lookup questionnaire=%d err=%v", fixture.success.ID, err)
+	}
+	stored, err := fixture.submissions.GetSubmission(fixture.ctx, surveyport.ID(successSubmissionID))
 	if err != nil || stored.QuestionnaireID != fixture.success.ID || stored.DefinitionVersion != fixture.success.DefinitionVersion || len(stored.Answers) != 1 || len(stored.Answers[0].SelectedOptions) != 1 {
-		t.Fatalf("Survey Owner success readback id=%d questionnaire=%d version=%d answers=%d err=%v", browser.SubmissionID, stored.QuestionnaireID, stored.DefinitionVersion, len(stored.Answers), err)
+		t.Fatalf("Survey Owner success readback id=%d questionnaire=%d version=%d answers=%d err=%v", successSubmissionID, stored.QuestionnaireID, stored.DefinitionVersion, len(stored.Answers), err)
 	}
-	recovered, err := fixture.submissions.GetSubmission(fixture.ctx, surveyport.ID(browser.RecoverySubmissionID))
+	var recoverySubmissionID int64
+	if err = fixture.native.QueryRow(fixture.ctx, `SELECT id FROM survey_submissions WHERE questionnaire_id=$1`, fixture.failure.ID).Scan(&recoverySubmissionID); err != nil {
+		t.Fatalf("Survey Owner recovery submission lookup questionnaire=%d err=%v", fixture.failure.ID, err)
+	}
+	recovered, err := fixture.submissions.GetSubmission(fixture.ctx, surveyport.ID(recoverySubmissionID))
 	if err != nil || recovered.QuestionnaireID != fixture.failure.ID || recovered.DefinitionVersion != fixture.failure.DefinitionVersion || len(recovered.Answers) != 1 || len(recovered.Answers[0].SelectedOptions) != 1 {
-		t.Fatalf("Survey Owner recovery readback id=%d questionnaire=%d version=%d answers=%d err=%v", browser.RecoverySubmissionID, recovered.QuestionnaireID, recovered.DefinitionVersion, len(recovered.Answers), err)
+		t.Fatalf("Survey Owner recovery readback id=%d questionnaire=%d version=%d answers=%d err=%v", recoverySubmissionID, recovered.QuestionnaireID, recovered.DefinitionVersion, len(recovered.Answers), err)
 	}
 	var failureWrites int
 	if err = fixture.native.QueryRow(fixture.ctx, `SELECT count(*) FROM survey_submissions WHERE questionnaire_id=$1`, fixture.failure.ID).Scan(&failureWrites); err != nil || failureWrites != 1 {
 		t.Fatalf("controlled failure then recovery writes=%d err=%v", failureWrites, err)
 	}
-	for _, page := range []string{"auth", "oauth-error", "answer", "failure", "result"} {
+	for _, page := range []string{"auth", "oauth-error", "answer", "failure", "done"} {
 		for _, width := range []string{"375", "390", "430"} {
 			name := "public-survey-" + page + "-" + width + ".png"
 			info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))

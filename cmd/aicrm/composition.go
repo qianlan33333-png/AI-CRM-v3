@@ -792,10 +792,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
 	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled).SetCompletionTargetCatalog(surveyCompletionProvider)
-	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
-	if err != nil {
-		return fail(err)
-	}
 	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
 	if err = tagCatalog.RequireProviderMutations(); err != nil {
 		return fail(err)
@@ -1005,6 +1001,27 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
 		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository, profiles: groupOpsRepository})
 	segmentBindings.Handler.BindAudienceChannelReferences(audienceChannelReferenceAdapter{channels: channelCatalogService})
+	publicCompletionTargets, err := platformconfig.ParseSurveyCompletionNavigationTargets(cfg.Survey.CompletionNavigationTargetsJSON)
+	if err != nil {
+		return fail(err)
+	}
+	publicCompletionResolver, err := newSurveyCompletionNavigationResolver(publicCompletionTargets)
+	if err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindPublicCompletionTarget(publicCompletionResolver); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindPublicLeadQRCode(channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+		return fail(err)
+	}
+	// Bind Survey HTTP only after its two public completion read boundaries are
+	// available. Survey still receives neither Channel tables nor an outbound
+	// Provider endpoint.
+	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
+	if err != nil {
+		return fail(err)
+	}
 	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Summaries: channelstore.NewPostgreSQLCatalogSummaryReader(uow), Security: requestSecurity, CursorSigningKey: channelCursorKey})
 	if err != nil {
 		return fail(err)

@@ -9,7 +9,7 @@
 | 管理端单壳 | `internal/webshell/templates/admin_base.html` | `internal/webshell/renderer.go` 的 `RenderDistribution` | 仅一个 `.admin-sidebar` 和 `.admin-topbar`；分销领域只提供经 manifest 验证的正文 assets。 |
 | 企微客户侧边栏 | `web/v3/sidebar/main.ts`、`web/v3/sidebar/presentation.css` | `RenderSidebar` → sidebar manifest assets → `sidebar_workbench_v3_overlay.js` | 仅复用签名 context 与 `SidebarBridge`；不挂员工、群、标签 picker 或自动化话术目录。403／context 失效清空客户缓存和操作入口；素材标签来自 Media Owner。 |
 | 问卷管理与编辑器 | `web/v3/surveyAdapter.ts`、`web/src/admin/sections/questionnaireEditor.ts` | `internal/survey/ui.go` 解析 manifest，`RenderSurvey` 在冻结 admin bundle 前装配列表 bridge；编辑器由 `questionnaireEditor` 入口挂载 | 一级列表复用冻结 table、检索和操作；bridge 仅映射问卷名称。编辑页保留标题用于答题/预览，状态以服务端 readback 为准。 |
-| 公共问卷 H5 | `web/v3/surveyPublicHost.ts`、`web/v3/surveyPublic.css` | `internal/survey/http.Handler.publicEntry` 的 `/q/{slug}` 保留 OAuth/session 入口；构建阶段只为 auth、all、one、result、error 注入 Host 与样式，再由 Survey manifest 装配 | Host 只呈现既有题目、校验、提交中、错误、失效链接与结果读回状态；提交 key、答案写入、OAuth/OneID 和结果 token 始终归 Survey Owner。 |
+| 公共问卷 H5 | `web/v3/surveyPublicHost.ts`、`web/v3/surveyPublic.css` | `internal/survey/http.Handler.publicEntry` 的 `/q/{slug}` 保留 OAuth/session 入口；构建阶段为 auth、all、one、result、error、done 注入 Host 与样式，再由 Survey manifest 装配 | Host 只呈现既有题目、校验、提交中、错误、失效链接、默认完成页与结果读回状态；提交 key、答案写入、OAuth/OneID、completion action 和结果 token 始终归 Survey Owner。 |
 | 通用详情抽屉 | `web/v3/shared/ui/detailDrawer.ts`、`web/v3/shared/ui/detailDrawer.css` | `distributionAdmin.ts` 导入行为，`sharedDetailDrawerStyles` 由 `admin_base` 挂载 | 组件只负责焦点回收、Escape/关闭和视觉容器；调用方必须读取自己的受权服务端事实，不能由抽屉伪造状态。 |
 | 顶栏动态操作 | `web/v3/shared/ui/pageHeaderActions.ts` | 挂载既有 `.admin-topbar > .admin-topbar-meta`；`distributionAdmin.ts`、图片库与 `pageHeaderActionHost.ts`（企微标签、AI 计划详情）复用 | SSR `PageAction` 仅承载链接；客户端命令可新建，或以 `mountPageHeaderActionElements` 移动调用页已绑定的原节点。不得创建第二标题栏、复制领域命令或跨 owner 转移控件。 |
 | 商品编辑分销配置 | `web/v3/productAdapter.ts`、`web/v3/productDistribution.css` | Product UI 的 `ProductCSS` 经 `admin_base` 装配 | 仅“售卖信息”承载启用分销开关、本商品佣金比例与退款复核等待天数；其他维度不写 `distribution_policy`，商品编辑页不提供申请链接、复制或二维码。公共分销中心保持其既有入口；不新增壳、配色、身份或资金模型。 |
@@ -157,7 +157,7 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 | 91 | `/h5/loading.html`（H5 loading artifact） | PUB-SUR | build carrier | 加载载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
 | 92 | `/h5/error.html`（H5 error artifact） | PUB-SUR | `surveyPublicHost` | 错误停止态 | 375/390/430 | Owner 受控错误、无重试写入 | `fc8f7239` 三宽证据；#361=`09f6d724` 已入 main |
 | 93 | `/h5/result.html`（H5 result artifact） | PUB-SUR | `surveyPublicHost` | 结果页 | 375/390/430 | 已挂载只读结果 | `fc8f7239` 候选三宽证据；结果 readback 另验 |
-| 94 | `/h5/done.html`（H5 done artifact） | PUB-SUR | build carrier | 完成载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
+| 94 | `/h5/done.html?slug={slug}`（H5 done artifact） | PUB-SUR | `surveyPublicHost` + Survey session | 提交完成：默认仅“收到你的问卷”；有效渠道二维码时展示二维码 | 375/390/430 | 无提交、会话失败、二维码失效、安全跳转 | 单次提交完成链路；页面只消费 Owner 的 completion action，不展示结果凭据 |
 | 95 | `/h5/signup.html`（H5 signup artifact） | PUB-SUR | build carrier | 注册载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
 | 96 | `/h5/active.html`（H5 active artifact） | PUB-SUR | build carrier | 活动载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
 | 97 | `/h5/expired.html`（H5 expired artifact） | PUB-SUR | build carrier | 过期载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |

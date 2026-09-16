@@ -15,7 +15,6 @@
         <p style="margin:18px 0 0;font-size:13px;line-height:20px;color:#A6AAB0;text-align:center">作答后点击「下一题」继续，可随时返回「上一题」修改；最后一题点击「提交」。</p>
       </div>
     </sc-if>
-    <sc-if value="{{ submitted }}"><div data-h5-receipt style="background:#fff;border-radius:14px;padding:18px"><h2 style="margin:0;font-size:18px">已收到本地提交回执</h2><p style="font-size:13px;color:#646A73">未执行任何外部效果。</p><a data-h5-result-link href="{{ resultPath }}" style="color:#245BDB">查询真实提交结果</a></div></sc-if>
   </div>
   <sc-if value="{{ ready }}"><div style="flex:none;display:flex;gap:10px;padding:14px 14px 22px;background:#fff;border-top:1px solid #EDEEF0"><sc-if value="{{ canPrevious }}"><button data-h5-previous onClick="{{ act.prevQ }}" style="flex:.8;height:48px;border:1px solid #DEE0E3;border-radius:12px;background:#fff;font-size:16px;font-weight:600;color:#1F2329;cursor:pointer">上一题</button></sc-if><sc-if value="{{ canNext }}"><button data-h5-next onClick="{{ act.nextQ }}" style="flex:1.2;height:48px;border:0;border-radius:12px;background:var(--accent,#3370ff);color:#fff;font-size:16px;font-weight:600;cursor:pointer">下一题</button></sc-if><sc-if value="{{ canSubmit }}"><button data-h5-submit onClick="{{ act.submit }}" style="flex:1.2;height:48px;border:0;border-radius:12px;background:var(--accent,#3370ff);color:#fff;font-size:16px;font-weight:600;cursor:pointer">提交</button></sc-if></div></sc-if>
 </div>

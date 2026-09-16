@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
@@ -141,6 +142,166 @@ func bytes32(value byte) []byte {
 	result := make([]byte, 32)
 	result[0] = value
 	return result
+}
+
+func TestPostgreSQLSubmissionClaimsAreAtomicPerCustomerAndQuestionnaire(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC)
+
+	var actorID, firstCustomer, secondCustomer, rollbackCustomer, concurrentCustomer, historicalCustomer int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-single-submit','$argon2id$test','Survey Single Submit') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range []*int64{&firstCustomer, &secondCustomer, &rollbackCustomer, &concurrentCustomer, &historicalCustomer} {
+		if err := native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var questionnaireID, definitionID int64
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Single submit','Single submit','','survey','all_in_one','single-submit','published',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at) VALUES($1,1,'survey','all_in_one','Single submit','','{}',$2,TRUE,$3,$4,$3) RETURNING id`, questionnaireID, bytes32(91), now, actorID).Scan(&definitionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1 WHERE id=$2`, definitionID, questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionnaire := surveyport.Questionnaire{ID: surveyport.ID(questionnaireID), DefinitionVersion: 1, Slug: "single-submit", Title: "Single submit", Mode: surveyport.ModeSurvey}
+	digest := func(marker byte) [32]byte {
+		var value [32]byte
+		value[0] = marker
+		return value
+	}
+	persist := func(customer int64, key, payload byte) (surveyport.Submission, bool, error) {
+		input := surveyapp.PersistSubmission{
+			Questionnaire:       questionnaire,
+			Command:             surveyport.SubmitCommand{Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: customerPointer(customer), EvidenceDigest: strings.Repeat("a", 64)}},
+			SubmissionKeyDigest: digest(key),
+			PayloadDigest:       digest(payload),
+			TokenDigest:         digest(key + 60),
+			Answers:             []surveyport.AnswerSnapshot{},
+			Now:                 now,
+		}
+		var submission surveyport.Submission
+		var created bool
+		err := uow.Within(ctx, func(txCtx context.Context) error {
+			var createErr error
+			submission, created, createErr = repository.CreateSubmission(txCtx, input)
+			return createErr
+		})
+		return submission, created, err
+	}
+
+	first, created, err := persist(firstCustomer, 1, 11)
+	if err != nil || !created || first.ID < 1 {
+		t.Fatalf("first submission=%+v created=%t err=%v", first, created, err)
+	}
+	replayed, created, err := persist(firstCustomer, 1, 11)
+	if err != nil || created || replayed.ID != first.ID {
+		t.Fatalf("same key replay=%+v created=%t err=%v", replayed, created, err)
+	}
+	if _, _, err = persist(firstCustomer, 1, 12); !errors.Is(err, surveyport.ErrConflict) {
+		t.Fatalf("same key payload drift error=%v", err)
+	}
+	if _, _, err = persist(firstCustomer, 2, 21); !errors.Is(err, surveyport.ErrAlreadySubmitted) {
+		t.Fatalf("different key duplicate error=%v", err)
+	}
+	if _, created, err = persist(secondCustomer, 2, 21); err != nil || !created {
+		t.Fatalf("different customer created=%t err=%v", created, err)
+	}
+
+	rollback := errors.New("force single-submit rollback")
+	err = uow.Within(ctx, func(txCtx context.Context) error {
+		_, _, createErr := repository.CreateSubmission(txCtx, surveyapp.PersistSubmission{
+			Questionnaire:       questionnaire,
+			Command:             surveyport.SubmitCommand{Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: customerPointer(rollbackCustomer), EvidenceDigest: strings.Repeat("b", 64)}},
+			SubmissionKeyDigest: digest(3), PayloadDigest: digest(31), TokenDigest: digest(63), Answers: []surveyport.AnswerSnapshot{}, Now: now,
+		})
+		if createErr != nil {
+			return createErr
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback error=%v", err)
+	}
+	if _, created, err = persist(rollbackCustomer, 4, 41); err != nil || !created {
+		t.Fatalf("rolled-back claim blocked retry created=%t err=%v", created, err)
+	}
+
+	// An imported/older submission is intentionally not claimed by this
+	// migration; its customer can make one new post-cutover submission.
+	if _, err = native.Exec(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,result_snapshot,submitted_at,created_at) VALUES($1,$2,1,$3,'resolved',$4,$5,'single-submit','Single submit','survey','{}',$6,$6)`, questionnaireID, definitionID, historicalCustomer, bytes32(70), bytes32(71), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err = persist(historicalCustomer, 5, 51); err != nil || !created {
+		t.Fatalf("historical row was backfilled or blocked created=%t err=%v", created, err)
+	}
+
+	start := make(chan struct{})
+	type concurrentResult struct {
+		created bool
+		err     error
+	}
+	results := make(chan concurrentResult, 2)
+	for _, key := range []byte{6, 7} {
+		key := key
+		go func() {
+			<-start
+			_, made, createErr := persist(concurrentCustomer, key, key+50)
+			results <- concurrentResult{created: made, err: createErr}
+		}()
+	}
+	close(start)
+	firstResult, secondResult := <-results, <-results
+	createdCount, duplicateCount := 0, 0
+	for _, result := range []concurrentResult{firstResult, secondResult} {
+		if result.err == nil && result.created {
+			createdCount++
+		}
+		if errors.Is(result.err, surveyport.ErrAlreadySubmitted) {
+			duplicateCount++
+		}
+	}
+	if createdCount != 1 || duplicateCount != 1 {
+		t.Fatalf("concurrent results=%+v/%+v", firstResult, secondResult)
+	}
+	var count int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM survey_submission_claims WHERE questionnaire_id=$1 AND customer_id=$2`, questionnaireID, concurrentCustomer).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("concurrent claim count=%d err=%v", count, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM survey_submissions WHERE questionnaire_id=$1 AND customer_id=$2`, questionnaireID, concurrentCustomer).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("concurrent submission count=%d err=%v", count, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM survey_result_tokens token JOIN survey_submissions submission ON submission.id=token.submission_id WHERE submission.questionnaire_id=$1 AND submission.customer_id=$2`, questionnaireID, concurrentCustomer).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("concurrent result token count=%d err=%v", count, err)
+	}
+}
+
+func customerPointer(value int64) *customerdomain.CustomerID {
+	customer := customerdomain.CustomerID(value)
+	return &customer
 }
 
 func TestPostgreSQLListLoadsActiveDefinitionsAfterClosingBaseRows(t *testing.T) {
@@ -1027,7 +1188,7 @@ func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql", "0090_survey_oauth_state_redirect.sql", "0091_survey_assessment_business_keys.sql", "0099_survey_historical_external_projection.sql", "0168_survey_questionnaire_archive.sql", "0169_survey_questionnaire_archive_receipts.sql"} {
+	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0038_survey_oauth_phone_vault.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql", "0090_survey_oauth_state_redirect.sql", "0091_survey_assessment_business_keys.sql", "0099_survey_historical_external_projection.sql", "0168_survey_questionnaire_archive.sql", "0169_survey_questionnaire_archive_receipts.sql", "0170_survey_single_submission_claims.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migrationName))
 		if readErr != nil {
 			t.Fatal(readErr)

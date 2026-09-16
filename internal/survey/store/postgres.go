@@ -509,24 +509,59 @@ func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.Persi
 	if err = t.QueryRow(ctx, `SELECT active_definition_version_id FROM survey_questionnaires WHERE id=$1 AND status='published' FOR SHARE`, input.Questionnaire.ID).Scan(&definitionID); err != nil {
 		return surveyport.Submission{}, false, mapError(err)
 	}
-	resultRaw, _ := json.Marshal(input.Result)
-	var submissionID int64
+	// Preserve the established same-key replay before the new customer claim is
+	// considered. This also keeps historical, pre-cutover submission-key
+	// receipts readable without backfilling them into the new claim table.
+	var existingID int64
 	var existingPayload []byte
-	err = t.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,identity_reason,evidence_digest,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) ON CONFLICT(questionnaire_id,submission_key_digest) DO NOTHING RETURNING id`, input.Questionnaire.ID, definitionID, input.Questionnaire.DefinitionVersion, input.Command.Identity.CustomerID, input.Command.Identity.State, decodeEvidence(input.Command.Identity.EvidenceDigest), input.SubmissionKeyDigest[:], input.PayloadDigest[:], input.Questionnaire.Slug, input.Questionnaire.Title, input.Questionnaire.Mode, input.TotalScore, resultRaw, input.Command.SourceChannel, input.Command.CampaignID, input.Command.StaffID, input.Now).Scan(&submissionID)
-	created := err == nil
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, input.Questionnaire.ID, input.SubmissionKeyDigest[:]).Scan(&submissionID, &existingPayload)
-		if err != nil {
-			return surveyport.Submission{}, false, mapError(err)
-		}
+	err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, input.Questionnaire.ID, input.SubmissionKeyDigest[:]).Scan(&existingID, &existingPayload)
+	if err == nil {
 		if string(existingPayload) != string(input.PayloadDigest[:]) {
 			return surveyport.Submission{}, false, surveyport.ErrConflict
 		}
-		stored, getErr := r.GetSubmission(ctx, surveyport.ID(submissionID))
+		stored, getErr := r.GetSubmission(ctx, surveyport.ID(existingID))
 		return stored, false, getErr
 	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return surveyport.Submission{}, false, mapError(err)
+	}
+
+	// The PK serializes competing submission keys for the same canonical
+	// customer and questionnaire. Because this runs in the caller's UoW, a
+	// later failure rolls the placeholder back with the submission, answers,
+	// audit, Outbox, and any accepted external effect.
+	claim, err := t.Exec(ctx, `INSERT INTO survey_submission_claims(questionnaire_id,customer_id,claimed_at) VALUES($1,$2,$3) ON CONFLICT(questionnaire_id,customer_id) DO NOTHING`, input.Questionnaire.ID, input.Command.Identity.CustomerID, input.Now)
 	if err != nil {
 		return surveyport.Submission{}, false, mapError(err)
+	}
+	if claim.RowsAffected() != 1 {
+		// A concurrent same-key request may have observed no submission before
+		// blocking on the claim. Re-read it after the conflict to preserve the
+		// original idempotent receipt; all other keys are already-submitted.
+		err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, input.Questionnaire.ID, input.SubmissionKeyDigest[:]).Scan(&existingID, &existingPayload)
+		if err == nil {
+			if string(existingPayload) != string(input.PayloadDigest[:]) {
+				return surveyport.Submission{}, false, surveyport.ErrConflict
+			}
+			stored, getErr := r.GetSubmission(ctx, surveyport.ID(existingID))
+			return stored, false, getErr
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return surveyport.Submission{}, false, surveyport.ErrAlreadySubmitted
+		}
+		return surveyport.Submission{}, false, mapError(err)
+	}
+	resultRaw, _ := json.Marshal(input.Result)
+	var submissionID int64
+	err = t.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,identity_reason,evidence_digest,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) RETURNING id`, input.Questionnaire.ID, definitionID, input.Questionnaire.DefinitionVersion, input.Command.Identity.CustomerID, input.Command.Identity.State, decodeEvidence(input.Command.Identity.EvidenceDigest), input.SubmissionKeyDigest[:], input.PayloadDigest[:], input.Questionnaire.Slug, input.Questionnaire.Title, input.Questionnaire.Mode, input.TotalScore, resultRaw, input.Command.SourceChannel, input.Command.CampaignID, input.Command.StaffID, input.Now).Scan(&submissionID)
+	if err != nil {
+		return surveyport.Submission{}, false, mapError(err)
+	}
+	if claim, err = t.Exec(ctx, `UPDATE survey_submission_claims SET submission_id=$3 WHERE questionnaire_id=$1 AND customer_id=$2 AND submission_id IS NULL`, input.Questionnaire.ID, input.Command.Identity.CustomerID, submissionID); err != nil || claim.RowsAffected() != 1 {
+		if err != nil {
+			return surveyport.Submission{}, false, mapError(err)
+		}
+		return surveyport.Submission{}, false, surveyport.ErrUnavailable
 	}
 	if _, err = t.Exec(ctx, `INSERT INTO survey_result_tokens(submission_id,token_digest,created_at) VALUES($1,$2,$3)`, submissionID, input.TokenDigest[:], input.Now); err != nil {
 		return surveyport.Submission{}, false, mapError(err)
@@ -551,7 +586,17 @@ func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.Persi
 		}
 	}
 	stored, err := r.GetSubmission(ctx, surveyport.ID(submissionID))
-	return stored, created, err
+	return stored, true, err
+}
+
+func (r *Repository) HasSubmissionClaim(ctx context.Context, questionnaireID surveyport.ID, customerID customerdomain.CustomerID) (bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	var claimed bool
+	err = t.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_submission_claims WHERE questionnaire_id=$1 AND customer_id=$2 AND submission_id IS NOT NULL)`, questionnaireID, customerID).Scan(&claimed)
+	return claimed, mapError(err)
 }
 
 func (r *Repository) RecordPhoneBinding(ctx context.Context, submissionID, answerID surveyport.ID, customerID, identityID int64, status identityport.DeclaredAttachStatus, evidence [32]byte, now time.Time) error {

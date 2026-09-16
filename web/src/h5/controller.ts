@@ -1,5 +1,12 @@
 import { PageBase, type Vals } from '../shared/ui/runtime';
-import { readPublicSurvey, readSurveyResult, submitSurvey } from '../api/public-survey';
+import {
+  completionAction,
+  completionActionFromCarrier,
+  readPublicSurvey,
+  readSurveyResult,
+  submitSurvey,
+  type CompletionAction,
+} from '../../v3/surveyPublicApi';
 import { toast } from '../shared/ui/feedback';
 import { ApiError } from '../api/transport';
 import { formatShanghaiDateTime } from '../../v3/adminDateTime';
@@ -49,6 +56,8 @@ export class H5Controller extends PageBase {
   private resultToken = '';
   private submitted = false;
 	private slug = '';
+  private done = false;
+  private doneAction: CompletionAction = { type: 'default' };
 
   constructor(readonly page: string) { super(); }
 
@@ -62,7 +71,11 @@ export class H5Controller extends PageBase {
 				const session = await fetch(`/api/h5/surveys/session?slug=${encodeURIComponent(this.slug)}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
 				if (session.ok) {
 					try { sessionStorage.removeItem('survey.oauth:' + this.slug); } catch {}
-					const body = await session.json() as { display?: string };
+					const body = await session.json() as { display?: string; submitted?: unknown; completion_action?: unknown };
+            if (body.submitted === true) {
+              this.complete(completionAction(body.completion_action));
+              return;
+            }
 					location.replace(`/h5/${body.display === 'one' ? 'one' : 'all'}.html?slug=${encodeURIComponent(this.slug)}`);
 				} else if (session.status === 401) this.startOAuth(false);
 				else if (session.status === 409) this.error = '当前微信身份存在冲突，请联系管理员处理后再填写';
@@ -73,7 +86,7 @@ export class H5Controller extends PageBase {
 		this.refresh();
 		return;
 	}
-	if (!['all', 'one', 'result'].includes(this.page)) return;
+	if (!['all', 'one', 'result', 'done'].includes(this.page)) return;
     this.loading = true;
     this.error = '';
     this.unsupportedTypes = new Set();
@@ -93,11 +106,28 @@ export class H5Controller extends PageBase {
 		const slug = new URLSearchParams(location.search).get('slug') || '';
 		if (!/^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/.test(slug)) throw new Error('缺少有效公开问卷 slug，不能填写或提交');
 		this.slug = slug;
-        const definition = await readPublicSurvey(slug) as V3SurveyDefinition;
-        this.validateDefinition(definition, slug);
-        this.definition = definition;
+        if (this.page === 'done') {
+          const session = await fetch(`/api/h5/surveys/session?slug=${encodeURIComponent(slug)}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+          if (!session.ok) throw new Error('问卷完成状态暂不可读取');
+          const body = await session.json() as { submitted?: unknown; completion_action?: unknown };
+          if (body.submitted !== true) throw new Error('当前问卷尚未提交');
+          this.doneAction = completionAction(body.completion_action);
+          if (this.doneAction.type === 'redirect') {
+            this.complete(this.doneAction);
+            return;
+          }
+          this.done = true;
+        } else {
+          const definition = await readPublicSurvey(slug) as V3SurveyDefinition;
+          this.validateDefinition(definition, slug);
+          this.definition = definition;
+        }
       }
     } catch (error) {
+	  if (this.slug && isAlreadySubmitted(error)) {
+        this.complete(completionActionFromCarrier(error.details));
+        return;
+      }
 	  if (error instanceof ApiError && error.status === 401 && this.slug) {
 		location.replace(`/q/${encodeURIComponent(this.slug)}`);
 		return;
@@ -109,6 +139,14 @@ export class H5Controller extends PageBase {
       this.loading = false;
       this.refresh();
     }
+  }
+
+  private complete(action: CompletionAction): void {
+    this.submitted = true;
+    const destination = action.type === 'redirect'
+      ? action.redirect_url
+      : `/h5/done.html?slug=${encodeURIComponent(this.slug)}`;
+    location.replace(destination);
   }
 
   private startOAuth(retry: boolean): void {
@@ -221,11 +259,10 @@ export class H5Controller extends PageBase {
       this.submissionKey ||= btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
         .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       const receipt = await submitSurvey(this.definition.slug, { version: this.definition.version, submission_key: this.submissionKey, answers });
-      if (!validToken(receipt.resultToken)) throw new Error('提交回执缺少有效结果凭据，未确认结果');
-      this.resultToken = receipt.resultToken;
-      this.submitted = true;
+      this.complete(receipt.completionAction);
     } catch (error) {
-      this.error = error instanceof Error ? error.message : '提交失败；未修改答案时可安全重试';
+      if (isAlreadySubmitted(error)) this.complete(completionActionFromCarrier(error.details));
+      else this.error = error instanceof Error ? error.message : '提交失败；未修改答案时可安全重试';
     } finally {
       this.submitting = false;
       this.refresh();
@@ -277,7 +314,9 @@ export class H5Controller extends PageBase {
       notWechatUA: !/MicroMessenger/i.test(navigator.userAgent || ''),
 	  authRetry: !!this.error && /MicroMessenger/i.test(navigator.userAgent || ''),
 	  wechatUA: /MicroMessenger/i.test(navigator.userAgent || ''),
-      submitted: this.submitted, resultPath: `result.html#result_token=${encodeURIComponent(this.resultToken)}`,
+      submitted: this.submitted,
+      done: this.done,
+      leadQR: this.doneAction.type === 'lead_qr' ? this.doneAction.lead_qr : null,
       title: definition?.title || '公开问卷', description: definition?.description || '',
       progress: stepMode ? `第 ${this.questionIndex + 1} / ${questions.length} 题` : `共 ${questions.length} 题`,
       canPrevious: ready && stepMode && this.questionIndex > 0 && !this.submitting,
@@ -318,4 +357,10 @@ export class H5Controller extends PageBase {
       },
     };
   }
+}
+
+function isAlreadySubmitted(error: unknown): error is ApiError {
+  if (!(error instanceof ApiError) || error.status !== 409 || !error.details || typeof error.details !== 'object') return false;
+  const details = error.details as { code?: unknown; error?: unknown };
+  return details.code === 'already_submitted' || details.error === 'already_submitted';
 }
