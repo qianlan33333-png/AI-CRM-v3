@@ -14,9 +14,10 @@ const historicalOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_HISTORICAL_
 const nativeOrderReference = process.env.AICRM_ADMIN_LAYOUT_TEST_NATIVE_ORDER;
 const radarID = process.env.AICRM_ADMIN_LAYOUT_TEST_RADAR_ID;
 const aiPlanID = process.env.AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID;
+const couponID = process.env.AICRM_ADMIN_LAYOUT_TEST_COUPON_ID;
 const screenshotDirectory = process.env.AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(archiveProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(nativeOrderReference || "") || !screenshotDirectory) {
-  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product ids, order fixtures, native AI plan id, and screenshot directory");
+if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[1-9][0-9]*$/.test(archiveProductID || "") || !/^[1-9][0-9]*$/.test(radarID || "") || !/^[1-9][0-9]*$/.test(aiPlanID || "") || !/^[1-9][0-9]*$/.test(couponID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(nativeOrderReference || "") || !screenshotDirectory) {
+  throw new Error("admin layout Chromium journey requires HTTPS URL, test login, product/coupon ids, order fixtures, native AI plan id, and screenshot directory");
 }
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -916,6 +917,32 @@ try {
     }
   };
 
+  // These are route-level desktop acceptance captures, not a second page
+  // harness. Each route stays on the composed Access session and its existing
+  // Owner Host, then proves the requested viewport, shell geometry, a visible
+  // page-specific operation or seeded fact, and no horizontal overflow.
+  const captureDesktopEvidence = async ({ label, pathname, ready, kind, titleSelector, assertPage, expectedResponse = '', finalPath = pathname, assertShell = true }) => {
+    for (const width of [1280, 1440]) {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+      const step = `${label}-desktop-${width}`;
+      try {
+        const responseStart = responses.length;
+        await cdp.call("Page.navigate", { url: baseURL + pathname });
+        await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, step + " did not navigate");
+        await waitFor(cdp, ready, step + " Host did not become ready");
+        await waitForFonts(step);
+        if (assertShell) await assertLayout(kind, step, titleSelector);
+        const evidence = await evaluate(cdp, assertPage);
+        if (!evidence?.ready || evidence.width !== width || evidence.overflow) throw new Error(step + " visible page evidence invalid " + JSON.stringify(evidence));
+        if (expectedResponse && !responses.slice(responseStart).includes(expectedResponse)) throw new Error(step + " did not complete expected Owner read " + expectedResponse);
+        await capture(step);
+      } catch (error) {
+        await recordRouteFailure(step, error);
+      }
+    }
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
+  };
+
   const assertConfigCenterLayout = async label => {
     await assertLayout("standard", label, "[data-runtime-release-host] .cc-card-h h2");
     const layout = await evaluate(cdp, `(() => {
@@ -1217,6 +1244,80 @@ try {
     return Boolean(root && title?.textContent?.trim() === '开放平台调用方' && refresh && rows.length > 0);
   })()`, "api-docs key management did not become ready");
   await assertStaticOpenLayout("api-docs-key-management");
+
+  // Remaining release-matrix desktop evidence. These intentionally read only
+  // existing Owner surfaces; no visible button below is clicked when it would
+  // create, publish, save, refresh or call a Provider.
+  await captureDesktopEvidence({
+    label: "coupons", pathname: "/admin/coupons",
+    ready: "Boolean(document.querySelector('#stage table tbody tr')) && document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券')",
+    kind: "embedded", titleSelector: frozenListToolbarTitle,
+    assertPage: `(() => ({ready:Boolean(document.querySelector('#stage button')) && Array.from(document.querySelectorAll('#stage tbody tr')).some(row => row.textContent?.includes('后台页面验收优惠券')) && Array.from(document.querySelectorAll('#stage tbody tr')).some(row => row.textContent?.includes('数据')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+  });
+  await captureDesktopEvidence({
+    label: "coupon-form", pathname: "/admin/couponForm.html?id=" + couponID,
+    ready: `(() => { const stage=document.querySelector('#stage'); const amount=document.querySelector('#couponAmount'); const limit=document.querySelector('#couponIssueLimit'); const start=document.querySelector('#couponClaimStart'); const end=document.querySelector('#couponClaimEnd'); return Boolean(stage?.textContent?.includes('后台页面验收优惠券') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券') && amount instanceof HTMLInputElement && amount.value === '12.00' && limit instanceof HTMLInputElement && limit.value === '100' && stage.textContent?.replace(/\\s/g,'').includes('已选1个商品') && start instanceof HTMLInputElement && Boolean(start.value) && end instanceof HTMLInputElement && Boolean(end.value)); })()`,
+    kind: "embedded", titleSelector: "#couponForm h2", assertShell: false,
+    expectedResponse: "GET /api/admin/coupons/" + couponID + ":200",
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const compact=text.replace(/\\s/g,''); const title=document.querySelector('#stage .coupon-editor-title-row h2'); const amount=document.querySelector('#couponAmount'); const limit=document.querySelector('#couponIssueLimit'); const start=document.querySelector('#couponClaimStart'); const end=document.querySelector('#couponClaimEnd'); return {ready:title?.textContent?.trim() === '编辑优惠券' && document.querySelectorAll('#stage .coupon-editor-title-row h2').length === 1 && compact.includes('后台页面验收优惠券') && compact.includes('已选1个商品') && amount instanceof HTMLInputElement && amount.value === '12.00' && limit instanceof HTMLInputElement && limit.value === '100' && start instanceof HTMLInputElement && Boolean(start.value) && end instanceof HTMLInputElement && Boolean(end.value) && Boolean(document.querySelector('#stage #saveCoupon')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
+  });
+  await captureDesktopEvidence({
+    label: "coupon-data", pathname: "/admin/couponData.html?id=" + couponID,
+    ready: "Boolean(document.querySelector('#stage table tbody tr')) && document.querySelector('#stage')?.textContent?.includes('领取与使用明细')",
+    kind: "embedded", titleSelector: frozenListToolbarTitle,
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const rows=Array.from(document.querySelectorAll('#stage tbody tr')); return {ready:text.includes('累计领取') && text.includes('领取时间') && text.includes('已领取 / 发行量') && /累计领取\\s*1\\s*发行 100/.test(text) && text.includes('指定商品（1项）') && rows.length >= 1 && rows.some(row => row.textContent?.includes('可用') && !row.textContent?.includes('claimed')) && !text.includes('claimed') && !text.includes('published') && !text.includes('standard_product:1') && !text.includes('当前页暂无领取记录'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
+  });
+  await captureDesktopEvidence({
+    label: "service-period-products", pathname: "/admin/service-period-products",
+    ready: "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded table')) && document.querySelector('#stage')?.textContent?.includes('浏览器周期外推商品')",
+    kind: "standard", titleSelector: "table",
+    assertPage: `(() => ({ready:document.querySelectorAll('.admin-topbar .admin-page-title').length === 1 && Boolean(document.querySelector('[data-page-header-actions="product-list-spProducts"] button')) && Boolean(document.querySelector('#stage tbody tr')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+  });
+  await captureDesktopEvidence({
+    label: "member-grid", pathname: "/admin/spProductData.html?id=" + serviceProductID,
+    ready: "Boolean(document.querySelector('#spMemberGrid[data-mode=\"internal\"]')) && document.querySelectorAll('#spGridBody tr[data-record-id]').length === 1 && document.querySelector('#spResultSummary')?.textContent?.trim() === '当前显示 1 行'",
+    kind: "embedded", titleSelector: "h1", assertShell: false,
+    assertPage: `(() => ({ready:document.querySelectorAll('h1').length === 1 && document.querySelector('h1')?.textContent?.includes('周期商品会员数据') && document.querySelectorAll('#spGridBody tr[data-record-id]').length === 1 && document.querySelector('#spResultSummary')?.textContent?.trim() === '当前显示 1 行',width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+  });
+  await captureDesktopEvidence({
+    label: "channels-new", pathname: "/admin/channels/new",
+    ready: "Boolean(document.querySelector('[data-channel-admission-page]')) && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存当前维度')",
+    kind: "embedded", titleSelector: "[data-channel-admission-page] h1", assertShell: false,
+    assertPage: `(() => ({ready:document.body.dataset.page === 'channelForm' && document.querySelectorAll('[data-channel-admission-page] h1').length === 1 && document.querySelector('[data-channel-admission-page] h1')?.textContent?.trim() === '渠道码中心' && Boolean(document.querySelector('[data-channel-admission-page] input')) && document.querySelector('[data-channel-admission-page]')?.textContent?.includes('基础配置') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存当前维度'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+  });
+  await captureDesktopEvidence({
+    label: "external-effects", pathname: "/admin/campaigns.html?view=external-effects",
+    ready: "Boolean(document.querySelector('#effects-refresh')) && Boolean(document.querySelector('#stage h2'))",
+    kind: "standard", titleSelector: "#stage h2",
+    assertPage: `(() => ({ready:document.querySelectorAll('.admin-topbar .admin-page-title').length === 1 && document.querySelector('#effects-refresh')?.textContent?.includes('刷新真实本地投影') && document.querySelector('#stage')?.textContent?.includes('External Effects runtime / diagnostics'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+  });
+  await captureDesktopEvidence({
+    label: "owner-migration", pathname: "/admin/owner-migration",
+    ready: "Boolean(document.querySelector('[data-owner-handoff-host][data-owner-handoff-init=\"ready\"]')) && Boolean(document.querySelector('[data-owner-picker=\"source\"]'))",
+    kind: "standard", titleSelector: "[data-owner-picker=\"source\"]",
+    assertPage: `(() => ({ready:document.querySelectorAll('.admin-topbar .admin-page-title').length === 1 && Boolean(document.querySelector('[data-owner-picker="source"]')) && Boolean(document.querySelector('[data-owner-picker="target"]')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+  });
+  await captureDesktopEvidence({
+    label: "runtime-config", pathname: "/admin/config/releases",
+    ready: "Boolean(document.querySelector('[data-runtime-release-host] .admin-card h2')) && document.body?.textContent?.includes('当前运行时配置')",
+    kind: "standard", titleSelector: "[data-runtime-release-host] .admin-card h2",
+    assertPage: `(() => ({ready:document.querySelectorAll('.admin-topbar .admin-page-title').length === 1 && Boolean(document.querySelector('[data-runtime-release-host] .admin-card h2')) && document.querySelector('[data-runtime-release-host]')?.textContent?.includes('当前运行时配置'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+  });
+  for (const width of [1280, 1440]) {
+    const step = `api-docs-desktop-${width}`;
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
+    try {
+      await cdp.call("Page.navigate", { url: baseURL + "/admin/api-docs" });
+      await waitFor(cdp, "location.pathname === '/admin/apidocs.html' && Boolean(document.querySelector('[data-open-platform-docs=\"v1\"] #operations tbody tr'))", step + " did not render docs");
+      await assertStaticOpenLayout(step);
+      const evidence = await evaluate(cdp, `(() => ({ready:document.querySelectorAll('[data-open-platform-docs="v1"] #operations tbody tr').length === 11 && Boolean(document.querySelector('[data-open-platform-docs="v1"] button[data-open-platform-action="密钥管理"]')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`);
+      if (!evidence?.ready || evidence.width !== width || evidence.overflow) throw new Error(step + " visible page evidence invalid " + JSON.stringify(evidence));
+      await capture(step);
+    } catch (error) {
+      await recordRouteFailure(step, error);
+    }
+  }
+  await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1622, height: 1007, deviceScaleFactor: 1, mobile: false, screenWidth: 1622, screenHeight: 1007 });
 
   // Detail and frozen aliases remain on their business Host, including the
   // order history panel whose source mapping is independently seeded below.

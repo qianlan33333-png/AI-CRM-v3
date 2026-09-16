@@ -40,6 +40,7 @@ type adminShellLayoutFixture struct {
 	aiPlanID             int64
 	nativeOrderReference string
 	archiveProductID     int64
+	couponID             int64
 }
 
 // TestPostgreSQLAdminShellLayoutCompositionPreflight keeps the real release
@@ -216,6 +217,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		"AICRM_ADMIN_LAYOUT_TEST_NATIVE_ORDER="+fixture.nativeOrderReference,
 		"AICRM_ADMIN_LAYOUT_TEST_RADAR_ID="+strconv.FormatInt(fixture.radarID, 10),
 		"AICRM_ADMIN_LAYOUT_TEST_AI_PLAN_ID="+strconv.FormatInt(fixture.aiPlanID, 10),
+		"AICRM_ADMIN_LAYOUT_TEST_COUPON_ID="+strconv.FormatInt(fixture.couponID, 10),
 		"AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR="+fixture.screenshots,
 	)
 	output, err := command.CombinedOutput()
@@ -230,6 +232,7 @@ func TestPostgreSQLAdminShellLayoutChromiumJourney(t *testing.T) {
 		"orders.png", "products.png", "service-period-products.png", "product.png", "service-period-product.png", "coupons.png", "materials-images-1280.png", "materials-images-1440.png", "materials-miniprograms-1280.png", "materials-miniprograms-1440.png", "materials-miniprograms-page-2-1280.png", "materials-attachments-1280.png", "materials-attachments-1440.png",
 		"products-actions-1440.png", "service-period-products-actions-1440.png", "products-actions-1280.png", "service-period-products-actions-1280.png", "products-actions-edge-1440.png", "products-actions-edge-1280.png", "products-delete-confirm.png",
 		"automation-agents.png", "owner-migration.png", "config.png", "runtime-config.png", "api-docs.png", "order-detail-history.png", "order-detail-native.png", "order-detail-history-mobile.png", "external-effects.png",
+		"coupons-desktop-1280.png", "coupons-desktop-1440.png", "coupon-form-desktop-1280.png", "coupon-form-desktop-1440.png", "coupon-data-desktop-1280.png", "coupon-data-desktop-1440.png", "service-period-products-desktop-1280.png", "service-period-products-desktop-1440.png", "member-grid-desktop-1280.png", "member-grid-desktop-1440.png", "channels-new-desktop-1280.png", "channels-new-desktop-1440.png", "external-effects-desktop-1280.png", "external-effects-desktop-1440.png", "owner-migration-desktop-1280.png", "owner-migration-desktop-1440.png", "runtime-config-desktop-1280.png", "runtime-config-desktop-1440.png", "api-docs-desktop-1280.png", "api-docs-desktop-1440.png",
 	} {
 		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
 		if statErr != nil || info.Size() < 512 {
@@ -275,6 +278,8 @@ func newAdminShellLayoutFixture(t *testing.T) *adminShellLayoutFixture {
 	seedAdminShellLayoutAttachmentAndMiniProgram(t, fixture.ctx, fixture.application)
 	fixture.nativeOrderReference = seedAdminShellLayoutNativeOrder(t, fixture.ctx, fixture.application, fixture.productID)
 	fixture.archiveProductID = seedAdminShellLayoutArchiveProduct(t, fixture.ctx, fixture.application)
+	fixture.couponID = seedAdminShellLayoutCoupon(t, fixture.ctx, fixture.application, fixture.productID)
+	seedRemainingPagesGridMember(t, fixture.productExternalPushChromiumFixture)
 	seedAdminShellLayoutOverflowProducts(t, fixture.ctx, fixture.application)
 	return fixture
 }
@@ -291,6 +296,37 @@ VALUES('admin-layout-delete-menu','菜单删除夹具商品','仅用于后台列
 		t.Fatalf("seed admin layout archive product: %v", err)
 	}
 	return id
+}
+
+// seedAdminShellLayoutCoupon supplies one current rule, target and canonical
+// customer claim for the existing Coupon Owner's read-only admin pages.  It
+// deliberately does not use the claim command: the browser only renders
+// local fixture facts and never issues a coupon, payment or Provider request.
+func seedAdminShellLayoutCoupon(t *testing.T, ctx context.Context, application *composedApplication, productID int64) int64 {
+	t.Helper()
+	now := time.Now().UTC()
+	pool := application.pool.Native()
+	var couponID, customerID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO coupon_rules(name,discount_amount_total,currency,status,total_issue_limit,per_user_issue_limit,issued_count,claim_starts_at,claim_ends_at,validity_mode,relative_validity_days,instructions,created_by,updated_by,created_at,updated_at)
+VALUES('后台页面验收优惠券',1200,'CNY','published',100,1,1,$1,$2,'relative_days',30,'仅用于本地 Chromium 只读验收',1,1,$3,$3) RETURNING id`, now.Add(-time.Hour), now.Add(24*time.Hour), now).Scan(&couponID); err != nil {
+		t.Fatalf("seed admin layout coupon rule: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO coupon_rule_targets(coupon_id,target_ref,position) VALUES($1,$2,0)`, couponID, fmt.Sprintf("standard_product:%d", productID)); err != nil {
+		t.Fatalf("seed admin layout coupon target: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed admin layout coupon customer: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,activation_status,source,source_version,last_synced_at,updated_at)
+VALUES($1,'active','优惠券领取验收客户','active','admin-layout-coupon-fixture',1,$2,$2)`, customerID, now); err != nil {
+		t.Fatalf("seed admin layout coupon customer projection: %v", err)
+	}
+	digest := sha256.Sum256([]byte("admin-layout-coupon-claim"))
+	if _, err := pool.Exec(ctx, `INSERT INTO coupon_customer_claims(source_system,source_key,customer_id,coupon_id,status,claim_no_masked,claimed_at,valid_from,valid_until,source_digest,created_at,updated_at)
+VALUES('admin-layout-coupon','claim-001',$1,$2,'claimed','CLM-***001',$3,$3,$4,$5,$3,$3)`, customerID, couponID, now, now.AddDate(0, 0, 30), digest[:]); err != nil {
+		t.Fatalf("seed admin layout coupon claim: %v", err)
+	}
+	return couponID
 }
 
 // seedAdminShellLayoutOverflowProducts supplies a real long product table so
