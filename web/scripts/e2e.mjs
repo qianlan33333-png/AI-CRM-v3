@@ -2179,28 +2179,20 @@ console.log('admin/wecom-tags.html（新建标签测试 Mock 建行）');
   dom.window.close();
 }
 
-console.log('admin/questionnaireOps.html?id=1（opaque 本地运营配置）');
+console.log('admin/questionnaireOps.html?id=1（旧版同款问卷提交后动作与外部推送）');
 {
   const dom = await loadPage('admin/questionnaireOps.html', { id: 1 });
   const d = dom.window.document;
-  ok('二维码卡片展示渠道选择器与渠道资源 ID', !!d.querySelector('#opsChannelResourceId') && d.body.textContent.includes('绑定渠道码') && !d.querySelector('#opsNavigationTarget'));
-  click(dom, [...d.querySelectorAll('div')].find((el) => el.textContent.trim() === '直接跳转'));
+  await sleep(100);
+  ok('问卷运营页使用旧版同款布局与两个独立维度', !!d.querySelector('.qo-page') && !!d.querySelector('.qo-summary-grid') && d.querySelectorAll('.qo-nav button').length === 2);
+  ok('二维码卡片展示渠道选择器与标题副标题', !!d.querySelector('#qo-lead-channel') && !!d.querySelector('[data-qr-title]') && !!d.querySelector('[data-qr-subtitle]'));
+  click(dom, d.querySelector('[data-mode="redirect"]'));
   await sleep(30);
-  ok('跳转卡片只展示 opaque navigation target，不出 URL 输入', !!d.querySelector('#opsNavigationTarget') && !d.querySelector('#opsChannelResourceId') && !d.querySelector('#opsRedirectUrl'));
-  ok('外部推送只接受 configuration reference', !!d.querySelector('#opsConfigurationReference') && !d.querySelector('#opsWebhook'));
-  input(dom, d.querySelector('#opsLogKeyword'), '#20478');
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '应用筛选'));
+  ok('直接跳转复刻 H5 与动态 URL Link 配置', !!d.querySelector('[data-target-type]') && !!d.querySelector('[data-h5-url]') && !!d.querySelector('[data-source-url]') && !!d.querySelector('[data-response-key]'));
+  click(dom, d.querySelector('[data-tab="push"]'));
   await sleep(30);
-  ok('问卷外推日志按测试记录 ID 筛选', d.querySelectorAll('tbody tr').length === 1 && d.body.textContent.includes('#20478'));
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '重置'));
-  await sleep(30);
-  ok('问卷外推日志重置恢复完整视图', d.querySelectorAll('tbody tr').length === 3);
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '全部问卷'));
-  await sleep(30);
-  ok('全局问卷外推日志测试模式失败关闭且不回退 Mock', d.querySelector('#fb-toast')?.textContent.includes('backend_blocked') && d.body.textContent.includes('当前问卷本地外推测试记录'));
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.includes('测试推送')));
-  await sleep(30);
-  ok('测试外推明确为本地 queued 记录且未宣称派发', d.querySelector('#fb-body').textContent.includes('不执行外部派发'));
+  ok('外部推送复刻 Webhook 与业务参数', !!d.querySelector('#qo-push-url') && !!d.querySelector('[data-push-type]') && !!d.querySelector('[data-expires]') && !!d.querySelector('[data-day]') && !!d.querySelector('[data-frequency]') && !!d.querySelector('[data-remark]'));
+  ok('外部推送保留自定义参数、测试推送与独立保存', !!d.querySelector('[data-add-param]') && !!d.querySelector('[data-test]') && !!d.querySelector('[data-save-push]'));
   dom.window.close();
 }
 

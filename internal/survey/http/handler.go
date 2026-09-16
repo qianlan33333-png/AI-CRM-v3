@@ -948,7 +948,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			writeError(w, http.StatusServiceUnavailable, "configuration_target_catalog_unavailable")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "metadata": config.ExternalPushMetadata}, "available_configuration_references": references, "target_catalog_available": catalogAvailable, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": h.completionProviderEnabled, "local_only": !h.completionProviderEnabled, "items": items, "total": total, "real_external_call_executed": false})
+		writeJSON(w, 200, operationConfigurationResponse(id, config, references, catalogAvailable, h.completionProviderEnabled, items, total))
 		return
 	}
 	principal, ok := h.write(w, r)
@@ -963,18 +963,43 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 		}
 		if strings.HasSuffix(r.URL.Path, "/completion") {
 			var body struct {
-				NavigationTargetID string `json:"navigation_target_id"`
-				ChannelID          *int64 `json:"channel_id"`
+				Enabled            *bool           `json:"enabled"`
+				ActionType         string          `json:"action_type"`
+				NavigationTargetID string          `json:"navigation_target_id"`
+				ChannelID          *int64          `json:"channel_id"`
+				LeadChannelID      *int64          `json:"lead_channel_id"`
+				LeadQRTitle        string          `json:"lead_qr_title"`
+				LeadQRSubtitle     string          `json:"lead_qr_subtitle"`
+				CompletionTarget   json.RawMessage `json:"completion_target"`
 			}
 			if decode(r, &body) != nil {
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
+			if body.Enabled == nil {
+				config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
+			} else if !*body.Enabled {
+				config.CompletionNavigationRef, config.CompletionChannelID, config.CompletionTarget = "", nil, json.RawMessage(`{}`)
+			} else if body.ActionType == "lead_qr" {
+				config.CompletionNavigationRef, config.CompletionTarget, config.CompletionChannelID = "", json.RawMessage(`{}`), body.LeadChannelID
+				config.LeadQRTitle, config.LeadQRSubtitle = body.LeadQRTitle, body.LeadQRSubtitle
+			} else if body.ActionType == "redirect" && len(body.CompletionTarget) > 0 {
+				config.CompletionNavigationRef, config.CompletionChannelID, config.CompletionTarget = "", nil, body.CompletionTarget
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid_completion_action")
+				return
+			}
 		} else {
 			var body struct {
 				Enabled                bool             `json:"enabled"`
 				ConfigurationReference string           `json:"configuration_reference"`
+				WebhookURL             string           `json:"webhook_url"`
+				PushType               string           `json:"type"`
+				ExpiresAtTS            *int64           `json:"expires_at_ts"`
+				Day                    *int64           `json:"day"`
+				Frequency              *int64           `json:"frequency"`
+				Remark                 string           `json:"remark"`
+				CustomParams           json.RawMessage  `json:"custom_params"`
 				Metadata               *json.RawMessage `json:"metadata"`
 				ConfigurationVersion   *int64           `json:"configuration_version"`
 			}
@@ -994,7 +1019,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 				writeError(w, 400, "configuration_version_required")
 				return
 			}
-			if body.Enabled {
+			if body.Enabled && body.WebhookURL == "" {
 				references, catalogAvailable, catalogErr := h.completionTargetReferences(r.Context())
 				if catalogErr != nil {
 					writeError(w, http.StatusServiceUnavailable, "configuration_target_catalog_unavailable")
@@ -1005,9 +1030,17 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 					return
 				}
 			}
-			config.ExternalPushEnabled, config.ExternalPushConfigurationRef = body.Enabled, body.ConfigurationReference
+			config.ExternalPushEnabled, config.ExternalPushConfigurationRef, config.ExternalPushURL = body.Enabled, body.ConfigurationReference, body.WebhookURL
 			if body.Metadata != nil {
 				config.ExternalPushMetadata = *body.Metadata
+			} else if body.WebhookURL != "" || len(body.CustomParams) > 0 || body.PushType != "" || body.ExpiresAtTS != nil || body.Day != nil || body.Frequency != nil || body.Remark != "" {
+				params, paramErr := surveyCustomParams(body.CustomParams)
+				if paramErr != nil {
+					writeError(w, http.StatusBadRequest, "invalid_custom_params")
+					return
+				}
+				metadata, _ := json.Marshal(map[string]any{"type": body.PushType, "expires_at_ts": body.ExpiresAtTS, "day": body.Day, "frequency": body.Frequency, "remark": body.Remark, "custom_params": params})
+				config.ExternalPushMetadata = metadata
 			}
 		}
 		stored, err := h.submissions.SaveOperationConfiguration(r.Context(), config, principal.InternalID, idempotency(r))
@@ -1015,7 +1048,8 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef, "metadata": stored.ExternalPushMetadata}, "configuration_version": stored.Version, "operation_enabled": stored.ExternalPushEnabled, "local_only": !h.completionProviderEnabled, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": false})
+		stored.ExternalPushURL = config.ExternalPushURL
+		writeJSON(w, 200, operationConfigurationResponse(id, stored, nil, h.completionTargets != nil, h.completionProviderEnabled, nil, 0))
 		return
 	}
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/operations/external-push/test") {
@@ -1078,6 +1112,54 @@ func containsCompletionTargetReference(references []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func surveyCustomParams(raw json.RawMessage) (map[string]string, error) {
+	params := map[string]string{}
+	if len(raw) == 0 || string(raw) == "null" {
+		return params, nil
+	}
+	if json.Unmarshal(raw, &params) == nil {
+		return params, nil
+	}
+	var rows []struct {
+		Name  string `json:"name"`
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(raw, &rows) != nil {
+		return nil, surveyport.ErrInvalid
+	}
+	for _, row := range rows {
+		key := strings.TrimSpace(row.Name)
+		if key == "" {
+			key = strings.TrimSpace(row.Key)
+		}
+		if key != "" {
+			params[key] = row.Value
+		}
+	}
+	return params, nil
+}
+func operationConfigurationResponse(id int64, config surveyport.OperationConfiguration, references []string, catalogAvailable, providerEnabled bool, items []surveyport.OperationReceipt, total int64) map[string]any {
+	var target map[string]any
+	_ = json.Unmarshal(config.CompletionTarget, &target)
+	if target == nil {
+		target = map[string]any{}
+	}
+	targetEnabled, _ := target["enabled"].(bool)
+	completionEnabled := targetEnabled || config.CompletionNavigationRef != "" || config.CompletionChannelID != nil
+	mode := "lead_qr"
+	if targetEnabled || config.CompletionNavigationRef != "" {
+		mode = "redirect"
+	}
+	var metadata map[string]any
+	_ = json.Unmarshal(config.ExternalPushMetadata, &metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	external := map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "webhook_url": config.ExternalPushURL, "metadata": metadata, "type": metadata["type"], "expires_at_ts": metadata["expires_at_ts"], "day": metadata["day"], "frequency": metadata["frequency"], "remark": metadata["remark"], "custom_params": metadata["custom_params"]}
+	return map[string]any{"questionnaire_id": id, "completion": map[string]any{"enabled": completionEnabled, "mode": mode, "navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID, "lead_channel_id": config.CompletionChannelID, "lead_qr_title": config.LeadQRTitle, "lead_qr_subtitle": config.LeadQRSubtitle, "completion_target": target}, "external_push": external, "available_configuration_references": references, "target_catalog_available": catalogAvailable, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": providerEnabled, "local_only": !providerEnabled, "items": items, "total": total, "real_external_call_executed": false}
 }
 
 func (h *Handler) legacyAdminTail(w http.ResponseWriter, r *http.Request, tail string) {

@@ -55,6 +55,10 @@ export type CompletionAction =
 export interface SurveyPublicLeadQRCode {
   /** @maxLength 2048 */
   url: string;
+  /** @maxLength 40 */
+  title?: string;
+  /** @maxLength 100 */
+  subtitle?: string;
 }
 
 export interface SurveyPublicError {

@@ -767,7 +767,16 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Identities: queries})
+	surveyCompletionRuntime, err := outbound.NewStaticSurveyCompletionTargets(surveyCompletionTargets)
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionRefs := make([]string, 0, len(surveyCompletionTargets))
+	for _, target := range surveyCompletionTargets {
+		surveyCompletionRefs = append(surveyCompletionRefs, target.Reference)
+	}
+	surveyCompletionEndpoints := outbound.NewSurveyCompletionEndpoints(pool.Native(), surveyCompletionRuntime, surveyCompletionRefs)
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Resolver: surveyCompletionEndpoints, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Identities: queries})
 	if err != nil {
 		return fail(err)
 	}
@@ -782,6 +791,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	if err = surveySubmissions.BindCompletionIdentity(surveyCompletionProvider); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionEndpoints(surveyCompletionEndpoints); err != nil {
 		return fail(err)
 	}
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {

@@ -43,6 +43,7 @@ type SurveyCompletionTarget struct {
 type SurveyCompletionProviderConfig struct {
 	Enabled    bool
 	Targets    []SurveyCompletionTarget
+	Resolver   SurveyCompletionTargetResolver
 	Reader     surveyport.CompletionPayloadReader
 	Client     *http.Client
 	Identities identityport.ExternalIdentityValueReader
@@ -50,26 +51,61 @@ type SurveyCompletionProviderConfig struct {
 
 type SurveyCompletionProvider struct {
 	enabled    bool
-	targets    map[string]SurveyCompletionTarget
+	targets    SurveyCompletionTargetResolver
 	reader     surveyport.CompletionPayloadReader
 	client     *http.Client
 	now        func() time.Time
 	identities identityport.ExternalIdentityValueReader
 }
 
-func NewSurveyCompletionProvider(c SurveyCompletionProviderConfig) (*SurveyCompletionProvider, error) {
-	if c.Reader == nil {
-		return nil, errors.New("survey completion payload reader is required")
-	}
-	targets := make(map[string]SurveyCompletionTarget, len(c.Targets))
-	for _, target := range c.Targets {
+type SurveyCompletionTargetResolver interface {
+	SurveyCompletionTarget(context.Context, string) (SurveyCompletionTarget, bool, error)
+	SurveyCompletionTargetReferences(context.Context) ([]string, error)
+}
+
+type StaticSurveyCompletionTargets struct {
+	targets map[string]SurveyCompletionTarget
+}
+
+func NewStaticSurveyCompletionTargets(values []SurveyCompletionTarget) (*StaticSurveyCompletionTargets, error) {
+	targets := make(map[string]SurveyCompletionTarget, len(values))
+	for _, target := range values {
 		if !validSurveyCompletionTarget(target) {
 			return nil, errors.New("invalid survey completion target")
 		}
 		if _, exists := targets[target.Reference]; exists {
 			return nil, errors.New("duplicate survey completion target")
 		}
+		target.SigningKey = append([]byte(nil), target.SigningKey...)
 		targets[target.Reference] = target
+	}
+	return &StaticSurveyCompletionTargets{targets: targets}, nil
+}
+func (s *StaticSurveyCompletionTargets) SurveyCompletionTarget(_ context.Context, reference string) (SurveyCompletionTarget, bool, error) {
+	target, found := s.targets[reference]
+	target.SigningKey = append([]byte(nil), target.SigningKey...)
+	return target, found, nil
+}
+func (s *StaticSurveyCompletionTargets) SurveyCompletionTargetReferences(context.Context) ([]string, error) {
+	references := make([]string, 0, len(s.targets))
+	for reference := range s.targets {
+		references = append(references, reference)
+	}
+	sort.Strings(references)
+	return references, nil
+}
+
+func NewSurveyCompletionProvider(c SurveyCompletionProviderConfig) (*SurveyCompletionProvider, error) {
+	if c.Reader == nil {
+		return nil, errors.New("survey completion payload reader is required")
+	}
+	targets := c.Resolver
+	if targets == nil {
+		var err error
+		targets, err = NewStaticSurveyCompletionTargets(c.Targets)
+		if err != nil {
+			return nil, err
+		}
 	}
 	client := lockedSurveyCompletionHTTPClient(c.Client)
 	if c.Enabled && c.Identities == nil {
@@ -96,7 +132,10 @@ func (p *SurveyCompletionProvider) Execute(ctx context.Context, envelope effectp
 	if !matchesSurveyCompletionEnvelope(payload, envelope) {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "payload-unavailable")}, nil
 	}
-	target, found := p.targets[payload.ConfigurationReference]
+	target, found, targetErr := p.targets.SurveyCompletionTarget(ctx, payload.ConfigurationReference)
+	if targetErr != nil {
+		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash(string(base), "target-unavailable")}, errors.New("survey completion target unavailable")
+	}
 	if !found || target.policyDigest() != payload.Policy.ConfigurationDigest {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "target-unavailable")}, nil
 	}
@@ -174,27 +213,25 @@ func (target SurveyCompletionTarget) policyDigest() string {
 	return string(effectport.Hash("survey.completion.config.v1", target.Reference, target.Endpoint, string(meta)))
 }
 
-func (p *SurveyCompletionProvider) CompletionPolicy(_ context.Context, reference string) (surveyport.CompletionPolicy, bool, error) {
+func (p *SurveyCompletionProvider) CompletionPolicy(ctx context.Context, reference string) (surveyport.CompletionPolicy, bool, error) {
 	if p == nil {
 		return surveyport.CompletionPolicy{}, false, nil
 	}
-	target, found := p.targets[reference]
+	target, found, err := p.targets.SurveyCompletionTarget(ctx, reference)
+	if err != nil {
+		return surveyport.CompletionPolicy{}, false, err
+	}
 	if !found {
 		return surveyport.CompletionPolicy{}, false, nil
 	}
 	return surveyport.CompletionPolicy{ConfigurationReference: target.Reference, ConfigurationVersion: target.Version, ConfigurationDigest: target.policyDigest(), IdentityKind: target.IdentityKind, IdentityScope: target.IdentityScope, Day: target.Day, Frequency: target.Frequency, ExpiresAtTS: target.ExpiresAtTS, PushType: target.PushType, Remark: target.Remark, CustomParams: target.CustomParams}, true, nil
 }
 
-func (p *SurveyCompletionProvider) CompletionTargetReferences(context.Context) ([]string, error) {
+func (p *SurveyCompletionProvider) CompletionTargetReferences(ctx context.Context) ([]string, error) {
 	if p == nil {
 		return []string{}, nil
 	}
-	references := make([]string, 0, len(p.targets))
-	for reference := range p.targets {
-		references = append(references, reference)
-	}
-	sort.Strings(references)
-	return references, nil
+	return p.targets.SurveyCompletionTargetReferences(ctx)
 }
 
 func (p *SurveyCompletionProvider) SnapshotCompletionIdentity(ctx context.Context, customerID int64, policy surveyport.CompletionPolicy) (string, bool, error) {

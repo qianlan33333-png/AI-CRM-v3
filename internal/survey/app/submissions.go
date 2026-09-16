@@ -81,18 +81,27 @@ type externalSubmissionStore interface {
 }
 
 type SubmissionService struct {
-	uow                platformport.UnitOfWork
-	store              SubmissionStore
-	cipher             *secure.Cipher
-	timeline           customerport.TimelineWriter
-	phoneAttacher      identityport.DeclaredPhoneAttacher
-	phoneProjection    customerport.ProjectionWriter
-	completion         surveyport.CompletionIntentAccepter
-	completionPolicy   surveyport.CompletionPolicyResolver
-	completionIdentity surveyport.CompletionIdentitySnapshotter
-	publicRedirect     surveyport.PublicCompletionTargetResolver
-	publicLeadQR       channelport.PublicLeadQRCodeReader
-	now                func() time.Time
+	uow                 platformport.UnitOfWork
+	store               SubmissionStore
+	cipher              *secure.Cipher
+	timeline            customerport.TimelineWriter
+	phoneAttacher       identityport.DeclaredPhoneAttacher
+	phoneProjection     customerport.ProjectionWriter
+	completion          surveyport.CompletionIntentAccepter
+	completionPolicy    surveyport.CompletionPolicyResolver
+	completionIdentity  surveyport.CompletionIdentitySnapshotter
+	completionEndpoints surveyport.CompletionEndpointManager
+	publicRedirect      surveyport.PublicCompletionTargetResolver
+	publicLeadQR        channelport.PublicLeadQRCodeReader
+	now                 func() time.Time
+}
+
+func (s *SubmissionService) BindCompletionEndpoints(manager surveyport.CompletionEndpointManager) error {
+	if s == nil || manager == nil {
+		return surveyport.ErrInvalid
+	}
+	s.completionEndpoints = manager
+	return nil
 }
 
 func (s *SubmissionService) BindCompletionPolicy(resolver surveyport.CompletionPolicyResolver) error {
@@ -387,6 +396,11 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 // All resolver and QR failures degrade to the non-sensitive default page.
 func (s *SubmissionService) resolvePublicCompletionAction(ctx context.Context, configuration surveyport.OperationConfiguration) surveyport.CompletionAction {
 	fallback := surveyport.DefaultCompletionAction()
+	if len(configuration.CompletionTarget) > 0 {
+		if redirectURL, found := s.resolveStoredCompletionTarget(ctx, configuration.CompletionTarget); found && safePublicCompletionURL(redirectURL) {
+			return surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: redirectURL}
+		}
+	}
 	if configuration.CompletionNavigationRef != "" {
 		if s.publicRedirect == nil {
 			return fallback
@@ -404,12 +418,15 @@ func (s *SubmissionService) resolvePublicCompletionAction(ctx context.Context, c
 	if readErr != nil || !safePublicCompletionURL(lead.URL) {
 		return fallback
 	}
-	return surveyport.CompletionAction{Type: surveyport.CompletionActionLeadQR, LeadQR: &surveyport.CompletionLeadQRCode{URL: lead.URL}}
+	return surveyport.CompletionAction{Type: surveyport.CompletionActionLeadQR, LeadQR: &surveyport.CompletionLeadQRCode{URL: lead.URL, Title: configuration.LeadQRTitle, Subtitle: configuration.LeadQRSubtitle}}
 }
 
 func safePublicCompletionURL(raw string) bool {
 	if len(raw) == 0 || len(raw) > 2048 {
 		return false
+	}
+	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
+		return true
 	}
 	parsed, err := url.Parse(raw)
 	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == ""
@@ -658,6 +675,9 @@ func (s *SubmissionService) GetOperationConfiguration(ctx context.Context, id su
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var e error
 		value, e = s.store.GetOperationConfiguration(tx, id)
+		if e == nil && s.completionEndpoints != nil {
+			value.ExternalPushURL, e = s.completionEndpoints.ReadSurveyCompletionEndpointWithin(tx, id, value.ExternalPushConfigurationRef)
+		}
 		return e
 	})
 	return value, classify(err)
@@ -666,11 +686,24 @@ func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, valu
 	if len(value.ExternalPushMetadata) == 0 {
 		value.ExternalPushMetadata = json.RawMessage(`{}`)
 	}
+	if len(value.CompletionTarget) == 0 {
+		value.CompletionTarget = json.RawMessage(`{}`)
+	}
+	if !json.Valid(value.CompletionTarget) || len(value.LeadQRTitle) > 40 || len(value.LeadQRSubtitle) > 100 {
+		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
+	}
+	target, targetErr := parseSurveyCompletionTarget(value.CompletionTarget)
+	if targetErr != nil {
+		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
+	}
+	if target.Enabled {
+		value.CompletionNavigationRef = ""
+	}
 	var metadata map[string]json.RawMessage
 	if !json.Valid(value.ExternalPushMetadata) || json.Unmarshal(value.ExternalPushMetadata, &metadata) != nil || metadata == nil {
 		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
 	}
-	if s == nil || s.uow == nil || s.store == nil || value.QuestionnaireID < 1 || actor < 1 || !validPublicKeyish(key) || !validOpaque(value.CompletionNavigationRef) || !validOpaque(value.ExternalPushConfigurationRef) || value.CompletionChannelID != nil && *value.CompletionChannelID < 1 || value.ExternalPushEnabled && value.ExternalPushConfigurationRef == "" {
+	if s == nil || s.uow == nil || s.store == nil || value.QuestionnaireID < 1 || actor < 1 || !validPublicKeyish(key) || !validOpaque(value.CompletionNavigationRef) || !validOpaque(value.ExternalPushConfigurationRef) || value.CompletionChannelID != nil && *value.CompletionChannelID < 1 || value.ExternalPushEnabled && value.ExternalPushURL == "" && value.ExternalPushConfigurationRef == "" {
 		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
 	}
 	now := s.now().UTC()
@@ -685,6 +718,15 @@ func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, valu
 		}
 		if status == surveyport.StatusArchived {
 			return surveyport.ErrNotFound
+		}
+		if s.completionEndpoints != nil && (value.ExternalPushURL != "" || strings.HasPrefix(value.ExternalPushConfigurationRef, "survey-endpoint:")) {
+			value.ExternalPushConfigurationRef, e = s.completionEndpoints.SaveSurveyCompletionEndpointWithin(tx, value.QuestionnaireID, value.ExternalPushConfigurationRef, value.ExternalPushURL, value.ExternalPushMetadata)
+			if e != nil {
+				return e
+			}
+		}
+		if value.ExternalPushEnabled && value.ExternalPushConfigurationRef == "" {
+			return surveyport.ErrInvalid
 		}
 		stored, e = s.store.SaveOperationConfiguration(tx, value, actor, now)
 		if e != nil {

@@ -30,11 +30,11 @@ export function completionAction(value: unknown): CompletionAction {
     } catch {}
   }
   if (action.type === 'lead_qr' && action.lead_qr && typeof action.lead_qr === 'object') {
-    const leadQR = action.lead_qr as { url?: unknown };
+    const leadQR = action.lead_qr as { url?: unknown; title?: unknown; subtitle?: unknown };
     if (typeof leadQR.url === 'string' && leadQR.url) {
       try {
         const target = new URL(leadQR.url, location.origin);
-        if (target.protocol === 'https:' && !target.username && !target.password && !target.hash) return { type: 'lead_qr', lead_qr: { url: target.href } };
+        if (target.protocol === 'https:' && !target.username && !target.password && !target.hash) return { type: 'lead_qr', lead_qr: { url: target.href, ...(typeof leadQR.title === 'string' && leadQR.title ? { title: leadQR.title } : {}), ...(typeof leadQR.subtitle === 'string' && leadQR.subtitle ? { subtitle: leadQR.subtitle } : {}) } };
       } catch {}
     }
   }

@@ -15,7 +15,7 @@ const stagedManifest = readManifest(stage);
 const surfaceFeedbackHost = sourceManifest.entries?.surfaceFeedbackHost;
 const surfaceFeedbackStyles = sourceManifest.entries?.surfaceFeedbackStyles;
 
-const requiredEntries = ['h5', 'h5AuthHost', 'surveyPublicHost', 'surveyPublicStyles', 'sharedVisualTokens', 'questionnaireEditor', 'questionnaireEditorStyles', 'surveyHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
+const requiredEntries = ['h5', 'h5AuthHost', 'surveyPublicHost', 'surveyPublicStyles', 'surveyOperationsHost', 'surveyOperationsStyles', 'sharedVisualTokens', 'questionnaireEditor', 'questionnaireEditorStyles', 'surveyHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
 for (const key of requiredEntries) {
   assert.equal(stagedManifest.entries?.[key], sourceManifest.entries?.[key], `staged manifest omits Survey entry ${key}`);
 }
@@ -57,6 +57,9 @@ for (const page of adminPages) {
   assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged private template drifted for ${relative}`);
 }
+const operationsHTML = fs.readFileSync(path.join(stage, 'admin', 'questionnaireOps.html'), 'utf8');
+assert.ok(operationsHTML.includes(`<link rel="stylesheet" href="../${sourceManifest.entries.surveyOperationsStyles}">`), 'staged questionnaire operations page does not load the legacy-parity stylesheet');
+assert.ok(operationsHTML.includes(`<script type="module" src="../${sourceManifest.entries.surveyOperationsHost}"></script>`), 'staged questionnaire operations page does not load the legacy-parity Host');
 
 const expectedH5 = ['active.html', 'all.html', 'auth.html', 'done.html', 'error.html', 'expired.html', 'index.html', 'loading.html', 'one.html', 'pay.html', 'qr.html', 'result.html', 'signup.html'];
 assert.deepEqual(fs.readdirSync(path.join(stage, 'h5')).sort(), expectedH5, 'release contains a missing or unapproved Survey H5 page');
@@ -79,6 +82,7 @@ for (const page of ['auth.html', 'all.html', 'one.html', 'result.html', 'error.h
 const doneCompletionHTML = fs.readFileSync(path.join(stage, 'h5', 'done.html'), 'utf8');
 assert.ok(doneCompletionHTML.includes('data-sc-if="{{ done }}"') && doneCompletionHTML.includes('data-h5-done'), 'staged H5 completion page does not gate confirmation on a submitted session');
 assert.ok(doneCompletionHTML.includes('data-sc-if="{{ leadQR }}"') && doneCompletionHTML.includes('data-h5-lead-qr'), 'staged H5 completion page omits the authorized channel QR branch');
+assert.ok(doneCompletionHTML.includes('{{ doneTitle }}') && doneCompletionHTML.includes('{{ doneSubtitle }}'), 'staged H5 completion page omits configured QR copy');
 assert.equal(doneCompletionHTML.includes('尚无可核验回执'), false, 'staged H5 completion page still exposes the frozen unavailable receipt carrier');
 
 // A future staging edit must keep public Survey assets fail-closed. The stage

@@ -151,7 +151,7 @@ func TestSurveyCompletionProviderRejectsTargetConfigDriftBeforeCallingNewEndpoin
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider.targets[frozen.Reference] = SurveyCompletionTarget{Reference: frozen.Reference, Endpoint: changed.URL, SigningKey: frozen.SigningKey, ClientID: frozen.ClientID, AllowLoopbackHTTP: true, Version: "v2", IdentityKind: frozen.IdentityKind, IdentityScope: frozen.IdentityScope}
+	provider.targets.(*StaticSurveyCompletionTargets).targets[frozen.Reference] = SurveyCompletionTarget{Reference: frozen.Reference, Endpoint: changed.URL, SigningKey: frozen.SigningKey, ClientID: frozen.ClientID, AllowLoopbackHTTP: true, Version: "v2", IdentityKind: frozen.IdentityKind, IdentityScope: frozen.IdentityScope}
 	result, err := provider.Execute(context.Background(), completionEnvelope(payload), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
 	if err != nil || result.Completion != effectport.StateFinalFailed || result.CallAttempted || newCalls != 0 {
 		t.Fatalf("drift result=%+v err=%v new_calls=%d", result, err, newCalls)

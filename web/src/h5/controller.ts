@@ -317,6 +317,8 @@ export class H5Controller extends PageBase {
       submitted: this.submitted,
       done: this.done,
       leadQR: this.doneAction.type === 'lead_qr' ? this.doneAction.lead_qr : null,
+      doneTitle: this.doneAction.type === 'lead_qr' ? (this.doneAction.lead_qr.title || '收到你的问卷') : '收到你的问卷',
+      doneSubtitle: this.doneAction.type === 'lead_qr' ? (this.doneAction.lead_qr.subtitle || '长按识别二维码，继续咨询') : '',
       title: definition?.title || '公开问卷', description: definition?.description || '',
       progress: stepMode ? `第 ${this.questionIndex + 1} / ${questions.length} 题` : `共 ${questions.length} 题`,
       canPrevious: ready && stepMode && this.questionIndex > 0 && !this.submitting,

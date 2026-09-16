@@ -40,6 +40,7 @@ assert.equal(serialized(action({ type: 'redirect', redirect_url: 'javascript:ale
 assert.equal(serialized(action({ type: 'redirect', redirect_url: 'http://completion.example/next' })), serialized({ type: 'default' }), 'external redirects require HTTPS even if a malformed response claims redirect');
 assert.equal(serialized(action({ type: 'redirect', redirect_url: 'https://completion.example/next#fragment' })), serialized({ type: 'default' }), 'fragments cannot leak through a completion navigation');
 assert.equal(serialized(action({ type: 'lead_qr', lead_qr: { url: '/survey-assets/qr.png' } })), serialized({ type: 'lead_qr', lead_qr: { url: 'https://survey.example/survey-assets/qr.png' } }));
+assert.equal(serialized(action({ type: 'lead_qr', lead_qr: { url: '/survey-assets/qr.png', title: '扫码继续', subtitle: '添加顾问' } })), serialized({ type: 'lead_qr', lead_qr: { url: 'https://survey.example/survey-assets/qr.png', title: '扫码继续', subtitle: '添加顾问' } }), 'configured QR copy must survive the public projection');
 assert.equal(serialized(action({ type: 'lead_qr', lead_qr: { url: 'data:image/png;base64,unsafe' } })), serialized({ type: 'default' }), 'non-public QR sources cannot become rendered images');
 
 dom.window.close();

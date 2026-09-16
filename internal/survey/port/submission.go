@@ -45,7 +45,9 @@ const (
 )
 
 type CompletionLeadQRCode struct {
-	URL string `json:"url"`
+	URL      string `json:"url"`
+	Title    string `json:"title,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
 }
 
 func DefaultCompletionAction() CompletionAction {
@@ -239,9 +241,13 @@ type OperationReceipt struct {
 type OperationConfiguration struct {
 	QuestionnaireID              ID              `json:"-"`
 	CompletionNavigationRef      string          `json:"navigation_target_id,omitempty"`
+	CompletionTarget             json.RawMessage `json:"completion_target,omitempty"`
 	CompletionChannelID          *int64          `json:"channel_id,omitempty"`
+	LeadQRTitle                  string          `json:"lead_qr_title,omitempty"`
+	LeadQRSubtitle               string          `json:"lead_qr_subtitle,omitempty"`
 	ExternalPushEnabled          bool            `json:"external_push_enabled"`
 	ExternalPushConfigurationRef string          `json:"configuration_reference,omitempty"`
+	ExternalPushURL              string          `json:"webhook_url,omitempty"`
 	ExternalPushMetadata         json.RawMessage `json:"metadata,omitempty"`
 	Version                      int64           `json:"version"`
 	UpdatedAt                    time.Time       `json:"updated_at,omitempty"`
