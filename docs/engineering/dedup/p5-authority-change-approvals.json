@@ -1413,6 +1413,28 @@
       ],
       "reason": "Expose the canonical OneID label only in the ready WeCom Sidebar workbench response and declare the administrator-only WeCom contact-description backfill, status, and readback contract. OneID derives from the BootstrapViewer-resolved CustomerID; the backfill contract exposes no raw external identifier and has no Provider effect itself.",
       "review_reference": "docs/prd/2026-09-16-wecom-contact-remark-oneid-backfill.md; Root-reviewed combined sidebar OneID and contact-description backfill scope on 2026-09-16."
+    },
+    {
+      "base_commit": "bd79ddbc0bf66632d3639797166789978228b1ea",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "5c172834a6a7f081d07827225ee558686920b70d32d4c988d06cc2557c4d1093",
+          "head_sha256": "03e7ab4bc27019247776e5dff5614ec86ad27b12c41af06777f8338b909d16f8"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "cb37c3a505df9224b0e85f7686959d269701a58eafeceb465620cd9bf612d7be",
+          "head_sha256": "758b76e00161ab4c331a5384180656b0ef98e4eaeac19e986ecb7a274ae92810"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "1db61b398ad05da054735b0aa50dd2b698c9ed9f36aa0b519592b949f1709bc0",
+          "head_sha256": "ff2995dc11bd450ec9fd473cd6786cf0344b22c942757660dac08638f2c1a271"
+        }
+      ],
+      "reason": "Rebind the Root-reviewed sidebar OneID and administrator-only WeCom contact-description backfill authority diff to current main without changing the reviewed source payloads.",
+      "review_reference": "Root review of the exact 4fbcb97-to-bd79ddb current-main rebind on 2026-09-16; user-authorized deployment and full backfill remain subject to ordinary PR review and required CI."
     }
   ]
 }
