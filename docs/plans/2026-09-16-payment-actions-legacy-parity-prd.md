@@ -95,7 +95,7 @@ H5 地址继续只接受安全的 HTTPS 绝对地址或同站相对地址。动�
 ## 验收与提交门禁
 
 1. Product app/store/HTTP 专项测试覆盖：两种商品的旧字段校验、CAS／idempotency、保存和 GET readback；reference／mapping 的兼容保留；历史 intent／receipt 不变。
-2. Outbound／order 集成测试覆盖：同一 paid 回放和并发仅一条 intent／effect；同事务失败全回滚；配置 disabled、receiver unavailable、identity unavailable、Provider outcome unknown；无 `expires_at_ts` 阻断；paid payload 的 order/product/buyer、V3 transaction 三字段和可选 `domain_event_outbox_id` 精确匹配，且精确缺少 `custom_params`、`expires_at_ts`、`occurred_at`、`tenant`。
+2. Outbound／order 集成测试覆盖：同一 paid 回放和并发仅一条 intent／effect；同事务失败全回滚；配置 disabled、receiver unavailable、identity unavailable、Provider outcome unknown；无 `expires_at_ts` 阻断；paid payload 的 order/product/buyer、V3 transaction 三字段和可选 `domain_event_outbox_id` 精确匹配，且精确缺少 `custom_params`、`expires_at_ts`、`occurred_at`、`tenant`。测试推送的真实 Product HTTP POST、同 key replay 与 receiver 必须得到同一非空 `delivery_id`；它仍不是送达证明，历史无该字段的 Product receipt 可读可重放。
 3. Completion 测试覆盖：lead、H5 redirect、动态 Link response-key 命中、fallback、无 fallback 失败、订单快照不随商品后续编辑漂移、支付状态恢复、单次 redirect、未支付和全额退款拒绝 paid completion。
 4. 在 `cmd/aicrm` 新增／扩展 `Test…ChromiumJourney`：普通与周期商品真实 Host 页的开关、字段顺序、独立外推保存、刷新回显；支付成功动作和 paid external-effect 接收／状态证据。不得用 Mock、静态 toast 或仅 queue 成功替代。
 5. 代码完成后，干净已提交树上依序运行 `python3 scripts/dev_preflight.py fast`、`python3 scripts/dev_preflight.py compile`、受影响领域专项及 browser Journey；记录 HEAD、tree、status、命令与证据目录。随后提交、推送 draft PR；不合并、不部署，也不把本地 browser／compile 说成完整 CI 或生产 Provider 验收。

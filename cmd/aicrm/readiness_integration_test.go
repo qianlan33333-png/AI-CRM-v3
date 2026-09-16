@@ -20,6 +20,7 @@ import (
 	hxcdashboard "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformruntime "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/runtime"
+	product "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
@@ -32,12 +33,15 @@ func TestCurrentReleaseReadinessRequiresAppliedMigrationsPostgreSQL(t *testing.T
 	if _, err := pool.Exec(ctx, `CREATE TABLE order_service_entitlements (alliance text)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE order_checkout_snapshots (post_purchase_action jsonb)`); err != nil {
+		t.Fatal(err)
+	}
 	required := requiredCurrentReleaseMigrations(config)
 	for _, version := range required {
 		insertReadinessMigration(t, ctx, pool, version)
 	}
 	handler := currentReleaseReadinessHandler(t, pool, config)
-	for _, missing := range []string{"0124", "0149", "0150", "0151", "0152", "0153", "0155", "0156", "0157", "0158", "0159", "0160", "0161", "0164"} {
+	for _, missing := range []string{"0124", "0149", "0150", "0151", "0152", "0153", "0155", "0156", "0157", "0158", "0159", "0160", "0161", "0164", "0170", "0171", "0172"} {
 
 		if !containsMigration(required, missing) {
 			t.Fatalf("runtime-required migration list omitted %s", missing)
@@ -60,6 +64,16 @@ func TestCurrentReleaseReadinessRequiresAppliedMigrationsPostgreSQL(t *testing.T
 	if err := checkCurrentReleaseSchema(ctx, pool, config); err == nil || !strings.Contains(err.Error(), "order_service_entitlements.alliance") {
 		t.Fatalf("missing global column readiness error=%v", err)
 	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE order_service_entitlements ADD COLUMN alliance text`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE order_checkout_snapshots DROP COLUMN post_purchase_action`); err != nil {
+		t.Fatal(err)
+	}
+	assertReadinessStatus(t, handler, http.StatusServiceUnavailable)
+	if err := checkCurrentReleaseSchema(ctx, pool, config); err == nil || !strings.Contains(err.Error(), "order_checkout_snapshots.post_purchase_action") {
+		t.Fatalf("missing checkout action readiness error=%v", err)
+	}
 }
 
 func TestCurrentReleaseReadinessAllowsDisabledOptionalProjectionsPostgreSQL(t *testing.T) {
@@ -69,6 +83,9 @@ func TestCurrentReleaseReadinessAllowsDisabledOptionalProjectionsPostgreSQL(t *t
 	config := platformconfig.Runtime{}
 	createReadinessMigrationLedger(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `CREATE TABLE order_service_entitlements (alliance text)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE order_checkout_snapshots (post_purchase_action jsonb)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, version := range requiredCurrentReleaseMigrations(config) {
@@ -104,8 +121,19 @@ func TestCurrentReleaseReadinessChecksCurrentModuleStructuresPostgreSQL(t *testi
 	if err := hxcdashboard.NewModuleRegistration().Readiness(ctx, pool); err != nil {
 		t.Fatalf("HXC registration coverage readiness: %v", err)
 	}
+	if err := product.NewModuleRegistration().Readiness(ctx, pool); err != nil {
+		t.Fatalf("Product payment-action readiness: %v", err)
+	}
 	handler := currentReleaseAndCurrentModuleReadinessHandler(t, pool, config)
 	assertReadinessStatus(t, handler, http.StatusOK)
+
+	if _, err := pool.Exec(ctx, `ALTER TABLE product_external_push_tests DROP COLUMN delivery_id`); err != nil {
+		t.Fatal(err)
+	}
+	assertReadinessStatus(t, handler, http.StatusServiceUnavailable)
+	if err := product.NewModuleRegistration().Readiness(ctx, pool); err == nil || !strings.Contains(err.Error(), "product schema") {
+		t.Fatalf("missing Product external-push test delivery id readiness error=%v", err)
+	}
 
 	if _, err := pool.Exec(ctx, `ALTER TABLE wecom_group_provider_facts DROP COLUMN identity_hashes`); err != nil {
 		t.Fatal(err)
@@ -161,6 +189,9 @@ func currentReleaseAndCurrentModuleReadinessHandler(t *testing.T, pool *pgxpool.
 				return err
 			}
 			if err := aiassistant.NewModuleRegistration().Readiness(ctx, pool); err != nil {
+				return err
+			}
+			if err := product.NewModuleRegistration().Readiness(ctx, pool); err != nil {
 				return err
 			}
 			if config.WeCom.ChannelProviderReadEnabled {

@@ -114,7 +114,7 @@ const dom = new JSDOM(page, {
       }
       if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [], next_cursor: '' });
       if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created);
-      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {} });
+      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {}, custom_params_json: '{}' });
       if (url.pathname === '/api/admin/channels') return reply({ items: [], total: 0 });
       if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [{ group_id: 4, group_name: '已同步标签' }], items: [{ tag_id: 37, tag_name: '已购买', group_id: 4, group_name: '已同步标签' }], count: 1, total_tags: 1, tag_limit: 1000 });
       if (url.pathname === '/api/admin/image-library/38') return reply({ item: { id: 38, name: '页面素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });

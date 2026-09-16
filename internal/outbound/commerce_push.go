@@ -317,16 +317,20 @@ func (s *CommercePushService) AcceptExternalPushTestWithin(ctx context.Context, 
 	sourceDigest := sha256.Sum256(append([]byte("commerce-push-test\x00"), in.ReceiptKeyDigest[:]...))
 	sourceReference := "synthetic:" + hex.EncodeToString(in.ReceiptKeyDigest[:])
 	targetSlot := commerceProductSlot(int64(in.ProductID))
+	deliveryID := commerceDeliveryIDFromDigest(in.ReceiptKeyDigest, targetSlot)
 	if existing, found, err := commerceIntentExists(ctx, sourceReference, targetSlot, sourceDigest, int64(in.ProductID)); err != nil {
 		return productport.ExternalPushTest{}, err
 	} else if found {
-		return productport.ExternalPushTest{ProductID: in.ProductID, ProductKind: in.ProductKind, EffectID: existing.effectID, State: existing.state, CreatedAt: existing.createdAt}, nil
+		// A test operation is keyed by the same Product receipt digest. The
+		// wire delivery identifier is therefore stable across a deduplicated
+		// acceptance without reading or rebuilding its protected body.
+		return productport.ExternalPushTest{ProductID: in.ProductID, ProductKind: in.ProductKind, EffectID: existing.effectID, DeliveryID: deliveryID, State: existing.state, CreatedAt: existing.createdAt}, nil
 	}
 	// The legacy test button always emits its fixed test protocol. A retained
 	// V3 field mapping remains readable with the configuration but never changes
 	// a newly accepted test delivery; existing encrypted intents retain their
 	// original mode and payload untouched.
-	body, err := commerceSyntheticPayload(in.ProductID, configuration.ProductName, target, commerceDeliveryIDFromDigest(in.ReceiptKeyDigest, targetSlot), s.now().UTC())
+	body, err := commerceSyntheticPayload(in.ProductID, configuration.ProductName, target, deliveryID, s.now().UTC())
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}
@@ -334,7 +338,7 @@ func (s *CommercePushService) AcceptExternalPushTestWithin(ctx context.Context, 
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}
-	return productport.ExternalPushTest{ProductID: in.ProductID, ProductKind: in.ProductKind, EffectID: accepted.effectID, State: accepted.state, CreatedAt: accepted.createdAt}, nil
+	return productport.ExternalPushTest{ProductID: in.ProductID, ProductKind: in.ProductKind, EffectID: accepted.effectID, DeliveryID: deliveryID, State: accepted.state, CreatedAt: accepted.createdAt}, nil
 }
 
 func commerceOrderSourceReference(event orderport.PaidEvent, lineNo int32) string {

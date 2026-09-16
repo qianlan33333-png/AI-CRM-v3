@@ -1699,7 +1699,7 @@ function mountPurchaseActionControls(): void {
   purchaseActionControls(prefix);
 }
 
-type LegacyParityPushConfig = { enabled: boolean; revision: number; webhookURL: string; pushType: string; expiresAtTS: number | null; day: number | null; frequency: number | null; remark: string; customParams: RecordValue };
+type LegacyParityPushConfig = { enabled: boolean; revision: number; webhookURL: string; pushType: string; expiresAtTS: number | null; day: number | null; frequency: number | null; remark: string; customParamsJSON: string };
 
 function parityOptionalInteger(value: string): number | null {
   const trimmed = value.trim();
@@ -1707,6 +1707,85 @@ function parityOptionalInteger(value: string): number | null {
   const parsed = Number(trimmed);
   if (!Number.isSafeInteger(parsed)) throw new Error('数值必须是整数');
   return parsed;
+}
+
+type RawCustomParam = { key: string; rawValue: string };
+
+function rawJSONStringEnd(source: string, start: number): number {
+  if (source[start] !== '"') throw new Error('外部推送配置响应不完整');
+  let escaped = false;
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) { escaped = false; continue; }
+    if (character === '\\') { escaped = true; continue; }
+    if (character === '"') return index + 1;
+  }
+  throw new Error('外部推送配置响应不完整');
+}
+
+function rawJSONValueEnd(source: string, start: number): number {
+  if (source[start] === '"') return rawJSONStringEnd(source, start);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === '{' || character === '[') { depth += 1; continue; }
+    if (character === '}' || character === ']') {
+      if (depth === 0) return index;
+      depth -= 1;
+      continue;
+    }
+    if (character === ',' && depth === 0) return index;
+  }
+  return source.length;
+}
+
+function rawCustomParams(source: string): RawCustomParam[] {
+  // JSON.parse is validation only. Values are never read from it because a
+  // JavaScript number would round historical integers above MAX_SAFE_INTEGER.
+  try { JSON.parse(source); } catch { throw new Error('外部推送配置响应不完整'); }
+  let index = 0;
+  const whitespace = (): void => { while (/\s/.test(source[index] || '')) index += 1; };
+  whitespace();
+  if (source[index] !== '{') throw new Error('外部推送配置响应不完整');
+  index += 1; whitespace();
+  const result: RawCustomParam[] = [];
+  if (source[index] === '}') return result;
+  while (index < source.length) {
+    whitespace();
+    const keyStart = index;
+    const keyEnd = rawJSONStringEnd(source, keyStart);
+    let key: string;
+    try { key = JSON.parse(source.slice(keyStart, keyEnd)); } catch { throw new Error('外部推送配置响应不完整'); }
+    index = keyEnd; whitespace();
+    if (source[index] !== ':') throw new Error('外部推送配置响应不完整');
+    index += 1; whitespace();
+    const valueStart = index;
+    const valueEnd = rawJSONValueEnd(source, valueStart);
+    const rawValue = source.slice(valueStart, valueEnd).trim();
+    if (!rawValue) throw new Error('外部推送配置响应不完整');
+    result.push({ key, rawValue });
+    index = valueEnd; whitespace();
+    if (source[index] === '}') return result;
+    if (source[index] !== ',') throw new Error('外部推送配置响应不完整');
+    index += 1;
+  }
+  throw new Error('外部推送配置响应不完整');
+}
+
+function displayRawCustomParam(rawValue: string): string {
+  if (rawValue.startsWith('"')) {
+    try { return JSON.parse(rawValue); } catch { /* validated above */ }
+  }
+  return rawValue;
 }
 
 function legacyParityPushConfig(raw: unknown, page: ExternalPushPage): LegacyParityPushConfig {
@@ -1718,14 +1797,17 @@ function legacyParityPushConfig(raw: unknown, page: ExternalPushPage): LegacyPar
     return parsed;
   };
   const webhookURL = typeof value.webhook_url === 'string' ? value.webhook_url : typeof value.url === 'string' ? value.url : undefined;
+  const customParamsJSON = value.custom_params_json;
   if (Number(value.product_id) !== page.productID || value.product_kind !== page.productKind || typeof value.enabled !== 'boolean' ||
     !Number.isSafeInteger(Number(value.revision)) || Number(value.revision) < 0 || typeof value.configuration_reference !== 'string' ||
     typeof webhookURL !== 'string' || typeof value.push_type !== 'string' || typeof value.remark !== 'string' ||
     !Object.prototype.hasOwnProperty.call(value, 'expires_at_ts') || !Object.prototype.hasOwnProperty.call(value, 'day') || !Object.prototype.hasOwnProperty.call(value, 'frequency') ||
-    !Object.prototype.hasOwnProperty.call(value, 'custom_params') || value.custom_params === null || typeof value.custom_params !== 'object' || Array.isArray(value.custom_params)) {
+    !Object.prototype.hasOwnProperty.call(value, 'custom_params') || value.custom_params === null || typeof value.custom_params !== 'object' || Array.isArray(value.custom_params) ||
+    typeof customParamsJSON !== 'string' || customParamsJSON.length > 32768) {
     throw new Error('外部推送配置响应不完整');
   }
-  return { enabled: value.enabled, revision: Number(value.revision), webhookURL, pushType: value.push_type, expiresAtTS: integer('expires_at_ts'), day: integer('day'), frequency: integer('frequency'), remark: value.remark, customParams: object(value.custom_params) };
+  rawCustomParams(customParamsJSON);
+  return { enabled: value.enabled, revision: Number(value.revision), webhookURL, pushType: value.push_type, expiresAtTS: integer('expires_at_ts'), day: integer('day'), frequency: integer('frequency'), remark: value.remark, customParamsJSON };
 }
 
 function syncExternalPushSummary(enabled: boolean): void {
@@ -1765,7 +1847,8 @@ function mountLegacyParityPushPanel(): void {
   const params = panel.querySelector<HTMLElement>('[data-product-parity-push-params]')!;
   const result = panel.querySelector<HTMLElement>('[data-product-parity-push-result]')!;
   const setVisible = (): void => { body.hidden = !enabled.checked; state.textContent = enabled.checked ? '已启用' : '未启用'; };
-  let originalParams: RecordValue = {};
+  let originalParamsJSON = '{}';
+  let originalParamValues = new Map<string, string>();
   let revision = 0;
   let loaded = false;
   let busy = false;
@@ -1776,28 +1859,42 @@ function mountLegacyParityPushPanel(): void {
     busy = value;
     setControlsDisabled(value || !loaded);
   };
-  const readParams = (): RecordValue => Object.fromEntries([...params.querySelectorAll<HTMLElement>('[data-product-parity-param-row]')].flatMap((row) => {
-    const key = row.querySelector<HTMLInputElement>('[data-product-parity-param-key]')?.value.trim() || '';
-    const value = row.querySelector<HTMLInputElement>('[data-product-parity-param-value]')?.value || '';
-    const originalKey = row.dataset.productParityParamOriginalKey || '';
-    return key ? [[key, row.dataset.productParityParamDirty === 'true' || key !== originalKey ? value : originalParams[originalKey]]] : [];
-  }));
-  const addParam = (key = '', value = '', rawValue?: unknown): void => {
+  const readParams = (): string => {
+    const rows = [...params.querySelectorAll<HTMLElement>('[data-product-parity-param-row]')];
+    const unchanged = rows.length === originalParamValues.size && rows.every((row) => {
+      const key = row.querySelector<HTMLInputElement>('[data-product-parity-param-key]')?.value.trim() || '';
+      return row.dataset.productParityParamValueDirty !== 'true' && key === row.dataset.productParityParamOriginalKey && originalParamValues.has(key);
+    });
+    if (unchanged) return originalParamsJSON;
+    const entries = rows.flatMap((row) => {
+      const key = row.querySelector<HTMLInputElement>('[data-product-parity-param-key]')?.value.trim() || '';
+      if (!key) return [];
+      const value = row.querySelector<HTMLInputElement>('[data-product-parity-param-value]')?.value || '';
+      const originalKey = row.dataset.productParityParamOriginalKey || '';
+      // A key rename changes the object member name only. Keep its original
+      // value token until the value input itself changes, so historical numbers
+      // and structured values never cross a JavaScript number/string roundtrip.
+      const rawValue = row.dataset.productParityParamValueDirty !== 'true' ? originalParamValues.get(originalKey) : undefined;
+      return [[JSON.stringify(key), rawValue === undefined ? JSON.stringify(value) : rawValue] as const];
+    });
+    return `{${entries.map(([key, value]) => `${key}:${value}`).join(',')}}`;
+  };
+  const addParam = (key = '', value = '', rawValue?: string): void => {
     const row = document.createElement('div'); row.dataset.productParityParamRow = ''; row.className = 'product-payment-param-row';
     row.dataset.productParityParamOriginalKey = key;
     row.innerHTML = `<input data-product-parity-param-key placeholder="key"><input data-product-parity-param-value placeholder="value"><button type="button" aria-label="删除参数">删除</button>`;
     (row.querySelector('button') as HTMLButtonElement & { __dcBound?: boolean }).__dcBound = true;
     row.querySelector<HTMLInputElement>('[data-product-parity-param-key]')!.value = key;
     row.querySelector<HTMLInputElement>('[data-product-parity-param-value]')!.value = value;
-    if (rawValue !== undefined) originalParams[key] = rawValue;
-    row.querySelectorAll('input').forEach((input) => input.addEventListener('input', () => { row.dataset.productParityParamDirty = 'true'; }));
+    if (rawValue !== undefined) originalParamValues.set(key, rawValue);
+    row.querySelector<HTMLInputElement>('[data-product-parity-param-value]')!.addEventListener('input', () => { row.dataset.productParityParamValueDirty = 'true'; });
     row.querySelector('button')!.addEventListener('click', () => { row.remove(); if (!params.children.length) addParam(); });
     params.append(row);
   };
   const fill = (value: LegacyParityPushConfig): void => {
-    originalParams = {}; revision = value.revision; enabled.checked = value.enabled; url.value = value.webhookURL; type.value = value.pushType; remark.value = value.remark;
+    originalParamsJSON = value.customParamsJSON; originalParamValues = new Map(); revision = value.revision; enabled.checked = value.enabled; url.value = value.webhookURL; type.value = value.pushType; remark.value = value.remark;
     expires.value = value.expiresAtTS == null ? '' : String(value.expiresAtTS); day.value = value.day == null ? '' : String(value.day); frequency.value = value.frequency == null ? '' : String(value.frequency);
-    params.replaceChildren(); Object.entries(value.customParams).forEach(([key, item]) => addParam(key, typeof item === 'string' ? item : JSON.stringify(item), item)); if (!params.children.length) addParam(); loaded = true; setVisible(); syncExternalPushSummary(value.enabled);
+    params.replaceChildren(); rawCustomParams(value.customParamsJSON).forEach(({ key, rawValue }) => addParam(key, displayRawCustomParam(rawValue), rawValue)); if (!params.children.length) addParam(); loaded = true; setVisible(); syncExternalPushSummary(value.enabled);
   };
   const save = async (retainBusy = false): Promise<void> => {
     if (!loaded) throw new Error('外部推送配置尚未读取完成');

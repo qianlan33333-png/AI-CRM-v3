@@ -22,7 +22,7 @@ for (const periodic of [false, true]) {
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error) => process.stderr.write(`jsdom: ${error.message}\n`));
   const product = { id: 101, ...(periodic ? { service_product_id: 101, duration_days: 30 } : {}), product_code: 'parity-fixture', name: '一致性商品', price_minor: 990, currency: 'CNY', stock_quantity: 1, description: '', images: [], version: 1, lifecycle: 'enabled', enabled: true, paid_order_count: 0, refund_order_count: 0, sold_count: 0, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z', admin_projection: projection };
-  const config = { product_id: 101, product_kind: periodic ? 'service_period' : 'wechat_pay', enabled: true, configuration_reference: 'parity-push-101', revision: 1, webhook_url: 'https://hooks.example.test/paid', push_type: 'paid_notify', expires_at_ts: 123, day: 7, frequency: 2, remark: '旧备注', custom_params: { nested: { keep: true } } };
+  let config = { product_id: 101, product_kind: periodic ? 'service_period' : 'wechat_pay', enabled: true, configuration_reference: 'parity-push-101', revision: 1, webhook_url: 'https://hooks.example.test/paid', push_type: 'paid_notify', expires_at_ts: 123, day: 7, frequency: 2, remark: '旧备注', custom_params: { campaign: 'control', count: 9007199254740992, nested: [{ inner: 9007199254740992 }], note: 'a,b \"quoted\"' }, custom_params_json: '{\"campaign\":\"control\",\"count\":9007199254740993,\"nested\":[{\"inner\":9007199254740993}],\"note\":\"a,b \\\"quoted\\\"\"}' };
   const dom = new JSDOM(page, { url: `https://example.test/admin/${periodic ? 'spProductForm' : 'productForm'}.html?id=101`, runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole, beforeParse(window) {
     window.Request = Request; window.Response = Response; window.Headers = Headers;
     window.fetch = async (input, init = {}) => {
@@ -30,7 +30,11 @@ for (const periodic of [false, true]) {
       if (url.pathname.endsWith('/external-push') && method === 'PUT' && rejectNextPushSave) { rejectNextPushSave = false; return new Response(JSON.stringify({ code: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } }); }
       if (url.pathname.endsWith('/external-push') && method === 'GET' && ++externalPushReads === 2) await panelRead;
       if (url.pathname.endsWith('/external-push/test') && method === 'POST') await testPost;
-      const value = url.pathname.endsWith('/external-push/test') ? { state: 'accepted', delivery_id: 'test-delivery-1' } : url.pathname.endsWith('/external-push') ? (method === 'PUT' ? { ...config, ...body } : config) : url.pathname === '/api/v1/products' ? { items: [product] } : url.pathname === '/api/v1/products/101' ? product : url.pathname.endsWith('/101') ? { product } : { items: [], total: 0, has_more: false };
+      if (url.pathname.endsWith('/external-push') && method === 'PUT') {
+        const rawParams = String(body?.custom_params ?? '');
+        config = { ...config, ...body, custom_params: JSON.parse(rawParams), custom_params_json: rawParams, revision: config.revision + 1 };
+      }
+      const value = url.pathname.endsWith('/external-push/test') ? { state: 'outcome_unknown', effect_id: 'eer_test_1', delivery_id: 'dlv_test_1' } : url.pathname.endsWith('/external-push') ? config : url.pathname === '/api/v1/products' ? { items: [product] } : url.pathname === '/api/v1/products/101' ? product : url.pathname.endsWith('/101') ? { product } : { items: [], total: 0, has_more: false };
       return new Response(JSON.stringify(value), { status: url.pathname.endsWith('/test') ? 202 : 200, headers: { 'Content-Type': 'application/json' } });
     };
   } });
@@ -73,7 +77,27 @@ for (const periodic of [false, true]) {
   const saved = calls.find(parityPushWrite).body;
   assert.deepEqual(Object.keys(saved).sort(), ['custom_params', 'day', 'enabled', 'expected_revision', 'expires_at_ts', 'frequency', 'push_type', 'remark', 'webhook_url']);
   assert.equal(saved.expected_revision, 1, 'config save uses the revision returned by its GET');
-  assert.deepEqual(saved.custom_params, config.custom_params, 'unmodified historical custom params survive read-save');
+  const originalParams = '{\"campaign\":\"control\",\"count\":9007199254740993,\"nested\":[{\"inner\":9007199254740993}],\"note\":\"a,b \\\"quoted\\\"\"}';
+  assert.equal(saved.custom_params, originalParams, 'unmodified historical custom params preserve nested integers and escaped commas exactly');
+  assert.equal(d.querySelectorAll('[data-product-parity-param-row]').length, 4, 'raw structured parameters remain available as legacy rows');
+  await waitFor(() => !d.querySelector('[data-product-parity-push-save]').disabled);
+  const nested = [...d.querySelectorAll('[data-product-parity-param-row]')].find((row) => row.querySelector('[data-product-parity-param-key]')?.value === 'nested');
+  const nestedKey = nested?.querySelector('[data-product-parity-param-key]');
+  nestedKey.value = 'renamed_nested'; nestedKey.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  d.querySelector('[data-product-parity-push-save]').click();
+  await waitFor(() => calls.filter(parityPushWrite).length >= 2);
+  const renamed = calls.filter(parityPushWrite).at(-1).body;
+  assert.equal(renamed.expected_revision, 2, 'the response revision advances before a key-only rename');
+  assert.equal(renamed.custom_params, '{\"campaign\":\"control\",\"count\":9007199254740993,\"renamed_nested\":[{\"inner\":9007199254740993}],\"note\":\"a,b \\\"quoted\\\"\"}', 'a key-only rename preserves the untouched nested integer value token');
+  await waitFor(() => !d.querySelector('[data-product-parity-push-save]').disabled);
+  const campaign = [...d.querySelectorAll('[data-product-parity-param-row]')].find((row) => row.querySelector('[data-product-parity-param-key]')?.value === 'campaign');
+  const campaignValue = campaign?.querySelector('[data-product-parity-param-value]');
+  campaignValue.value = 'renewal'; campaignValue.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  d.querySelector('[data-product-parity-push-save]').click();
+  await waitFor(() => calls.filter(parityPushWrite).length >= 3);
+  const edited = calls.filter(parityPushWrite).at(-1).body;
+  assert.equal(edited.expected_revision, 3, 'the response revision advances before a value edit');
+  assert.equal(edited.custom_params, '{\"campaign\":\"renewal\",\"count\":9007199254740993,\"renamed_nested\":[{\"inner\":9007199254740993}],\"note\":\"a,b \\\"quoted\\\"\"}', 'editing one value preserves untouched nested integers and escaped string fragments');
   await waitFor(() => !d.querySelector('[data-product-parity-push-test]').disabled);
   rejectNextPushSave = true; d.querySelector('[data-product-parity-push-test]').click();
   await waitFor(() => calls.filter(parityPushWrite).length >= 2);
