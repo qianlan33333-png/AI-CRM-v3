@@ -159,7 +159,7 @@
   }
 
   function identityDispositionLabel(value) {
-    return ({ resolved: "已关联客户", pending: "待识别", conflict: "身份冲突", anonymous: "匿名访问", failed: "识别失败" })[value] || "身份状态待确认";
+    return ({ resolved: "已关联用户", pending: "待识别", conflict: "身份冲突", anonymous: "匿名访问", failed: "识别失败" })[value] || "身份状态待确认";
   }
 
   function aiPlanStateLabel(value) {
@@ -395,14 +395,14 @@
 
     function renderTemplates(templates) {
       byID("templateSelect").innerHTML = (templates || []).map((item) => `<option value="${escapeHTML(item.key)}"${item.available ? "" : " disabled"}>${escapeHTML(item.key)}${item.available ? "" : ` · ${escapeHTML(item.unavailable_reason)}`}</option>`).join("");
-      byID("templateParameterForm").innerHTML = `<p class="ai-label">闭集 AST 以 JSON 形式保存；预览只返回数量、摘要与数据水位，不返回客户标识。</p>`;
+      byID("templateParameterForm").innerHTML = `<p class="ai-label">闭集 AST 以 JSON 形式保存；预览只返回数量、摘要与数据水位，不返回用户标识。</p>`;
       byID("templatePreviewBtn").textContent = "预览当前配置";
       byID("templateSaveBtn").textContent = "保存不可变配置版本";
     }
 
     function renderAgents() {
       const eligible = state.agents.filter((agent) => (agent.automation_type === "fixed_script" || agent.automation_type === "agent") && agent.status !== "archived");
-      byID("automationCapabilitySelector").innerHTML = `<select class="ai-select" id="automationAgentSelect"><option value="">请选择已发布固定话术或动态文本智能体</option>${eligible.map((agent) => `<option value="${agent.id}"${state.binding?.agent_id === agent.id ? " selected" : ""}>${escapeHTML(agent.agent_name)} · ${agent.automation_type === "agent" ? "动态文本" : "固定话术"} · ${escapeHTML(lifecycleLabel(agent.status))}</option>`).join("")}</select><p class="ai-label">固定话术会进入现有 AI 审阅；动态文本会先按冻结客户上下文生成，再进入同一审阅流程。绑定时冻结已发布版本和摘要。</p>`;
+      byID("automationCapabilitySelector").innerHTML = `<select class="ai-select" id="automationAgentSelect"><option value="">请选择已发布固定话术或动态文本智能体</option>${eligible.map((agent) => `<option value="${agent.id}"${state.binding?.agent_id === agent.id ? " selected" : ""}>${escapeHTML(agent.agent_name)} · ${agent.automation_type === "agent" ? "动态文本" : "固定话术"} · ${escapeHTML(lifecycleLabel(agent.status))}</option>`).join("")}</select><p class="ai-label">固定话术会进入现有 AI 审阅；动态文本会先按冻结用户上下文生成，再进入同一审阅流程。绑定时冻结已发布版本和摘要。</p>`;
     }
 
     function renderSenders() {
@@ -476,7 +476,7 @@
     }
 
     async function previewAudience() {
-      setStatus(byID("templateStatusLine"), "正在通过 客户目录 计算预览…");
+      setStatus(byID("templateStatusLine"), "正在通过 用户目录 计算预览…");
       try {
         const result = await request(`${API}/ai-audience/packages/${packageID}/preview`, { method: "POST", body: { reference_time: new Date().toISOString() } });
         const value = result.preview;
@@ -538,7 +538,7 @@
         state.snapshot = result?.snapshot || null;
         const items = result?.items || [];
         byID("memberTotal").textContent = result ? `${result.snapshot.member_count} 人` : "尚无快照";
-        byID("memberRows").innerHTML = items.length ? items.map((item) => `<tr><td>客户 #${item.customer_id}</td><td><span class="ai-pill${item.identity_disposition === "resolved" ? "" : " gray"}">${escapeHTML(identityDispositionLabel(item.identity_disposition))}</span></td><td>${formatTime(item.entered_at)}</td></tr>`).join("") : `<tr><td class="ai-empty" colspan="3">${result ? "当前快照为空" : "尚未发布人群快照"}</td></tr>`;
+        byID("memberRows").innerHTML = items.length ? items.map((item) => `<tr><td>用户 #${item.customer_id}</td><td><span class="ai-pill${item.identity_disposition === "resolved" ? "" : " gray"}">${escapeHTML(identityDispositionLabel(item.identity_disposition))}</span></td><td>${formatTime(item.entered_at)}</td></tr>`).join("") : `<tr><td class="ai-empty" colspan="3">${result ? "当前快照为空" : "尚未发布人群快照"}</td></tr>`;
         renderSummary();
       } catch (error) { const detail = errorState(error); byID("memberRows").innerHTML = `<tr><td class="ai-empty" colspan="3">${escapeHTML(detail.message)}</td></tr>`; }
     }
@@ -571,7 +571,7 @@
         const result = await request(`${API}/automation-runs/${runID}/generation-items?limit=100`);
         const items = result.items || [];
         byID("sendRecordDrawerSubtitle").textContent = `运行 #${runID} · ${items.length} 项动态生成`;
-        byID("sendRecordMeta").innerHTML = items.map((item) => `<div class="ai-mini"><div class="label">客户 #${item.customer_id} · 员工 #${item.sender_staff_id}</div><div class="value">${escapeHTML(runStateLabel(item.state))}</div>${item.effect_id ? `<div>外部效果记录：${escapeHTML(item.effect_id)}</div>` : ""}${item.failure_code ? `<div class="ai-label">已排除：${escapeHTML(generationFailureLabel(item.failure_code))}</div>` : ""}</div>`).join("") || `<div class="ai-empty">暂无动态生成记录</div>`;
+        byID("sendRecordMeta").innerHTML = items.map((item) => `<div class="ai-mini"><div class="label">用户 #${item.customer_id} · 员工 #${item.sender_staff_id}</div><div class="value">${escapeHTML(runStateLabel(item.state))}</div>${item.effect_id ? `<div>外部效果记录：${escapeHTML(item.effect_id)}</div>` : ""}${item.failure_code ? `<div class="ai-label">已排除：${escapeHTML(generationFailureLabel(item.failure_code))}</div>` : ""}</div>`).join("") || `<div class="ai-empty">暂无动态生成记录</div>`;
         byID("sendRecordContentDetail").innerHTML = `<div class="ai-status-line">此处只展示持久生成进度和排除原因；成功内容进入既有 AI 审阅与收件人流程。</div>`;
         byID("sendRecordDrawerMask").style.display = "block";
         byID("sendRecordDrawer").style.display = "block";
@@ -583,7 +583,7 @@
       try {
         const result = await request(`${API}/automation-runs/${runID}/recipients?limit=100`);
         byID("sendRecordDrawerSubtitle").textContent = `运行 #${runID} · ${result.items?.length || 0} 个收件人`;
-        byID("sendRecordMeta").innerHTML = (result.items || []).map((item) => `<div class="ai-mini"><div class="label">客户 #${item.customer_id} · 员工 #${item.sender_staff_id}</div><div class="value">${escapeHTML(runStateLabel(item.state))}</div>${item.effect_id ? `<div>外部效果记录：${escapeHTML(item.effect_id)}</div>` : ""}${item.state === "outcome_unknown" && item.effect_id ? `<button class="ai-btn soft" data-reconcile-effect="${escapeHTML(item.effect_id)}">读取对账标记</button>` : ""}</div>`).join("") || `<div class="ai-empty">暂无收件人</div>`;
+        byID("sendRecordMeta").innerHTML = (result.items || []).map((item) => `<div class="ai-mini"><div class="label">用户 #${item.customer_id} · 员工 #${item.sender_staff_id}</div><div class="value">${escapeHTML(runStateLabel(item.state))}</div>${item.effect_id ? `<div>外部效果记录：${escapeHTML(item.effect_id)}</div>` : ""}${item.state === "outcome_unknown" && item.effect_id ? `<button class="ai-btn soft" data-reconcile-effect="${escapeHTML(item.effect_id)}">读取对账标记</button>` : ""}</div>`).join("") || `<div class="ai-empty">暂无收件人</div>`;
         byID("sendRecordContentDetail").innerHTML = `<div class="ai-status-line">消息正文、渠道身份与发送服务原始响应不会在运行详情中持久化或展示。</div>`;
         byID("sendRecordMeta").querySelectorAll("[data-reconcile-effect]").forEach((node) => node.addEventListener("click", () => showReconciliation(runID, node.dataset.reconcileEffect)));
         byID("sendRecordDrawerMask").style.display = "block";

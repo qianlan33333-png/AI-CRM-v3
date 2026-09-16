@@ -19,7 +19,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 	if len(ADMIN_NAV_GROUPS) != 7 {
 		t.Fatalf("group count=%d, want 7", len(ADMIN_NAV_GROUPS))
 	}
-	wantTitles := []string{"总览", "客户", "运营", "交易", "分销", "内容素材", "系统设置"}
+	wantTitles := []string{"总览", "用户", "运营", "交易", "分销", "内容素材", "系统设置"}
 	wantCounts := []int{1, 3, 6, 4, 1, 3, 3}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
@@ -199,7 +199,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"data-admin-shell-source=\"v3_webshell\"",
 				"交易管理",
 				"功能待接入",
-				"客户激活 / 客户列表",
+				"用户激活 / 用户列表",
 			},
 			notContain: []string{"统计：0"},
 		},
@@ -307,7 +307,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/admin/customers",
 			status:     http.StatusOK,
-			contains:   []string{"data-customer-directory-root", "/api/admin/customers", "/api/admin/customer-sync-runs", "客户查找", "admin-filter-bar admin-form-grid admin-form-grid--wide-filters", "手机号", "客户列表", "admin-table", "admin_customers.js"},
+			contains:   []string{"data-customer-directory-root", "/api/admin/customers", "/api/admin/customer-sync-runs", "用户查找", "admin-filter-bar admin-form-grid admin-form-grid--wide-filters", "手机号", "用户列表", "admin-table", "admin_customers.js"},
 			notContain: []string{"type=\"password\"", "name=\"activation_status\"", "揭示理由", "临时揭示", "+8613812345678", "raw_external_userid", "unionid_value", "/api/v2/", "fixture", "data-profile-section"},
 		},
 		{
@@ -323,7 +323,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/admin/message-archive",
 			status:     http.StatusOK,
-			contains:   []string{"data-message-archive-entry", `class="admin-page-title">会话存档`, "选择客户", "href=\"/admin/customers\""},
+			contains:   []string{"data-message-archive-entry", `class="admin-page-title">会话存档`, "选择用户", "href=\"/admin/customers\""},
 			notContain: []string{"data-message-archive-root", "name=\"q\"", "Customer ID", "<h2>会话存档</h2>"},
 		},
 		{
@@ -331,7 +331,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/admin/customers/42",
 			status:     http.StatusOK,
-			contains:   []string{"客户档案", "admin-module-banner", "admin-profile-grid", "admin-split-grid admin-customer-detail-layout", "admin-customer-detail-main", "admin-customer-detail-sidebar", "customer-360-sections"},
+			contains:   []string{"用户档案", "admin-module-banner", "admin-profile-grid", "admin-split-grid admin-customer-detail-layout", "admin-customer-detail-main", "admin-customer-detail-sidebar", "customer-360-sections"},
 			notContain: []string{"external_userid", "UnionID", "unionid", "declared", "verified", "+8613812345678", "揭示理由", "customer-list-filters", "customer-sync-start", "跟进成员", "聊天记录", "data-profile-section"},
 		},
 		{

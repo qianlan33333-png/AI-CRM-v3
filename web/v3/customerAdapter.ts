@@ -322,7 +322,7 @@ async function customerDirectory(url: URL, init?: RequestInit): Promise<Response
     directoryPresentation.set(id, presentation);
     return {
       id,
-      name: text(customer.display_name) || `客户 ${id}`,
+      name: text(customer.display_name) || `用户 ${id}`,
       owner_staff_id: presentation.ownerStaffID,
       stage_id: null,
       is_deleted: false,
@@ -374,7 +374,7 @@ async function customerContext(id: number, init?: RequestInit): Promise<Response
   return json({
     customer: {
       id,
-      name: text(profile.display_name) || `客户 ${id}`,
+      name: text(profile.display_name) || `用户 ${id}`,
       owner_staff_id: sourcePresentation.ownerStaffID,
       stage_id: null,
       channel_id: null,
@@ -526,7 +526,7 @@ function attachOwnerSelector(): void {
     button.disabled = false;
     button.addEventListener('click', () => {
       picker.open({
-        title: '选择客户负责人',
+        title: '选择用户负责人',
         scope: 'owner_migration',
         page_size: 100,
         onSelect(member) {
@@ -545,7 +545,7 @@ function attachOwnerSelector(): void {
 
 function attachFrozenCustomerSelectors(): void {
   attachOwnerSelector();
-  attachTagSelector('fCustomerTag', '选择客户筛选标签');
+  attachTagSelector('fCustomerTag', '选择用户筛选标签');
 }
 
 async function installFrozenCustomerSelectors(): Promise<void> {

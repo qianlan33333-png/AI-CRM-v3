@@ -68,15 +68,15 @@
     reversed: "已撤销",
   };
   const resultLabels = {
-    found: "已找到客户归属。",
-    not_found: "未找到匹配身份，系统没有创建新客户。",
+    found: "已找到用户归属。",
+    not_found: "未找到匹配身份，系统没有创建新用户。",
     conflict: "身份存在冲突，请查看冲突列表。",
   };
   const errorLabels = {
     authentication_required: "登录状态已失效，请重新登录。",
     permission_denied: "当前账号没有查看 OneID 的权限。",
     invalid_request: "请求内容不完整或格式不正确。",
-    identity_not_found: "没有找到该客户或身份记录。",
+    identity_not_found: "没有找到该用户或身份记录。",
     identity_conflict: "身份状态发生冲突，请刷新后重试。",
     internal_error: "OneID 服务暂时不可用，请稍后重试。",
   };
@@ -198,7 +198,7 @@
       const button = document.createElement("button");
       button.className = "admin-button admin-button--ghost";
       button.type = "button";
-      button.textContent = "查看客户详情";
+      button.textContent = "查看用户详情";
       button.addEventListener("click", function () {
         if (customerID === "—") return;
         loadCustomer(customerID);
@@ -212,7 +212,7 @@
       return;
     }
     if (resultLabels[status]) {
-      setState(elements.resolveState, resultLabels[status], status === "conflict" ? "请在下方列表中核对客户根和处理状态。" : "可继续查询其他已验证身份。", status === "conflict" ? "error" : "");
+      setState(elements.resolveState, resultLabels[status], status === "conflict" ? "请在下方列表中核对用户根和处理状态。" : "可继续查询其他已验证身份。", status === "conflict" ? "error" : "");
       return;
     }
     setState(elements.resolveState, "查询结果不可识别", "服务端返回了不受支持的结果。", "error");
@@ -280,7 +280,7 @@
       const strong = document.createElement("strong");
       strong.textContent = "暂无合并谱系";
       const span = document.createElement("span");
-      span.textContent = "该客户当前没有可展示的归并记录。";
+      span.textContent = "该用户当前没有可展示的归并记录。";
       empty.append(strong, span);
       elements.lineage.appendChild(empty);
       return;
@@ -289,7 +289,7 @@
     table.className = "admin-table admin-oneid-table";
     const head = document.createElement("thead");
     const headRow = document.createElement("tr");
-    ["合并 ID", "来源客户", "归属客户", "状态", "时间"].forEach(function (label) {
+    ["合并 ID", "来源用户", "归属用户", "状态", "时间"].forEach(function (label) {
       const cell = document.createElement("th");
       cell.scope = "col";
       cell.textContent = label;
@@ -319,14 +319,14 @@
       return;
     }
     const encodedID = encodeURIComponent(customerID);
-    setState(elements.customerState, "正在加载", "正在读取客户详情。", "");
+    setState(elements.customerState, "正在加载", "正在读取用户详情。", "");
     elements.customerDetail.hidden = true;
     try {
       const payload = await requestJSON(api.customer + encodedID, { method: "GET" });
       renderCustomerDetail(payload);
-      showAlert("客户详情加载完成。", "success");
+      showAlert("用户详情加载完成。", "success");
     } catch (error) {
-      setState(elements.customerState, "客户详情不可用", errorMessage(error, "客户详情暂时不可用，请稍后重试。"), "error");
+      setState(elements.customerState, "用户详情不可用", errorMessage(error, "用户详情暂时不可用，请稍后重试。"), "error");
       showAlert(errorMessage(error), "error");
     } finally {
       if (elements.customerID) elements.customerID.value = "";

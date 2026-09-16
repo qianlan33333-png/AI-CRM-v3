@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { memberGridPresentationPlugin } from './member-grid-presentation-source.mjs';
+import { rewriteAdminTerminology, rewriteFrozenAdminComponentCopy } from './admin-terminology-transform.mjs';
 
 const repository = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const dist = path.join(repository, 'web', 'dist');
@@ -129,9 +130,11 @@ const standardComponents = [
 ];
 const standardComponentsManifest = { version: 'standard-components-v2-1b12b405d7377948', css: [], scripts: [] };
 for (const component of standardComponents) {
-  const contents = fs.readFileSync(path.join(repository, component.source));
+  const frozenContents = fs.readFileSync(path.join(repository, component.source));
+  const frozenMetadata = metadataFor(frozenContents);
+  if (frozenMetadata.sha256 !== component.sha256) throw new Error(`standard component differs from its audited dd8 donor bytes: ${component.name}`);
+  const contents = Buffer.from(rewriteFrozenAdminComponentCopy(component.name, frozenContents.toString('utf8')));
   const metadata = metadataFor(contents);
-  if (metadata.sha256 !== component.sha256) throw new Error(`standard component differs from its audited dd8 donor bytes: ${component.name}`);
   const relative = `assets/standard-components/${component.name}`;
   fs.mkdirSync(path.dirname(path.join(dist, relative)), { recursive: true });
   fs.writeFileSync(path.join(dist, relative), contents);
@@ -163,9 +166,11 @@ const standardPassiveAssets = [
   { name: 'channel_admission_pages.js', source: 'web/donors/standard-components-production/channel/channel_admission_pages.js', sha256: 'ae1d9007dbd37757850d35ac25bd147cb09e7f576563122ec26cba7f4285832a' },
 ];
 for (const component of standardPassiveAssets) {
-  const contents = fs.readFileSync(path.join(repository, component.source));
+  const frozenContents = fs.readFileSync(path.join(repository, component.source));
+  const frozenMetadata = metadataFor(frozenContents);
+  if (frozenMetadata.sha256 !== component.sha256) throw new Error(`standard passive asset differs from its audited donor bytes: ${component.name}`);
+  const contents = Buffer.from(rewriteFrozenAdminComponentCopy(component.name, frozenContents.toString('utf8')));
   const metadata = metadataFor(contents);
-  if (metadata.sha256 !== component.sha256) throw new Error(`standard passive asset differs from its audited donor bytes: ${component.name}`);
   const relative = `assets/standard-components/${component.name}`;
   fs.writeFileSync(path.join(dist, relative), contents);
   manifest.files[relative] = { ...metadata, entry_point: component.source, imports: [], inputs: [component.source] };
@@ -489,6 +494,17 @@ fs.writeFileSync(path.join(dist, 'distribution', 'index.html'), distributionPubl
 fs.writeFileSync(path.join(dist, 'admin', 'distribution.html'), distributionAdminHTML);
 manifest.release_files['distribution/index.html'] = metadataFor(Buffer.from(distributionPublicHTML));
 manifest.release_files['admin/distribution.html'] = metadataFor(Buffer.from(distributionAdminHTML));
+
+// The frozen admin documents remain immutable source evidence. Their release
+// copies are the composition-owned admin surface, so apply the reviewed
+// static-copy map only here after every document injection is complete.
+for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.endsWith('.html'))) {
+  const relative = `admin/${documentName}`;
+  const documentPath = path.join(adminOutput, documentName);
+  const documentHTML = rewriteAdminTerminology(fs.readFileSync(documentPath, 'utf8'));
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[relative] = metadataFor(Buffer.from(documentHTML));
+}
 manifest.entries = Object.fromEntries(Object.entries(manifest.entries).sort(([left], [right]) => left.localeCompare(right)));
 manifest.files = Object.fromEntries(Object.entries(manifest.files).sort(([left], [right]) => left.localeCompare(right)));
 manifest.release_files = Object.fromEntries(Object.entries(manifest.release_files).sort(([left], [right]) => left.localeCompare(right)));

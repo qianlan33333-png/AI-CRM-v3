@@ -8,7 +8,7 @@
   <div class="admin-card-head admin-card-head--tight">
     <div>
       <h2>OneID 基础查询</h2>
-      <p>使用受控的 kind、scope 和 identity key 查询当前客户归属。页面只展示服务端脱敏摘要，不创建客户、不修改身份。</p>
+      <p>使用受控的 kind、scope 和 identity key 查询当前用户归属。页面只展示服务端脱敏摘要，不创建用户、不修改身份。</p>
     </div>
     <span class="admin-chip admin-chip--neutral">只读查询</span>
   </div>
@@ -66,7 +66,7 @@
       <div class="admin-oneid-section__head">
         <div>
           <h3 id="admin-oneid-customer-title">按 Customer ID 查看</h3>
-          <p>只读取客户状态、当前 OneID 和合并谱系摘要。</p>
+          <p>只读取用户状态、当前 OneID 和合并谱系摘要。</p>
         </div>
       </div>
       <form id="admin-oneid-customer-form" class="admin-form-grid admin-form-grid--filters" autocomplete="off">
@@ -74,11 +74,11 @@
           <span>Customer ID</span>
           <input id="admin-oneid-customer-id" name="customer_id" type="number" min="1" step="1" inputmode="numeric" required>
         </label>
-        <button class="admin-button admin-button--secondary" type="submit">查看客户</button>
+        <button class="admin-button admin-button--secondary" type="submit">查看用户</button>
       </form>
       <div id="admin-oneid-customer-state" class="admin-state admin-state--inline" role="status" aria-live="polite">
-        <strong>等待客户 ID</strong>
-        <span>客户详情不会显示身份原始值。</span>
+        <strong>等待用户 ID</strong>
+        <span>用户详情不会显示身份原始值。</span>
       </div>
       <div id="admin-oneid-customer-detail" class="admin-oneid-detail" hidden>
         <div class="admin-oneid-detail-grid">
@@ -124,7 +124,7 @@
     <div id="admin-oneid-conflicts-table-wrap" class="admin-table-wrap" hidden>
       <table class="admin-table admin-oneid-table">
         <thead>
-          <tr><th scope="col">冲突 ID</th><th scope="col">客户根</th><th scope="col">原因</th><th scope="col">状态</th><th scope="col">创建时间</th></tr>
+          <tr><th scope="col">冲突 ID</th><th scope="col">用户根</th><th scope="col">原因</th><th scope="col">状态</th><th scope="col">创建时间</th></tr>
         </thead>
         <tbody id="admin-oneid-conflicts-body"></tbody>
       </table>
@@ -154,7 +154,7 @@
     <div id="admin-oneid-candidates-table-wrap" class="admin-table-wrap" hidden>
       <table class="admin-table admin-oneid-table">
         <thead>
-          <tr><th scope="col">候选 ID</th><th scope="col">客户根</th><th scope="col">证据强度</th><th scope="col">原因</th><th scope="col">状态</th><th scope="col">创建时间</th><th scope="col">选择 survivor</th></tr>
+          <tr><th scope="col">候选 ID</th><th scope="col">用户根</th><th scope="col">证据强度</th><th scope="col">原因</th><th scope="col">状态</th><th scope="col">创建时间</th><th scope="col">选择 survivor</th></tr>
         </thead>
         <tbody id="admin-oneid-candidates-body"></tbody>
       </table>
@@ -175,7 +175,7 @@
   <div id="admin-oneid-hxc-conflicts-empty" class="admin-state" hidden><strong>暂无开放冲突</strong><span>当前 HXC 双键没有待处理冲突。</span></div>
   <div id="admin-oneid-hxc-conflicts-table-wrap" class="admin-table-wrap" hidden>
     <table class="admin-table admin-oneid-table admin-oneid-source-table">
-      <thead><tr><th scope="col">安全用户引用</th><th scope="col">原因</th><th scope="col">身份观察</th><th scope="col">客户根</th><th scope="col">候选 / Case</th><th scope="col">证据摘要</th><th scope="col">状态</th><th scope="col">处理</th></tr></thead>
+      <thead><tr><th scope="col">安全用户引用</th><th scope="col">原因</th><th scope="col">身份观察</th><th scope="col">用户根</th><th scope="col">候选 / Case</th><th scope="col">证据摘要</th><th scope="col">状态</th><th scope="col">处理</th></tr></thead>
       <tbody id="admin-oneid-hxc-conflicts-body"></tbody>
     </table>
   </div>

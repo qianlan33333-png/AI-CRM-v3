@@ -220,7 +220,7 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 	if request.URL.Path == "/admin/message-archive" || strings.HasPrefix(request.URL.Path, "/admin/message-archive/customers/") {
 		// The shared topbar owns the one page title and this navigation action.
 		// The archive body keeps only its route-specific guidance and filters.
-		data.PageActions = []PageAction{{Label: "选择客户", Href: "/admin/customers", Variant: "primary"}}
+		data.PageActions = []PageAction{{Label: "选择用户", Href: "/admin/customers", Variant: "primary"}}
 	}
 	if err := handler.renderer.RenderAdmin(writer, data); err != nil {
 		http.Error(writer, "unable to render admin shell", http.StatusInternalServerError)
@@ -298,12 +298,12 @@ var adminSpecs = map[string]adminSpec{
 	},
 	"/admin/message-archive": {
 		title:          "会话存档",
-		summary:        "从客户列表选择客户，查看已入库会话存档。",
+		summary:        "从用户列表选择用户，查看已入库会话存档。",
 		activeEndpoint: "",
 	},
 	"/admin/customers": {
-		title:          "客户激活 / 客户列表",
-		summary:        "从 v3 OneID 与企微同步投影查看客户，手机号默认脱敏。",
+		title:          "用户激活 / 用户列表",
+		summary:        "从 v3 OneID 与企微同步投影查看用户，手机号默认脱敏。",
 		activeEndpoint: "api.admin_console_customers",
 	},
 	"/admin/hxc-dashboard": {
@@ -408,7 +408,7 @@ func adminSpecForPath(requestPath string) adminSpec {
 		return spec
 	}
 	if strings.HasPrefix(requestPath, "/admin/customers/") {
-		return adminSpec{title: "客户档案", summary: "按 Customer ID 查看分区式安全客户档案。", activeEndpoint: "api.admin_console_customers"}
+		return adminSpec{title: "用户档案", summary: "按 Customer ID 查看分区式安全用户档案。", activeEndpoint: "api.admin_console_customers"}
 	}
 	if strings.HasPrefix(requestPath, "/admin/message-archive/customers/") {
 		return adminSpec{title: "会话存档", summary: "仅显示已入库的本地会话存档。", activeEndpoint: ""}

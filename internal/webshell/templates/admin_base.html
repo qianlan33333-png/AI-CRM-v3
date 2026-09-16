@@ -5,7 +5,7 @@
   {{with presentationAssets}}{{if .Script}}<script type="module" async src="{{.Script}}"></script>{{end}}{{end}}
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.PageTitle}} · 客户管理后台</title>
+  <title>{{.PageTitle}} · 用户管理后台</title>
   <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=production-shell-layout-20260909">
   {{with presentationAssets}}{{if .AdminDateTimeScript}}<script type="module" src="{{.AdminDateTimeScript}}"></script>{{end}}{{end}}
   <script defer src="/static/admin_console/admin_console.js?v=production-shell-41f80a11-mime2"></script>
@@ -212,12 +212,12 @@
       <div class="admin-brand">
         <div class="admin-brand-mark">CRM</div>
         <div class="admin-brand-copy">
-          <div class="admin-brand-title">客户管理后台</div>
+          <div class="admin-brand-title">用户管理后台</div>
           <div class="admin-brand-subtitle">ADMIN CONSOLE</div>
         </div>
       </div>
 
-      <nav class="admin-nav" aria-label="客户管理后台导航">
+      <nav class="admin-nav" aria-label="用户管理后台导航">
         {{range .NavItems}}
         <section class="admin-nav-section{{if .Active}} is-active{{end}}">
           <div class="admin-nav-section-title">{{.Title}}</div>

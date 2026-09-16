@@ -8,10 +8,10 @@ const navigation = {
   version: 1,
   groups: [
     { key: 'overview', label: '总览', items: [{ key: 'overview', label: '经营总览', href: '/admin', active_prefixes: ['/admin'], required_permission: '' }] },
-    { key: 'customers', label: '客户', items: [{ key: 'customers', label: '客户列表', href: '/admin/customers', active_prefixes: ['/admin/customers', '/admin/customerDetail.html'], required_permission: '' }] },
+    { key: 'customers', label: '用户', items: [{ key: 'customers', label: '用户列表', href: '/admin/customers', active_prefixes: ['/admin/customers', '/admin/customerDetail.html'], required_permission: '' }] },
   ],
 };
-const dom = new JSDOM('<!doctype html><aside><nav class="side-nav"><div class="side-grp">旧导航</div><a class="nav-item on" href="customers.html"><svg><path d="M0 0"></path></svg><span>客户列表</span></a><a class="nav-item" href="login-access.html"><span>登录与权限</span></a></nav></aside>', {
+const dom = new JSDOM('<!doctype html><aside><nav class="side-nav"><div class="side-grp">旧导航</div><a class="nav-item on" href="customers.html"><svg><path d="M0 0"></path></svg><span>用户列表</span></a><a class="nav-item" href="login-access.html"><span>登录与权限</span></a></nav></aside>', {
   url: 'https://crm.example/admin/customerDetail.html?id=42', runScripts: 'outside-only', pretendToBeVisual: true,
   beforeParse(window) {
     window.Response = Response;
@@ -24,7 +24,7 @@ const dom = new JSDOM('<!doctype html><aside><nav class="side-nav"><div class="s
 dom.window.eval(bundle);
 for (let attempt = 0; attempt < 100 && dom.window.document.querySelector('.side-nav')?.dataset.v3NavigationHost !== 'ready'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
 const links = [...dom.window.document.querySelectorAll('.side-nav a.nav-item')];
-assert.deepEqual(links.map((link) => link.textContent?.trim()), ['经营总览', '客户列表']);
+assert.deepEqual(links.map((link) => link.textContent?.trim()), ['经营总览', '用户列表']);
 assert.equal(links[1].getAttribute('href'), '/admin/customers');
 assert.equal(links[1].classList.contains('on'), true, 'active prefixes must work for detail pages');
 assert.equal(links[1].querySelector('svg') !== null, true, 'existing donor icon should survive adaptation');
