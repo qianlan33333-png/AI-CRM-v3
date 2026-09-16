@@ -44,6 +44,12 @@ func ValidPublicCompletionURL(raw string) bool {
 	return ValidPublicCompletionHost(parsed.Hostname())
 }
 
+// SafePublicCompletionURL remains the compatibility name for callers that
+// validate the same browser-visible completion-action boundary.
+func SafePublicCompletionURL(raw string) bool {
+	return ValidPublicCompletionURL(raw)
+}
+
 var publicCompletionIDNA = idna.New(idna.MapForLookup(), idna.Transitional(false))
 
 // ValidPublicCompletionHost is the shared final host boundary for browser
