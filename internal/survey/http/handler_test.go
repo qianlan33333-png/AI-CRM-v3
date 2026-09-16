@@ -410,7 +410,7 @@ func TestPublicSubmissionSuccessEmitsCompletionActionOnlyAtTopLevel(t *testing.T
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	body := response.Body.String()
-	if response.Code != nethttp.StatusCreated || strings.Count(body, `"completion_action"`) != 1 || !strings.Contains(body, `"completion_action":{"type":"redirect","redirect_url":"https://go.example.test/complete"}`) || strings.Contains(body, `"receipt":{"questionnaire_id":7,"questionnaire_slug":"growth","definition_version":1,"submission_id":9,"result_token":"opaque-result-token","completion_action"`) {
+	if response.Code != nethttp.StatusCreated || strings.Count(body, `"completion_action"`) != 1 || !strings.Contains(body, `"completion_action":{"type":"redirect","redirect_url":"https://go.example.test/complete"}`) || !strings.Contains(body, `"receipt":{"questionnaire_id":7,"questionnaire_slug":"growth","definition_version":1,"submission_id":9}`) || strings.Contains(body, `"submission_id":9,"result_token"`) {
 		t.Fatalf("submit status=%d body=%s", response.Code, body)
 	}
 }

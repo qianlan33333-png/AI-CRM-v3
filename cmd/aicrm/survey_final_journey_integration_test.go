@@ -446,7 +446,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		ResultToken string                       `json:"result_token"`
 	}
 	mustSurveyJourneyJSON(t, submitted, &submissionResult)
-	if submissionResult.Receipt.SubmissionID < 1 || submissionResult.ResultToken == "" || submissionResult.Receipt.ResultToken != submissionResult.ResultToken {
+	if submissionResult.Receipt.SubmissionID < 1 || submissionResult.ResultToken == "" || submissionResult.Receipt.ResultToken != "" {
 		t.Fatalf("submission receipt=%+v token=%q", submissionResult.Receipt, submissionResult.ResultToken)
 	}
 	var concurrentResult struct {
@@ -565,10 +565,11 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("one-mode submit status=%d body=%s", oneSubmitted.Code, oneSubmitted.Body.String())
 	}
 	var oneReceipt struct {
-		Receipt surveyport.SubmissionReceipt `json:"receipt"`
+		Receipt     surveyport.SubmissionReceipt `json:"receipt"`
+		ResultToken string                       `json:"result_token"`
 	}
 	mustSurveyJourneyJSON(t, oneSubmitted, &oneReceipt)
-	oneResultBody, err := json.Marshal(map[string]string{"result_token": oneReceipt.Receipt.ResultToken})
+	oneResultBody, err := json.Marshal(map[string]string{"result_token": oneReceipt.ResultToken})
 	if err != nil {
 		t.Fatal(err)
 	}

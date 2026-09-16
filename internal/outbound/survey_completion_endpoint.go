@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"sort"
@@ -27,12 +28,22 @@ type SurveyCompletionEndpoints struct {
 func NewSurveyCompletionEndpoints(pool *pgxpool.Pool, runtime SurveyCompletionTargetResolver, templates []string) *SurveyCompletionEndpoints {
 	return &SurveyCompletionEndpoints{pool: pool, runtime: runtime, templates: append([]string(nil), templates...)}
 }
-func editableSurveyEndpoint(raw string) bool {
+func editableSurveyEndpoint(raw string, allowLoopback bool) bool {
 	if raw == "" || raw != strings.TrimSpace(raw) || len(raw) > 4096 || strings.ContainsAny(raw, "\r\n\t") {
 		return false
 	}
 	parsed, err := url.Parse(raw)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == "" && !strings.EqualFold(strings.TrimSuffix(parsed.Hostname(), "."), "localhost")
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return false
+	}
+	host := strings.TrimSuffix(parsed.Hostname(), ".")
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") || strings.HasSuffix(strings.ToLower(host), ".local") {
+		return allowLoopback && isLoopbackCommerceHost(host) && (parsed.Port() == "" || validCommercePort(parsed.Port()))
+	}
+	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
+		return !disallowedCommerceIP(ip, allowLoopback) && (parsed.Port() == "" || parsed.Port() == "443" || allowLoopback && ip.IsLoopback() && validCommercePort(parsed.Port()))
+	}
+	return parsed.Port() == "" || parsed.Port() == "443"
 }
 
 func (s *SurveyCompletionEndpoints) ReadSurveyCompletionEndpointWithin(ctx context.Context, id surveyport.ID, ref string) (string, error) {
@@ -72,7 +83,7 @@ func (s *SurveyCompletionEndpoints) SaveSurveyCompletionEndpointWithin(ctx conte
 	if err != nil {
 		return "", err
 	}
-	if id < 1 || endpoint != "" && !editableSurveyEndpoint(endpoint) || !validSurveyEndpointMetadata(metadata) {
+	if id < 1 || !validSurveyEndpointMetadata(metadata) {
 		return "", surveyport.ErrInvalid
 	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("survey-completion-endpoint:%d", id)); err != nil {
@@ -100,10 +111,14 @@ func (s *SurveyCompletionEndpoints) SaveSurveyCompletionEndpointWithin(ctx conte
 		_, err = tx.Exec(ctx, `DELETE FROM outbound_survey_completion_endpoints WHERE questionnaire_id=$1`, id)
 		return "", err
 	}
-	if _, found, resolveErr := s.runtime.SurveyCompletionTarget(ctx, template); resolveErr != nil || !found {
+	runtimeTarget, found, resolveErr := s.runtime.SurveyCompletionTarget(ctx, template)
+	if resolveErr != nil || !found {
 		if resolveErr != nil {
 			return "", resolveErr
 		}
+		return "", surveyport.ErrInvalid
+	}
+	if !editableSurveyEndpoint(endpoint, runtimeTarget.AllowLoopbackHTTP) {
 		return "", surveyport.ErrInvalid
 	}
 	derived := fmt.Sprintf("survey-endpoint:%d", id)
@@ -134,7 +149,7 @@ func (s *SurveyCompletionEndpoints) SurveyCompletionTarget(ctx context.Context, 
 	if err != nil || !found {
 		return SurveyCompletionTarget{}, found, err
 	}
-	if !editableSurveyEndpoint(endpoint) {
+	if !editableSurveyEndpoint(endpoint, target.AllowLoopbackHTTP) {
 		return SurveyCompletionTarget{}, false, surveyport.ErrInvalid
 	}
 	target.Reference, target.Endpoint = ref, endpoint

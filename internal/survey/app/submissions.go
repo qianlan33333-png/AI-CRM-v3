@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -461,14 +460,7 @@ func (s *SubmissionService) resolvePublicCompletionAction(ctx context.Context, c
 }
 
 func safePublicCompletionURL(raw string) bool {
-	if len(raw) == 0 || len(raw) > 2048 {
-		return false
-	}
-	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
-		return true
-	}
-	parsed, err := url.Parse(raw)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == ""
+	return safeStoredSurveyRedirect(raw)
 }
 
 func completionIntent(questionnaireID, submissionID surveyport.ID, configurationRef string, submissionPayloadDigest [32]byte, now time.Time) surveyport.CompletionIntent {

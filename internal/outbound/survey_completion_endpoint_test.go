@@ -22,3 +22,25 @@ func TestSurveyEndpointMetadataOverridesEditableFields(t *testing.T) {
 		t.Fatal("negative service period must be rejected")
 	}
 }
+
+func TestEditableSurveyEndpointRejectsPrivateAndAmbiguousDestinations(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://localhost/hook",
+		"https://service.local/hook",
+		"https://127.0.0.1/hook",
+		"https://10.0.0.8/hook",
+		"https://169.254.169.254/latest/meta-data",
+		"https://[::1]/hook",
+		"https://example.com:8443/hook",
+	} {
+		if editableSurveyEndpoint(endpoint, false) {
+			t.Fatalf("private or non-standard endpoint accepted: %s", endpoint)
+		}
+	}
+	if !editableSurveyEndpoint("https://hooks.example.com/aicrm", false) {
+		t.Fatal("public HTTPS endpoint rejected")
+	}
+	if !editableSurveyEndpoint("https://127.0.0.1/hook", true) {
+		t.Fatal("explicit test-only loopback endpoint rejected")
+	}
+}

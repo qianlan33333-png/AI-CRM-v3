@@ -767,6 +767,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	// A non-nil client is accepted only by the package-private composition test
+	// seam. It permits controlled loopback receivers without exposing a runtime
+	// setting that could weaken production target validation.
+	if surveyCompletionHTTPClient != nil {
+		for index := range surveyCompletionTargets {
+			surveyCompletionTargets[index].AllowLoopbackHTTP = true
+		}
+	}
 	surveyCompletionRuntime, err := outbound.NewStaticSurveyCompletionTargets(surveyCompletionTargets)
 	if err != nil {
 		return fail(err)

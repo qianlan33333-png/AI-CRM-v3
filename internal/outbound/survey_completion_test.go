@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -133,6 +134,29 @@ func TestSurveyCompletionProviderDoesNotForwardBodyOnRedirect(t *testing.T) {
 	result, err := provider.Execute(context.Background(), completionEnvelope(payload), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
 	if err != nil || result.Completion != effectport.StateFinalFailed || !result.CallAttempted || redirected != 0 {
 		t.Fatalf("redirect result=%+v err=%v destination_calls=%d", result, err, redirected)
+	}
+}
+
+func TestSurveyCompletionHTTPClientRejectsPrivateAndRebindingDNS(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		addresses []netip.Addr
+	}{
+		{name: "private", addresses: []netip.Addr{netip.MustParseAddr("10.0.0.8")}},
+		{name: "dns rebinding set", addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("127.0.0.1")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := guardedSurveyCompletionHTTPClientWithResolver(nil, false, func(context.Context, string, string) ([]netip.Addr, error) {
+				return test.addresses, nil
+			})
+			request, err := http.NewRequest(http.MethodPost, "https://hooks.example.test/complete", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = client.Do(request); err == nil || !strings.Contains(err.Error(), "dial rejected") {
+				t.Fatalf("expected DNS target rejection, got %v", err)
+			}
+		})
 	}
 }
 

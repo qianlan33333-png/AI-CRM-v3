@@ -60,7 +60,17 @@ func safeStoredSurveyRedirect(raw string) bool {
 		return true
 	}
 	parsed, err := url.Parse(raw)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == ""
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.Port() != "" && parsed.Port() != "443" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return false
+	}
+	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
+		return !blockedSurveyIP(ip)
+	}
+	return true
 }
 func safeSurveyProviderURL(raw string) bool {
 	if !safeStoredSurveyRedirect(raw) || strings.HasPrefix(raw, "/") {

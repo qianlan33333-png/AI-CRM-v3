@@ -188,10 +188,10 @@ func newPublicSurveyPresentationChromiumFixture(t *testing.T) *publicSurveyPrese
 	origin := "https://" + server.Listener.Addr().String()
 	redirectTarget := origin + "/browser-completion-redirect"
 	leadQRURL := origin + "/browser-completion-lead-qr.png"
-	if err = submissions.BindPublicCompletionTarget(surveyJourneyCompletionResolver{"browser-completion-redirect": redirectTarget}); err != nil {
+	if err = submissions.BindPublicCompletionTarget(surveyJourneyCompletionResolver{"browser-completion-redirect": "/browser-completion-redirect"}); err != nil {
 		t.Fatal(err)
 	}
-	if err = submissions.BindPublicLeadQRCode(surveyJourneyLeadQRCodeReader{501: {URL: leadQRURL}}); err != nil {
+	if err = submissions.BindPublicLeadQRCode(surveyJourneyLeadQRCodeReader{501: {URL: "/browser-completion-lead-qr.png"}}); err != nil {
 		t.Fatal(err)
 	}
 	oauthProvider, err := surveyprovider.NewWeChatOAuth(true, "public-survey-browser-app", "public-survey-browser-secret", "public-survey-browser-platform", origin+"/api/h5/surveys/oauth/callback", "snsapi_userinfo")

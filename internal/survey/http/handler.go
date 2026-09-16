@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -472,7 +473,13 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 201, map[string]any{"receipt": receipt, "result_token": receipt.ResultToken, "completion_action": receipt.CompletionAction})
+		publicReceipt := struct {
+			QuestionnaireID   surveyport.ID `json:"questionnaire_id"`
+			QuestionnaireSlug string        `json:"questionnaire_slug"`
+			DefinitionVersion int64         `json:"definition_version"`
+			SubmissionID      surveyport.ID `json:"submission_id"`
+		}{receipt.QuestionnaireID, receipt.QuestionnaireSlug, receipt.DefinitionVersion, receipt.SubmissionID}
+		writeJSON(w, 201, map[string]any{"receipt": publicReceipt, "result_token": receipt.ResultToken, "completion_action": receipt.CompletionAction})
 		return
 	}
 	method(w, "GET or POST")
@@ -657,11 +664,24 @@ func completionLocation(slug string, action surveyport.CompletionAction) string 
 }
 
 func safeCompletionRedirectURL(raw string) bool {
-	if len(raw) == 0 || len(raw) > 2048 {
+	if len(raw) == 0 || len(raw) > 2048 || strings.ContainsAny(raw, "\\\r\n\t") {
 		return false
 	}
+	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
+		return true
+	}
 	parsed, err := url.Parse(raw)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == ""
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.Port() != "" && parsed.Port() != "443" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return false
+	}
+	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
+		return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified())
+	}
+	return true
 }
 
 func (h *Handler) surveySession(r *http.Request) (surveyport.SubmissionIdentity, bool) {

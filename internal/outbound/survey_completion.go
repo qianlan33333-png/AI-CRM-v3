@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -159,7 +161,7 @@ func (p *SurveyCompletionProvider) Execute(ctx context.Context, envelope effectp
 	req.Header.Set("X-AICRM-Event-Id", eventID)
 	req.Header.Set("X-AICRM-Signature", "sha256="+signature)
 	req.Header.Set("X-AICRM-Idempotency-Key", payload.IdempotencyKey)
-	response, err := p.client.Do(req)
+	response, err := guardedSurveyCompletionHTTPClient(p.client, target.AllowLoopbackHTTP).Do(req)
 	if err != nil {
 		// Once Do is entered, request delivery is ambiguous. Reuse this exact
 		// key through EER reconciliation; never mint a second Provider write.
@@ -187,6 +189,46 @@ func lockedSurveyCompletionHTTPClient(source *http.Client) *http.Client {
 	return &client
 }
 
+func guardedSurveyCompletionHTTPClient(source *http.Client, allowLoopback bool) *http.Client {
+	return guardedSurveyCompletionHTTPClientWithResolver(source, allowLoopback, net.DefaultResolver.LookupNetIP)
+}
+
+func guardedSurveyCompletionHTTPClientWithResolver(source *http.Client, allowLoopback bool, lookup func(context.Context, string, string) ([]netip.Addr, error)) *http.Client {
+	client := lockedSurveyCompletionHTTPClient(source)
+	var transport *http.Transport
+	if configured, ok := client.Transport.(*http.Transport); ok {
+		transport = configured.Clone()
+	} else {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || !validCommercePort(port) {
+			return nil, errors.New("survey completion target dial rejected")
+		}
+		normalized := strings.TrimSuffix(strings.ToLower(host), ".")
+		if normalized == "localhost" || strings.HasSuffix(normalized, ".localhost") || strings.HasSuffix(normalized, ".local") {
+			if !allowLoopback || !isLoopbackCommerceHost(normalized) {
+				return nil, errors.New("survey completion target dial rejected")
+			}
+		}
+		addresses, resolveErr := lookup(ctx, "ip", host)
+		if resolveErr != nil || len(addresses) == 0 {
+			return nil, errors.New("survey completion target resolution unavailable")
+		}
+		for _, ip := range addresses {
+			if disallowedCommerceIP(ip, allowLoopback) {
+				return nil, errors.New("survey completion target dial rejected")
+			}
+		}
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+	}
+	client.Transport = transport
+	return client
+}
+
 func validSurveyCompletionTarget(target SurveyCompletionTarget) bool {
 	if target.Reference == "" || strings.TrimSpace(target.Reference) != target.Reference || len(target.Reference) > 128 || target.Version == "" || len(target.Version) > 128 || target.ClientID == "" || len(target.ClientID) > 256 || len(target.SigningKey) < 32 || identitydomain.ValidateNamespace(target.IdentityKind, target.IdentityScope) != nil {
 		return false
@@ -196,7 +238,11 @@ func validSurveyCompletionTarget(target SurveyCompletionTarget) bool {
 		return false
 	}
 	if parsed.Scheme == "https" {
-		return true
+		host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+		if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+			return target.AllowLoopbackHTTP && isLoopbackCommerceHost(host)
+		}
+		return !isDisallowedCommerceHost(host, target.AllowLoopbackHTTP)
 	}
 	return target.AllowLoopbackHTTP && parsed.Scheme == "http" && (parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost" || parsed.Hostname() == "::1")
 }

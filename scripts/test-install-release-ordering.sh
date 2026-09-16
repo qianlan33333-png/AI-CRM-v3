@@ -55,6 +55,7 @@ sha_missing_0173=1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
 sha_missing_0174=1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
 sha_missing_0175=1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c
 sha_missing_0176=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d
+sha_missing_0177=1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -217,6 +218,7 @@ make_release() {
     0174_product_external_push_test_delivery_id.sql \
     0175_customer_minimum_directory_projection.sql \
     0176_survey_single_submission_claims.sql \
+    0177_survey_operation_legacy_parity.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -393,6 +395,7 @@ for missing_release in \
   "$sha_missing_0174:migrations/0174_product_external_push_test_delivery_id.sql" \
   "$sha_missing_0175:migrations/0175_customer_minimum_directory_projection.sql" \
   "$sha_missing_0176:migrations/0176_survey_single_submission_claims.sql" \
+  "$sha_missing_0177:migrations/0177_survey_operation_legacy_parity.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \

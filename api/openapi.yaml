@@ -3071,7 +3071,11 @@ paths:
     get: {operationId: getSurveyOperations, security: [{adminSession: []}], responses: {"200": {description: External Effect intent and receipt state}}}
   /api/admin/questionnaires/{questionnaire_id}/operations/completion:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    put: {operationId: saveSurveyCompletionOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+    put:
+      operationId: saveSurveyCompletionOperation
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyCompletionOperationRequest"}}}}
+      responses: {"200": {description: Persisted completion action readback}, "400": {description: invalid_request or invalid_completion_action}, "503": {description: Provider disabled by default}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     put:
@@ -3089,6 +3093,13 @@ paths:
               properties:
                 enabled: {type: boolean}
                 configuration_reference: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+                webhook_url: {type: string, format: uri, maxLength: 4096, pattern: '^https://'}
+                type: {type: string, maxLength: 100}
+                expires_at_ts: {type: [integer, "null"], format: int64, minimum: 0}
+                day: {type: [integer, "null"], format: int64, minimum: 0}
+                frequency: {type: [integer, "null"], format: int64, minimum: 0}
+                remark: {type: string, maxLength: 1000}
+                custom_params: {type: object, maxProperties: 100, additionalProperties: {type: string, maxLength: 4096}}
                 metadata: {type: object, additionalProperties: true, description: Non-secret legacy push parameters. Requires configuration_version.}
                 configuration_version: {type: integer, minimum: 0, description: Readback version required whenever metadata is supplied.}
       responses: {"200": {description: Persisted local configuration readback}, "400": {description: invalid_request or configuration_version_required}, "409": {description: configuration_conflict}, "503": {description: Provider disabled by default}}
@@ -6977,6 +6988,26 @@ components:
         source_channel: {type: string, maxLength: 200}
         campaign_id: {type: string, maxLength: 200}
         staff_id: {type: string, maxLength: 200}
+    SurveyCompletionOperationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled: {type: boolean}
+        action_type: {type: string, enum: [lead_qr, redirect]}
+        navigation_target_id: {type: string, maxLength: 128}
+        channel_id: {type: [integer, "null"], format: int64, minimum: 1}
+        lead_channel_id: {type: [integer, "null"], format: int64, minimum: 1}
+        lead_qr_title: {type: string, maxLength: 2048}
+        lead_qr_subtitle: {type: string, maxLength: 2048}
+        completion_target:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled: {type: boolean}
+            target_type: {type: string, enum: [h5, url_link]}
+            h5_url: {type: string, maxLength: 2048}
+            source_url: {type: string, format: uri, maxLength: 2048, pattern: '^https://'}
+            response_url_key: {type: string, maxLength: 128}
     SurveyPublicSubmissionAnswer:
       type: object
       additionalProperties: false
