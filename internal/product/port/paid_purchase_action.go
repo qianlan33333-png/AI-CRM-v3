@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -31,6 +32,15 @@ type PaidPurchaseAction struct {
 	LeadQRTitle      string
 	LeadQRSubtitle   string
 	RedirectURL      string
+	// CompletionTarget holds the configured server-side URL Link source only
+	// inside Product's paid-action snapshot. Payment may ask Product to resolve
+	// it after it authorizes the exact paid checkout; it never returns it to a
+	// browser.
+	CompletionTarget json.RawMessage
+	// CheckoutSnapshot marks actions frozen at native checkout creation. Older
+	// paid-action rows intentionally keep false so their existing guidance
+	// fallback remains available.
+	CheckoutSnapshot bool
 	TagState         string
 	CreatedAt        time.Time
 }
@@ -45,4 +55,11 @@ type PaidPurchaseActionReader interface {
 // PaidPurchaseGuidanceReader is read-only presentation, not a settlement snapshot.
 type PaidPurchaseGuidanceReader interface {
 	ReadPaidPurchaseGuidance(context.Context, int64) (PaidPurchaseAction, error)
+}
+
+// PaidPurchaseURLLinkResolver performs the optional legacy URL Link read only
+// after Payment has authorized the exact paid checkout. It returns a safe
+// destination, never the configured source URL or its credentials.
+type PaidPurchaseURLLinkResolver interface {
+	ResolvePaidPurchaseURLLink(context.Context, PaidPurchaseAction) (string, error)
 }

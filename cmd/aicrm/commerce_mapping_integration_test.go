@@ -44,7 +44,7 @@ type mappingCustomerName struct{ name string }
 func (n *mappingCustomerName) DisplayNames(_ context.Context, ids []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
 	return map[customerdomain.CustomerID]string{ids[0]: n.name}, nil
 }
-func TestPostgreSQLCommerceMappingFrozenPaidAndSynthetic(t *testing.T) {
+func TestPostgreSQLCommerceLegacyPaidIgnoresHistoricalMappingAndExpiry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	dsn, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -96,7 +96,7 @@ func TestPostgreSQLCommerceMappingFrozenPaidAndSynthetic(t *testing.T) {
 		_, _ = mac.Write([]byte(r.Header.Get("X-AICRM-Timestamp") + "."))
 		_, _ = mac.Write(received)
 		if r.Header.Get("X-AICRM-Signature") != "sha256="+hex.EncodeToString(mac.Sum(nil)) {
-			t.Error("signature does not cover exact mapped body")
+			t.Error("signature does not cover exact paid body")
 		}
 		w.WriteHeader(204)
 	}))
@@ -125,8 +125,6 @@ func TestPostgreSQLCommerceMappingFrozenPaidAndSynthetic(t *testing.T) {
 	}
 	expiredLegacyDeadline := time.Now().Add(-time.Hour).Unix()
 	configuration.value.ExpiresAtTS = &expiredLegacyDeadline
-	names := &mappingCustomerName{name: "原昵称"}
-	service.SetFieldMappingReaders(orderService, names)
 	sink, err := outbound.NewCommercePushCompletionSink(service)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +161,8 @@ func TestPostgreSQLCommerceMappingFrozenPaidAndSynthetic(t *testing.T) {
 	if err = pool.QueryRow(ctx, "SELECT payload_ciphertext FROM outbound_commerce_push_intents WHERE source_kind='order_paid'").Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	names.name = "修改昵称"
+	// Historic mapping data remains persisted for compatibility but a fresh
+	// transaction.paid intent now uses the frozen legacy protocol.
 	mapping.Fields[3].Value = json.RawMessage(`"changed"`)
 	configuration.value.Revision = 2
 	if err = uow.Within(ctx, func(tx context.Context) error { return service.ConsumePaidEventWithin(tx, capture.event) }); err != nil {
@@ -192,9 +191,14 @@ func TestPostgreSQLCommerceMappingFrozenPaidAndSynthetic(t *testing.T) {
 	if calls != 1 || headerEvent != "transaction.paid" || headerDelivery == "mapped-id" || !strings.HasPrefix(headerDelivery, "commerce_") {
 		t.Fatal("mapped fields replaced transport metadata")
 	}
-	const expected = `{"amount":990,"delivery_id":"mapped-id","event":"mapped-event","mobile":"+8613800000000","nickname":"原昵称"}`
-	if string(received) != expected {
-		t.Fatal("sent body was not exact frozen mapping")
+	var paid map[string]json.RawMessage
+	if json.Unmarshal(received, &paid) != nil || string(paid["event"]) != `"transaction.paid"` || len(paid["transaction"]) == 0 || len(paid["order"]) == 0 || len(paid["product"]) == 0 || len(paid["buyer"]) == 0 {
+		t.Fatalf("sent body was not the legacy paid protocol: %s", received)
+	}
+	for _, forbidden := range []string{"mobile", "nickname", "amount", "custom_params", "expires_at_ts"} {
+		if _, found := paid[forbidden]; found {
+			t.Fatalf("paid body retained historical mapping field %q: %s", forbidden, received)
+		}
 	}
 	digest := sha256.Sum256([]byte("mapping-synthetic-key"))
 	if err = uow.Within(ctx, func(tx context.Context) error {
@@ -206,7 +210,16 @@ func TestPostgreSQLCommerceMappingFrozenPaidAndSynthetic(t *testing.T) {
 	run("synthetic_test")
 	var body map[string]json.RawMessage
 	_ = json.Unmarshal(received, &body)
-	if calls != 2 || headerEvent != "external_push.test" || len(body) != 5 {
-		t.Fatal("synthetic body shape drifted")
+	var payloadMode string
+	if err = pool.QueryRow(ctx, "SELECT payload_mode FROM outbound_commerce_push_intents WHERE source_kind='synthetic_test'").Scan(&payloadMode); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || headerEvent != "external_push.test" || string(body["event"]) != `"external_push.test"` || len(body["delivery_id"]) == 0 || len(body["product"]) == 0 || len(body["custom_params"]) == 0 || payloadMode != "legacy" {
+		t.Fatalf("retained mapping altered new legacy synthetic payload mode=%q body=%s", payloadMode, received)
+	}
+	for _, mapped := range []string{"mobile", "nickname", "amount"} {
+		if _, found := body[mapped]; found {
+			t.Fatalf("retained mapping leaked synthetic field %q: %s", mapped, received)
+		}
 	}
 }

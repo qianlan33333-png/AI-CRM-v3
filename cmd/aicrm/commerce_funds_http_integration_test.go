@@ -552,7 +552,7 @@ FROM outbound_commerce_push_intents intent WHERE intent.order_paid_event_id=$1`,
 	}
 }
 
-func TestPostgreSQLExpiredPaidOrderPlansConfigExpiredCommercePushOnce(t *testing.T) {
+func TestPostgreSQLExpiredPaidOrderContinuesToTargetResolutionOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -632,7 +632,11 @@ func TestPostgreSQLExpiredPaidOrderPlansConfigExpiredCommercePushOnce(t *testing
   (SELECT count(*) FROM outbound_commerce_push_audit_events audit WHERE audit.intent_id=intent.id),
   (SELECT count(*) FROM outbound_commerce_push_outbox outbox WHERE outbox.intent_id=intent.id)
 FROM outbound_commerce_push_intents intent WHERE intent.order_paid_event_id=$1`, paidEventID, effectport.KindCommerceProductPush).Scan(&state, &targetReference, &revision, &effects, &audits, &outbox)
-	if err != nil || state != "planned_config_expired" || targetReference != "push-expired-reference" || revision != 1 || effects != 0 || audits != 1 || outbox != 1 {
+	// The resolver fixture deliberately has no matching target. Reaching this
+	// state proves expires_at_ts is persisted metadata rather than a paid-event
+	// delivery gate; the former planner would have stopped at
+	// planned_config_expired before target lookup.
+	if err != nil || state != "planned_target_unavailable" || targetReference != "push-expired-reference" || revision != 1 || effects != 0 || audits != 1 || outbox != 1 {
 		t.Fatalf("expired paid intent state/ref/revision/effects/audits/outbox=%q/%q/%d/%d/%d/%d err=%v", state, targetReference, revision, effects, audits, outbox, err)
 	}
 }

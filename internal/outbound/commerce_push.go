@@ -269,12 +269,6 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 	if !configuration.Enabled || !s.targets.CommercePushProviderEnabled() {
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: commerceTargetReference(configuration), targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_disabled"})
 	}
-	// This is the frozen V2 paid-order behavior: a locally enabled product
-	// configuration may expire. Synthetic admin tests remain available for
-	// inspection and do not pass through this paid-event-only gate.
-	if commerceLegacyPushExpired(configuration, s.now().UTC()) {
-		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: commerceTargetReference(configuration), targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_config_expired"})
-	}
 	target, found, err := s.targets.CommercePushTarget(ctx, configuration.ConfigurationReference)
 	if err != nil {
 		return err
@@ -283,13 +277,10 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 	if !found || !target.valid() {
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_target_unavailable"})
 	}
-	var body []byte
-	var missing bool
-	if configuration.FieldMapping != nil {
-		body, err = s.mappedPaidPayload(ctx, event, configuration.FieldMapping)
-	} else {
-		body, missing, err = s.paidPayload(ctx, event, item, target, commerceDeliveryID(event.ID, item.LineNo, targetSlot))
-	}
+	// The frozen transaction.paid contract is fixed.  Historic mapping rows are
+	// retained for readback and already-encrypted intents retain their original
+	// payloads, but a newly accepted paid event always uses the legacy body.
+	body, missing, err := s.paidPayload(ctx, event, item, target, commerceDeliveryID(event.ID, item.LineNo, targetSlot))
 	if err != nil {
 		return err
 	}
@@ -300,7 +291,7 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 		}
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: state})
 	}
-	_, err = s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, target: target, body: body, payloadMode: commerceMappingMode(configuration.FieldMapping)})
+	_, err = s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, target: target, body: body, payloadMode: "legacy"})
 	return err
 }
 
@@ -331,16 +322,15 @@ func (s *CommercePushService) AcceptExternalPushTestWithin(ctx context.Context, 
 	} else if found {
 		return productport.ExternalPushTest{ProductID: in.ProductID, ProductKind: in.ProductKind, EffectID: existing.effectID, State: existing.state, CreatedAt: existing.createdAt}, nil
 	}
-	var body []byte
-	if configuration.FieldMapping != nil {
-		body, err = commerceMappedSyntheticPayload(configuration.FieldMapping)
-	} else {
-		body, err = commerceSyntheticPayload(in.ProductID, configuration.ProductName, target, commerceDeliveryIDFromDigest(in.ReceiptKeyDigest, targetSlot), s.now().UTC())
-	}
+	// The legacy test button always emits its fixed test protocol. A retained
+	// V3 field mapping remains readable with the configuration but never changes
+	// a newly accepted test delivery; existing encrypted intents retain their
+	// original mode and payload untouched.
+	body, err := commerceSyntheticPayload(in.ProductID, configuration.ProductName, target, commerceDeliveryIDFromDigest(in.ReceiptKeyDigest, targetSlot), s.now().UTC())
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}
-	accepted, err := s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "synthetic_test", sourceReference: sourceReference, productID: int64(in.ProductID), productKind: in.ProductKind, targetReference: in.ConfigurationReference, targetSlot: targetSlot, revision: in.ConfigurationRevision, sourceDigest: sourceDigest, target: target, body: body, payloadMode: commerceMappingMode(configuration.FieldMapping)})
+	accepted, err := s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "synthetic_test", sourceReference: sourceReference, productID: int64(in.ProductID), productKind: in.ProductKind, targetReference: in.ConfigurationReference, targetSlot: targetSlot, revision: in.ConfigurationRevision, sourceDigest: sourceDigest, target: target, body: body, payloadMode: "legacy"})
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}

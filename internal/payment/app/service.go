@@ -304,7 +304,8 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				PayerCustomerID: actor.PayerCustomerID, BeneficiaryCustomerID: actor.BeneficiaryCustomerID,
 				ProductID: int64(product.ID), CouponClaimID: c.CouponClaimID, ProductCode: product.Code, ProductName: product.Name,
 				ProductVersion: product.Version, ProductType: orderCheckoutProductType(product.ProductType), ServicePeriodDurationDays: product.ServicePeriodDurationDays, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
-				MobileE164: c.MobileE164, PromotionContext: c.PromotionContext,
+				PostPurchaseAction: product.PostPurchaseAction,
+				MobileE164:         c.MobileE164, PromotionContext: c.PromotionContext,
 				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
 			})
 		}

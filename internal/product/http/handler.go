@@ -862,9 +862,13 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 				return
 			}
 		}
+		endpoint := body.URL
+		if body.WebhookURL != nil {
+			endpoint = body.WebhookURL
+		}
 		configuration, err := h.external.SaveExternalPushConfiguration(r.Context(), productport.SaveExternalPushConfigurationCommand{
 			ProductID: productport.ID(id), ProductKind: kind, Enabled: body.Enabled, ConfigurationReference: body.ConfigurationReference,
-			FieldMapping: mapping, FieldMappingSet: len(body.FieldMapping) > 0, URL: body.URL, BusinessParametersSet: businessSet, PushType: business.pushType, Day: business.day, Frequency: business.frequency, ExpiresAtTS: business.expiresAtTS, Remark: business.remark, CustomParams: business.customParams,
+			FieldMapping: mapping, FieldMappingSet: len(body.FieldMapping) > 0, URL: endpoint, BusinessParametersSet: businessSet, PushType: business.pushType, Day: business.day, Frequency: business.frequency, ExpiresAtTS: business.expiresAtTS, Remark: business.remark, CustomParams: business.customParams,
 			ExpectedRevision: business.expectedRevision, Actor: principal.InternalID, IdempotencyKey: key,
 		})
 		if err != nil {
@@ -1664,17 +1668,22 @@ type versionRequest struct {
 }
 
 type externalConfigurationRequest struct {
-	URL                    *string         `json:"url"`
-	Enabled                bool            `json:"enabled"`
-	ConfigurationReference string          `json:"configuration_reference"`
-	ExpectedRevision       *int64          `json:"expected_revision"`
-	PushType               *string         `json:"type"`
-	Day                    json.RawMessage `json:"day"`
-	Frequency              json.RawMessage `json:"frequency"`
-	ExpiresAtTS            json.RawMessage `json:"expires_at_ts"`
-	Remark                 *string         `json:"remark"`
-	CustomParams           json.RawMessage `json:"custom_params"`
-	FieldMapping           json.RawMessage `json:"field_mapping"`
+	URL                    *string `json:"url"`
+	WebhookURL             *string `json:"webhook_url"`
+	Enabled                bool    `json:"enabled"`
+	ConfigurationReference string  `json:"configuration_reference"`
+	ExpectedRevision       *int64  `json:"expected_revision"`
+	// PushType is the historic V3 spelling; LegacyPushType is the frozen
+	// AI-CRM product-panel spelling. When both arrive, the legacy panel value
+	// is authoritative so a compatibility client cannot overwrite it.
+	PushType       *string         `json:"type"`
+	LegacyPushType *string         `json:"push_type"`
+	Day            json.RawMessage `json:"day"`
+	Frequency      json.RawMessage `json:"frequency"`
+	ExpiresAtTS    json.RawMessage `json:"expires_at_ts"`
+	Remark         *string         `json:"remark"`
+	CustomParams   json.RawMessage `json:"custom_params"`
+	FieldMapping   json.RawMessage `json:"field_mapping"`
 }
 
 // externalConfigurationResponse keeps the canonical JSON text alongside the
@@ -1688,6 +1697,8 @@ type externalConfigurationResponse struct {
 	ConfigurationReference string `json:"configuration_reference"`
 	CustomParamsJSON       string `json:"custom_params_json"`
 	URL                    string `json:"url"`
+	WebhookURL             string `json:"webhook_url"`
+	PushType               string `json:"push_type"`
 }
 
 func externalConfigurationJSONResponse(value productport.ExternalPushConfiguration) externalConfigurationResponse {
@@ -1701,7 +1712,7 @@ func externalConfigurationJSONResponse(value productport.ExternalPushConfigurati
 		// defensive fallback; no request data is reflected here.
 		raw = []byte("{}")
 	}
-	return externalConfigurationResponse{ExternalPushConfiguration: value, ConfigurationReference: value.ConfigurationReference, CustomParamsJSON: string(raw), URL: value.URL}
+	return externalConfigurationResponse{ExternalPushConfiguration: value, ConfigurationReference: value.ConfigurationReference, CustomParamsJSON: string(raw), URL: value.URL, WebhookURL: value.URL, PushType: value.PushType}
 }
 
 type externalConfigurationBusinessValue struct {
@@ -1719,11 +1730,15 @@ type externalConfigurationBusinessValue struct {
 // non-sensitive payload fields while the opaque reference selects deployment
 // credentials and the controlled target.
 func externalConfigurationBusiness(value externalConfigurationRequest) (bool, externalConfigurationBusinessValue, bool) {
-	present := value.PushType != nil || len(value.Day) != 0 || len(value.Frequency) != 0 || len(value.ExpiresAtTS) != 0 || value.Remark != nil || len(value.CustomParams) != 0 || value.ExpectedRevision != nil
+	pushType := value.PushType
+	if value.LegacyPushType != nil {
+		pushType = value.LegacyPushType
+	}
+	present := pushType != nil || len(value.Day) != 0 || len(value.Frequency) != 0 || len(value.ExpiresAtTS) != 0 || value.Remark != nil || len(value.CustomParams) != 0 || value.ExpectedRevision != nil
 	if !present {
 		return false, externalConfigurationBusinessValue{}, true
 	}
-	if value.PushType == nil || len(value.Day) == 0 || len(value.Frequency) == 0 || len(value.ExpiresAtTS) == 0 || value.Remark == nil || len(value.CustomParams) == 0 || value.ExpectedRevision == nil || *value.ExpectedRevision < 0 {
+	if pushType == nil || len(value.Day) == 0 || len(value.Frequency) == 0 || len(value.ExpiresAtTS) == 0 || value.Remark == nil || len(value.CustomParams) == 0 || value.ExpectedRevision == nil || *value.ExpectedRevision < 0 {
 		return false, externalConfigurationBusinessValue{}, false
 	}
 	day, ok := externalConfigurationOptionalInteger(value.Day)
@@ -1742,7 +1757,7 @@ func externalConfigurationBusiness(value externalConfigurationRequest) (bool, ex
 	if !ok {
 		return false, externalConfigurationBusinessValue{}, false
 	}
-	return true, externalConfigurationBusinessValue{expectedRevision: *value.ExpectedRevision, pushType: strings.TrimSpace(*value.PushType), day: day, frequency: frequency, expiresAtTS: expiresAtTS, remark: strings.TrimSpace(*value.Remark), customParams: custom}, true
+	return true, externalConfigurationBusinessValue{expectedRevision: *value.ExpectedRevision, pushType: strings.TrimSpace(*pushType), day: day, frequency: frequency, expiresAtTS: expiresAtTS, remark: strings.TrimSpace(*value.Remark), customParams: custom}, true
 }
 
 func externalConfigurationOptionalInteger(raw json.RawMessage) (*int64, bool) {

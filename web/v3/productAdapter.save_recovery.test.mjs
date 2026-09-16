@@ -83,8 +83,7 @@ await verifyDefaultPolicyAtActualCreateAlias();
 const created = { id: 101, product_code: 'recovery-product', name: '恢复商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, distribution_policy: { enabled: true, commission_rate_basis_points: 1234, wait_days: 8, version: 1 }, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' };
 const calls = [];
 let savedVersion = 1;
-let externalAttempts = 0;
-let failEditPush = false;
+let failEditProduct = false;
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', () => undefined);
 const navigationErrors = [];
@@ -106,17 +105,16 @@ const dom = new JSDOM(page, {
       calls.push({ path: url.pathname, method, key: new Headers(init.headers || (input instanceof Request ? input.headers : undefined)).get('Idempotency-Key') || '', body: typeof init.body === 'string' ? init.body : '' });
       const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
       if (url.pathname === '/api/v1/products/101') {
-        if (method === 'PUT') { assert.equal(JSON.parse(init.body).expected_version, savedVersion); savedVersion++; }
+        if (method === 'PUT') {
+          assert.equal(JSON.parse(init.body).expected_version, savedVersion);
+          if (failEditProduct) { failEditProduct = false; return reply({ code: 'dependency_unavailable' }, 503); }
+          savedVersion++;
+        }
         return reply({ ...created, version: savedVersion });
       }
       if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [], next_cursor: '' });
       if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created);
-      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push' && (method === 'POST' || method === 'PUT')) {
-        externalAttempts += 1;
-        if (failEditPush) { failEditPush = false; return reply({ code: 'dependency_unavailable' }, 503); }
-        if (externalAttempts === 1) return reply({ code: 'dependency_unavailable' }, 503);
-        return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'recovery.push', updated_at: '2026-09-08T00:01:00Z' });
-      }
+      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {} });
       if (url.pathname === '/api/admin/channels') return reply({ items: [], total: 0 });
       if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [{ group_id: 4, group_name: '已同步标签' }], items: [{ tag_id: 37, tag_name: '已购买', group_id: 4, group_name: '已同步标签' }], count: 1, total_tags: 1, tag_limit: 1000 });
       if (url.pathname === '/api/admin/image-library/38') return reply({ item: { id: 38, name: '页面素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });
@@ -176,15 +174,13 @@ const actionEnabled = dom.window.document.querySelector('[data-product-purchase-
 actionEnabled.checked = true; actionEnabled.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 const qr = dom.window.document.querySelector('input[name="pfPurchaseActionMode"][value="qr"]');
 qr.checked = true; qr.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-assert.notEqual(dom.window.getComputedStyle(dom.window.document.getElementById('pfLeadQrTitle').parentElement).display, 'none', 'QR fields must appear only for QR mode');
-assert.equal(dom.window.getComputedStyle(dom.window.document.getElementById('pfCompletionRedirectUrl').parentElement).display, 'none', 'redirect fields must stay hidden in QR mode');
-for (const [id, value] of [['pfName', '恢复商品'], ['pfCode', 'recovery-product'], ['pfPrice', '0.02'], ['pfStock', '1'], ['pfExternalPushReference', 'recovery.push']]) {
+assert.equal(dom.window.document.querySelector('[data-product-purchase-lead]').hidden, false, 'QR fields must appear only for QR mode');
+assert.equal(dom.window.document.querySelector('[data-product-purchase-redirect]').hidden, true, 'redirect fields must stay hidden in QR mode');
+for (const [id, value] of [['pfName', '恢复商品'], ['pfCode', 'recovery-product'], ['pfPrice', '0.02'], ['pfStock', '1']]) {
   const field = dom.window.document.getElementById(id);
   field.value = value;
   field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 }
-const push = dom.window.document.getElementById('pfExternalPushEnabled');
-push.value = 'true'; push.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 const policyBeforeCreate = dom.window.document.querySelector('[data-distribution-policy]');
 policyBeforeCreate.querySelector('[data-distribution-policy-enabled]').checked = true;
 policyBeforeCreate.querySelector('[data-distribution-policy-enabled]').dispatchEvent(new dom.window.Event('change', { bubbles: true }));
@@ -199,7 +195,7 @@ const save = [...dom.window.document.querySelectorAll('button')].find((button) =
 assert.ok(save, 'frozen product form must retain save action');
 save.click();
 save.click();
-await waitFor(() => dom.window.document.querySelector('#fb-toast')?.textContent.includes('商品主体已保存'), 'first external-push failure must retain created product for recovery');
+await waitFor(() => dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度'), 'product create must finish through the retained frozen save action');
 const creates = calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST');
 assert.equal(creates.length, 1, 'duplicate save clicks must create one product');
 assert.match(creates[0].key, /^product-save-/, 'subject create must carry an idempotency key');
@@ -209,23 +205,15 @@ assert.deepEqual(createPayload.images, ['/api/admin/image-library/39/variants/or
 assert.deepEqual(createPayload.distribution_policy, { enabled: true, commission_rate_basis_points: 1234, wait_days: 8, version: 0 }, 'ordinary product create must atomically carry the edited distribution policy');
 assert.equal(createPayload.admin_projection.purchase_action_enabled, true, 'product save must enable the selected purchase action');
 assert.equal(createPayload.admin_projection.purchase_action_mode, 'qr', 'product save must preserve the selected QR action mode');
-assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101', 'failed external push must recover the created ID into the editor URL');
+assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101', 'created product must enter its editor URL');
 const policyAfterCreate = dom.window.document.querySelector('[data-distribution-policy]');
 assert.equal(policyAfterCreate.dataset.distributionPolicyVersion, '1', 'new ordinary product must read back the server policy revision after receiving an ID');
 assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-enabled]').checked, true, 'new ordinary product readback must retain the selected distribution state');
 assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-rate]').value, '12.34', 'new ordinary product readback must retain the edited commission rate');
 assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-wait-days]').value, '8', 'new ordinary product readback must retain the edited wait days');
 
-const recoverySave = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存当前维度');
-assert.ok(recoverySave, 'recovery must keep a live frozen save action');
-recoverySave.click();
-await waitFor(() => calls.filter((call) => call.path === '/api/admin/wechat-pay/products/101/external-push').length === 2, 'recovery retry must continue only the external-push operation');
-assert.equal(calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST').length, 1, 'recovery retry must never create a second product');
-const external = calls.filter((call) => call.path === '/api/admin/wechat-pay/products/101/external-push');
-assert.equal(external[0].key, external[1].key, 'external-push recovery must reuse its original idempotency key');
-
 await wait(300);
-assert.equal(dom.window.location.pathname, '/admin/wechat-pay/productForm.html', 'successful recovery must remain in the actual ordinary-product alias');
+assert.equal(dom.window.location.pathname, '/admin/wechat-pay/productForm.html', 'successful create must remain in the actual ordinary-product alias');
 assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101');
 dom.reconfigure({url:'https://test.invalid/admin/wechat-pay/products/101/edit'});
 const actionLink = dom.window.document.querySelector('a[href="#product-action"]');
@@ -237,15 +225,15 @@ for (const expected of [2, 3]) {
   await wait(80);
   assert.match(dom.window.document.querySelector('#product-v3-toast').textContent, /已保存当前维度/);
 }
-failEditPush = true;
+failEditProduct = true;
 const editSave = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '保存当前维度');
 editSave.click();
-await waitFor(() => savedVersion === 4 && dom.window.document.querySelector('#fb-toast')?.textContent.includes('可直接重试'), 'edited subject partial success must be recoverable');
-const editPushKey = calls.filter(call => call.path.endsWith('/external-push') && ['POST', 'PUT'].includes(call.method)).at(-1).key;
+await waitFor(() => dom.window.document.querySelector('#fb-toast')?.textContent.includes('HTTP 503'), 'failed subject save must retain the editable product form');
+const failedEdit = calls.filter(call => call.path === '/api/v1/products/101' && call.method === 'PUT').at(-1);
 editSave.click();
-await waitFor(() => dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度'), 'edit configuration recovery must finish');
-assert.equal(savedVersion, 4, 'recovery may not repeat the already committed subject PUT');
-assert.equal(calls.filter(call => call.path.endsWith('/external-push') && ['POST', 'PUT'].includes(call.method)).at(-1).key, editPushKey, 'edit recovery must retain original external configuration key');
+await waitFor(() => savedVersion === 4 && dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度'), 'retry must submit the retained subject form');
+const retriedEdit = calls.filter(call => call.path === '/api/v1/products/101' && call.method === 'PUT').at(-1);
+assert.equal(retriedEdit.key, failedEdit.key, 'subject retry must retain its original idempotency key');
 assert.equal(navigationErrors.length, 0, 'successful saves must not navigate to the list');
 [...dom.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '返回商品管理').click();
 await wait(30);

@@ -44,10 +44,10 @@ func (r *Repository) CreatePaidPurchaseAction(ctx context.Context, value product
 	}
 	var id int64
 	err = tx.QueryRow(ctx, `INSERT INTO product_paid_purchase_actions(
-order_paid_event_id,order_id,product_id,product_version,source_digest,enabled,action_mode,lead_channel_id,lead_qr_title,lead_qr_subtitle,redirect_url,tag_ids,tag_state,created_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+order_paid_event_id,order_id,product_id,product_version,source_digest,enabled,action_mode,lead_channel_id,lead_qr_title,lead_qr_subtitle,redirect_url,completion_target,checkout_snapshot,tag_ids,tag_state,created_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16)
 ON CONFLICT(order_paid_event_id) DO NOTHING RETURNING order_paid_event_id`,
-		value.OrderPaidEventID, value.OrderID, value.ProductID, value.ProductVersion, value.SourceDigest[:], value.Enabled, value.Mode, optionalPositive(value.LeadChannelID), value.LeadQRTitle, value.LeadQRSubtitle, value.RedirectURL, tagIDs, value.TagState, value.CreatedAt.UTC(),
+		value.OrderPaidEventID, value.OrderID, value.ProductID, value.ProductVersion, value.SourceDigest[:], value.Enabled, value.Mode, optionalPositive(value.LeadChannelID), value.LeadQRTitle, value.LeadQRSubtitle, value.RedirectURL, optionalCompletionTarget(value.CompletionTarget), value.CheckoutSnapshot, tagIDs, value.TagState, value.CreatedAt.UTC(),
 	).Scan(&id)
 	if err == nil {
 		created, readErr := r.ReadPaidPurchaseActionForUpdate(ctx, value.OrderPaidEventID)
@@ -77,13 +77,13 @@ SET tag_command_id=$2,tag_state=$3 WHERE order_paid_event_id=$1
 RETURNING `+paidPurchaseActionColumns, orderPaidEventID, command, state))
 }
 
-const paidPurchaseActionColumns = `order_paid_event_id,order_id,product_id,product_version,source_digest,enabled,action_mode,COALESCE(lead_channel_id,0),lead_qr_title,lead_qr_subtitle,redirect_url,tag_state,created_at`
+const paidPurchaseActionColumns = `order_paid_event_id,order_id,product_id,product_version,source_digest,enabled,action_mode,COALESCE(lead_channel_id,0),lead_qr_title,lead_qr_subtitle,redirect_url,completion_target,checkout_snapshot,tag_state,created_at`
 const paidPurchaseActionSelect = `SELECT ` + paidPurchaseActionColumns + ` FROM product_paid_purchase_actions`
 
 func scanPaidPurchaseAction(row rowScanner) (productport.PaidPurchaseAction, error) {
 	var value productport.PaidPurchaseAction
 	var source []byte
-	err := row.Scan(&value.OrderPaidEventID, &value.OrderID, &value.ProductID, &value.ProductVersion, &source, &value.Enabled, &value.Mode, &value.LeadChannelID, &value.LeadQRTitle, &value.LeadQRSubtitle, &value.RedirectURL, &value.TagState, &value.CreatedAt)
+	err := row.Scan(&value.OrderPaidEventID, &value.OrderID, &value.ProductID, &value.ProductVersion, &source, &value.Enabled, &value.Mode, &value.LeadChannelID, &value.LeadQRTitle, &value.LeadQRSubtitle, &value.RedirectURL, &value.CompletionTarget, &value.CheckoutSnapshot, &value.TagState, &value.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return productport.PaidPurchaseAction{}, productport.ErrProductReadNotFound
 	}
@@ -99,6 +99,13 @@ func scanPaidPurchaseAction(row rowScanner) (productport.PaidPurchaseAction, err
 
 func optionalPositive(value int64) any {
 	if value < 1 {
+		return nil
+	}
+	return value
+}
+
+func optionalCompletionTarget(value []byte) any {
+	if len(value) == 0 {
 		return nil
 	}
 	return value

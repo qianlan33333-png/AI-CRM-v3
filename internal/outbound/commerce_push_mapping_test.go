@@ -9,7 +9,6 @@ import (
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	"strings"
 	"testing"
-	"time"
 )
 
 type mappingMobile struct {
@@ -135,24 +134,5 @@ func TestCommerceCustomHeadersIgnoreMappedBodyFields(t *testing.T) {
 	execution.SourceReference = "untrusted"
 	if _, _, ok = commerceExecutionHeaderValues(execution, body); ok {
 		t.Fatal("malformed frozen source accepted")
-	}
-}
-
-func TestCommerceCustomMappingDoesNotInheritLegacyExpiry(t *testing.T) {
-	now := time.Unix(2000, 0)
-	past := int64(1000)
-	configuration := productport.ExternalPushConfiguration{ExpiresAtTS: &past}
-	if !commerceLegacyPushExpired(configuration, now) {
-		t.Fatal("legacy expiry gate changed")
-	}
-	configuration.FieldMapping = mappingFixture()
-	if commerceLegacyPushExpired(configuration, now) {
-		t.Fatal("custom mapping inherited legacy deadline")
-	}
-	future := int64(3000)
-	configuration.FieldMapping = nil
-	configuration.ExpiresAtTS = &future
-	if commerceLegacyPushExpired(configuration, now) {
-		t.Fatal("unexpired legacy blocked")
 	}
 }

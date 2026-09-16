@@ -1151,6 +1151,12 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	paidPurchaseActions.SetPaidGuidanceOrderReader(orderService)
+	if err = paidPurchaseActions.SetCheckoutSnapshotReader(orderService); err != nil {
+		return fail(err)
+	}
+	if err = paidPurchaseActions.SetCompletionURLLinkResolver(productapp.NewCompletionURLLinkResolver()); err != nil {
+		return fail(err)
+	}
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	ownerHandoffCipher, cipherErr := customer.NewOwnerHandoffCipher(cfg.Survey.DataKey)
 	if cipherErr != nil {

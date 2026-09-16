@@ -96,6 +96,7 @@ function archivedProductEditorTerminal(editor: ArchivedProductEditor): AdminDb {
 let loadedProducts: ProductProjection[] = [];
 const openedProductPayloads = new Map<number, RecordValue>();
 const purchaseActionByProduct = new Map<number, { enabled: boolean; mode: '' | 'qr' | 'redirect' }>();
+const loadedLeadChannels: RecordValue[] = [];
 const productLifecycleKeys = new Map<string, string>();
 type ProductLifecycleActionContext = { product: ProductProjection; row: HTMLTableRowElement; container: HTMLElement; page: 'products' };
 const productLifecycleActionContexts = new WeakMap<HTMLButtonElement, ProductLifecycleActionContext>();
@@ -426,7 +427,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     const body = JSON.parse(String(nextInit?.body || '{}'));
     nextInit = { ...nextInit, body: JSON.stringify({ ...body, duration_days: duration }) };
   }
-  if (isProductSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
+  if (isPurchaseActionSubjectWrite(url, method)) nextInit = adaptPurchaseActionWrite(nextInit);
   if (isDistributionProductSubjectWrite(url, method)) nextInit = adaptDistributionPolicyWrite(nextInit);
   let submittedDistributionPolicy: DistributionPolicy | undefined;
   if (isDistributionProductSubjectWrite(url, method) && typeof nextInit?.body === 'string') {
@@ -510,7 +511,10 @@ api.saveProduct = (input) => {
   productSaveInFlight = (async () => {
     productSaveContext = context;
     try {
-      const saved = await donorSaveProduct(input);
+      // External push is now its own legacy-parity command.  The frozen
+      // product controller still carries its retired reference field, so do
+      // not let an ordinary dimension save overwrite or disable that config.
+      const saved = await donorSaveProduct({ ...input, externalPush: undefined });
       // An editor may intentionally change the subject after an earlier
       // external-push failure.  That normal PUT is still an edit of the same
       // product, never a second create; its completed push supersedes the
@@ -565,7 +569,10 @@ api.saveServiceProduct = (input) => {
   };
   productSaveInFlight = (async () => {
     productSaveContext = context;
-    try { return await donorSaveServiceProduct(input); }
+    // Period-product external push is saved only by its dedicated parity
+    // panel. Do not let the retired donor reference controls clear it while
+    // saving a product dimension.
+    try { return await donorSaveServiceProduct({ ...input, externalPush: undefined }); }
     finally { productSaveContext = undefined; }
   })();
   void productSaveInFlight.then(
@@ -611,6 +618,7 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
     db.tagGroups = tagDb.tagGroups;
     db.wecomTags = tagDb.wecomTags;
     db.rows.channels = channelDb?.rows.channels || [];
+    loadedLeadChannels.splice(0, loadedLeadChannels.length, ...list(db.rows.channels).map(object));
     const base = db.rows.products.find((item) => item.resourceId === productID);
     const product = strictProjection(rawProduct, base);
     const rawAction = object(object(rawProduct).admin_projection);
@@ -632,6 +640,7 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
 
   const db = await donorLoadDb(context);
   if (context?.page === 'spProductForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
+    loadedLeadChannels.splice(0, loadedLeadChannels.length, ...list(db.rows.channels).map(object));
     const productID = Number(context.id);
     const current = db.rows.spProducts[0];
     if (archivedProductEditor(current, { id: productID, prefix: 'spf' })) {
@@ -1272,7 +1281,9 @@ function installExternalPushTestHost(): void {
   mountExternalPushTest(page, ownerDocument);
 }
 
-installExternalPushTestHost();
+// Replaced below by the Product-owned legacy-parity panel.  Keep the older
+// helpers in this Host while historical pages are still in the repository,
+// but never mount their reference/mapping UI into the active editor.
 // The editor's shared save action must use the same complete external-push
 // configuration command as this dimension's own save button.
 document.addEventListener('click', (event) => {
@@ -1492,15 +1503,24 @@ function productActionState(prefix: string): PurchaseActionDOM {
   return saved || { enabled: false, mode: '' };
 }
 
+function productActionProjection(prefix: string): RecordValue {
+  const route = productEditorRoute();
+  if (!route || route.prefix !== prefix) return {};
+  const snapshot = prefix === 'pf' ? openedProductPayloads.get(route.id) : periodicSnapshots.get(route.id);
+  return object(snapshot?.admin_projection);
+}
+
 function purchaseActionControls(prefix: string): HTMLElement | null {
   const action = document.getElementById(prefix === 'pf' ? 'product-action' : 'sp-action');
   if (!action || action.querySelector('[data-product-purchase-action]')) return null;
   const host = document.createElement('section');
   host.dataset.productPurchaseAction = '';
-  host.style.cssText = 'display:grid;gap:10px;margin:0 0 14px;padding:12px;border:1px solid #DEE0E3;border-radius:8px;background:#fff';
-  host.innerHTML = `<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#344054"><input type="checkbox" data-product-purchase-enabled> 启用购买后动作</label><div data-product-purchase-modes style="display:flex;gap:18px;align-items:center;font-size:13px;color:#4E5969"><label style="display:flex;align-items:center;gap:6px"><input type="radio" name="${prefix}PurchaseActionMode" value="qr"> 展示二维码</label><label style="display:flex;align-items:center;gap:6px"><input type="radio" name="${prefix}PurchaseActionMode" value="redirect"> 直接跳转</label></div>`;
-  const grid = action.querySelector(':scope > div[style*="grid-template-columns"]');
-  grid?.parentElement?.insertBefore(host, grid);
+  host.className = 'product-payment-action';
+  host.innerHTML = `<div class="product-payment-panel__head"><h3>购买后动作</h3><label class="product-payment-switch"><span data-product-purchase-state>未启用</span><input type="checkbox" data-product-purchase-enabled aria-label="启用购买后动作配置"><i aria-hidden="true"></i></label></div><div data-product-purchase-body class="product-payment-panel__body" hidden><div class="product-payment-modes" data-product-purchase-modes role="group" aria-label="购买后动作模式"><label class="product-payment-mode"><input type="radio" name="${prefix}PurchaseActionMode" value="qr"><span>支付后展示引流二维码</span></label><label class="product-payment-mode"><input type="radio" name="${prefix}PurchaseActionMode" value="redirect"><span>支付完成后直接跳转</span></label></div><div data-product-purchase-lead class="product-payment-fields"><label>引流渠道码<select data-product-purchase-lead-channel><option value="">不配置引流渠道码</option></select></label><label>二维码主标题<input data-product-purchase-lead-title maxlength="40" placeholder="留空沿用：报名成功"></label><label>二维码副标题<input data-product-purchase-lead-subtitle maxlength="100" placeholder="留空沿用：扫码添加企微领取后续资料"></label></div><div data-product-purchase-redirect class="product-payment-fields" hidden><label>跳转类型<select data-product-purchase-target-type><option value="h5">H5 跳转地址</option><option value="url_link">动态 URL Link 接口</option></select></label><label data-product-purchase-h5>H5 跳转地址<input data-product-purchase-h5-url placeholder="https://example.com/landing 或 /internal/path"></label><label data-product-purchase-url-link hidden>动态 URL Link 接口<input data-product-purchase-url-link-source placeholder="https://ip.lhbl.com.cn/api/wxlink?from=qianlan_pay"></label><label data-product-purchase-url-link hidden>响应字段<input data-product-purchase-url-link-key placeholder="url_link" value="url_link"></label></div></div><div class="product-payment-panel__actions"><button class="product-payment-primary" data-product-purchase-save type="button">保存购买后动作</button></div>`;
+  const retainedDonorFields = document.createElement('div');
+  retainedDonorFields.hidden = true;
+  while (action.firstChild) retainedDonorFields.append(action.firstChild);
+  action.append(host, retainedDonorFields);
   const current = productActionState(prefix);
   const enabled = host.querySelector<HTMLInputElement>('[data-product-purchase-enabled]')!;
   const modes = host.querySelector<HTMLElement>('[data-product-purchase-modes]')!;
@@ -1508,25 +1528,47 @@ function purchaseActionControls(prefix: string): HTMLElement | null {
   const radio = host.querySelector<HTMLInputElement>(`input[value="${current.mode}"]`);
   if (radio) radio.checked = true;
 
-  const fieldFor = (id: string): HTMLElement | null => document.getElementById(id)?.closest<HTMLElement>('div') || null;
-  const qr = [`${prefix}LeadChannelId`, `${prefix}LeadQrTitle`, `${prefix}LeadQrSubtitle`].map(fieldFor);
-  const redirect = [`${prefix}CompletionRedirectUrl`, `${prefix}CompletionTarget`].map(fieldFor);
-  const oldRedirect = fieldFor(`${prefix}CompletionRedirectEnabled`);
+  const projection = productActionProjection(prefix);
+  const leadChannel = host.querySelector<HTMLSelectElement>('[data-product-purchase-lead-channel]')!;
+  const leadTitle = host.querySelector<HTMLInputElement>('[data-product-purchase-lead-title]')!;
+  const leadSubtitle = host.querySelector<HTMLInputElement>('[data-product-purchase-lead-subtitle]')!;
+  const targetType = host.querySelector<HTMLSelectElement>('[data-product-purchase-target-type]')!;
+  const h5URL = host.querySelector<HTMLInputElement>('[data-product-purchase-h5-url]')!;
+  const linkSource = host.querySelector<HTMLInputElement>('[data-product-purchase-url-link-source]')!;
+  const linkKey = host.querySelector<HTMLInputElement>('[data-product-purchase-url-link-key]')!;
+  const selectedChannel = projection.lead_channel_id == null ? '' : String(projection.lead_channel_id);
+  for (const channel of loadedLeadChannels) {
+    const id = Number(channel.id ?? channel.channel_id ?? channel.resourceId);
+    if (!Number.isSafeInteger(id) || id < 1) continue;
+    const option = document.createElement('option'); option.value = String(id); option.textContent = String(channel.name ?? channel.channel_name ?? `渠道 ${id}`); leadChannel.append(option);
+  }
+  if (selectedChannel && ![...leadChannel.options].some((option) => option.value === selectedChannel)) { const option = document.createElement('option'); option.value = selectedChannel; option.textContent = `已选渠道 ${selectedChannel}`; leadChannel.append(option); }
+  leadChannel.value = selectedChannel;
+  leadTitle.value = typeof projection.lead_qr_title === 'string' ? projection.lead_qr_title : '';
+  leadSubtitle.value = typeof projection.lead_qr_subtitle === 'string' ? projection.lead_qr_subtitle : '';
+  const target = object(projection.completion_target);
+  const targetLink = object(target.url_link);
+  targetType.value = target.target_type === 'url_link' ? 'url_link' : 'h5';
+  h5URL.value = typeof target.h5_url === 'string' ? target.h5_url : typeof projection.completion_redirect_url === 'string' ? projection.completion_redirect_url : '';
+  linkSource.value = typeof targetLink.source_url === 'string' ? targetLink.source_url : typeof targetLink.url === 'string' ? targetLink.url : '';
+  linkKey.value = typeof targetLink.response_url_key === 'string' && targetLink.response_url_key ? targetLink.response_url_key : 'url_link';
   const update = (): void => {
     const selected = host.querySelector<HTMLInputElement>(`input[name="${prefix}PurchaseActionMode"]:checked`)?.value as PurchaseActionMode | undefined;
-    setProductVisible(modes, enabled.checked);
-    for (const field of qr) if (field) setProductVisible(field, enabled.checked && selected === 'qr');
-    for (const field of redirect) if (field) setProductVisible(field, enabled.checked && selected === 'redirect');
-    if (oldRedirect) setProductVisible(oldRedirect, false);
-    // The frozen serializer always parses this hidden JSON field. Keep it
-    // syntactically empty when redirect is not the active choice.
-    if (!enabled.checked || selected !== 'redirect') {
-      const target = document.getElementById(`${prefix}CompletionTarget`) as HTMLTextAreaElement | null;
-      if (target) target.value = '';
-    }
+    (host.querySelector('[data-product-purchase-body]') as HTMLElement).hidden = !enabled.checked;
+    (host.querySelector('[data-product-purchase-lead]') as HTMLElement).hidden = !enabled.checked || selected !== 'qr';
+    (host.querySelector('[data-product-purchase-redirect]') as HTMLElement).hidden = !enabled.checked || selected !== 'redirect';
+    const isLink = targetType.value === 'url_link';
+    host.querySelector<HTMLElement>('[data-product-purchase-h5]')!.hidden = isLink;
+    host.querySelectorAll<HTMLElement>('[data-product-purchase-url-link]').forEach((node) => { node.hidden = !isLink; });
+    (host.querySelector('[data-product-purchase-state]') as HTMLElement).textContent = enabled.checked ? '已启用' : '未启用';
   };
   enabled.addEventListener('change', update);
   modes.addEventListener('change', update);
+  targetType.addEventListener('change', update);
+  host.querySelector<HTMLButtonElement>('[data-product-purchase-save]')!.addEventListener('click', () => {
+    const save = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === '保存当前维度' && !button.closest('#product-action, #sp-action'));
+    save?.click();
+  });
   update();
   return host;
 }
@@ -1542,6 +1584,12 @@ function currentPurchaseAction(): PurchaseActionDOM {
 
 function isProductSubjectWrite(url: URL, method: string): boolean {
   return (method === 'POST' && url.pathname === '/api/v1/products') || (method === 'PUT' && /^\/api\/v1\/products\/[1-9][0-9]*$/.test(url.pathname));
+}
+
+function isPurchaseActionSubjectWrite(url: URL, method: string): boolean {
+  return isProductSubjectWrite(url, method)
+    || (method === 'POST' && url.pathname === '/api/admin/service-period-products')
+    || (method === 'PUT' && /^\/api\/admin\/service-period-products\/[1-9][0-9]*$/.test(url.pathname));
 }
 
 function isDistributionProductSubjectWrite(url: URL, method: string): boolean {
@@ -1560,17 +1608,34 @@ function adaptPurchaseActionWrite(init: RequestInit | undefined): RequestInit | 
   const action = currentPurchaseAction();
   projection.purchase_action_enabled = action.enabled;
   projection.purchase_action_mode = action.mode;
+  const host = document.querySelector<HTMLElement>('[data-product-purchase-action]');
+  const leadChannel = host?.querySelector<HTMLSelectElement>('[data-product-purchase-lead-channel]')?.value.trim() || '';
+  const leadTitle = host?.querySelector<HTMLInputElement>('[data-product-purchase-lead-title]')?.value || '';
+  const leadSubtitle = host?.querySelector<HTMLInputElement>('[data-product-purchase-lead-subtitle]')?.value || '';
   if (!action.enabled || action.mode !== 'qr') {
     projection.lead_channel_id = null;
     projection.lead_qr_title = '';
     projection.lead_qr_subtitle = '';
+  } else {
+    const channelID = Number(leadChannel);
+    projection.lead_channel_id = Number.isSafeInteger(channelID) && channelID > 0 ? channelID : null;
+    projection.lead_qr_title = leadTitle;
+    projection.lead_qr_subtitle = leadSubtitle;
   }
   if (!action.enabled || action.mode !== 'redirect') {
     projection.completion_redirect_enabled = false;
     projection.completion_redirect_url = '';
     projection.completion_target = null;
   } else {
+    const targetType = host?.querySelector<HTMLSelectElement>('[data-product-purchase-target-type]')?.value === 'url_link' ? 'url_link' : 'h5';
+    const h5URL = host?.querySelector<HTMLInputElement>('[data-product-purchase-h5-url]')?.value.trim() || '';
+    const sourceURL = host?.querySelector<HTMLInputElement>('[data-product-purchase-url-link-source]')?.value.trim() || '';
+    const responseKey = host?.querySelector<HTMLInputElement>('[data-product-purchase-url-link-key]')?.value.trim() || 'url_link';
     projection.completion_redirect_enabled = true;
+    projection.completion_redirect_url = targetType === 'h5' ? h5URL : '';
+    projection.completion_target = targetType === 'h5'
+      ? { enabled: true, target_type: 'h5', open_strategy: 'h5_redirect', h5_url: h5URL, fallback_url: h5URL, url_link: { enabled: false, url: '', source_url: '', response_url_key: 'url_link' } }
+      : { enabled: true, target_type: 'url_link', open_strategy: 'url_link', h5_url: '', fallback_url: '', url_link: { enabled: true, url: '', source_url: sourceURL, response_url_key: responseKey } };
   }
   const tagging = object(projection.wecom_tagging);
   const rawTagIDs = list(tagging.tag_ids);
@@ -1634,8 +1699,134 @@ function mountPurchaseActionControls(): void {
   purchaseActionControls(prefix);
 }
 
+type LegacyParityPushConfig = { enabled: boolean; revision: number; webhookURL: string; pushType: string; expiresAtTS: number | null; day: number | null; frequency: number | null; remark: string; customParams: RecordValue };
+
+function parityOptionalInteger(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed)) throw new Error('数值必须是整数');
+  return parsed;
+}
+
+function legacyParityPushConfig(raw: unknown, page: ExternalPushPage): LegacyParityPushConfig {
+  const value = object(object(raw).config ?? raw);
+  const integer = (field: string): number | null => {
+    if (value[field] === null) return null;
+    const parsed = Number(value[field]);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error('外部推送配置响应不完整');
+    return parsed;
+  };
+  const webhookURL = typeof value.webhook_url === 'string' ? value.webhook_url : typeof value.url === 'string' ? value.url : undefined;
+  if (Number(value.product_id) !== page.productID || value.product_kind !== page.productKind || typeof value.enabled !== 'boolean' ||
+    !Number.isSafeInteger(Number(value.revision)) || Number(value.revision) < 0 || typeof value.configuration_reference !== 'string' ||
+    typeof webhookURL !== 'string' || typeof value.push_type !== 'string' || typeof value.remark !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(value, 'expires_at_ts') || !Object.prototype.hasOwnProperty.call(value, 'day') || !Object.prototype.hasOwnProperty.call(value, 'frequency') ||
+    !Object.prototype.hasOwnProperty.call(value, 'custom_params') || value.custom_params === null || typeof value.custom_params !== 'object' || Array.isArray(value.custom_params)) {
+    throw new Error('外部推送配置响应不完整');
+  }
+  return { enabled: value.enabled, revision: Number(value.revision), webhookURL, pushType: value.push_type, expiresAtTS: integer('expires_at_ts'), day: integer('day'), frequency: integer('frequency'), remark: value.remark, customParams: object(value.custom_params) };
+}
+
+function syncExternalPushSummary(enabled: boolean): void {
+  for (const label of document.querySelectorAll<HTMLElement>('span')) {
+    if (label.textContent?.trim() !== '外部推送') continue;
+    const summary = label.parentElement?.querySelector<HTMLElement>(':scope > strong');
+    if (summary) summary.textContent = enabled ? '已启用' : '未启用';
+  }
+}
+
+function mountLegacyParityPushPanel(): void {
+  const page = externalPushPage();
+  if (!page) return;
+  const anchor = document.querySelector<HTMLElement>(page.anchor);
+  if (!anchor || anchor.querySelector('[data-product-parity-push]')) return;
+  const panel = document.createElement('section');
+  panel.dataset.productParityPush = '';
+  panel.className = 'product-payment-push';
+  const remarkLabel = productPrefix() === 'spf' ? 'remark' : '备注';
+  panel.innerHTML = `<div class="product-payment-panel__head"><h3>外部推送</h3><label class="product-payment-switch"><span data-product-parity-push-state>未启用</span><input type="checkbox" data-product-parity-push-enabled aria-label="启用外部推送配置"><i aria-hidden="true"></i></label></div><div class="product-payment-panel__body" data-product-parity-push-body hidden><div class="product-payment-fields"><label>推送地址<input data-product-parity-push-url placeholder="https://hooks.example.com/..."></label><label>${remarkLabel}<textarea data-product-parity-push-remark></textarea></label><label>push_type<input data-product-parity-push-type placeholder="paid_notify"></label><label>expires_at_ts<input data-product-parity-push-expires type="number" step="1"></label><label>day<input data-product-parity-push-day type="number" step="1"></label><label>frequency<input data-product-parity-push-frequency type="number" step="1"></label></div><label class="product-payment-param-label">custom_params<div data-product-parity-push-params></div></label><div class="product-payment-panel__inline-actions"><button type="button" data-product-parity-push-add>新增参数</button><button type="button" data-product-parity-push-test>测试推送</button></div><span data-product-parity-push-result></span></div><div class="product-payment-panel__actions"><button class="product-payment-primary" data-product-parity-push-save type="button">保存外部推送</button></div>`;
+  panel.querySelectorAll<HTMLButtonElement>('button').forEach((button) => { (button as HTMLButtonElement & { __dcBound?: boolean }).__dcBound = true; });
+  const retainedDonorFields = document.createElement('div');
+  retainedDonorFields.hidden = true;
+  while (anchor.firstChild) retainedDonorFields.append(anchor.firstChild);
+  anchor.append(panel, retainedDonorFields);
+  const legacyEnabled = retainedDonorFields.querySelector<HTMLSelectElement>('#pfExternalPushEnabled, #spfExternalPushEnabled');
+  if (legacyEnabled) legacyEnabled.value = 'false';
+  const enabled = panel.querySelector<HTMLInputElement>('[data-product-parity-push-enabled]')!;
+  const body = panel.querySelector<HTMLElement>('[data-product-parity-push-body]')!;
+  const state = panel.querySelector<HTMLElement>('[data-product-parity-push-state]')!;
+  const url = panel.querySelector<HTMLInputElement>('[data-product-parity-push-url]')!;
+  const remark = panel.querySelector<HTMLTextAreaElement>('[data-product-parity-push-remark]')!;
+  const type = panel.querySelector<HTMLInputElement>('[data-product-parity-push-type]')!;
+  const expires = panel.querySelector<HTMLInputElement>('[data-product-parity-push-expires]')!;
+  const day = panel.querySelector<HTMLInputElement>('[data-product-parity-push-day]')!;
+  const frequency = panel.querySelector<HTMLInputElement>('[data-product-parity-push-frequency]')!;
+  const params = panel.querySelector<HTMLElement>('[data-product-parity-push-params]')!;
+  const result = panel.querySelector<HTMLElement>('[data-product-parity-push-result]')!;
+  const setVisible = (): void => { body.hidden = !enabled.checked; state.textContent = enabled.checked ? '已启用' : '未启用'; };
+  let originalParams: RecordValue = {};
+  let revision = 0;
+  let loaded = false;
+  let busy = false;
+  const setControlsDisabled = (value: boolean): void => {
+    panel.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>('input, textarea, select, button').forEach((control) => { control.disabled = value; });
+  };
+  const setBusy = (value: boolean): void => {
+    busy = value;
+    setControlsDisabled(value || !loaded);
+  };
+  const readParams = (): RecordValue => Object.fromEntries([...params.querySelectorAll<HTMLElement>('[data-product-parity-param-row]')].flatMap((row) => {
+    const key = row.querySelector<HTMLInputElement>('[data-product-parity-param-key]')?.value.trim() || '';
+    const value = row.querySelector<HTMLInputElement>('[data-product-parity-param-value]')?.value || '';
+    const originalKey = row.dataset.productParityParamOriginalKey || '';
+    return key ? [[key, row.dataset.productParityParamDirty === 'true' || key !== originalKey ? value : originalParams[originalKey]]] : [];
+  }));
+  const addParam = (key = '', value = '', rawValue?: unknown): void => {
+    const row = document.createElement('div'); row.dataset.productParityParamRow = ''; row.className = 'product-payment-param-row';
+    row.dataset.productParityParamOriginalKey = key;
+    row.innerHTML = `<input data-product-parity-param-key placeholder="key"><input data-product-parity-param-value placeholder="value"><button type="button" aria-label="删除参数">删除</button>`;
+    (row.querySelector('button') as HTMLButtonElement & { __dcBound?: boolean }).__dcBound = true;
+    row.querySelector<HTMLInputElement>('[data-product-parity-param-key]')!.value = key;
+    row.querySelector<HTMLInputElement>('[data-product-parity-param-value]')!.value = value;
+    if (rawValue !== undefined) originalParams[key] = rawValue;
+    row.querySelectorAll('input').forEach((input) => input.addEventListener('input', () => { row.dataset.productParityParamDirty = 'true'; }));
+    row.querySelector('button')!.addEventListener('click', () => { row.remove(); if (!params.children.length) addParam(); });
+    params.append(row);
+  };
+  const fill = (value: LegacyParityPushConfig): void => {
+    originalParams = {}; revision = value.revision; enabled.checked = value.enabled; url.value = value.webhookURL; type.value = value.pushType; remark.value = value.remark;
+    expires.value = value.expiresAtTS == null ? '' : String(value.expiresAtTS); day.value = value.day == null ? '' : String(value.day); frequency.value = value.frequency == null ? '' : String(value.frequency);
+    params.replaceChildren(); Object.entries(value.customParams).forEach(([key, item]) => addParam(key, typeof item === 'string' ? item : JSON.stringify(item), item)); if (!params.children.length) addParam(); loaded = true; setVisible(); syncExternalPushSummary(value.enabled);
+  };
+  const save = async (retainBusy = false): Promise<void> => {
+    if (!loaded) throw new Error('外部推送配置尚未读取完成');
+    if (busy) throw new Error('外部推送保存进行中');
+    setBusy(true);
+    try {
+      const webhookURL = url.value.trim();
+      if (enabled.checked) { const parsed = new URL(webhookURL); if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('请填写有效的 HTTPS 推送地址'); }
+      const response = await externalPushRequest(page.configurationEndpoint, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushConfigurationIdempotencyKey() }, body: JSON.stringify({ enabled: enabled.checked, webhook_url: webhookURL, push_type: type.value.trim(), expires_at_ts: parityOptionalInteger(expires.value), day: parityOptionalInteger(day.value), frequency: parityOptionalInteger(frequency.value), remark: remark.value, custom_params: readParams(), expected_revision: revision }) });
+      fill(legacyParityPushConfig(response, page)); result.textContent = '配置已保存'; showMessage('外部推送已保存', true);
+    } finally { if (!retainBusy) setBusy(false); }
+  };
+  enabled.addEventListener('change', setVisible);
+  panel.querySelector<HTMLButtonElement>('[data-product-parity-push-add]')!.addEventListener('click', () => addParam());
+  panel.querySelector<HTMLButtonElement>('[data-product-parity-push-save]')!.addEventListener('click', (event) => { event.stopPropagation(); void save().catch((error) => { result.textContent = error instanceof Error ? error.message : '外部推送保存失败'; }); });
+  panel.querySelector<HTMLButtonElement>('[data-product-parity-push-test]')!.addEventListener('click', (event) => { event.stopPropagation(); void save(true).then(async () => {
+    const response = await externalPushRequest(page.endpoint, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushIdempotencyKey() }, body: '{}' });
+    const item = object(response); const delivery = object(item.delivery ?? object(item.result).delivery); result.textContent = `测试推送 ${String(delivery.status || item.state || '已受理')}，delivery_id: ${String(delivery.delivery_id || item.delivery_id || '')}`;
+  }).catch((error) => { result.textContent = error instanceof Error ? error.message : '测试失败'; }).finally(() => setBusy(false)); });
+  setControlsDisabled(true);
+  void externalPushRequest(page.configurationEndpoint, { method: 'GET', headers: { Accept: 'application/json' } }).then((response) => {
+    fill(legacyParityPushConfig(response, page)); setControlsDisabled(false);
+  }).catch((error) => { result.textContent = error instanceof Error ? error.message : '外部推送读取失败'; });
+}
+
 const purchaseActionObserver = observeProductDocument(mountPurchaseActionControls);
 mountPurchaseActionControls();
+const legacyParityPushObserver = observeProductDocument(mountLegacyParityPushPanel);
+mountLegacyParityPushPanel();
 const distributionPolicyObserver = observeProductDocument(mountDistributionPolicyControls);
 mountDistributionPolicyControls();
 const servicePeriodDurationObserver = observeProductDocument(mountNewServicePeriodDuration);

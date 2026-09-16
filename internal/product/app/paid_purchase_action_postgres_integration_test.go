@@ -31,6 +31,18 @@ type guidanceOrderStub struct {
 	order orderdomain.Snapshot
 }
 
+type checkoutSnapshotStub struct {
+	values map[int64]orderport.CheckoutSnapshot
+}
+
+func (stub checkoutSnapshotStub) ReadCheckoutSnapshotWithin(_ context.Context, orderID int64) (orderport.CheckoutSnapshot, error) {
+	value, found := stub.values[orderID]
+	if !found {
+		return orderport.CheckoutSnapshot{}, orderport.ErrNotFound
+	}
+	return value, nil
+}
+
 func (s *guidanceOrderStub) Get(context.Context, int64) (orderdomain.Snapshot, error) {
 	return s.order, nil
 }
@@ -112,6 +124,13 @@ func TestPaidPurchaseActionPostgreSQLTransactionBoundaries(t *testing.T) {
 	}
 	if _, err = native.Exec(ctx, string(sql)); err != nil {
 		t.Fatalf("apply 0117: %v", err)
+	}
+	targetSnapshotSQL, err := os.ReadFile(paidPurchaseActionTargetSnapshotMigration(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(targetSnapshotSQL)); err != nil {
+		t.Fatalf("apply 0171: %v", err)
 	}
 	if _, err = native.Exec(ctx, `INSERT INTO customer_tag_commands(id) VALUES(1)`); err != nil {
 		t.Fatal(err)
@@ -245,6 +264,33 @@ func TestPaidPurchaseActionPostgreSQLTransactionBoundaries(t *testing.T) {
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM product_paid_purchase_actions WHERE order_id=104`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed tag action count=%d err=%v", count, err)
 	}
+
+	// A newly created checkout carries the Product action recorded at checkout,
+	// not a later product edit that happens before payment succeeds.
+	if err = service.SetCheckoutSnapshotReader(checkoutSnapshotStub{values: map[int64]orderport.CheckoutSnapshot{105: {
+		OrderID: 105, ProductID: 5, ProductVersion: 1,
+		PostPurchaseAction: []byte(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect","lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_url":"/frozen-after-paid","completion_target":null}`),
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	insertProduct(5, `{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"/changed-after-checkout","completion_target":null,"purchase_action_enabled":true,"purchase_action_mode":"redirect","wecom_tagging":{},"slices":[]}`)
+	if err = consume(insertEvent(105, 5)); err != nil {
+		t.Fatal(err)
+	}
+	var redirectURL string
+	var frozen bool
+	if err = native.QueryRow(ctx, `SELECT redirect_url,checkout_snapshot FROM product_paid_purchase_actions WHERE order_id=105`).Scan(&redirectURL, &frozen); err != nil || redirectURL != "/frozen-after-paid" || !frozen {
+		t.Fatalf("checkout action redirect=%q frozen=%t err=%v", redirectURL, frozen, err)
+	}
+	orders.order = orderdomain.Snapshot{ID: 105, Status: orderdomain.StatusPaid, Amount: orderdomain.Money{AmountMinor: 990, Currency: "CNY"}, Items: []orderdomain.ItemSnapshot{{ProductID: func() *int64 { id := int64(5); return &id }(), ProductCode: "purchase-5"}}}
+	guidance, guidanceErr := service.ReadPaidPurchaseGuidance(ctx, 105)
+	if guidanceErr != nil || guidance.RedirectURL != "/frozen-after-paid" {
+		t.Fatalf("paid checkout guidance=%+v err=%v", guidance, guidanceErr)
+	}
+	orders.order.Status, orders.order.RefundedMinor = orderdomain.StatusRefunded, 990
+	if _, guidanceErr = service.ReadPaidPurchaseGuidance(ctx, 105); guidanceErr == nil {
+		t.Fatal("fully refunded checkout retained a completion action")
+	}
 }
 
 func paidPurchaseActionMigration(t *testing.T) string {
@@ -254,4 +300,13 @@ func paidPurchaseActionMigration(t *testing.T) string {
 		t.Fatal("runtime caller unavailable")
 	}
 	return filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0117_product_paid_purchase_actions.sql")
+}
+
+func paidPurchaseActionTargetSnapshotMigration(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime caller unavailable")
+	}
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0171_product_paid_purchase_action_target_snapshot.sql")
 }

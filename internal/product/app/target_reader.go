@@ -150,7 +150,11 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if json.Unmarshal(item.LegacyAdminProjection, &projection) != nil {
 			return productport.CheckoutProduct{}, ErrUnavailable
 		}
-		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version, RequireMobile: projection.RequireMobile, Images: append([]string(nil), item.Images...)}, nil
+		action, actionErr := checkoutPaidPurchaseAction(item.LegacyAdminProjection)
+		if actionErr != nil {
+			return productport.CheckoutProduct{}, actionErr
+		}
+		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version, RequireMobile: projection.RequireMobile, Images: append([]string(nil), item.Images...), PostPurchaseAction: action}, nil
 	case productport.ProductOptionServicePeriod:
 		item, err := reader.period.store.GetServicePeriodProductForUpdate(ctx, id)
 		if err != nil {
@@ -164,10 +168,39 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
 			return productport.CheckoutProduct{}, ErrNotFound
 		}
-		return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: kind, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, Images: append([]string(nil), projected.Images...), ServicePeriodDurationDays: duration}, nil
+		action, actionErr := checkoutPaidPurchaseAction(projected.AdminProjection)
+		if actionErr != nil {
+			return productport.CheckoutProduct{}, actionErr
+		}
+		return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: kind, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, Images: append([]string(nil), projected.Images...), PostPurchaseAction: action, ServicePeriodDurationDays: duration}, nil
 	default:
 		return productport.CheckoutProduct{}, ErrInvalidProduct
 	}
 }
 
 var _ productport.CheckoutProductReader = (*TargetReader)(nil)
+
+func checkoutPaidPurchaseAction(raw json.RawMessage) (json.RawMessage, error) {
+	canonical, err := CanonicalLegacyAdminProjection(raw)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	var projection map[string]json.RawMessage
+	if json.Unmarshal(canonical, &projection) != nil {
+		return nil, ErrUnavailable
+	}
+	keys := []string{"schema_version", "purchase_action_enabled", "purchase_action_mode", "lead_channel_id", "lead_qr_title", "lead_qr_subtitle", "completion_redirect_url", "completion_target"}
+	snapshot := make(map[string]json.RawMessage, len(keys))
+	for _, key := range keys {
+		value, found := projection[key]
+		if !found {
+			return nil, ErrUnavailable
+		}
+		snapshot[key] = value
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil || len(encoded) == 0 {
+		return nil, ErrUnavailable
+	}
+	return encoded, nil
+}
