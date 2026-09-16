@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const [sourceArg = 'web/dist', stageArg = 'release/web/dist'] = process.argv.slice(2);
 const source = path.resolve(sourceArg);
@@ -12,7 +15,7 @@ const stagedManifest = readManifest(stage);
 const surfaceFeedbackHost = sourceManifest.entries?.surfaceFeedbackHost;
 const surfaceFeedbackStyles = sourceManifest.entries?.surfaceFeedbackStyles;
 
-const requiredEntries = ['h5', 'questionnaireEditor', 'questionnaireEditorStyles', 'surveyHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
+const requiredEntries = ['h5', 'h5AuthHost', 'surveyPublicHost', 'surveyPublicStyles', 'sharedVisualTokens', 'questionnaireEditor', 'questionnaireEditorStyles', 'surveyHost', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles'];
 for (const key of requiredEntries) {
   assert.equal(stagedManifest.entries?.[key], sourceManifest.entries?.[key], `staged manifest omits Survey entry ${key}`);
 }
@@ -66,6 +69,30 @@ for (const page of expectedH5) {
   assert.ok(html.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), `staged ${relative} does not load surface feedback styles`);
   assert.ok(html.includes(`<script type="module" async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host as an ESM module`);
 }
+for (const page of ['auth.html', 'all.html', 'one.html', 'result.html']) {
+  const html = fs.readFileSync(path.join(stage, 'h5', page), 'utf8');
+  for (const entry of ['sharedVisualTokens', 'surveyPublicStyles']) {
+    assert.ok(html.includes(`<link rel="stylesheet" href="../${sourceManifest.entries[entry]}">`), `staged h5/${page} does not load ${entry}`);
+  }
+  assert.ok(html.includes(`<script type="module" src="../${sourceManifest.entries.surveyPublicHost}"></script>`), `staged h5/${page} does not load the public Survey Host`);
+}
+
+// A future staging edit must keep public Survey assets fail-closed. The stage
+// command should reject a manifest that omits the new Host before it copies
+// any page or silently serves an unstyled public answer flow.
+const missingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aicrm-survey-stage-missing-'));
+const missingStage = path.join(missingRoot, 'stage');
+const missingSource = path.join(missingRoot, 'source');
+fs.mkdirSync(missingSource, { recursive: true });
+fs.mkdirSync(missingStage, { recursive: true });
+const missingManifest = structuredClone(sourceManifest);
+delete missingManifest.entries.surveyPublicHost;
+fs.writeFileSync(path.join(missingSource, 'asset-manifest.json'), JSON.stringify(missingManifest));
+fs.writeFileSync(path.join(missingStage, 'asset-manifest.json'), JSON.stringify({ entries: {}, files: {}, release_files: {} }));
+const missingRun = childProcess.spawnSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'stage-survey-ui.mjs'), missingSource, missingStage], { encoding: 'utf8' });
+fs.rmSync(missingRoot, { recursive: true, force: true });
+assert.notEqual(missingRun.status, 0, 'Survey staging must reject an absent public Survey Host');
+assert.match(`${missingRun.stderr}\n${missingRun.stdout}`, /missing manifest entry: surveyPublicHost/, 'Survey staging must identify the absent public Survey Host');
 assert.equal(stagedManifest.entries?.sidebar, undefined, 'Survey stage exposed the donor sidebar entry');
 assert.equal(stagedManifest.entries?.memberGridShare, undefined, 'Survey stage exposed an unrelated public entry');
 
