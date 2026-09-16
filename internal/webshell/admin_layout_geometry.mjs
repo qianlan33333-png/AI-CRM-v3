@@ -1255,14 +1255,14 @@ try {
   await captureDesktopEvidence({
     label: "coupon-form", pathname: "/admin/couponForm.html?id=" + couponID,
     ready: "document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券')",
-    kind: "embedded", titleSelector: frozenListToolbarTitle,
-    assertPage: `(() => ({ready:document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券') && document.querySelector('#stage')?.textContent?.includes('已选 1 个商品') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+    kind: "embedded", titleSelector: "#couponForm h2", assertShell: false,
+    assertPage: `(() => ({ready:document.querySelectorAll('#couponForm h2').length === 1 && document.querySelector('#couponForm h2')?.textContent?.trim() === '编辑优惠券' && document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券') && document.querySelector('#selectedProductCount')?.textContent?.trim() === '已选 1 个商品' && Boolean(document.querySelector('#saveCoupon')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
   });
   await captureDesktopEvidence({
     label: "coupon-data", pathname: "/admin/couponData.html?id=" + couponID,
     ready: "Boolean(document.querySelector('#stage table tbody tr')) && document.querySelector('#stage')?.textContent?.includes('领取与使用明细')",
     kind: "embedded", titleSelector: frozenListToolbarTitle,
-    assertPage: `(() => ({ready:document.querySelector('#stage')?.textContent?.includes('累计领取') && document.querySelector('#stage')?.textContent?.includes('第 1 — 1 条，共 1 条') && Array.from(document.querySelectorAll('#stage tbody tr')).some(row => row.textContent?.includes('claimed')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || '').replace(/\s/g,''); return {ready:text.includes('累计领取') && text.includes('共1条') && Array.from(document.querySelectorAll('#stage tbody tr')).some(row => row.textContent?.includes('claimed')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
   });
   await captureDesktopEvidence({
     label: "service-period-products", pathname: "/admin/service-period-products",
@@ -1279,8 +1279,8 @@ try {
   await captureDesktopEvidence({
     label: "channels-new", pathname: "/admin/channels/new",
     ready: "Boolean(document.querySelector('[data-channel-admission-page]')) && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存当前维度')",
-    kind: "embedded", titleSelector: frozenListToolbarTitle,
-    assertPage: `(() => ({ready:document.body.dataset.page === 'channelForm' && Boolean(document.querySelector('[data-channel-admission-page] input')) && document.querySelector('[data-channel-admission-page]')?.textContent?.includes('基础配置') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存当前维度'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+    kind: "embedded", titleSelector: "[data-channel-admission-page] h1", assertShell: false,
+    assertPage: `(() => ({ready:document.body.dataset.page === 'channelForm' && document.querySelectorAll('[data-channel-admission-page] h1').length === 1 && document.querySelector('[data-channel-admission-page] h1')?.textContent?.trim() === '渠道码中心' && Boolean(document.querySelector('[data-channel-admission-page] input')) && document.querySelector('[data-channel-admission-page]')?.textContent?.includes('基础配置') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存当前维度'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
   });
   await captureDesktopEvidence({
     label: "external-effects", pathname: "/admin/campaigns.html?view=external-effects",
