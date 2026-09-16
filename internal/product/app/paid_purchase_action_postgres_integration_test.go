@@ -130,7 +130,7 @@ func TestPaidPurchaseActionPostgreSQLTransactionBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, string(targetSnapshotSQL)); err != nil {
-		t.Fatalf("apply 0171: %v", err)
+		t.Fatalf("apply 0173: %v", err)
 	}
 	if _, err = native.Exec(ctx, `INSERT INTO customer_tag_commands(id) VALUES(1)`); err != nil {
 		t.Fatal(err)
@@ -308,5 +308,5 @@ func paidPurchaseActionTargetSnapshotMigration(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime caller unavailable")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0171_product_paid_purchase_action_target_snapshot.sql")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0173_product_paid_purchase_action_target_snapshot.sql")
 }

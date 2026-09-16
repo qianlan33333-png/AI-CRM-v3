@@ -84,6 +84,8 @@ H5 地址继续只接受安全的 HTTPS 绝对地址或同站相对地址。动�
 
 预计受影响 V3-owned 路径：`internal/product/{port,app,http,store}`、`internal/outbound/commerce_push.go`、相关 migration、`cmd/aicrm/{commerce_push_adapter.go,order_paid_event_fanout.go}`、`web/src/admin/templates/{productForm.html,spProductForm.html}`、`web/v3/productAdapter.ts`、Product public completion adapter 与其测试。最终以实际最小 diff 为准。
 
+迁移编号在实施时以合入主线后的 ledger 为准：主线已发布 `0170`／`0171`，本 PR 的未发布 schema 变化顺延为 `0172_order_checkout_post_purchase_action.sql`、`0173_product_paid_purchase_action_target_snapshot.sql`、`0174_product_external_push_test_delivery_id.sql`；不得重写已发布迁移。
+
 ## 前端一致性记录
 
 | 参考页面 | 复用组件 | 公共扩展／新增 | 受影响调用 | Product Design skill | 验收证据 |
