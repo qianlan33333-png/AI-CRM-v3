@@ -1,7 +1,7 @@
 import { openDetailDrawer } from './shared/ui/detailDrawer';
 import { installCommittedTextSearch } from './shared/ui/committedTextSearch';
 import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
-import { renderQr } from '../src/admin/sections/qr';
+import { openShareQrDialog } from './shared/ui/shareQrDialog';
 import { distributionAdjustmentLabel, distributionCommissionStatusLabel, distributionExceptionLabel, distributionSettlementStatusLabel } from './distributionPresentation';
 import type { ConfirmationDialogOptions, ConfirmationDialogResult } from './shared/ui/confirmationDialog';
 
@@ -29,8 +29,9 @@ const root = document.getElementById('distribution-admin-root');
 if (!root) throw new Error('分销管理容器缺失');
 const distributionRoot: HTMLElement = root;
 const summaryHost = document.createElement('section');
+const controlsHost = document.createElement('section');
 const tabsHost = document.createElement('section');
-const filterHost = document.createElement('section');
+let mountedFilter: HTMLElement | undefined;
 const tableHost = document.createElement('section');
 const paginationHost = document.createElement('section');
 const messageHost = document.createElement('p');
@@ -244,20 +245,13 @@ async function copyApplicationLink(): Promise<void> {
 }
 
 function showApplicationEntry(): void {
-  const body = document.createElement('section');
-  body.className = 'distribution-detail-body';
   const url = applicationURL();
-  const note = document.createElement('p');
-  note.textContent = '该入口用于微信可信登录后的分销员注册。商品售卖信息页不提供分销申请入口；请在本后台按需打开或复制此入口。';
-  const input = document.createElement('input');
-  input.value = url;
-  input.readOnly = true;
-  input.className = 'distribution-application-link';
-  const qr = document.createElement('div');
-  qr.className = 'distribution-application-qr';
-  renderQr(qr, url, '分销员申请入口');
-  body.append(note, input, qr, button('复制申请链接', () => copyApplicationLink(), true));
-  openDetailDrawer('分销申请入口', body);
+  openShareQrDialog({
+    title: '分销申请二维码',
+    url,
+    qrLabel: '分销员申请入口',
+    actions: [{ label: '复制申请链接', primary: true, onClick: () => copyApplicationLink() }],
+  });
 }
 
 let tab: Tab = 'distributors';
@@ -373,23 +367,6 @@ function overviewResponse(value: unknown): Row {
   return response;
 }
 
-function summaryReason(value: unknown): string {
-  const reason = optionalText(value);
-  if (reason === 'distribution_not_configured') return '分销汇总尚未配置';
-  if (reason === 'distribution_summary_unavailable') return '分销汇总暂不可用';
-  return reason ? '原因待确认' : '';
-}
-
-function statusCopy(section: Row, fallback = '正在读取…'): string {
-  const status = summaryStatus(section);
-  const reason = summaryReason(section.reason_code);
-  if (status === 'ready') return `观察时间：${timeText(section.as_of)}`;
-  if (status === 'zero') return '当前口径内未形成';
-  if (status === 'data_missing') return `待确认${reason ? `：${reason}` : ''}`;
-  if (status === 'failed') return `读取失败${reason ? `：${reason}` : ''}`;
-  return fallback;
-}
-
 function summaryMoney(section: Row, amount: unknown, code: unknown): string {
   const status = summaryStatus(section);
   if (status === 'data_missing') return '待确认';
@@ -406,27 +383,29 @@ function summaryNumber(section: Row, value: unknown): string {
   return numericText(value);
 }
 
-function distributionExceptionCount(todos: Row): unknown {
-  if (!Array.isArray(todos.items)) return undefined;
-  const item = todos.items.map(obj).find((candidate) => optionalText(candidate.code) === 'distribution_exceptions');
-  return item?.count;
+function exceptionOrderNumber(section: Row, value: unknown): string {
+  const status = summaryStatus(section);
+  if (status === 'data_missing') return '待确认';
+  if (status === 'failed') return '读取失败';
+  if (!status) return '—';
+  const count = integer(value);
+  // This is a count, unlike adjustment amounts elsewhere in the Distribution
+  // UI. Negative values are invalid facts and must remain explicitly unknown.
+  return count === undefined || count < 0 ? '待确认' : count.toLocaleString('zh-CN');
 }
 
-function metric(label: string, value: string, detail: string, status: SummaryStatus | undefined): HTMLElement {
+function metric(label: string, value: string, status: SummaryStatus | undefined): HTMLElement {
   const card = document.createElement('article');
   card.className = 'distribution-summary-card';
   card.dataset.distributionSummaryStatus = status || 'loading';
   card.append(Object.assign(document.createElement('span'), { className: 'distribution-summary-card__label', textContent: label }));
   card.append(Object.assign(document.createElement('strong'), { textContent: value }));
-  card.append(Object.assign(document.createElement('small'), { textContent: detail }));
   return card;
 }
 
 function summary(): HTMLElement {
   const section = obj(overview?.distribution);
-  const todos = obj(overview?.todos);
   const status = summaryStatus(section);
-  const todoStatus = summaryStatus(todos);
   const summaryRoot = document.createElement('section');
   summaryRoot.className = 'distribution-summary';
   summaryRoot.setAttribute('aria-label', '分销汇总');
@@ -434,7 +413,6 @@ function summary(): HTMLElement {
   head.className = 'distribution-summary__head';
   const copy = document.createElement('div');
   copy.append(Object.assign(document.createElement('h2'), { textContent: '分销概览' }));
-  copy.append(Object.assign(document.createElement('p'), { textContent: '期内指标按支付确认时间计算；未结算、系统分账成功确认和待处理异常为当前状态。' }));
   const periods = document.createElement('div');
   periods.className = 'distribution-summary__periods';
   for (const [period, label] of [['today', '今日'], ['7d', '近 7 天'], ['30d', '近 30 天']] as const) {
@@ -447,12 +425,10 @@ function summary(): HTMLElement {
   const cards = document.createElement('div');
   cards.className = 'distribution-summary__grid';
   cards.append(
-    metric('期内推广成交', summaryMoney(section, section.period_paid_sales_minor, section.currency), statusCopy(section), status),
-    metric('期内初始佣金', summaryMoney(section, section.period_initial_commission_minor, section.currency), '仅初始佣金，退款与调整不混入此指标。', status),
-    metric('期内佣金笔数', summaryNumber(section, section.period_commission_count), '使用同一支付确认口径。', status),
-    metric('当前未结算', summaryMoney(section, section.current_unsettled_minor, section.currency), '当前状态，不随期间过滤。', status),
-    metric('系统分账成功确认', summaryMoney(section, section.current_settled_minor, section.currency), '系统成功确认，不代称银行到账。', status),
-    metric('待处理异常', summaryNumber(todos, distributionExceptionCount(todos)), statusCopy(todos, overviewFailure || (overviewLoading ? '正在读取…' : '等待读取…')), todoStatus),
+    metric('成交额', summaryMoney(section, section.period_paid_sales_minor, section.currency), status),
+    metric('待结算佣金', summaryMoney(section, section.current_unsettled_minor, section.currency), status),
+    metric('已结算佣金', summaryMoney(section, section.current_settled_minor, section.currency), status),
+    metric('待处理异常订单', exceptionOrderNumber(section, section.current_exception_order_count), status),
   );
   summaryRoot.append(head, cards);
   if (overviewFailure) {
@@ -553,28 +529,27 @@ function filterControl(value = tab): HTMLElement {
   if (existing) return existing.element;
   const filter = document.createElement('section');
   filter.className = 'distribution-admin-filter';
-  filter.append(Object.assign(document.createElement('span'), { textContent: '当前页筛选' }));
   const input = document.createElement('input');
   input.type = 'search';
   input.value = pageState(value).draftFilter;
   input.placeholder = '按当前已加载记录筛选';
   input.setAttribute('aria-label', '仅筛选当前已加载页');
   input.addEventListener('input', () => commitCurrentPageFilter(input));
+  filter.append(Object.assign(document.createElement('span'), { textContent: '当前页筛选' }));
   filter.append(input);
   filter.append(button('筛选', () => commitCurrentPageFilter(input)));
-  filter.append(Object.assign(document.createElement('small'), { textContent: '仅筛选当前已加载页，不扫描后续页，也不代表总数。' }));
   filterControls[value] = { element: filter, input };
   return filter;
 }
 
 function ensurePage(): void {
   if (pageMounted) return;
-  distributionRoot.replaceChildren(summaryHost, tabsHost, filterHost, tableHost, paginationHost, messageHost);
+  controlsHost.className = 'distribution-admin-controls';
+  controlsHost.append(tabsHost);
+  distributionRoot.replaceChildren(summaryHost, controlsHost, tableHost, paginationHost, messageHost);
   // The shell title is the page’s only title. Mount its actions once so table,
   // filter and summary redraws preserve header focus and an in-flight command.
   mountPageHeaderActions('distribution-admin', [
-    { label: '打开申请页', href: '/distribution', target: '_blank', variant: 'secondary' },
-    { label: '复制申请链接', onClick: () => copyApplicationLink() },
     { label: '申请二维码', onClick: () => showApplicationEntry() },
   ]);
   pageMounted = true;
@@ -592,7 +567,11 @@ function render(): void {
   }
   tabsHost.replaceChildren(nav);
   const currentFilter = filterControl();
-  if (filterHost.firstElementChild !== currentFilter) filterHost.replaceChildren(currentFilter);
+  if (mountedFilter !== currentFilter) {
+    mountedFilter?.remove();
+    controlsHost.append(currentFilter);
+    mountedFilter = currentFilter;
+  }
   tableHost.replaceChildren(tab === 'distributors' ? distributors() : tab === 'orders' ? orders() : exceptions());
   paginationHost.replaceChildren();
   if (pageState().cursor) {
