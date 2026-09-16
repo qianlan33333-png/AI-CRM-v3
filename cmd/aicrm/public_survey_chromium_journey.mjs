@@ -95,12 +95,12 @@ try {
   }
   await cdp.call('Network.setBlockedURLs', { urls: [] });
   await cdp.call('Page.navigate', { url: `${base}/api/h5/surveys/oauth/callback?state=${'x'.repeat(43)}&code=controlled-failure` });
-  await waitFor(cdp, `location.pathname === '/h5/auth.html' && document.body?.dataset.v3PublicSurvey === 'auth' && document.querySelector('#screen')?.textContent?.includes('微信授权未完成，请重试') && Boolean(document.querySelector('#screen button'))`, 'Owner OAuth failure did not render the public auth retry page');
+  await waitFor(cdp, `(() => { const stop=document.querySelector('#screen [data-v3-survey-stop]'); const text=stop?.textContent || ''; return location.pathname === '/h5/auth.html' && document.body?.dataset.v3PublicSurvey === 'auth' && stop?.querySelector('h1')?.textContent === '授权失败' && !stop?.querySelector('button') && !text.includes('正在验证微信身份') && !text.includes('重试微信授权'); })()`, 'Owner OAuth failure did not render the public stopped authorization state');
   for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-auth-${width}.png`);
 
   await cdp.call('Network.deleteCookies', { name: 'survey_oauth_return', url: `${base}/api/h5/surveys/oauth/callback` });
   await cdp.call('Page.navigate', { url: `${base}/api/h5/surveys/oauth/callback?state=${'y'.repeat(43)}&code=controlled-failure` });
-  await waitFor(cdp, `location.pathname === '/h5/error.html' && document.querySelector('#screen [data-h5-blocked]') && document.querySelector('#screen')?.textContent?.includes('当前页面不可执行') && Boolean(document.querySelector('#screen button[disabled]'))`, 'Owner OAuth failure without a return target did not render the fail-closed error page');
+  await waitFor(cdp, `(() => { const stop=document.querySelector('#screen [data-v3-survey-stop]'); const text=stop?.textContent || ''; const title=stop?.querySelector('h1')?.textContent || ''; return location.pathname === '/h5/error.html' && ['暂时无法继续','授权失败','无法继续','链接无效'].includes(title) && !stop?.querySelector('button') && !/增长诊断测评|后端能力未就绪|演示题|全部屏幕|正在验证微信身份|重试微信授权/.test(text); })()`, 'Owner OAuth failure without a return target did not render the public stopped error state');
   for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-oauth-error-${width}.png`);
 
   await cdp.call('Network.setCookie', { name: '__Host-aicrm_survey_identity', value: session, url: base, path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
