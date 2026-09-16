@@ -3112,18 +3112,55 @@ paths:
     post: {operationId: reconcileSurveySubmissionExternalPush, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
   /api/public/questionnaires/{slug}:
     parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
-    get: {operationId: getPublicSurvey, description: Requires a valid HttpOnly Survey OAuth session., responses: {"200": {description: Published immutable survey}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
+    get:
+      operationId: getPublicSurvey
+      tags: [SurveyPublic]
+      description: Requires a valid HttpOnly Survey OAuth session. A Customer that has already submitted receives already_submitted and a safe completion action instead of a definition.
+      responses:
+        "200": {description: Published immutable survey, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicDefinition"}}}}
+        "401": {description: survey_oauth_required, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "409": {description: survey_identity_conflict or already_submitted, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicConflictError"}}}}
+        "503": {description: survey_oauth_unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
   /api/public/questionnaires/{slug}/submissions:
     parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
-    post: {operationId: submitPublicSurvey, description: Requires a resolved Customer from a valid HttpOnly Survey OAuth session. Mobile answers accept only 11-digit mainland numbers and remain declared evidence., requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"201": {description: Idempotent local submission receipt}, "400": {description: invalid_public_input}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
+    post:
+      operationId: submitPublicSurvey
+      tags: [SurveyPublic]
+      description: Requires a resolved Customer from a valid HttpOnly Survey OAuth session. Mobile answers accept only 11-digit mainland numbers and remain declared evidence. The same submission key and payload replays its receipt; a different key after a successful claim returns already_submitted.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicSubmissionRequest"}}}}
+      responses:
+        "201": {description: Idempotent local submission receipt and safe completion action, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicSubmissionResponse"}}}}
+        "400": {description: invalid_public_input, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "401": {description: survey_oauth_required, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "409": {description: "survey_identity_conflict, idempotency_conflict, or already_submitted. already_submitted includes completion_action.", content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicConflictError"}}}}
+        "503": {description: survey_oauth_unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
   /api/public/survey-submission-results/query:
-    post: {operationId: queryPublicSurveyResult, description: New resolved submissions require the same Customer OAuth session; historical anonymous result tokens remain read-only compatible., requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Result token projection}, "401": {description: survey_oauth_required}, "403": {description: survey_result_forbidden}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
+    post:
+      operationId: queryPublicSurveyResult
+      tags: [SurveyPublic]
+      description: New resolved submissions require the same Customer OAuth session; historical anonymous result tokens remain read-only compatible.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicResultQueryRequest"}}}}
+      responses:
+        "200": {description: Result token projection, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicResult"}}}}
+        "401": {description: survey_oauth_required, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "403": {description: survey_result_forbidden, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "409": {description: survey_identity_conflict, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "503": {description: survey_oauth_unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
   /api/h5/surveys/oauth/start:
     get: {operationId: startSurveyOAuth, description: User-click initiated snsapi_userinfo authorization. Display mode is derived from the published server-side definition., parameters: [{name: slug, in: query, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}], responses: {"303": {description: Redirect to WeChat OAuth}, "400": {description: survey_wechat_required}, "404": {description: questionnaire_not_found}, "503": {description: survey_oauth_unavailable}}}
   /api/h5/surveys/oauth/callback:
     get: {operationId: completeSurveyOAuth, parameters: [{name: code, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 512}}, {name: state, in: query, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}}], responses: {"303": {description: Verified identity session and safe H5 redirect; the session cookie is HttpOnly Secure SameSite Lax}}}
   /api/h5/surveys/session:
-    get: {operationId: getSurveyOAuthSession, description: Returns only authorization state and display mode; never returns Customer ID OpenID or UnionID., parameters: [{name: slug, in: query, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}], responses: {"200": {description: Safe OAuth session state}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
+    get:
+      operationId: getSurveyOAuthSession
+      tags: [SurveyPublic]
+      description: Returns only authorization state, display mode, submitted state, and the safe completion action; never returns Customer ID, OpenID, UnionID, submission ID, or result token.
+      parameters: [{name: slug, in: query, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
+      responses:
+        "200": {description: Safe OAuth session state, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicSession"}}}}
+        "401": {description: survey_oauth_required, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "409": {description: survey_identity_conflict, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
+        "503": {description: survey_oauth_unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/SurveyPublicError"}}}}
   /api/admin/survey-history/submissions:
     get: {operationId: listSurveyUnresolvedHistory, security: [{adminSession: []}], responses: {"200": {description: Read-only unresolved migrated submissions}}}
   /api/admin/survey-history/submissions/{submission_id}:
@@ -6839,6 +6876,141 @@ components:
     ErrorResponse:
       type: object
       properties: {ok: {type: boolean, const: false}, error: {type: string}, code: {type: string}, message: {type: string}, request_id: {type: string, minLength: 1}}
+    CompletionAction:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties: {type: {type: string, const: default}}
+        - type: object
+          additionalProperties: false
+          required: [type, redirect_url]
+          properties: {type: {type: string, const: redirect}, redirect_url: {type: string, format: uri, pattern: '^https://'}}
+        - type: object
+          additionalProperties: false
+          required: [type, lead_qr]
+          properties: {type: {type: string, const: lead_qr}, lead_qr: {$ref: "#/components/schemas/SurveyPublicLeadQRCode"}}
+      discriminator: {propertyName: type}
+    SurveyPublicLeadQRCode:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties: {url: {type: string, format: uri, maxLength: 2048}}
+    SurveyPublicError:
+      type: object
+      additionalProperties: false
+      required: [ok, code, message]
+      properties: {ok: {type: boolean, const: false}, code: {type: string}, message: {type: string}}
+    SurveyPublicAlreadySubmittedError:
+      type: object
+      additionalProperties: false
+      required: [ok, code, message, completion_action]
+      properties: {ok: {type: boolean, const: false}, code: {type: string, const: already_submitted}, message: {type: string, const: already_submitted}, completion_action: {$ref: "#/components/schemas/CompletionAction"}}
+    SurveyPublicConflictError:
+      oneOf: [{$ref: "#/components/schemas/SurveyPublicError"}, {$ref: "#/components/schemas/SurveyPublicAlreadySubmittedError"}]
+    SurveyPublicSession:
+      type: object
+      additionalProperties: false
+      required: [authorized, identity_state, display, submitted, completion_action]
+      properties:
+        authorized: {type: boolean, const: true}
+        identity_state: {type: string, enum: [resolved]}
+        display: {type: string, enum: [all, one]}
+        submitted: {type: boolean}
+        completion_action: {$ref: "#/components/schemas/CompletionAction"}
+    SurveyPublicDefinition:
+      type: object
+      additionalProperties: false
+      required: [id, slug, title, description, answer_display_mode, version, mode, assessment_config, questions]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}
+        title: {type: string, minLength: 1, maxLength: 300}
+        description: {type: string, maxLength: 10000}
+        answer_display_mode: {type: string, enum: [all_in_one, one_by_one]}
+        version: {type: integer, format: int64, minimum: 1}
+        mode: {type: string, enum: [survey, assessment]}
+        assessment_config: {type: object, additionalProperties: true}
+        questions: {type: array, minItems: 1, maxItems: 100, items: {$ref: "#/components/schemas/SurveyPublicQuestion"}}
+    SurveyPublicQuestion:
+      type: object
+      additionalProperties: false
+      required: [id, type, title, required, sort_order, minimum_selections, maximum_selections, placeholder_text, assessment_dimension_key, options]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        type: {type: string, enum: [single_choice, multi_choice, textarea, mobile]}
+        title: {type: string, minLength: 1, maxLength: 500}
+        required: {type: boolean}
+        sort_order: {type: integer, minimum: 0, maximum: 99}
+        # The existing public H5 projection exposes these computed validation
+        # values at the question top level. They are derived from the
+        # Survey-owned Validation value and retained for its deployed client.
+        minimum_selections: {type: integer, minimum: 0, maximum: 100}
+        maximum_selections: {type: integer, minimum: 0, maximum: 100}
+        minimum_length: {type: integer, minimum: 0, maximum: 10000}
+        maximum_length: {type: integer, minimum: 0, maximum: 10000}
+        placeholder_text: {type: string, maxLength: 500}
+        assessment_dimension_key: {type: string, maxLength: 128}
+        options: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/SurveyPublicOption"}}
+    SurveyPublicOption:
+      type: object
+      additionalProperties: false
+      required: [id, option_text, score, tag_codes, is_other, other_max_length, sort_order]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        option_text: {type: string, minLength: 1, maxLength: 500}
+        score: {type: number}
+        assessment_type_key: {type: string, maxLength: 128}
+        tag_codes: {type: [array, "null"], maxItems: 100, items: {type: string, maxLength: 128}}
+        is_other: {type: boolean}
+        other_placeholder: {type: string, maxLength: 500}
+        other_max_length: {type: integer, minimum: 0, maximum: 10000}
+        sort_order: {type: integer, minimum: 0, maximum: 99}
+    SurveyPublicSubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [version, submission_key, answers]
+      properties:
+        version: {type: integer, format: int64, minimum: 1}
+        submission_key: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
+        answers: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/SurveyPublicSubmissionAnswer"}}
+        source_channel: {type: string, maxLength: 200}
+        campaign_id: {type: string, maxLength: 200}
+        staff_id: {type: string, maxLength: 200}
+    SurveyPublicSubmissionAnswer:
+      type: object
+      additionalProperties: false
+      required: [question_id, option_ids]
+      properties: {question_id: {$ref: "#/components/schemas/PositiveID"}, option_ids: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/PositiveID"}}, text_value: {type: string, maxLength: 10000}}
+    SurveyPublicSubmissionReceipt:
+      type: object
+      additionalProperties: false
+      required: [questionnaire_id, questionnaire_slug, definition_version, submission_id]
+      properties: {questionnaire_id: {$ref: "#/components/schemas/PositiveID"}, questionnaire_slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}, definition_version: {type: integer, format: int64, minimum: 1}, submission_id: {$ref: "#/components/schemas/PositiveID"}}
+    SurveyPublicSubmissionResponse:
+      type: object
+      additionalProperties: false
+      required: [receipt, result_token, completion_action]
+      properties: {receipt: {$ref: "#/components/schemas/SurveyPublicSubmissionReceipt"}, result_token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$', writeOnly: true}, completion_action: {$ref: "#/components/schemas/CompletionAction"}}
+    SurveyPublicResultQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [result_token]
+      properties: {result_token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}}
+    SurveyPublicResult:
+      type: object
+      additionalProperties: false
+      required: [submission_id, definition_version, submitted_at, local_only, external_executed, questionnaire_title, mode, total_score, assessment_result]
+      properties:
+        submission_id: {$ref: "#/components/schemas/PositiveID"}
+        definition_version: {type: integer, format: int64, minimum: 1}
+        submitted_at: {type: string, format: date-time}
+        local_only: {type: boolean}
+        external_executed: {type: boolean}
+        questionnaire_title: {type: string}
+        mode: {type: string, enum: [survey, assessment]}
+        total_score: {type: number}
+        assessment_result: {type: object, additionalProperties: true}
     LoginRequest:
       type: object
       additionalProperties: false

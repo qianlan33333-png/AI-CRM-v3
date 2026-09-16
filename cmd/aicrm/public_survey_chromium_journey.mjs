@@ -115,13 +115,12 @@ try {
   await evaluate(cdp, `document.querySelector('#screen label[data-option-id]').click(); true`, 'select public answer');
   await waitFor(cdp, `document.querySelector('#screen label[data-option-id]')?.getAttribute('aria-pressed') === 'true'`, 'selected answer did not remain visible');
   await evaluate(cdp, `(() => { const button=document.querySelector('#screen [data-h5-submit]'); button.click(); button.click(); return true; })()`, 'double click public submit');
-  await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-receipt] [data-h5-result-link]'))`, 'successful submission receipt did not render');
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.body?.dataset.v3PublicSurvey === 'done' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷' && !document.querySelector('#screen [data-h5-lead-qr]')`, 'successful submission did not replace the answer page with the default completion page');
   if (cdp.successSubmissions !== 1) throw new Error(`success submission requests=${cdp.successSubmissions}`);
-  await evaluate(cdp, `document.querySelector('#screen [data-h5-result-link]').click(); true`, 'open actual submission result');
-  await waitFor(cdp, `location.pathname === '/h5/result.html' && Boolean(document.querySelector('#screen [data-h5-result]')) && document.querySelector('#screen')?.textContent?.includes('提交已确认')`, 'actual result GET did not render');
-  const successfulResult = await evaluate(cdp, `(() => { const text=document.querySelector('#screen')?.textContent || ''; const id=text.match(/提交编号\\s*(\\d+)/)?.[1] || ''; return { submissionID: Number(id), time: text.includes('提交时间'), version: text.includes('问卷版本'), internalScope: /处理范围|仅本地处理|外部效果/.test(text) }; })()`, 'read rendered result receipt');
-  if (!successfulResult?.submissionID || !successfulResult.time || !successfulResult.version || successfulResult.internalScope) throw new Error(`public result receipt presentation is incomplete: ${JSON.stringify(successfulResult)}`);
-  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-result-${width}.png`);
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-done-${width}.png`);
+  await cdp.call('Page.navigate', { url: `${base}/q/${successSlug}` });
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷'`, 'revisiting a submitted survey did not bypass the answer route');
+  if (cdp.successSubmissions !== 1) throw new Error(`submitted survey revisit created a second submission=${cdp.successSubmissions}`);
 
   await cdp.call('Page.navigate', { url: `${base}/q/${failureSlug}` });
   await waitFor(cdp, `location.pathname === '/h5/one.html' && document.body?.dataset.v3PublicSurvey === 'one' && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('1 / 2')`, 'authorized one-by-one route or progress did not mount');
@@ -138,13 +137,9 @@ try {
   await evaluate(cdp, `document.querySelector('#screen [data-h5-next]').click(); true`, 'return to final retry step');
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-submit]'))`, 'final retry submit step did not restore');
   await evaluate(cdp, `document.querySelector('#screen [data-h5-submit]').click(); true`, 'retry reaches the real Survey Owner');
-  await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-receipt] [data-h5-result-link]'))`, 'recovered one-by-one submission receipt did not render');
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷'`, 'recovered one-by-one submission did not finish at the default completion page');
   if (cdp.failureSubmissions !== 2) throw new Error(`recovery submission requests=${cdp.failureSubmissions}`);
-  await evaluate(cdp, `document.querySelector('#screen [data-h5-result-link]').click(); true`, 'open recovered submission result');
-  await waitFor(cdp, `location.pathname === '/h5/result.html' && Boolean(document.querySelector('#screen [data-h5-result]')) && document.querySelector('#screen')?.textContent?.includes('提交已确认')`, 'recovered submission result GET did not render');
-  const recoveredResult = await evaluate(cdp, `(() => { const text=document.querySelector('#screen')?.textContent || ''; return Number(text.match(/提交编号\\s*(\\d+)/)?.[1] || 0); })()`, 'read recovered result receipt');
-  if (!recoveredResult) throw new Error('recovered result receipt has no submission ID');
-  console.log(JSON.stringify({ submission_id: successfulResult.submissionID, recovery_submission_id: recoveredResult }));
+  console.log(JSON.stringify({ success_submission_requests: cdp.successSubmissions, recovery_submission_requests: cdp.failureSubmissions }));
   console.log('public_survey_chromium: PASS');
   socket.close();
 } catch (error) {

@@ -9,7 +9,7 @@ export {};
  * accessibility hooks to its release template and rendered screen.
  */
 
-const supportedPages = new Set(["auth", "all", "one", "result", "error"]);
+const supportedPages = new Set(["auth", "all", "one", "result", "error", "done"]);
 const page = document.body.dataset.page || "";
 
 type FailurePresentation = {
@@ -296,6 +296,15 @@ if (supportedPages.has(page)) {
       ),
     ))
       detail.remove();
+
+    const done = screen.querySelector<HTMLElement>("[data-h5-done]");
+    if (done) {
+      done.dataset.v3SurveyDone = "";
+      done.setAttribute("role", "status");
+      done.setAttribute("aria-live", "polite");
+      done.tabIndex = -1;
+      if (document.activeElement !== done) done.focus({ preventScroll: true });
+    }
   };
 
   markTemplate();

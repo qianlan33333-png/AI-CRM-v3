@@ -43,7 +43,7 @@ assert.ok(errorDom.window.document.querySelector('#screen [data-h5-blocked]')?.t
 assert.equal(errorDom.window.document.querySelector('#screen').textContent?.includes('授权仅用于识别本次问卷所属客户，不会发送短信。'), false, 'ordinary WeChat notice must not occupy the cleaned page');
 errorDom.window.close();
 console.log('h5 auth Host presentation journey: PASS');
-for (const name of ['all', 'one', 'result']) {
+for (const name of ['all', 'one', 'result', 'done']) {
   const html = fs.readFileSync(path.join(root, `web/dist/h5/${name}.html`), 'utf8');
   const mobile = new JSDOM(html, {url:`https://test.invalid/h5/${name}.html?slug=survey`,runScripts:'outside-only'});
   const d = mobile.window.document;
@@ -52,12 +52,20 @@ for (const name of ['all', 'one', 'result']) {
   mobile.window.eval(host);
   const content = d.querySelector('#tpl').content;
   assert.equal(content.textContent.includes('增长诊断测评'),false, `${name}: fixed demo title must be removed`);
-  assert.ok(d.querySelector('#tpl').innerHTML.includes('data-h5-error'), `${name}: actual error feedback must remain`);
+  if (name !== 'done') assert.ok(d.querySelector('#tpl').innerHTML.includes('data-h5-error'), `${name}: actual error feedback must remain`);
   assert.ok(d.querySelector('#screen').style.cssText.includes('width: 100%'), `${name}: mobile width must be fluid`);
   assert.equal(d.querySelector('#screen').style.height,'', `${name}: no fixed device-height crop`);
   assert.equal(d.querySelector('#screen').style.overflow,'', `${name}: long content must not be clipped`);
-  const binding = name === 'result' ? '{{ resultTitle }}' : '{{ title }}';
-  assert.ok(d.querySelector('#tpl').innerHTML.includes(binding), `${name}: real questionnaire title binding must remain`);
+  if (name === 'done') {
+    const completionTemplate = d.querySelector('#tpl').innerHTML;
+    assert.ok(completionTemplate.includes('data-sc-if="{{ done }}"') && completionTemplate.includes('data-h5-done'), 'done: built completion content must be guarded by confirmed submission state');
+    assert.ok(completionTemplate.includes('data-sc-if="{{ leadQR }}"') && completionTemplate.includes('data-h5-lead-qr'), 'done: built completion content must preserve the optional authorized channel QR branch');
+    assert.equal(completionTemplate.includes('尚无可核验回执'), false, 'done: built completion content must replace the frozen unavailable receipt carrier');
+    assert.equal(content.querySelector('[data-h5-blocked]'), null, 'done: completion page must not retain the obsolete blocked banner');
+  } else {
+    const binding = name === 'result' ? '{{ resultTitle }}' : '{{ title }}';
+    assert.ok(d.querySelector('#tpl').innerHTML.includes(binding), `${name}: real questionnaire title binding must remain`);
+  }
   mobile.window.close();
 }
 console.log('survey mobile release shell: PASS');
@@ -67,11 +75,11 @@ console.log('survey mobile release shell: PASS');
 // A session miss auto-starts once; callback failure or a lost cookie cannot loop.
 const {build} = await import('esbuild');
 const {runInNewContext} = await import('node:vm');
-const compiled = await build({entryPoints:[path.join(root,'web/src/h5/controller.ts')],bundle:true,write:false,format:'iife',globalName:'AuthController',plugins:[{name:'auth-controller-dependencies',setup(b){b.onResolve({filter:/^\.\.\//},args=>({path:args.path,namespace:'auth-dependency'}));b.onLoad({filter:/.*/,namespace:'auth-dependency'},()=>({contents:'export class PageBase {} export class ApiError extends Error {} export const toast=()=>{}; export const readPublicSurvey=()=>{}; export const readSurveyResult=()=>{}; export const submitSurvey=()=>{}; export const formatShanghaiDateTime=(value)=>value;',loader:'js'}));}}]});
+const compiled = await build({entryPoints:[path.join(root,'web/src/h5/controller.ts')],bundle:true,write:false,format:'iife',globalName:'AuthController',plugins:[{name:'auth-controller-dependencies',setup(b){b.onResolve({filter:/^\.\.\//},args=>({path:args.path,namespace:'auth-dependency'}));b.onLoad({filter:/.*/,namespace:'auth-dependency'},()=>({contents:'export class PageBase {} export class ApiError extends Error {} export const toast=()=>{}; export const completionAction=(value)=>value||{type:"default"}; export const completionActionFromCarrier=(value)=>value?.completion_action||{type:"default"}; export const readPublicSurvey=()=>{}; export const readSurveyResult=()=>{}; export const submitSurvey=()=>{}; export const formatShanghaiDateTime=(value)=>value;',loader:'js'}));}}]});
 const marker = new Map();
-async function authRun(status, search='?slug=survey', userAgent='MicroMessenger') {
+async function authRun(status, search='?slug=survey', userAgent='MicroMessenger', body={display:'one'}) {
   const redirects=[], calls=[];
-  const sandbox={URLSearchParams,navigator:{userAgent},location:{search,replace(url){redirects.push(url)}},sessionStorage:{getItem:k=>marker.get(k),setItem:(k,v)=>marker.set(k,v),removeItem:k=>marker.delete(k)},fetch:async url=>{calls.push(url);return {ok:status===200,status,json:async()=>({display:'one'})}}};
+  const sandbox={URLSearchParams,navigator:{userAgent},location:{search,origin:'https://test.invalid',replace(url){redirects.push(url)}},sessionStorage:{getItem:k=>marker.get(k),setItem:(k,v)=>marker.set(k,v),removeItem:k=>marker.delete(k)},fetch:async url=>{calls.push(url);return {ok:status===200,status,json:async()=>body}}};
   runInNewContext(compiled.outputFiles[0].text,sandbox);
   const controller=new sandbox.AuthController.H5Controller('auth');await controller.init();
   return {controller,redirects,calls};
@@ -92,6 +100,11 @@ assert.equal(failed.calls.length,0);
 const known=await authRun(200);
 assert.deepEqual(known.redirects,['/h5/one.html?slug=survey']);
 assert.equal(marker.size,0);
+
+const alreadyDone=await authRun(200,'?slug=survey','MicroMessenger',{submitted:true,completion_action:{type:'default'}});
+assert.deepEqual(alreadyDone.redirects,['/h5/done.html?slug=survey'],'a trusted session with an earlier submission leaves the answer route through the default completion page');
+const alreadyRedirected=await authRun(200,'?slug=survey','MicroMessenger',{submitted:true,completion_action:{type:'redirect',redirect_url:'https://completion.example/next'}});
+assert.deepEqual(alreadyRedirected.redirects,['https://completion.example/next'],'a trusted session reuses its Owner-computed redirect completion action');
 
 const outsideWeChat=await authRun(401,'?slug=survey&oauth_error=1','Mozilla/5.0');
 assert.equal(outsideWeChat.controller.renderVals().authRetry,false);

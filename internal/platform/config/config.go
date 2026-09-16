@@ -300,11 +300,17 @@ type Survey struct {
 	IdentityPhoneDataKey      string
 	CompletionProviderEnabled bool
 	CompletionTargetsJSON     string
-	OAuthEnabled              bool
-	OAuthAppID                string
-	OAuthSecret               string
-	OAuthOpenPlatformID       string
-	OAuthScope                string
+	// CompletionNavigationTargetsJSON is deliberately separate from
+	// CompletionTargetsJSON. The latter is an External Effects provider
+	// configuration and must never be exposed to a browser. This value only
+	// maps Survey-owned opaque navigation references to public, allowlisted
+	// HTTPS destinations.
+	CompletionNavigationTargetsJSON string
+	OAuthEnabled                    bool
+	OAuthAppID                      string
+	OAuthSecret                     string
+	OAuthOpenPlatformID             string
+	OAuthScope                      string
 }
 
 // TagCatalogProvider separates the read-only catalog projection from an
@@ -383,7 +389,7 @@ func Load() (Runtime, error) {
 			ProviderPermission:  os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
 			MaxRecipientsPerRun: DefaultAutomationMaxRecipientsPerRun,
 		},
-		Survey:       Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
+		Survey:       Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), CompletionNavigationTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_NAVIGATION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
 		CommercePush: CommercePush{TargetsJSON: os.Getenv("AICRM_COMMERCE_PUSH_TARGETS_JSON"), PayloadDataKey: os.Getenv("AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
@@ -825,6 +831,9 @@ func Load() (Runtime, error) {
 	}
 	if cfg.Survey.CompletionProviderEnabled && (!cfg.Effects.ProviderEnabled || strings.TrimSpace(cfg.Survey.CompletionTargetsJSON) != cfg.Survey.CompletionTargetsJSON || cfg.Survey.CompletionTargetsJSON == "") {
 		return Runtime{}, errors.New("enabled survey completion provider requires External Effects and target configuration")
+	}
+	if _, parseErr := ParseSurveyCompletionNavigationTargets(cfg.Survey.CompletionNavigationTargetsJSON); parseErr != nil {
+		return Runtime{}, fmt.Errorf("invalid AICRM_SURVEY_COMPLETION_NAVIGATION_TARGETS_JSON: %w", parseErr)
 	}
 	if cfg.CommercePush.PayloadDataKey != "" {
 		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.CommercePush.PayloadDataKey); decodeErr != nil || len(decoded) != 32 {

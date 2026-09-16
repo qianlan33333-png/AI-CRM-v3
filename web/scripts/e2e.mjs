@@ -570,7 +570,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.pathname === '/api/public/questionnaires/uat-survey/submissions') {
             const status = h5Http.submissionStatuses?.[submissionAttempt++] ?? 202;
             if (status === 'network') throw new Error('network outcome unknown');
-            return json(status === 202 ? { result_token: 'r'.repeat(43), receipt: { questionnaire_id: 7, definition_version: 3, submission_id: 901 } } : { code: 'unavailable' }, status);
+            return json(status === 202 ? { completion_action: { type: 'default' }, receipt: { questionnaire_id: 7, definition_version: 3, submission_id: 901 } } : { code: 'unavailable' }, status);
           }
           if (url.pathname === '/api/public/survey-submission-results/query') return json(h5Http.result, h5Http.resultStatus || 200);
           return json({ code: 'unexpected_h5_request' }, 500);
@@ -3084,8 +3084,7 @@ console.log('h5/all.html（真实定义、答案与幂等重试）');
   click(dom, d.querySelector('[data-option-id="11"]'));
   click(dom, d.querySelector('[data-h5-submit]'));
   await sleep(30);
-  ok('H5 改答案使用新key并只按真实回执显示受理', submissions().length === 3 && submissions()[2].body.submission_key !== firstKey && submissions()[2].body.answers[0].option_ids[0] === 11 && !!d.querySelector('[data-h5-receipt]') && !d.querySelector('[data-h5-submit]'));
-  ok('H5 结果凭据放fragment，不加入API查询串', d.querySelector('[data-h5-result-link]')?.getAttribute('href') === 'result.html#result_token=' + 'r'.repeat(43));
+  ok('H5 改答案使用新key并按真实 completion action 结束答题页', submissions().length === 3 && submissions()[2].body.submission_key !== firstKey && submissions()[2].body.answers[0].option_ids[0] === 11 && !d.querySelector('[data-h5-receipt]') && !d.querySelector('[data-h5-result-link]'));
   dom.window.close();
 }
 
@@ -3172,13 +3171,28 @@ for (const scenario of [
   ok('H5 auth 微信内先读取安全会话并自动发起一次授权', ![...insideDocument.querySelectorAll('#screen button')].some((button) => !button.disabled) && inside.window.sessionStorage.getItem('survey.oauth:uat-survey') === 'started' && inside.window.__h5HttpTest.calls.length === 1 && inside.window.__h5HttpTest.calls[0].path === '/api/h5/surveys/session');
   inside.window.close();
 }
-for (const page of ['error', 'done', 'signup', 'active', 'expired', 'pay', 'qr']) {
+for (const page of ['error', 'signup', 'active', 'expired', 'pay', 'qr']) {
   const dom = await loadPage(`h5/${page}.html`, { h5Http: {} });
   const d = dom.window.document;
   ok(`H5 ${page} 保留原壳但明确blocked，不调用Provider`, !!d.querySelector('[data-h5-blocked]') && d.body.textContent.includes('后端能力未就绪') && [...d.querySelectorAll('#screen button')].every((button) => button.disabled) && dom.window.__h5HttpTest.calls.length === 0 && !d.body.textContent.includes('诊断报告已生成'));
   dom.window.close();
 }
-for (const page of ['done', 'qr']) {
+{
+  const dom = await loadPage('h5/done.html', { q: 'slug=uat-survey', h5Http: { sessionStatus: 200, session: { submitted: true, completion_action: { type: 'default' } } } });
+  const d = dom.window.document;
+  ok('H5 默认完成页只显示收到问卷的确认，不显示技术回执或结果入口', d.querySelector('[data-h5-done]')?.textContent?.trim() === '✓\n    收到你的问卷' && !d.querySelector('[data-h5-lead-qr]') && !d.querySelector('[data-h5-blocked]') && !d.querySelector('[data-h5-local-exit]'));
+  dom.window.close();
+}
+for (const [label, session] of [
+  ['未确认提交', { submitted: false, completion_action: { type: 'default' } }],
+  ['redirect 动作', { submitted: true, completion_action: { type: 'redirect', redirect_url: 'https://completion.example/next' } }],
+]) {
+  const dom = await loadPage('h5/done.html', { q: 'slug=uat-survey', h5Http: { sessionStatus: 200, session } });
+  const d = dom.window.document;
+  ok(`H5 完成页${label}不闪现确认文案`, !d.querySelector('[data-h5-done]') && !d.body.textContent.includes('收到你的问卷'));
+  dom.window.close();
+}
+for (const page of ['qr']) {
   const dom = await loadPage(`h5/${page}.html`, { h5Http: {} });
   const d = dom.window.document;
   ok(`H5 ${page} 提供可用的纯本地出口（非禁用按钮、不发请求）`, !!d.querySelector('#screen a[data-h5-local-exit]') && dom.window.__h5HttpTest.calls.length === 0);

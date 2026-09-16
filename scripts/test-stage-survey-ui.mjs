@@ -69,13 +69,17 @@ for (const page of expectedH5) {
   assert.ok(html.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), `staged ${relative} does not load surface feedback styles`);
   assert.ok(html.includes(`<script type="module" async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host as an ESM module`);
 }
-for (const page of ['auth.html', 'all.html', 'one.html', 'result.html', 'error.html']) {
+for (const page of ['auth.html', 'all.html', 'one.html', 'result.html', 'error.html', 'done.html']) {
   const html = fs.readFileSync(path.join(stage, 'h5', page), 'utf8');
   for (const entry of ['sharedVisualTokens', 'surveyPublicStyles']) {
     assert.ok(html.includes(`<link rel="stylesheet" href="../${sourceManifest.entries[entry]}">`), `staged h5/${page} does not load ${entry}`);
   }
   assert.ok(html.includes(`<script type="module" src="../${sourceManifest.entries.surveyPublicHost}"></script>`), `staged h5/${page} does not load the public Survey Host`);
 }
+const doneCompletionHTML = fs.readFileSync(path.join(stage, 'h5', 'done.html'), 'utf8');
+assert.ok(doneCompletionHTML.includes('data-sc-if="{{ done }}"') && doneCompletionHTML.includes('data-h5-done'), 'staged H5 completion page does not gate confirmation on a submitted session');
+assert.ok(doneCompletionHTML.includes('data-sc-if="{{ leadQR }}"') && doneCompletionHTML.includes('data-h5-lead-qr'), 'staged H5 completion page omits the authorized channel QR branch');
+assert.equal(doneCompletionHTML.includes('尚无可核验回执'), false, 'staged H5 completion page still exposes the frozen unavailable receipt carrier');
 
 // A future staging edit must keep public Survey assets fail-closed. The stage
 // command should reject a manifest that omits the new Host before it copies

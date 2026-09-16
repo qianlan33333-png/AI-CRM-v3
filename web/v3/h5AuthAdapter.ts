@@ -31,11 +31,11 @@ if (document.body.dataset.page === 'auth') {
 
 }
 
-if (['auth', 'all', 'one', 'result', 'error'].includes(document.body.dataset.page || '')) {
+if (['auth', 'all', 'one', 'result', 'error', 'done'].includes(document.body.dataset.page || '')) {
   const screen = document.getElementById('screen');
   const template = document.getElementById('tpl') as HTMLTemplateElement | null;
   if (!screen || !template) throw new Error('问卷页面缺少运行容器');
-  if (document.body.dataset.page !== 'auth') template.content.firstElementChild?.remove();
+  if (!['auth', 'done'].includes(document.body.dataset.page || '')) template.content.firstElementChild?.remove();
   const phone = screen.closest('.phone');
   if (phone) phone.replaceWith(screen);
   document.querySelector('a[href="index.html"]')?.parentElement?.remove();

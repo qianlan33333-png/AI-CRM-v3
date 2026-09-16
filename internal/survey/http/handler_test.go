@@ -71,9 +71,13 @@ func (d *publishVersionDefinitions) Publish(_ context.Context, _ surveyport.ID, 
 type routeSurvey struct {
 	surveyport.PublicApplication
 	surveyport.SubmissionApplication
-	questionnaire surveyport.Questionnaire
-	submissions   []surveyport.Submission
-	exportCalls   int
+	questionnaire   surveyport.Questionnaire
+	submissions     []surveyport.Submission
+	exportCalls     int
+	publicStatus    surveyport.PublicSubmissionStatus
+	publicStatusErr error
+	submitReceipt   surveyport.SubmissionReceipt
+	submitErr       error
 }
 
 func (s *routeSurvey) ReadPublic(_ context.Context, slug string) (surveyport.Questionnaire, error) {
@@ -81,6 +85,17 @@ func (s *routeSurvey) ReadPublic(_ context.Context, slug string) (surveyport.Que
 		return surveyport.Questionnaire{}, surveyport.ErrNotFound
 	}
 	return s.questionnaire, nil
+}
+
+func (s *routeSurvey) PublicSubmissionStatus(_ context.Context, slug string, _ surveyport.SubmissionIdentity) (surveyport.PublicSubmissionStatus, error) {
+	if slug != s.questionnaire.Slug {
+		return surveyport.PublicSubmissionStatus{}, surveyport.ErrNotFound
+	}
+	return s.publicStatus, s.publicStatusErr
+}
+
+func (s *routeSurvey) Submit(context.Context, surveyport.SubmitCommand) (surveyport.SubmissionReceipt, error) {
+	return s.submitReceipt, s.submitErr
 }
 
 func (s *routeSurvey) ListSubmissions(context.Context, surveyport.ID, int32, int32, surveyport.IdentityState) (surveyport.SubmissionPage, error) {
@@ -328,6 +343,90 @@ func TestPublicSurveyCannotBypassOAuth(t *testing.T) {
 		if response.Code != nethttp.StatusUnauthorized || !strings.Contains(response.Body.String(), "survey_oauth_required") {
 			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestSubmittedPublicRoutesExposeOnlyCompletionAction(t *testing.T) {
+	customerID := customerdomain.CustomerID(42)
+	survey := &routeSurvey{
+		questionnaire: surveyport.Questionnaire{Slug: "growth", Status: surveyport.StatusPublished, AnswerDisplayMode: surveyport.DisplayAllInOne},
+		publicStatus:  surveyport.PublicSubmissionStatus{Submitted: true, CompletionAction: surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "https://go.example.test/complete"}},
+		submitErr:     &surveyport.AlreadySubmittedError{CompletionAction: surveyport.CompletionAction{Type: surveyport.CompletionActionLeadQR, LeadQR: &surveyport.CompletionLeadQRCode{URL: "https://cdn.example.test/lead.png"}}},
+	}
+	handler, err := NewHandler(&routeDefinitions{}, survey, routeSecurity{}, routeOAuth{enabled: true, identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customerID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &nethttp.Cookie{Name: "__Host-aicrm_survey_identity", Value: strings.Repeat("a", 43)}
+
+	definition := httptest.NewRequest(nethttp.MethodGet, "/api/public/questionnaires/growth", nil)
+	definition.AddCookie(cookie)
+	definitionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(definitionResponse, definition)
+	if definitionResponse.Code != nethttp.StatusConflict || !strings.Contains(definitionResponse.Body.String(), `"code":"already_submitted"`) || !strings.Contains(definitionResponse.Body.String(), `"redirect_url":"https://go.example.test/complete"`) || strings.Contains(definitionResponse.Body.String(), "42") {
+		t.Fatalf("definition status=%d body=%s", definitionResponse.Code, definitionResponse.Body.String())
+	}
+
+	session := httptest.NewRequest(nethttp.MethodGet, "/api/h5/surveys/session?slug=growth", nil)
+	session.AddCookie(cookie)
+	sessionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(sessionResponse, session)
+	if sessionResponse.Code != nethttp.StatusOK || !strings.Contains(sessionResponse.Body.String(), `"submitted":true`) || strings.Contains(sessionResponse.Body.String(), "42") {
+		t.Fatalf("session status=%d body=%s", sessionResponse.Code, sessionResponse.Body.String())
+	}
+
+	entry := httptest.NewRequest(nethttp.MethodGet, "/q/growth", nil)
+	entry.AddCookie(cookie)
+	entryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(entryResponse, entry)
+	if entryResponse.Code != nethttp.StatusSeeOther || entryResponse.Header().Get("Location") != "https://go.example.test/complete" {
+		t.Fatalf("entry status=%d location=%q", entryResponse.Code, entryResponse.Header().Get("Location"))
+	}
+
+	submit := httptest.NewRequest(nethttp.MethodPost, "/api/public/questionnaires/growth/submissions", strings.NewReader(`{"version":1,"submission_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","answers":[]}`))
+	submit.AddCookie(cookie)
+	submitResponse := httptest.NewRecorder()
+	handler.ServeHTTP(submitResponse, submit)
+	if submitResponse.Code != nethttp.StatusConflict || !strings.Contains(submitResponse.Body.String(), `"type":"lead_qr"`) || !strings.Contains(submitResponse.Body.String(), `"lead_qr":{"url":"https://cdn.example.test/lead.png"}`) || strings.Contains(submitResponse.Body.String(), "42") {
+		t.Fatalf("submit status=%d body=%s", submitResponse.Code, submitResponse.Body.String())
+	}
+}
+
+func TestPublicSubmissionSuccessEmitsCompletionActionOnlyAtTopLevel(t *testing.T) {
+	customerID := customerdomain.CustomerID(42)
+	survey := &routeSurvey{
+		questionnaire: surveyport.Questionnaire{Slug: "growth", Status: surveyport.StatusPublished, AnswerDisplayMode: surveyport.DisplayAllInOne},
+		submitReceipt: surveyport.SubmissionReceipt{
+			QuestionnaireID: 7, QuestionnaireSlug: "growth", DefinitionVersion: 1, SubmissionID: 9, ResultToken: "opaque-result-token",
+			CompletionAction: surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "https://go.example.test/complete"},
+		},
+	}
+	handler, err := NewHandler(&routeDefinitions{}, survey, routeSecurity{}, routeOAuth{enabled: true, identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customerID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(nethttp.MethodPost, "/api/public/questionnaires/growth/submissions", strings.NewReader(`{"version":1,"submission_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","answers":[]}`))
+	request.AddCookie(&nethttp.Cookie{Name: "__Host-aicrm_survey_identity", Value: strings.Repeat("a", 43)})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != nethttp.StatusCreated || strings.Count(body, `"completion_action"`) != 1 || !strings.Contains(body, `"completion_action":{"type":"redirect","redirect_url":"https://go.example.test/complete"}`) || strings.Contains(body, `"receipt":{"questionnaire_id":7,"questionnaire_slug":"growth","definition_version":1,"submission_id":9,"result_token":"opaque-result-token","completion_action"`) {
+		t.Fatalf("submit status=%d body=%s", response.Code, body)
+	}
+}
+
+func TestCompletionLocationFallsBackToDoneCarrier(t *testing.T) {
+	if got := completionLocation("growth", surveyport.DefaultCompletionAction()); got != "/h5/done.html?slug=growth" {
+		t.Fatalf("default location=%q", got)
+	}
+	if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionLeadQR}); got != "/h5/done.html?slug=growth" {
+		t.Fatalf("lead QR location=%q", got)
+	}
+	if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "http://unsafe.example.test"}); got != "/h5/done.html?slug=growth" {
+		t.Fatalf("unsafe redirect location=%q", got)
+	}
+	if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "https://safe.example.test/complete#fragment"}); got != "/h5/done.html?slug=growth" {
+		t.Fatalf("fragment redirect location=%q", got)
 	}
 }
 

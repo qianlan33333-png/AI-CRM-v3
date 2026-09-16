@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
@@ -23,8 +24,11 @@ type completionStore struct {
 	questionnaire surveyport.Questionnaire
 	configuration surveyport.OperationConfiguration
 	created       bool
+	claimed       bool
+	createErr     error
 	accepted      int
 	bound         int
+	auditOutbox   int
 	saveCalls     int
 	statusLocks   int
 	testSnapshot  CompletionTestSnapshot
@@ -45,7 +49,13 @@ func completionIntPointer(value int) *int { return &value }
 func (s *completionStore) GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error) {
 	return s.questionnaire, nil
 }
+func (s *completionStore) HasSubmissionClaim(context.Context, surveyport.ID, customerdomain.CustomerID) (bool, error) {
+	return s.claimed, nil
+}
 func (s *completionStore) CreateSubmission(_ context.Context, in PersistSubmission) (surveyport.Submission, bool, error) {
+	if s.createErr != nil {
+		return surveyport.Submission{}, false, s.createErr
+	}
 	if s.created {
 		return surveyport.Submission{ID: 9, QuestionnaireID: in.Questionnaire.ID, QuestionnaireSlug: in.Questionnaire.Slug, DefinitionVersion: in.Questionnaire.DefinitionVersion}, false, nil
 	}
@@ -89,6 +99,7 @@ func (s *completionStore) RecordCompletionTestEffect(context.Context, surveyport
 	return nil
 }
 func (s *completionStore) AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error {
+	s.auditOutbox++
 	return nil
 }
 
@@ -137,6 +148,114 @@ func (completionProjection) ClearDirectoryPhone(context.Context, customerdomain.
 	return nil
 }
 
+type completionStatusUOW struct{ inTransaction bool }
+
+func (u *completionStatusUOW) Within(ctx context.Context, run func(context.Context) error) error {
+	u.inTransaction = true
+	defer func() { u.inTransaction = false }()
+	return run(ctx)
+}
+
+type publicCompletionResolverStub struct {
+	uow   *completionStatusUOW
+	url   string
+	found bool
+	err   error
+	calls int
+}
+
+func (s *publicCompletionResolverStub) ResolvePublicCompletionTarget(context.Context, string) (string, bool, error) {
+	if s.uow != nil && s.uow.inTransaction {
+		return "", false, errors.New("resolver invoked inside survey transaction")
+	}
+	s.calls++
+	return s.url, s.found, s.err
+}
+
+type publicLeadQRReaderStub struct {
+	uow   *completionStatusUOW
+	lead  channelport.PublicLeadQRCode
+	err   error
+	calls int
+}
+
+func (s *publicLeadQRReaderStub) ReadPublicLeadQRCode(context.Context, int64) (channelport.PublicLeadQRCode, error) {
+	if s.uow != nil && s.uow.inTransaction {
+		return channelport.PublicLeadQRCode{}, errors.New("lead QR read invoked inside survey transaction")
+	}
+	s.calls++
+	return s.lead, s.err
+}
+
+func TestPublicSubmissionStatusUsesPostCutoverClaimAndResolvesAfterCommit(t *testing.T) {
+	questionnaire := surveyport.Questionnaire{ID: 4, Slug: "growth", Status: surveyport.StatusPublished}
+	store := &completionStore{questionnaire: questionnaire, configuration: surveyport.OperationConfiguration{QuestionnaireID: questionnaire.ID, CompletionNavigationRef: "survey-complete"}}
+	uow := &completionStatusUOW{}
+	service := NewSubmissionService(uow, store, nil)
+	resolver := &publicCompletionResolverStub{uow: uow, url: "https://go.example.test/complete", found: true}
+	if err := service.BindPublicCompletionTarget(resolver); err != nil {
+		t.Fatal(err)
+	}
+	customer := customerdomain.CustomerID(7)
+	identity := surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer}
+
+	status, err := service.PublicSubmissionStatus(context.Background(), questionnaire.Slug, identity)
+	if err != nil || status.Submitted || status.CompletionAction.Type != surveyport.CompletionActionDefault || resolver.calls != 0 {
+		t.Fatalf("unclaimed status=%+v err=%v resolver_calls=%d", status, err, resolver.calls)
+	}
+
+	store.claimed = true
+	status, err = service.PublicSubmissionStatus(context.Background(), questionnaire.Slug, identity)
+	if err != nil || !status.Submitted || status.CompletionAction.Type != surveyport.CompletionActionRedirect || status.CompletionAction.RedirectURL != "https://go.example.test/complete" || resolver.calls != 1 || uow.inTransaction {
+		t.Fatalf("redirect status=%+v err=%v resolver_calls=%d in_transaction=%t", status, err, resolver.calls, uow.inTransaction)
+	}
+
+	lead := &publicLeadQRReaderStub{uow: uow, lead: channelport.PublicLeadQRCode{URL: "https://cdn.example.test/lead.png"}}
+	if err = service.BindPublicLeadQRCode(lead); err != nil {
+		t.Fatal(err)
+	}
+	channelID := int64(8)
+	store.configuration.CompletionChannelID = &channelID
+	resolver.url = "http://unsafe.example.test"
+	status, err = service.PublicSubmissionStatus(context.Background(), questionnaire.Slug, identity)
+	if err != nil || status.CompletionAction.Type != surveyport.CompletionActionDefault || lead.calls != 0 {
+		t.Fatalf("unsafe redirect status=%+v err=%v lead_calls=%d", status, err, lead.calls)
+	}
+	resolver.url = "https://go.example.test/complete#fragment"
+	status, err = service.PublicSubmissionStatus(context.Background(), questionnaire.Slug, identity)
+	if err != nil || status.CompletionAction.Type != surveyport.CompletionActionDefault || lead.calls != 0 {
+		t.Fatalf("fragment redirect status=%+v err=%v lead_calls=%d", status, err, lead.calls)
+	}
+
+	store.configuration.CompletionNavigationRef = ""
+	status, err = service.PublicSubmissionStatus(context.Background(), questionnaire.Slug, identity)
+	if err != nil || status.CompletionAction.Type != surveyport.CompletionActionLeadQR || status.CompletionAction.LeadQR == nil || status.CompletionAction.LeadQR.URL != "https://cdn.example.test/lead.png" || lead.calls != 1 || uow.inTransaction {
+		t.Fatalf("lead QR status=%+v err=%v lead_calls=%d in_transaction=%t", status, err, lead.calls, uow.inTransaction)
+	}
+}
+
+func TestSubmissionAlreadySubmittedReturnsSafeCompletionActionAfterRollbackBoundary(t *testing.T) {
+	questionnaire := surveyport.Questionnaire{ID: 4, Slug: "growth", DefinitionVersion: 1, Mode: surveyport.ModeSurvey, Questions: []surveyport.Question{{ID: 1, Type: surveyport.QuestionTextarea, Title: "需求", Required: true, SortOrder: 0, Validation: surveyport.Validation{MinimumLength: completionIntPointer(1)}}}}
+	store := &completionStore{questionnaire: questionnaire, configuration: surveyport.OperationConfiguration{QuestionnaireID: questionnaire.ID, CompletionNavigationRef: "survey-complete"}, createErr: surveyport.ErrAlreadySubmitted}
+	uow := &completionStatusUOW{}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewSubmissionService(uow, store, cipher)
+	service.phoneAttacher, service.phoneProjection = completionPhoneAttacher{}, completionProjection{}
+	resolver := &publicCompletionResolverStub{uow: uow, url: "https://go.example.test/complete", found: true}
+	if err = service.BindPublicCompletionTarget(resolver); err != nil {
+		t.Fatal(err)
+	}
+	customer := customerdomain.CustomerID(7)
+	_, err = service.Submit(context.Background(), surveyport.SubmitCommand{Slug: questionnaire.Slug, DefinitionVersion: 1, SubmissionKey: strings.Repeat("a", 43), Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer, EvidenceDigest: strings.Repeat("b", 64)}, Answers: []surveyport.SubmissionAnswer{{QuestionID: 1, TextValue: "需要帮助"}}})
+	var duplicate *surveyport.AlreadySubmittedError
+	if !errors.As(err, &duplicate) || duplicate.CompletionAction.Type != surveyport.CompletionActionRedirect || duplicate.CompletionAction.RedirectURL != "https://go.example.test/complete" || resolver.calls != 1 || uow.inTransaction {
+		t.Fatalf("duplicate error=%v action=%+v resolver_calls=%d in_transaction=%t", err, duplicate, resolver.calls, uow.inTransaction)
+	}
+}
+
 func TestSubmissionAcceptsAndBindsConfiguredCompletionOnce(t *testing.T) {
 	q := surveyport.Questionnaire{ID: 4, Slug: "growth", DefinitionVersion: 1, Mode: surveyport.ModeSurvey, Questions: []surveyport.Question{{ID: 1, Type: surveyport.QuestionTextarea, Title: "需求", Required: true, SortOrder: 0, Validation: surveyport.Validation{MinimumLength: completionIntPointer(1)}, Options: []surveyport.Option{}}}}
 	store := &completionStore{questionnaire: q, configuration: surveyport.OperationConfiguration{QuestionnaireID: 4, ExternalPushEnabled: true, ExternalPushConfigurationRef: "local-webhook"}}
@@ -158,8 +277,8 @@ func TestSubmissionAcceptsAndBindsConfiguredCompletionOnce(t *testing.T) {
 	if _, err = service.Submit(context.Background(), command); err != nil {
 		t.Fatal(err)
 	}
-	if accepter.calls != 1 || store.bound != 1 {
-		t.Fatalf("completion calls/bindings=%d/%d", accepter.calls, store.bound)
+	if accepter.calls != 1 || store.bound != 1 || store.auditOutbox != 1 {
+		t.Fatalf("completion calls/bindings/audit-outbox=%d/%d/%d", accepter.calls, store.bound, store.auditOutbox)
 	}
 }
 

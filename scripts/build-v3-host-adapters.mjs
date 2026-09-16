@@ -321,11 +321,39 @@ const h5AuthReference = `<script type="module" src="../${h5AuthHost}"></script>`
 const surveyPublicReference = `<script type="module" src="../${surveyPublicHost}"></script>`;
 const surveyPublicStylesheet = `<link rel="stylesheet" href="../${surveyPublicStyles}">`;
 const sharedVisualTokensStylesheet = `<link rel="stylesheet" href="../${sharedVisualTokens}">`;
-for (const page of ['auth', 'all', 'one', 'result', 'error']) {
+// `done.html` is a PR01 frozen carrier. The production completion surface is
+// intentionally substituted only in the built document: an unexpected donor
+// change must stop the build instead of silently publishing a mixed page.
+const frozenDoneCarrier = `<div style="position:relative;display:flex;align-items:center;justify-content:center;height:44px;background:#fff;border-bottom:1px solid #EDEEF0;flex:none">
+          <span style="font-size:16px;font-weight:600">提交状态</span>
+          <span style="position:absolute;right:16px;letter-spacing:1px;color:#1F2329">···</span>
+        </div>
+        <div data-h5-blocked role="status" style="padding:9px 14px;border-bottom:1px solid #FFE0B2;background:#FFF7E8;color:#8A4B08;font-size:12px;line-height:18px">{{ blockedReason }}</div>
+        <div style="flex:1;min-height:0;overflow:auto;background:#F5F6F7;display:flex;align-items:center;padding:20px">
+          <div style="width:100%;background:#fff;border-radius:16px;padding:32px 22px;text-align:center">
+            <div style="width:56px;height:56px;margin:0 auto;border-radius:50%;background:#FFF7E8;display:flex;align-items:center;justify-content:center;color:#8A4B08;font-size:24px">!</div>
+            <h1 style="margin:18px 0 0;font-size:24px;line-height:32px;font-weight:600">尚无可核验回执</h1>
+            <p style="margin:10px 0 0;font-size:15px;line-height:23px;color:#8F959E">当前 OpenAPI 未提供此静态完成页对应的真实结果；未生成报告、顾问或二维码。</p>
+            <button disabled aria-disabled="true" style="width:100%;height:46px;margin-top:24px;border:0;border-radius:12px;background:#A8C3FF;color:#fff;font-size:16px;font-weight:600">等待后端能力</button>
+            <a data-h5-local-exit role="button" onClick="{{ act.close }}" style="display:block;box-sizing:border-box;width:100%;height:46px;line-height:46px;margin-top:12px;border:1px solid #DEE0E3;border-radius:12px;background:#fff;color:#1F2329;font-size:16px;font-weight:600;cursor:pointer;text-align:center">返回上一页</a>
+          </div>`;
+const completionDoneCarrier = `<div style="flex:1;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;background:#F5F6F7;padding:24px 20px">
+  <template data-sc-if="{{ done }}"><section data-h5-done role="status" aria-live="polite" tabindex="-1" style="width:100%;max-width:390px;background:#fff;border-radius:16px;padding:36px 24px;text-align:center;box-shadow:0 4px 14px rgba(31,35,41,.05)">
+      <div aria-hidden="true" style="width:56px;height:56px;margin:0 auto;border-radius:50%;background:#E8F7EE;color:#2F9E62;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700">✓</div>
+      <h1 style="margin:18px 0 0;font-size:24px;line-height:32px;font-weight:600;color:#1F2329">收到你的问卷</h1>
+      <template data-sc-if="{{ leadQR }}"><div data-h5-lead-qr style="margin-top:24px"><img src="{{ leadQR.url }}" alt="渠道二维码" style="display:block;width:180px;height:180px;max-width:100%;margin:0 auto;object-fit:contain"><p style="margin:14px 0 0;color:#646A73;font-size:14px;line-height:22px">长按识别二维码，继续咨询</p></div></template>
+    </section></template>
+</div>`;
+for (const page of ['auth', 'all', 'one', 'result', 'error', 'done']) {
   const documentPath = path.join(dist, 'h5', `${page}.html`);
   let html = fs.readFileSync(documentPath, 'utf8');
   if (!html.includes(frozenH5Reference)) throw new Error(`${page}.html does not reference the declared frozen H5 entry`);
   if (html.includes(h5AuthReference) || html.includes(surveyPublicReference) || html.includes(surveyPublicStylesheet) || html.includes(sharedVisualTokensStylesheet)) throw new Error(`${page}.html already contains the H5 public Survey presentation`);
+  if (page === 'done') {
+    if (html.includes('data-h5-done')) throw new Error('done.html already contains a completion projection');
+    if (html.split(frozenDoneCarrier).length !== 2) throw new Error('done.html frozen carrier changed; refuse completion replacement');
+    html = html.replace(frozenDoneCarrier, completionDoneCarrier);
+  }
   // Remove demo chrome in the release HTML before first paint, not after mount.
   const demoShell = /<div class="h5-backdrop"><div><div class="phone"><div id="screen" class="phone-screen"><\/div><\/div><div style="[^"]*"><a href="index.html">← 全部屏幕<\/a><\/div><\/div><\/div>/;
   if (!demoShell.test(html)) throw new Error(`${page}.html H5 shell changed; inspect the mobile adaptation`);
