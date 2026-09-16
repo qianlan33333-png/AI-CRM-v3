@@ -297,6 +297,56 @@ func TestPostgreSQLSubmissionClaimsAreAtomicPerCustomerAndQuestionnaire(t *testi
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM survey_result_tokens token JOIN survey_submissions submission ON submission.id=token.submission_id WHERE submission.questionnaire_id=$1 AND submission.customer_id=$2`, questionnaireID, concurrentCustomer).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("concurrent result token count=%d err=%v", count, err)
 	}
+
+	// Re-publishing changes the active mutable definition, not a retained
+	// receipt. The narrow lookup that precedes public validation must still
+	// recover that receipt by its original key and payload.
+	var republishedDefinitionID int64
+	if err = native.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at) VALUES($1,2,'survey','all_in_one','Single submit v2','','{}',$2,TRUE,$3,$4,$3) RETURNING id`, questionnaireID, bytes32(92), now.Add(time.Minute), actorID).Scan(&republishedDefinitionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1,version=version+1 WHERE id=$2`, republishedDefinitionID, questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txCtx context.Context) error {
+		retained, lookupErr := repository.GetBySlug(txCtx, "single-submit")
+		if lookupErr != nil || retained.ID != surveyport.ID(questionnaireID) || retained.Status != surveyport.StatusPublished {
+			return fmt.Errorf("republished questionnaire=%+v err=%w", retained, lookupErr)
+		}
+		replayed, found, lookupErr := repository.FindSubmissionByKey(txCtx, surveyport.ID(questionnaireID), digest(1), digest(11))
+		if lookupErr != nil || !found || replayed.ID != first.ID || replayed.DefinitionVersion != 1 {
+			return fmt.Errorf("republished receipt=%+v found=%t err=%w", replayed, found, lookupErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, stopped := range []surveyport.QuestionnaireStatus{surveyport.StatusDisabled, surveyport.StatusArchived} {
+		if _, err = native.Exec(ctx, `UPDATE survey_questionnaires SET status=$1 WHERE id=$2`, stopped, questionnaireID); err != nil {
+			t.Fatal(err)
+		}
+		if err = uow.Within(ctx, func(txCtx context.Context) error {
+			retained, lookupErr := repository.GetBySlug(txCtx, "single-submit")
+			if lookupErr != nil || retained.Status != stopped {
+				return fmt.Errorf("stopped questionnaire=%+v err=%w", retained, lookupErr)
+			}
+			claimed, lookupErr := repository.HasSubmissionClaim(txCtx, surveyport.ID(questionnaireID), customerdomain.CustomerID(firstCustomer))
+			if lookupErr != nil || !claimed {
+				return fmt.Errorf("stopped claim=%t err=%w", claimed, lookupErr)
+			}
+			replayed, found, lookupErr := repository.FindSubmissionByKey(txCtx, surveyport.ID(questionnaireID), digest(1), digest(11))
+			if lookupErr != nil || !found || replayed.ID != first.ID {
+				return fmt.Errorf("stopped receipt=%+v found=%t err=%w", replayed, found, lookupErr)
+			}
+			if _, lookupErr = repository.GetPublishedBySlug(txCtx, "single-submit"); !errors.Is(lookupErr, surveyport.ErrNotFound) {
+				return fmt.Errorf("stopped public lookup err=%w", lookupErr)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("state=%s retained claim lookup: %v", stopped, err)
+		}
+	}
 }
 
 func customerPointer(value int64) *customerdomain.CustomerID {

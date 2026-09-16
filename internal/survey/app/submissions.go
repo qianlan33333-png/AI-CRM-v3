@@ -36,7 +36,9 @@ type PersistSubmission struct {
 type SubmissionStore interface {
 	Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error)
 	LockQuestionnaireStatus(context.Context, surveyport.ID) (surveyport.QuestionnaireStatus, error)
+	GetBySlug(context.Context, string) (surveyport.Questionnaire, error)
 	GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error)
+	FindSubmissionByKey(context.Context, surveyport.ID, [32]byte, [32]byte) (surveyport.Submission, bool, error)
 	HasSubmissionClaim(context.Context, surveyport.ID, customerdomain.CustomerID) (bool, error)
 	CreateSubmission(context.Context, PersistSubmission) (surveyport.Submission, bool, error)
 	GetSubmissionByTokenDigest(context.Context, [32]byte) (surveyport.Submission, error)
@@ -199,7 +201,7 @@ func (s *SubmissionService) PublicSubmissionStatus(ctx context.Context, slug str
 	}
 	var configuration surveyport.OperationConfiguration
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		questionnaire, err := s.store.GetPublishedBySlug(tx, slug)
+		questionnaire, err := s.store.GetBySlug(tx, slug)
 		if err != nil {
 			return err
 		}
@@ -208,10 +210,14 @@ func (s *SubmissionService) PublicSubmissionStatus(ctx context.Context, slug str
 			return err
 		}
 		result.Submitted = claimed
-		if !claimed {
-			return nil
+		if claimed {
+			configuration, err = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+			return err
 		}
-		configuration, err = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+		// Only an already-submitted trusted customer may reach the retained
+		// completion action after a questionnaire is disabled or archived.
+		// New visitors still use the normal public-published gate.
+		_, err = s.store.GetPublishedBySlug(tx, slug)
 		return err
 	})
 	if err != nil {
@@ -227,7 +233,7 @@ func (s *SubmissionService) PublicSubmissionStatus(ctx context.Context, slug str
 }
 
 func (s *SubmissionService) Submit(ctx context.Context, command surveyport.SubmitCommand) (surveyport.SubmissionReceipt, error) {
-	if s == nil || s.uow == nil || s.store == nil || s.cipher == nil || s.phoneAttacher == nil || s.phoneProjection == nil || !validSlug(command.Slug) || command.DefinitionVersion < 1 || !validPublicKey(command.SubmissionKey) || command.Identity.State != surveyport.IdentityResolved || command.Identity.CustomerID == nil || !validIdentity(command.Identity) || len(command.SourceChannel) > 100 || len(command.CampaignID) > 200 || len(command.StaffID) > 200 {
+	if s == nil || s.uow == nil || s.store == nil || s.cipher == nil || s.phoneAttacher == nil || s.phoneProjection == nil || !validSlug(command.Slug) || !validPublicKey(command.SubmissionKey) || command.Identity.State != surveyport.IdentityResolved || command.Identity.CustomerID == nil || !validIdentity(command.Identity) || len(command.SourceChannel) > 100 || len(command.CampaignID) > 200 || len(command.StaffID) > 200 {
 		return surveyport.SubmissionReceipt{}, surveyport.ErrInvalid
 	}
 	canonical, _ := json.Marshal(struct {
@@ -249,9 +255,42 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 	var completionConfiguration surveyport.OperationConfiguration
 	alreadySubmitted := false
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		questionnaire, e := s.store.GetPublishedBySlug(tx, command.Slug)
+		// Idempotency and the post-cutover customer claim intentionally precede
+		// the mutable public definition. A retained same-key receipt must be
+		// recoverable after re-publish, and a claimed customer must not see a
+		// validation error merely because the questionnaire later stopped.
+		questionnaire, e := s.store.GetBySlug(tx, command.Slug)
 		if e != nil {
 			return e
+		}
+		var found bool
+		stored, found, e = s.store.FindSubmissionByKey(tx, questionnaire.ID, submissionKeyDigest, payloadDigest)
+		if e != nil {
+			return e
+		}
+		if found {
+			completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+			return e
+		}
+		claimed, e := s.store.HasSubmissionClaim(tx, questionnaire.ID, *command.Identity.CustomerID)
+		if e != nil {
+			return e
+		}
+		if claimed {
+			completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+			if e != nil {
+				return e
+			}
+			alreadySubmitted = true
+			return nil
+		}
+
+		questionnaire, e = s.store.GetPublishedBySlug(tx, command.Slug)
+		if e != nil {
+			return e
+		}
+		if command.DefinitionVersion < 1 {
+			return surveyport.ErrInvalid
 		}
 		if questionnaire.DefinitionVersion != command.DefinitionVersion {
 			return surveyport.ErrConflict

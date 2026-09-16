@@ -566,11 +566,6 @@ func (h *Handler) publicEntry(w http.ResponseWriter, r *http.Request, slug strin
 		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_unavailable", http.StatusSeeOther)
 		return
 	}
-	questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
-	if err != nil {
-		resultError(w, err)
-		return
-	}
 	identity, resolved := h.surveySession(r)
 	if resolved && identity.State == surveyport.IdentityResolved {
 		status, statusErr := h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
@@ -582,11 +577,23 @@ func (h *Handler) publicEntry(w http.ResponseWriter, r *http.Request, slug strin
 			http.Redirect(w, r, completionLocation(slug, status.CompletionAction), http.StatusSeeOther)
 			return
 		}
+		questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
 		display := "all"
 		if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
 			display = "one"
 		}
 		http.Redirect(w, r, "/h5/"+display+".html?slug="+slug, http.StatusSeeOther)
+		return
+	}
+	// An anonymous or conflicted session has no trusted canonical Customer to
+	// match against a claim, so it remains subject to the ordinary public
+	// availability gate.
+	if _, err := h.submissions.ReadPublic(r.Context(), slug); err != nil {
+		resultError(w, err)
 		return
 	}
 	if resolved && identity.State == surveyport.IdentityConflict {
@@ -606,12 +613,27 @@ func (h *Handler) oauthSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := r.URL.Query().Get("slug")
+	identity, ok := h.surveySession(r)
+	display := "all"
+	status := surveyport.PublicSubmissionStatus{CompletionAction: surveyport.DefaultCompletionAction()}
+	if ok && identity.State == surveyport.IdentityResolved && identity.CustomerID != nil {
+		var err error
+		status, err = h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		if status.Submitted {
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display, "submitted": true, "completion_action": status.CompletionAction})
+			return
+		}
+	}
 	questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
 	if err != nil {
 		resultError(w, err)
 		return
 	}
-	identity, ok := h.surveySession(r)
 	if !ok || identity.State == surveyport.IdentityAnonymous {
 		writeError(w, http.StatusUnauthorized, "survey_oauth_required")
 		return
@@ -620,17 +642,8 @@ func (h *Handler) oauthSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "survey_identity_conflict")
 		return
 	}
-	display := "all"
 	if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
 		display = "one"
-	}
-	status := surveyport.PublicSubmissionStatus{CompletionAction: surveyport.DefaultCompletionAction()}
-	if identity.State == surveyport.IdentityResolved && identity.CustomerID != nil {
-		status, err = h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
-		if err != nil {
-			resultError(w, err)
-			return
-		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display, "submitted": status.Submitted, "completion_action": status.CompletionAction})

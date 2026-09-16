@@ -21,18 +21,22 @@ import (
 
 type completionStore struct {
 	SubmissionStore
-	questionnaire surveyport.Questionnaire
-	configuration surveyport.OperationConfiguration
-	created       bool
-	claimed       bool
-	createErr     error
-	accepted      int
-	bound         int
-	auditOutbox   int
-	saveCalls     int
-	statusLocks   int
-	testSnapshot  CompletionTestSnapshot
-	testCreated   bool
+	questionnaire  surveyport.Questionnaire
+	configuration  surveyport.OperationConfiguration
+	created        bool
+	claimed        bool
+	createErr      error
+	stored         surveyport.Submission
+	storedKey      [32]byte
+	storedPayload  [32]byte
+	publishedReads int
+	accepted       int
+	bound          int
+	auditOutbox    int
+	saveCalls      int
+	statusLocks    int
+	testSnapshot   CompletionTestSnapshot
+	testCreated    bool
 }
 
 func (s *completionStore) Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error) {
@@ -46,8 +50,24 @@ func (s *completionStore) LockQuestionnaireStatus(context.Context, surveyport.ID
 
 func completionIntPointer(value int) *int { return &value }
 
-func (s *completionStore) GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error) {
+func (s *completionStore) GetBySlug(context.Context, string) (surveyport.Questionnaire, error) {
 	return s.questionnaire, nil
+}
+func (s *completionStore) GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error) {
+	s.publishedReads++
+	if s.questionnaire.Status != "" && s.questionnaire.Status != surveyport.StatusPublished {
+		return surveyport.Questionnaire{}, surveyport.ErrNotFound
+	}
+	return s.questionnaire, nil
+}
+func (s *completionStore) FindSubmissionByKey(_ context.Context, _ surveyport.ID, key, payload [32]byte) (surveyport.Submission, bool, error) {
+	if !s.created || key != s.storedKey {
+		return surveyport.Submission{}, false, nil
+	}
+	if payload != s.storedPayload {
+		return surveyport.Submission{}, false, surveyport.ErrConflict
+	}
+	return s.stored, true, nil
 }
 func (s *completionStore) HasSubmissionClaim(context.Context, surveyport.ID, customerdomain.CustomerID) (bool, error) {
 	return s.claimed, nil
@@ -57,10 +77,15 @@ func (s *completionStore) CreateSubmission(_ context.Context, in PersistSubmissi
 		return surveyport.Submission{}, false, s.createErr
 	}
 	if s.created {
-		return surveyport.Submission{ID: 9, QuestionnaireID: in.Questionnaire.ID, QuestionnaireSlug: in.Questionnaire.Slug, DefinitionVersion: in.Questionnaire.DefinitionVersion}, false, nil
+		if in.SubmissionKeyDigest != s.storedKey || in.PayloadDigest != s.storedPayload {
+			return surveyport.Submission{}, false, surveyport.ErrConflict
+		}
+		return s.stored, false, nil
 	}
-	s.created = true
-	return surveyport.Submission{ID: 9, QuestionnaireID: in.Questionnaire.ID, QuestionnaireSlug: in.Questionnaire.Slug, DefinitionVersion: in.Questionnaire.DefinitionVersion, Answers: in.Answers}, true, nil
+	s.created, s.claimed = true, true
+	s.storedKey, s.storedPayload = in.SubmissionKeyDigest, in.PayloadDigest
+	s.stored = surveyport.Submission{ID: 9, QuestionnaireID: in.Questionnaire.ID, QuestionnaireSlug: in.Questionnaire.Slug, DefinitionVersion: in.Questionnaire.DefinitionVersion, Answers: in.Answers}
+	return s.stored, true, nil
 }
 func (s *completionStore) GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error) {
 	return s.configuration, nil
@@ -279,6 +304,73 @@ func TestSubmissionAcceptsAndBindsConfiguredCompletionOnce(t *testing.T) {
 	}
 	if accepter.calls != 1 || store.bound != 1 || store.auditOutbox != 1 {
 		t.Fatalf("completion calls/bindings/audit-outbox=%d/%d/%d", accepter.calls, store.bound, store.auditOutbox)
+	}
+}
+
+func TestSubmissionRetainsReceiptAndClaimBeforeMutablePublicValidation(t *testing.T) {
+	q := surveyport.Questionnaire{ID: 4, Slug: "growth", Status: surveyport.StatusPublished, DefinitionVersion: 1, Mode: surveyport.ModeSurvey, Questions: []surveyport.Question{{ID: 1, Type: surveyport.QuestionTextarea, Title: "需求", Required: true, SortOrder: 0, Validation: surveyport.Validation{MinimumLength: completionIntPointer(1)}}}}
+	store := &completionStore{questionnaire: q, configuration: surveyport.OperationConfiguration{QuestionnaireID: q.ID, CompletionNavigationRef: "survey-complete"}}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewSubmissionService(oauthUOW{}, store, cipher)
+	service.phoneAttacher, service.phoneProjection = completionPhoneAttacher{}, completionProjection{}
+	resolver := &publicCompletionResolverStub{url: "https://go.example.test/complete", found: true}
+	if err = service.BindPublicCompletionTarget(resolver); err != nil {
+		t.Fatal(err)
+	}
+	customer := customerdomain.CustomerID(7)
+	command := surveyport.SubmitCommand{Slug: q.Slug, DefinitionVersion: 1, SubmissionKey: strings.Repeat("a", 43), Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer, EvidenceDigest: strings.Repeat("b", 64)}, Answers: []surveyport.SubmissionAnswer{{QuestionID: 1, TextValue: "需要帮助"}}}
+	first, err := service.Submit(context.Background(), command)
+	if err != nil || first.SubmissionID != 9 {
+		t.Fatalf("first receipt=%+v err=%v", first, err)
+	}
+	readsAfterFirst := store.publishedReads
+
+	// A later re-publish or stop may invalidate the mutable definition, but it
+	// must not invalidate the exact same idempotency receipt.
+	store.questionnaire.Status = surveyport.StatusDisabled
+	store.questionnaire.DefinitionVersion = 2
+	store.questionnaire.Questions = nil
+	replayed, err := service.Submit(context.Background(), command)
+	if err != nil || replayed != first || store.publishedReads != readsAfterFirst {
+		t.Fatalf("retained replay=%+v err=%v published_reads=%d/%d", replayed, err, store.publishedReads, readsAfterFirst)
+	}
+
+	drifted := command
+	drifted.Answers = []surveyport.SubmissionAnswer{{QuestionID: 1, TextValue: "不同内容"}}
+	if _, err = service.Submit(context.Background(), drifted); !errors.Is(err, surveyport.ErrConflict) || store.publishedReads != readsAfterFirst {
+		t.Fatalf("payload drift err=%v published_reads=%d/%d", err, store.publishedReads, readsAfterFirst)
+	}
+
+	store.questionnaire.Status = surveyport.StatusArchived
+	duplicate := command
+	duplicate.DefinitionVersion = 0
+	duplicate.SubmissionKey = strings.Repeat("c", 43)
+	_, err = service.Submit(context.Background(), duplicate)
+	var already *surveyport.AlreadySubmittedError
+	if !errors.As(err, &already) || already.CompletionAction.Type != surveyport.CompletionActionRedirect || already.CompletionAction.RedirectURL != "https://go.example.test/complete" || store.publishedReads != readsAfterFirst {
+		t.Fatalf("retained claim err=%v action=%+v published_reads=%d/%d", err, already, store.publishedReads, readsAfterFirst)
+	}
+}
+
+func TestPublicSubmissionStatusRetainsClaimAfterQuestionnaireStops(t *testing.T) {
+	customer := customerdomain.CustomerID(7)
+	identity := surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer}
+	for _, state := range []surveyport.QuestionnaireStatus{surveyport.StatusDisabled, surveyport.StatusArchived} {
+		t.Run(string(state), func(t *testing.T) {
+			store := &completionStore{questionnaire: surveyport.Questionnaire{ID: 4, Slug: "growth", Status: state}, claimed: true}
+			service := NewSubmissionService(oauthUOW{}, store, nil)
+			status, err := service.PublicSubmissionStatus(context.Background(), "growth", identity)
+			if err != nil || !status.Submitted || status.CompletionAction.Type != surveyport.CompletionActionDefault || store.publishedReads != 0 {
+				t.Fatalf("retained status=%+v err=%v published_reads=%d", status, err, store.publishedReads)
+			}
+			store.claimed = false
+			if _, err = service.PublicSubmissionStatus(context.Background(), "growth", identity); !errors.Is(err, surveyport.ErrNotFound) || store.publishedReads != 1 {
+				t.Fatalf("unsubmitted stopped questionnaire err=%v published_reads=%d", err, store.publishedReads)
+			}
+		})
 	}
 }
 

@@ -500,30 +500,57 @@ func (r *Repository) GetPublishedBySlug(ctx context.Context, slug string) (surve
 	return q, nil
 }
 
+// GetBySlug is the minimal Survey-owned lookup used to recover a retained
+// idempotency receipt or completion claim. It deliberately does not make the
+// questionnaire publicly readable: callers must still use GetPublishedBySlug
+// before serving a new answer form.
+func (r *Repository) GetBySlug(ctx context.Context, slug string) (surveyport.Questionnaire, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.Questionnaire{}, err
+	}
+	q, _, err := scanBase(t.QueryRow(ctx, `SELECT `+baseColumns+` FROM survey_questionnaires q WHERE q.slug=$1`, slug))
+	return q, err
+}
+
+// FindSubmissionByKey keeps payload conflict comparison within Survey's
+// persistence boundary. The returned Submission is application-internal;
+// public handlers only receive its safe receipt projection.
+func (r *Repository) FindSubmissionByKey(ctx context.Context, questionnaireID surveyport.ID, keyDigest, payloadDigest [32]byte) (surveyport.Submission, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.Submission{}, false, err
+	}
+	var id int64
+	var existingPayload []byte
+	err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, questionnaireID, keyDigest[:]).Scan(&id, &existingPayload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return surveyport.Submission{}, false, nil
+	}
+	if err != nil {
+		return surveyport.Submission{}, false, mapError(err)
+	}
+	if string(existingPayload) != string(payloadDigest[:]) {
+		return surveyport.Submission{}, false, surveyport.ErrConflict
+	}
+	stored, err := r.GetSubmission(ctx, surveyport.ID(id))
+	return stored, true, err
+}
+
 func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.PersistSubmission) (surveyport.Submission, bool, error) {
 	t, err := tx(ctx)
 	if err != nil {
 		return surveyport.Submission{}, false, err
 	}
-	var definitionID int64
-	if err = t.QueryRow(ctx, `SELECT active_definition_version_id FROM survey_questionnaires WHERE id=$1 AND status='published' FOR SHARE`, input.Questionnaire.ID).Scan(&definitionID); err != nil {
-		return surveyport.Submission{}, false, mapError(err)
-	}
 	// Preserve the established same-key replay before the new customer claim is
 	// considered. This also keeps historical, pre-cutover submission-key
 	// receipts readable without backfilling them into the new claim table.
-	var existingID int64
-	var existingPayload []byte
-	err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, input.Questionnaire.ID, input.SubmissionKeyDigest[:]).Scan(&existingID, &existingPayload)
-	if err == nil {
-		if string(existingPayload) != string(input.PayloadDigest[:]) {
-			return surveyport.Submission{}, false, surveyport.ErrConflict
-		}
-		stored, getErr := r.GetSubmission(ctx, surveyport.ID(existingID))
-		return stored, false, getErr
+	existing, found, err := r.FindSubmissionByKey(ctx, input.Questionnaire.ID, input.SubmissionKeyDigest, input.PayloadDigest)
+	if err != nil {
+		return surveyport.Submission{}, false, err
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return surveyport.Submission{}, false, mapError(err)
+	if found {
+		return existing, false, nil
 	}
 
 	// The PK serializes competing submission keys for the same canonical
@@ -538,17 +565,17 @@ func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.Persi
 		// A concurrent same-key request may have observed no submission before
 		// blocking on the claim. Re-read it after the conflict to preserve the
 		// original idempotent receipt; all other keys are already-submitted.
-		err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, input.Questionnaire.ID, input.SubmissionKeyDigest[:]).Scan(&existingID, &existingPayload)
-		if err == nil {
-			if string(existingPayload) != string(input.PayloadDigest[:]) {
-				return surveyport.Submission{}, false, surveyport.ErrConflict
-			}
-			stored, getErr := r.GetSubmission(ctx, surveyport.ID(existingID))
-			return stored, false, getErr
+		existing, found, err = r.FindSubmissionByKey(ctx, input.Questionnaire.ID, input.SubmissionKeyDigest, input.PayloadDigest)
+		if err != nil {
+			return surveyport.Submission{}, false, err
 		}
-		if errors.Is(err, pgx.ErrNoRows) {
-			return surveyport.Submission{}, false, surveyport.ErrAlreadySubmitted
+		if found {
+			return existing, false, nil
 		}
+		return surveyport.Submission{}, false, surveyport.ErrAlreadySubmitted
+	}
+	var definitionID int64
+	if err = t.QueryRow(ctx, `SELECT active_definition_version_id FROM survey_questionnaires WHERE id=$1 AND status='published' FOR SHARE`, input.Questionnaire.ID).Scan(&definitionID); err != nil {
 		return surveyport.Submission{}, false, mapError(err)
 	}
 	resultRaw, _ := json.Marshal(input.Result)
