@@ -16,6 +16,9 @@ const authHost = await buildTestBrowserBundle(
 const publicHost = await buildTestBrowserBundle(
   path.join(root, "web/v3/surveyPublicHost.ts"),
 );
+const runtime = await buildTestBrowserBundle(
+  path.join(root, "web/src/h5/main.ts"),
+);
 const dom = new JSDOM(page, {
   url: "https://test.invalid/h5/all.html?slug=survey",
   runScripts: "outside-only",
@@ -208,5 +211,81 @@ assert.ok(
   "result receipt preserves the traceable Owner facts",
 );
 resultDOM.window.close();
+
+const failurePage = fs.readFileSync(path.join(root, "web/dist/h5/error.html"), "utf8");
+const renderFailure = async (url) => {
+  const failureDOM = new JSDOM(failurePage, {
+    url,
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  failureDOM.window.eval(authHost);
+  failureDOM.window.eval(publicHost);
+  failureDOM.window.eval(runtime);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return failureDOM;
+};
+
+for (const [code, title, message] of [
+  ["survey_oauth_unavailable", "暂时无法继续", "当前问卷暂时不能完成微信授权"],
+  ["survey_oauth_failed", "授权失败", "当前链接无法继续"],
+  ["survey_identity_conflict", "无法继续", "当前微信身份与问卷状态不一致"],
+]) {
+  const failureDOM = await renderFailure(
+    `https://test.invalid/h5/error.html?code=${code}`,
+  );
+  const failureScreen = failureDOM.window.document.getElementById("screen");
+  assert.equal(failureDOM.window.document.body.dataset.v3PublicSurvey, "error", `${code}: failure route is owned by the existing public Survey Host`);
+  assert.match(failureScreen?.textContent || "", new RegExp(title), `${code}: Owner error fact receives its explicit stop title`);
+  assert.match(failureScreen?.textContent || "", new RegExp(message), `${code}: Owner error fact receives a non-progress explanation`);
+  assert.equal(failureScreen?.textContent?.includes("增长诊断测评"), false, `${code}: frozen demo title must be absent`);
+  assert.equal(failureScreen?.textContent?.includes("后端能力未就绪"), false, `${code}: engineering placeholder must be absent`);
+  assert.equal(failureScreen?.textContent?.includes("演示题"), false, `${code}: demo copy must be absent`);
+  assert.equal(failureDOM.window.document.querySelector('a[href="index.html"]'), null, `${code}: demo screen navigation must be absent`);
+  assert.equal(failureScreen?.querySelector("button"), null, `${code}: terminal Owner error must not offer an unsupported retry`);
+  failureDOM.window.close();
+}
+
+const unsafeCode = '<img src=x onerror="window.__escaped=1">';
+const unknownDOM = await renderFailure(
+  `https://test.invalid/h5/error.html?code=${encodeURIComponent(unsafeCode)}`,
+);
+const unknownScreen = unknownDOM.window.document.getElementById("screen");
+assert.match(unknownScreen?.textContent || "", /链接无效/, "unknown error code has the generic invalid-link stop state");
+assert.equal(unknownDOM.window.document.documentElement.outerHTML.includes(unsafeCode), false, "untrusted error code must not be copied into markup");
+assert.equal(unknownScreen?.querySelector("a"), null, "unknown error code cannot create a navigation target");
+unknownDOM.window.close();
+
+const authPage = fs.readFileSync(path.join(root, "web/dist/h5/auth.html"), "utf8");
+const oauthFailureDOM = new JSDOM(authPage, {
+  url: "https://test.invalid/h5/auth.html?oauth_error=%3Csvg%3E&slug=growth",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+oauthFailureDOM.window.eval(authHost);
+oauthFailureDOM.window.eval(publicHost);
+oauthFailureDOM.window.eval(runtime);
+await new Promise((resolve) => setTimeout(resolve, 0));
+const oauthFailureScreen = oauthFailureDOM.window.document.getElementById("screen");
+assert.match(oauthFailureScreen?.textContent || "", /授权失败/, "OAuth callback failure must not claim that identity verification is still running");
+assert.equal(oauthFailureScreen?.textContent?.includes("正在验证微信身份"), false, "failed OAuth must not retain a validating title");
+assert.equal(oauthFailureScreen?.textContent?.includes("重试微信授权"), false, "failed OAuth must not offer a direct Provider retry");
+const safeReturn = oauthFailureScreen?.querySelector("[data-v3-survey-safe-return]");
+assert.ok(safeReturn instanceof oauthFailureDOM.window.HTMLAnchorElement, "only a validated callback slug provides a return path");
+assert.equal(safeReturn.href, "https://test.invalid/q/growth", "return path is rebuilt from the validated slug, not copied from a query URL");
+assert.equal(oauthFailureDOM.window.document.documentElement.outerHTML.includes("<svg>"), false, "untrusted OAuth query value must not be rendered");
+oauthFailureDOM.window.close();
+
+const invalidSlugDOM = new JSDOM(authPage, {
+  url: "https://test.invalid/h5/auth.html?oauth_error=1&slug=javascript%3Aalert(1)",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+invalidSlugDOM.window.eval(authHost);
+invalidSlugDOM.window.eval(publicHost);
+invalidSlugDOM.window.eval(runtime);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(invalidSlugDOM.window.document.querySelector("[data-v3-survey-safe-return]"), null, "untrusted slug cannot become a return target");
+invalidSlugDOM.window.close();
 
 console.log("public Survey H5 presentation Host: PASS");

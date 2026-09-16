@@ -69,7 +69,7 @@ for (const page of expectedH5) {
   assert.ok(html.includes(`<link rel="stylesheet" href="../${surfaceFeedbackStyles}">`), `staged ${relative} does not load surface feedback styles`);
   assert.ok(html.includes(`<script type="module" async src="../${surfaceFeedbackHost}"></script>`), `staged ${relative} does not load the surface feedback Host as an ESM module`);
 }
-for (const page of ['auth.html', 'all.html', 'one.html', 'result.html']) {
+for (const page of ['auth.html', 'all.html', 'one.html', 'result.html', 'error.html']) {
   const html = fs.readFileSync(path.join(stage, 'h5', page), 'utf8');
   for (const entry of ['sharedVisualTokens', 'surveyPublicStyles']) {
     assert.ok(html.includes(`<link rel="stylesheet" href="../${sourceManifest.entries[entry]}">`), `staged h5/${page} does not load ${entry}`);
