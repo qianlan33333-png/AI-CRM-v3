@@ -9,14 +9,89 @@ export {};
  * accessibility hooks to its release template and rendered screen.
  */
 
-const supportedPages = new Set(["auth", "all", "one", "result"]);
+const supportedPages = new Set(["auth", "all", "one", "result", "error"]);
 const page = document.body.dataset.page || "";
+
+type FailurePresentation = {
+  title: string;
+  message: string;
+  returnSlug?: string;
+};
+
+const validPublicSlug = (value: string): boolean =>
+  /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/.test(value);
+
+const failurePresentation = (): FailurePresentation | null => {
+  const query = new URLSearchParams(location.search);
+  if (page === "auth" && query.has("oauth_error")) {
+    const slug = query.get("slug") || "";
+    return {
+      title: "授权失败",
+      message: "未能完成微信授权，当前授权流程无法继续。",
+      ...(validPublicSlug(slug) ? { returnSlug: slug } : {}),
+    };
+  }
+  if (page !== "error") return null;
+
+  // The Handler owns these exact redirect codes. Query text is never echoed or
+  // used as a target, so an arbitrary error URL cannot become page content or
+  // navigation.
+  switch (query.get("code")) {
+    case "survey_oauth_unavailable":
+      return {
+        title: "暂时无法继续",
+        message: "当前问卷暂时不能完成微信授权，请稍后从原问卷入口重新打开。",
+      };
+    case "survey_oauth_failed":
+      return {
+        title: "授权失败",
+        message: "未能完成微信授权，当前链接无法继续。",
+      };
+    case "survey_identity_conflict":
+      return {
+        title: "无法继续",
+        message: "当前微信身份与问卷状态不一致，请联系管理员处理后从原问卷入口重新打开。",
+      };
+    default:
+      return {
+        title: "链接无效",
+        message: "当前链接无法继续，请从原问卷入口重新打开。",
+      };
+  }
+};
 
 if (supportedPages.has(page)) {
   document.body.dataset.v3PublicSurvey = page;
 
   const template = document.getElementById("tpl") as HTMLTemplateElement | null;
   if (!template) throw new Error("公开问卷页面缺少冻结运行模板");
+
+  const failure = failurePresentation();
+  if (failure) {
+    const stop = document.createElement("section");
+    stop.dataset.v3SurveyStop = "";
+    stop.setAttribute("role", "status");
+    stop.setAttribute("aria-live", "assertive");
+    const card = document.createElement("div");
+    card.dataset.v3SurveyStopCard = "";
+    const label = document.createElement("span");
+    label.dataset.v3SurveyStopLabel = "";
+    label.textContent = "问卷访问";
+    const title = document.createElement("h1");
+    title.textContent = failure.title;
+    const message = document.createElement("p");
+    message.textContent = failure.message;
+    card.append(label, title, message);
+    if (failure.returnSlug) {
+      const returnLink = document.createElement("a");
+      returnLink.dataset.v3SurveySafeReturn = "";
+      returnLink.href = `/q/${encodeURIComponent(failure.returnSlug)}`;
+      returnLink.textContent = "重新打开问卷";
+      card.append(returnLink);
+    }
+    stop.append(card);
+    template.content.replaceChildren(stop);
+  }
 
   const templateDescendants = <T extends Element>(
     root: ParentNode,

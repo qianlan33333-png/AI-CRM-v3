@@ -316,7 +316,7 @@ const h5AuthReference = `<script type="module" src="../${h5AuthHost}"></script>`
 const surveyPublicReference = `<script type="module" src="../${surveyPublicHost}"></script>`;
 const surveyPublicStylesheet = `<link rel="stylesheet" href="../${surveyPublicStyles}">`;
 const sharedVisualTokensStylesheet = `<link rel="stylesheet" href="../${sharedVisualTokens}">`;
-for (const page of ['auth', 'all', 'one', 'result']) {
+for (const page of ['auth', 'all', 'one', 'result', 'error']) {
   const documentPath = path.join(dist, 'h5', `${page}.html`);
   let html = fs.readFileSync(documentPath, 'utf8');
   if (!html.includes(frozenH5Reference)) throw new Error(`${page}.html does not reference the declared frozen H5 entry`);
