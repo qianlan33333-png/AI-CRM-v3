@@ -2,17 +2,17 @@
 
 日期：2026-09-15
 状态：已批准，持续实施；治理账本继续由 PR #297 交付
-当前实施基线：origin/main=`23a3174260d7f7646fb58c94de4644fc82a7300d`（2026-09-16 账本更新时点）
-主线动态：#345、#348、#349、#350、#352、#351、#343、#347 与 #353 已进入此前主线；本次账本时点 #340=`a01d6f2e`、#346=`aec4c260`、#354=`71acf1e8`、#357=`d9eb7147`、#355=`23a31742` 也已合入。固定审计基线仍保留 a4，合入不等于部署或页面验收。#358、#359、#360、#361 与 tests/governance 仍按候选登记；#356 旧栈候选仅作历史记录。
+当前实施基线：origin/main=`09f6d7243228f6415cf550dc8711e28b4003889f`（2026-09-16 账本更新时点）
+主线动态：#345、#348、#349、#350、#352、#351、#343、#347 与 #353 已进入此前主线；本次账本时点 #340=`a01d6f2e`、#346=`aec4c260`、#354=`71acf1e8`、#357=`d9eb7147`、#355=`23a31742`、#358=`03a06d0a`、#359=`08a33879`、#360=`7552ebd3`、#361=`09f6d724` 也已合入。固定审计基线仍保留 a4，合入不等于部署或页面验收。tests/governance 仍按候选登记；#356 旧栈候选仅作历史记录。
 实施方式：按可观察能力拆分独立工作树与 PR。本文是产品与验收基线，不把未合入分支、CI、截图、fixture 或构建包当作已发布能力。
 
 ## 2026-09-16 浏览器证据补记
 
-当前 main 已有 #340、#346、#354、#357 与 #355（`23a3174260d7f7646fb58c94de4644fc82a7300d`）；#358、#359、#360、#361 及本 tests/governance 候选仍须按最终合入顺序重新绑定。本段取代本文较早的“仍待合入”快照，不把候选或本地验收写成 production。
+当前 main 已有 #340、#346、#354、#357、#355、#358、#359、#360 与 #361（`09f6d7243228f6415cf550dc8711e28b4003889f`）；本 tests/governance 候选仍须按最终合入顺序重新绑定。本段取代本文较早的“仍待合入”快照，不把候选或本地验收写成 production。
 
 - 四类既有缺口的隔离验收基线是 `e2dded70f8f08c20f2d9080b3bbcd0f716cd65fb`：UTF8 PostgreSQL、required Chromium 19.335s、13 张图，覆盖消息存档、Radar、公开优惠券和共享会员表格。
-- 桌面补验收提交 `74743a12a2e21686e67881061c88eccecc7feb17` 在 UTF8 PostgreSQL、required Chromium 下通过 admin 1280/1440 路由证据；CouponData 语义修复后，候选 `2800105c549f68143f36d248bc77e829b35a7042` 的 83.147s 复验确认“已领取 / 发行量”=`1 / 100`、累计领取说明“发行 100”、范围“指定商品（1项）”，且编辑表单实际字段已读回。
-- 公开问卷真实可达状态限于 auth/all/one/error/result：候选 `fc8f72393c5633ff1327b705c8cd073ec8c61cb5` 的 UTF8 PostgreSQL、required Chromium 44.853s，15 张 375/390/430 图在 `/Users/qianlan/aicrm-artifacts/remaining-pages-chromium-20260916/public-survey-final-fc8f7239f54d`；auth/error 为停止态且没有冻结演示壳。`/h5/index/loading/done/signup/active/expired/pay/qr` 是未挂载 build carrier，不伪造业务流；渠道没有独立公共移动 UI。
+- 桌面补验收提交 `74743a12a2e21686e67881061c88eccecc7feb17` 在 UTF8 PostgreSQL、required Chromium 下通过 admin 1280/1440 路由证据；CouponData 语义修复后，`2800105c549f68143f36d248bc77e829b35a7042` 的 83.147s 复验确认“已领取 / 发行量”=`1 / 100`、累计领取说明“发行 100”、范围“指定商品（1项）”，且编辑表单实际字段已读回；#360 已入 main。
+- 公开问卷真实可达状态限于 auth/all/one/error/result：`fc8f72393c5633ff1327b705c8cd073ec8c61cb5` 的 UTF8 PostgreSQL、required Chromium 44.853s，15 张 375/390/430 图在 `/Users/qianlan/aicrm-artifacts/remaining-pages-chromium-20260916/public-survey-final-fc8f7239f54d`；auth/error 为停止态且没有冻结演示壳，#361 已入 main。`/h5/index/loading/done/signup/active/expired/pay/qr` 是未挂载 build carrier，不伪造业务流；渠道没有独立公共移动 UI。
 - 以上均为独立 PostgreSQL fixture、Provider disabled 的页面级证据；不替代部署后认证读回、支付、退款、结算或 Provider receipt。
 
 本次使用干净测试／治理工作树；原目录 `/Users/qianlan/Downloads/新CRM` 的现有修改只读保留，冻结 donor 不修改。本候选更新 Chromium/PG 验收测试、测试截图配置 getter、治理文档、组件索引、逐页账本和剩余清单，不改业务 runtime、不部署。
@@ -66,13 +66,13 @@ GitHub 参考采用 [Ant Design DESIGN.md](https://github.com/ant-design/ant-des
 
 ## 99 路由矩阵收口判断
 
-本轮逐项复核 1–99 台账后，确认过四类真实的页面／状态证据缺口：消息存档列表与详情（22–23）、Radar 公共查看器（79）、优惠券公共领取（84）以及会员数据表格（50、86）。早期 `eaa84fc5` 截图被根审拒绝，原因分别是 archive 重复标题、member-grid 把 `null` 算成 0 行、Radar fixture 只有 1px。随后 remaining-pages clean tree `e2dded70f8f0` 在 UTF8 PostgreSQL 上完成 Chromium 19.335s，日志为 `/Users/qianlan/aicrm-artifacts/remaining-pages-chromium-20260916/remaining-pages-e2dded70f8f0.log`，13 张截图覆盖 archive entry/detail 1280/1440、Radar/Coupon/Grid 375/390/430；根审已复核 archive entry 1280、detail 1440、Radar 390、Grid 390，重复标题、1px fixture 和共 0 行问题已消除，Grid 当前显示 1 行。该结果是隔离浏览器／合同证据，不是生产 readback；#355 已合入，#358/#359/#360/#361 仍待。#356 的旧栈候选保留为历史，不再作为当前交付。
+本轮逐项复核 1–99 台账后，确认过四类真实的页面／状态证据缺口：消息存档列表与详情（22–23）、Radar 公共查看器（79）、优惠券公共领取（84）以及会员数据表格（50、86）。早期 `eaa84fc5` 截图被根审拒绝，原因分别是 archive 重复标题、member-grid 把 `null` 算成 0 行、Radar fixture 只有 1px。随后 remaining-pages clean tree `e2dded70f8f0` 在 UTF8 PostgreSQL 上完成 Chromium 19.335s，日志为 `/Users/qianlan/aicrm-artifacts/remaining-pages-chromium-20260916/remaining-pages-e2dded70f8f0.log`，13 张截图覆盖 archive entry/detail 1280/1440、Radar/Coupon/Grid 375/390/430；根审已复核 archive entry 1280、detail 1440、Radar 390、Grid 390，重复标题、1px fixture 和共 0 行问题已消除，Grid 当前显示 1 行。该结果是隔离浏览器／合同证据，不是生产 readback；相关 #355/#358/#359/#360/#361 均已合入。#356 的旧栈候选保留为历史，不再作为当前交付。
 
-除上述四类外，本次矩阵审计没有发现需要新增页面或扩大业务验收范围的遗漏。`/admin/coupons`、couponForm、couponData、`/admin/service-period-products`、`/admin/external-effects`、`/admin/channels/new`、`/admin/api-docs`／runtime releases、`/admin/owner-migration` 与 member-grid 已有实际 PostgreSQL Chromium 1280/1440 证据。问卷的实际公共移动路由是 auth/all/one/error/result，已有 375/390/430 候选证据；`index/loading/done/signup/active/expired/pay/qr` 是未挂载 build carrier，渠道没有独立公共移动 UI，均为 N/A 而不伪造流程。shared member-grid 的 e2dded 375/390/430 隔离证据不代替后台周期商品列表或完整 projection readback。仍须等 runtime 候选合入当前 main，再补发布后认证页面和服务端 readback；不把测试稳定性工作、共享组件存在或截图本身升级为页面完成。
+除上述四类外，本次矩阵审计没有发现需要新增页面或扩大业务验收范围的遗漏。`/admin/coupons`、couponForm、couponData、`/admin/service-period-products`、`/admin/external-effects`、`/admin/channels/new`、`/admin/api-docs`／runtime releases、`/admin/owner-migration` 与 member-grid 已有实际 PostgreSQL Chromium 1280/1440 证据。问卷的实际公共移动路由是 auth/all/one/error/result，已有 375/390/430 证据；`index/loading/done/signup/active/expired/pay/qr` 是未挂载 build carrier，渠道没有独立公共移动 UI，均为 N/A 而不伪造流程。shared member-grid 的 e2dded 375/390/430 隔离证据不代替后台周期商品列表或完整 projection readback。runtime 已入当前 main，仍须补发布后认证页面和服务端 readback；不把测试稳定性工作、共享组件存在或截图本身升级为页面完成。
 
 ## 当前主线与交付顺序
 
-当前 main `23a3174260d7f7646fb58c94de4644fc82a7300d` 已包含 #340、#346、#354、#357、#355 以及此前共享组件、经营汇总、订单分销事实、客户档案、公共商品／支付、搜索／确认框、企微 sidebar、分销管理基础、群运营反馈、fixed_script 等范围。#340 CI `35036235000`、#346 CI `35037494318`、#354 CI `35039557156` 与 #355 CI `35042545968` 均已记录为全适用通过。#358 clean-main archive 正在 CI `35044046079`；#359 member-grid、#360 CouponData 与 #361 public Survey 停止态仍待合入。四漏项的 e2dded 隔离 Chromium 证据已具备，但不代表当前 main 或生产完成。
+当前 main `09f6d7243228f6415cf550dc8711e28b4003889f` 已包含 #340、#346、#354、#357、#355、#358、#359、#360、#361 以及此前共享组件、经营汇总、订单分销事实、客户档案、公共商品／支付、搜索／确认框、企微 sidebar、分销管理基础、群运营反馈、fixed_script 等范围。#340 CI `35036235000`、#346 CI `35037494318`、#354 CI `35039557156` 与 #355 CI `35042545968` 均已记录为全适用通过。四漏项的 e2dded 隔离 Chromium 证据已具备，但不代表当前 main 或生产完成。
 
 交付顺序：先盘点 route／Host／assets 与共享组件；再按可观察能力完成后台壳、首页、分销、运营、档案、素材、自动化及公共页；每个 PR 只交付一个可观察能力。root 负责分发审核，Terra high/xhigh 负责标准开发，Luna max 负责基础执行和审计。
 

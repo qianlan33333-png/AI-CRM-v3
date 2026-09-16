@@ -323,8 +323,8 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/admin/message-archive",
 			status:     http.StatusOK,
-			contains:   []string{"data-message-archive-entry", "选择客户", "href=\"/admin/customers\""},
-			notContain: []string{"data-message-archive-root", "name=\"q\"", "Customer ID"},
+			contains:   []string{"data-message-archive-entry", `class="admin-page-title">会话存档`, "选择客户", "href=\"/admin/customers\""},
+			notContain: []string{"data-message-archive-root", "name=\"q\"", "Customer ID", "<h2>会话存档</h2>"},
 		},
 		{
 			name:       "customer profile page",
@@ -1042,7 +1042,7 @@ func TestMessageArchiveRendersAsSeparateArchiveHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, `data-message-archive-root`) || !strings.Contains(body, `admin-profile-message-list`) || strings.Contains(body, `customer-profile-root`) || strings.Contains(body, `customer-chat-activity`) {
+	if response.Code != http.StatusOK || !strings.Contains(body, `data-message-archive-root`) || !strings.Contains(body, `admin-profile-message-list`) || strings.Contains(body, `customer-profile-root`) || strings.Contains(body, `customer-chat-activity`) || strings.Count(body, `class="admin-page-title">会话存档`) != 1 || strings.Count(body, `<h2>会话存档</h2>`) != 0 {
 		t.Fatalf("archive host boundary mismatch: %s", body)
 	}
 }

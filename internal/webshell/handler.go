@@ -217,6 +217,11 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 	}
 	spec := adminSpecForPath(request.URL.Path)
 	data := AdminPageForRequest(request, spec.title, spec.summary, spec.activeEndpoint)
+	if request.URL.Path == "/admin/message-archive" || strings.HasPrefix(request.URL.Path, "/admin/message-archive/customers/") {
+		// The shared topbar owns the one page title and this navigation action.
+		// The archive body keeps only its route-specific guidance and filters.
+		data.PageActions = []PageAction{{Label: "选择客户", Href: "/admin/customers", Variant: "primary"}}
+	}
 	if err := handler.renderer.RenderAdmin(writer, data); err != nil {
 		http.Error(writer, "unable to render admin shell", http.StatusInternalServerError)
 	}

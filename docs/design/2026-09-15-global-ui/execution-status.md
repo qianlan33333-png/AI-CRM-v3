@@ -2,7 +2,7 @@
 
 更新时间：2026-09-16 09:22:08（Asia/Shanghai；事件时间均保留原始时区）
 固定审计基线：a4a89ce55e3dc745aca0baf6634d684700bbce8b
-当前 main：23a3174260d7f7646fb58c94de4644fc82a7300d
+当前 main：09f6d7243228f6415cf550dc8711e28b4003889f
 当前原目录：`/Users/qianlan/Downloads/新CRM`（只读保留用户改动）
 文档工作树：`/Users/qianlan/aicrm-worktrees/governance-recover-20260915`
 
@@ -10,14 +10,14 @@
 
 ## 2026-09-16 当前证据校准
 
-#340、#346、#354、#357 与 #355 已进入该时点的 main；#358、#359、#360、#361 和 tests/governance 仍是候选，最终账本必须以最终 clean main 重建。以下是可复核的隔离浏览器事实，不是部署或生产认证 readback。
+#340、#346、#354、#357、#355、#358、#359、#360 与 #361 已进入该时点的 main；tests/governance 候选仍须随最终 merge 重新绑定。以下是可复核的隔离浏览器事实，不是部署或生产认证 readback。
 
 | 范围 | clean SHA 与实际日志 | 已确认页面事实 | 保留边界 |
 | --- | --- | --- | --- |
 | remaining 四类 | `e2dded70f8f08c20f2d9080b3bbcd0f716cd65fb`；UTF8 PG Chromium 19.335s | 13 图覆盖 archive entry/detail、Radar、coupon public、shared member grid；根审确认单页头、可见图和当前显示 1 行 | 仅 fixture；等待最终 main 与生产读回 |
 | admin desktop | `74743a12a2e21686e67881061c88eccecc7feb17`；UTF8 PG Chromium 49.910s | coupon list/form/data、service list、external-effects、channels new、runtime、API docs、owner migration、member grid 的 1280/1440 几何与可见操作 | CouponData 当时仅几何通过，语义以后一行记录为准 |
-| CouponData 修复后 | `2800105c549f68143f36d248bc77e829b35a7042`；83.147s；`coupon-data-final-2800105c8c71/coupon-data-final-utf8.log` | 两桌面图确认 1/100、发行100、指定商品1项、可用状态与编辑表单完整字段 | #360 尚未写成 main/production 完成 |
-| public survey | `fc8f72393c5633ff1327b705c8cd073ec8c61cb5`；44.853s；`public-survey-final-fc8f7239f54d/public-survey-final-utf8.log` | auth/all/one/error/result 各 375/390/430；OAuth auth/error 是明确停止态，正常提交/result 保持 Owner journey | artifact suffix 不等于完整 SHA，以本行完整 SHA 为准；#361 尚未写成 main/production 完成 |
+| CouponData 修复后 | `2800105c549f68143f36d248bc77e829b35a7042`；83.147s；`coupon-data-final-2800105c8c71/coupon-data-final-utf8.log` | 两桌面图确认 1/100、发行100、指定商品1项、可用状态与编辑表单完整字段；#360=`7552ebd3` 已入 main | artifact suffix 不等于完整 SHA，以本行完整 SHA 为准；未部署/生产 readback 未完成 |
+| public survey | `fc8f72393c5633ff1327b705c8cd073ec8c61cb5`；44.853s；`public-survey-final-fc8f7239f54d/public-survey-final-utf8.log` | auth/all/one/error/result 各 375/390/430；OAuth auth/error 是明确停止态，正常提交/result 保持 Owner journey；#361=`09f6d724` 已入 main | artifact suffix 不等于完整 SHA，以本行完整 SHA 为准；未部署/生产 readback 未完成 |
 
 目录 `public-survey-final-fc8f7239f54d` 的唯一最终日志在 09:22:08 覆盖此前同路径的流式输出；不再重复运行或重写该目录。先前语义失败原件仍保留在 `public-survey-mobile-07a41fd4cf5a`。后续每次只使用新 attempt 目录。
 
@@ -53,22 +53,22 @@
 | #347 paid records | head `66143cd19c67d2bfd17e66505f54b35d8e18076f`；CI `35033284745` 全 lanes/check/quality 通过；merge `040eb6759c3ac3f1d81e78de40d3a4d61b4c1c74` | root verified clean source `384f383ee8e91047b7865708e61155fa5ad49d25` and tree `238b6b6de1787b36ba086ec71a44dde83e00d2f2`; PG/authority evidence remains scoped | 已进入 main，仍未部署；订单认证 readback、支付／退款／分账和 Provider receipt 未验 |
 | #345 admin list visual fixes | head `f8a3658149cbb9a6b25d131244d06a2c9f06d77d`；CI `35027252551` 全适用检查通过；merge `1e91d8f8bff409d6d0e8c91c4191b12cc2efec4a` | local visual/action evidence and exact-head quality retained | 已进入 main，仍未部署；生产页面 readback 未验 |
 | #340 channel read state | merge `a01d6f2e19c72500c94c8944dc55c905b63ba8e1`；CI `35036235000` 全适用检查通过 | read-state 证据保留 | 已进入 main，未部署；渠道空态、权限和认证 readback 仍待验 |
-| #346 public survey | merge `aec4c2609b016fdf18b2d5cbf546e76f0ce30eb4`；CI `35037494318` 全适用检查通过 | UTF8 PG 下 PublicSurveyPresentation Chromium 实际通过；H5 实际可达 auth/all/one/error/result 的移动证据另按 #361 候选保存 | 已进入 main，未部署；#361 停止态修复、移动端 readback、问卷提交结果和业务写入回执仍需单独验收 |
+| #346/#361 public survey | merges `aec4c2609b016fdf18b2d5cbf546e76f0ce30eb4` / `09f6d7243228f6415cf550dc8711e28b4003889f` | UTF8 PG 下 PublicSurveyPresentation Chromium 实际通过；H5 实际可达 auth/all/one/error/result 的移动证据已绑定 #361 | 已进入 main，未部署；移动端 readback、问卷提交结果和业务写入回执仍需单独验收 |
 | 公共分销生命周期／#351 | merge `d2eda00380fa3fee94bbd303398228a20bcd2894`；CI `35030233550` 全适用检查通过，deploy SKIPPED | public authorized read state、375/390/430 和 UTF8/认证边界证据已按 PR 保存 | 已进入 main，仍未部署；公共中心、归因／佣金真实 readback 和 Provider receipt 待验 |
 | 管理分销确认／#352 | merge `b4bb355d2b15324748fdc4f4d2a81e6e3523836b`；CI `35028879267` 全适用检查通过，deploy SKIPPED | 共享字段、目标版本与访问代次捕获证据 | 已进入 main，仍未部署；后台认证页面与真实数据 readback 待验 |
 | 分销 compact／#353 | merge `ada1bdc902a4ba603382d03bc8d78e2983446696`；CI `35034837242` 全适用 lane、check、quality 通过；clean source `dff54688`、tree `d17da85` 与 review 一致；formal map `166/225`、stage `154/214` | QR dialog、四指标、同排 tabs/filter 与 distinct order ReadPort 已随 merge 进入当前 main | 已进入 main／未部署；认证数据 readback、生产页面和 settlement/Provider 结果仍待验 |
 | 问卷列表 read state／#354 | merge `71acf1e81db0743954696999cba18e8864799cc5`；CI `35039557156` 全适用检查通过 | 失败、空态、无匹配和 retry 合同继续独立记录；旧失败/取消 run 不计为通过 | 已进入 main，未部署；认证浏览器与业务写入 readback 待验 |
 | Radar CSP／#355 | merge `23a3174260d7f7646fb58c94de4644fc82a7300d`；CI `35042545968` 全适用检查通过 | same-origin tracking 修复范围仅为同源 `connect-src 'self'`；e2 已验收可见 fixture 与 Owner receipt 证据；不涉及 Provider、迁移或身份 | 已进入 main，未部署；公开授权／UnionID assurance 与生产认证 readback 仍待，不为本次 UI 发布触发新的 Provider 效果 |
-| archive 单标题／#356→#358 | #356 旧栈候选 `b6097924` 保留为历史；clean-main #358 head `329894123c88f01b550f30f64624ab2111693972`，CI `35044046079` 运行中 | 保留共享 topbar，移除 archive list/detail 重复 h2；e2dded 隔离证据已复核 entry 1280/detail 1440 | #358 尚未进入 main／未部署；current-head CI、真实 archive readback 待完成；#356 不再作为当前交付 |
-| member-grid visible rows／#359 | 已审 head `17be27180140e6d2db3d847b557df5b029dd838c`；双模式 Host/HTTP-JSDOM 定向证据已保存 | 管理员和公开页缺失/null total 都显示“当前显示 N 行”，明确 total 保持；折叠分组不冒充已加载记录；e2dded 隔离证据显示当前 1 行 | runtime 尚未进入 main／未部署；current-head CI、真实会员 projection readback 待验 |
+| archive 单标题／#356→#358 | #356 旧栈候选 `b6097924` 保留为历史；#358 merge `03a06d0a080751d8494d8df45a31639f1cbcf0e9` | 保留共享 topbar，移除 archive list/detail 重复 h2；e2dded 隔离证据已复核 entry 1280/detail 1440 | 已进入 main，未部署；真实 archive readback 待完成；#356 不再作为当前交付 |
+| member-grid visible rows／#359 | merge `08a33879d674a22968c2d237145e67a707f3557c`（自有修复 `17be2718`）；双模式 Host/HTTP-JSDOM 定向证据已保存 | 管理员和公开页缺失/null total 都显示“当前显示 N 行”，明确 total 保持；折叠分组不冒充已加载记录；e2dded 隔离证据显示当前 1 行 | 已进入 main，未部署；真实会员 projection readback 待验 |
 | Chromium readiness tests／#357 | merge `d9eb7147f6cd20148d7cd2ff35e7354d60b17172` | 原生鼠标动作与有界 readiness polling；不改 runtime 业务代码 | 已进入 main；不构成页面或业务验收 |
-| remaining-pages tests-only | clean tree `e2dded70f8f0`；UTF8 PG Chromium 19.335s；日志 `/Users/qianlan/aicrm-artifacts/remaining-pages-chromium-20260916/remaining-pages-e2dded70f8f0.log` | 13 张截图覆盖 archive entry/detail、Radar/Coupon/Grid；桌面与 public survey 扩展证据以本页“当前证据校准”为准 | 隔离测试证据已通过；#358/#359/#360/#361 runtime 尚待合入，生产认证 readback、部署和 Provider 业务仍未验收 |
+| remaining-pages tests-only | clean tree `e2dded70f8f0`；UTF8 PG Chromium 19.335s；日志 `/Users/qianlan/aicrm-artifacts/remaining-pages-chromium-20260916/remaining-pages-e2dded70f8f0.log` | 13 张截图覆盖 archive entry/detail、Radar/Coupon/Grid；桌面与 public survey 扩展证据以本页“当前证据校准”为准 | 隔离测试证据已通过；相关 runtime 均已合入 main，生产认证 readback、部署和 Provider 业务仍未验收 |
 
 证据文件 `/Users/qianlan/aicrm-artifacts/root-ui-review-20260915-341.md` 为本轮主索引；本账本只引用明确命名的 evidence，不全盘扫描日志。`343-distribution-confirmed-510f1b05-verification-20260915.md` 证明 canonical customer/OneID 读取、Distribution-owned PG read projection 和 Go/dedup audit，未证明发布或 Provider 效果。
 
 ## 2026-09-16 07:32:41 根审收口补记
 
-- 99 路由矩阵曾确认四类真实证据缺口：archive list/detail（22–23）、Radar public（79）、coupon public claim（84）和 member-grid（50、86）。早期 `eaa84fc5` 的 archive 重复标题、grid `Number(null)` 导致总数 0、Radar 1px fixture 截图全部拒绝；随后 clean tree `e2dded70f8f0` 的 UTF8 PG Chromium 19.335s、13 张截图和根审复核已消除这四个隔离测试问题。桌面补验已覆盖 `/admin/coupons`、couponForm、couponData、`/admin/service-period-products`、`/admin/external-effects`、`/admin/channels/new`、`/admin/api-docs`／runtime releases、`/admin/owner-migration` 与 member-grid 的 1280/1440 几何、单页头和可见操作。问卷的实际公共移动路由是 auth/all/one/error/result，均已有 375/390/430 候选证据；`index/loading/done/signup/active/expired/pay/qr` 为未挂载 build carrier，渠道没有独立公共移动 UI，均记 N/A 而不伪造流程。以上不替代 main、生产认证 readback 或 Provider 结果。
+- 99 路由矩阵曾确认四类真实证据缺口：archive list/detail（22–23）、Radar public（79）、coupon public claim（84）和 member-grid（50、86）。早期 `eaa84fc5` 的 archive 重复标题、grid `Number(null)` 导致总数 0、Radar 1px fixture 截图全部拒绝；随后 clean tree `e2dded70f8f0` 的 UTF8 PG Chromium 19.335s、13 张截图和根审复核已消除这四个隔离测试问题。桌面补验已覆盖 `/admin/coupons`、couponForm、couponData、`/admin/service-period-products`、`/admin/external-effects`、`/admin/channels/new`、`/admin/api-docs`／runtime releases、`/admin/owner-migration` 与 member-grid 的 1280/1440 几何、单页头和可见操作。问卷的实际公共移动路由是 auth/all/one/error/result，均已有 375/390/430 证据；`index/loading/done/signup/active/expired/pay/qr` 为未挂载 build carrier，渠道没有独立公共移动 UI，均记 N/A 而不伪造流程。以上不替代 production 认证 readback 或 Provider 结果。
 - detached `b8691792b1e35de8d7f058fbf0e8bbdbf4dea5d2` 的首次 Linux `release-fast` 包因 AppleDouble 被拒；attempt2 设置 `COPYFILE_DISABLE=1` 后由 root 独立核验通过：458 tar members = 441 regular + 17 directories，440 manifest payload hashes 全匹配，无 AppleDouble、链接、绝对/父路径或重复 canonical path，archive SHA256 为 `1504a8ea17a4b150c914bc43c9e86e3264d36df50beb05da45354c0beb10eb46`。该包仍是 detached b869 的预检、未部署；最终发布必须从 clean merged main 重建。
 - 本地中文 PostgreSQL Journey 统一使用 `postgres://qianlan@127.0.0.1:55441/aicrm_ui_utf8_20260916?sslmode=disable`；旧 SQL_ASCII 数据库不能作为中文 PG 测试依据。该修正没有改生产 schema 或新增迁移。
 - 生产只读 `/readyz` 仍报告 `f594e33b010db8bef62a9a890c3d80350f2008a0`；认证浏览器／扩展当前不可用，不能写生产页面 readback 或 Provider 业务通过。
@@ -92,7 +92,7 @@ scripts/run-donor-view-consumers.sh release-fast
 
 只读生产版本核对：2026-09-16 04:27:23（北京时间）请求 `https://id-dev.youcangogogo.com/readyz` 返回 `{"release_sha":"f594e33b010db8bef62a9a890c3d80350f2008a0","status":"ready"}`。该响应证明当前公开 ready 端点报告的版本与运行状态；它不证明新候选已部署，也不替代 root 的认证页面、PostgreSQL、支付／退款、分销、分账或 Provider 回执验收。
 
-可执行上线顺序：#345/#343/#347/#351/#352/#353/#340/#346/#354/#357/#355 已在当前 main；root 继续按当前 SHA 绑定 #358/#359/#360/#361 和 remaining-pages tests/governance，#356 旧栈不再作为当前交付。完成最终 check/quality 后再从 clean merged main 生成无 AppleDouble 的完整包。随后按 deploy runbook 分块上传和 installer，用 /healthz、/readyz 核对同一 release SHA，再用已登录生产 `/admin/distribution`、商品和素材页面完成认证回读与视口交互核验。支付、退款、归因、系统分账、发送和 Provider receipt 继续按已有合同／既有回执分别记账；本次 UI 发布不要求额外触发新的资金或外部写入。任一证据缺失，相关门禁保持待验收。
+可执行上线顺序：#345/#343/#347/#351/#352/#353/#340/#346/#354/#357/#355/#358/#359/#360/#361 已在当前 main；root 继续按当前 SHA 绑定 remaining-pages tests/governance，#356 旧栈不再作为当前交付。完成最终 check/quality 后再从 clean merged main 生成无 AppleDouble 的完整包。随后按 deploy runbook 分块上传和 installer，用 /healthz、/readyz 核对同一 release SHA，再用已登录生产 `/admin/distribution`、商品和素材页面完成认证回读与视口交互核验。支付、退款、归因、系统分账、发送和 Provider receipt 继续按已有合同／既有回执分别记账；本次 UI 发布不要求额外触发新的资金或外部写入。任一证据缺失，相关门禁保持待验收。
 
 ## 用户最新分销 UI 调整与验收界线
 
@@ -130,9 +130,9 @@ C0=源码路由、Host、`Render*`/mount、manifest 静态闭包；C1=共享组�
 
 剩余工作：
 
-- root/集成链继续绑定 #358/#359/#360/#361 和 remaining-pages tests/governance 的最终 SHA、CI、合入状态；#340/#346/#354/#357/#355 已在 main，#356 旧栈候选只保留历史。已有实现但缺页面级视口证据的 route 已按上方收口补记，不视为新增业务页面。
+- root/集成链继续绑定 remaining-pages tests/governance 的最终 SHA、CI、合入状态；#340/#346/#354/#357/#355/#358/#359/#360/#361 已在 main，#356 旧栈候选只保留历史。已有实现但缺页面级视口证据的 route 已按上方收口补记，不视为新增业务页面。
 - 对当前 main 已含的 #345/#348/#349/#350 完成无 AppleDouble 最终包、部署后版本、商品／素材认证 readback；不要用静态 carrier、截图或旧 artifact 代替真实保存读回。
-- 问卷列表空／无匹配／失败 retry 与 archive、Radar public、coupon public、member-grid 的隔离证据已闭合；#358/#359/#360/#361 合入、生产认证 readback 和服务端业务事实仍待，不把旧 eaa 截图或测试稳定性 PR 写成页面通过。
+- 问卷列表空／无匹配／失败 retry 与 archive、Radar public、coupon public、member-grid 的隔离证据已闭合；生产认证 readback 和服务端业务事实仍待，不把旧 eaa 截图或测试稳定性 PR 写成页面通过。
 - 支付、退款、分销归因、系统分账、发送和 Provider 回执按既有合同与既有证据分层记录；不为本轮 UI 发布额外触发新交易或外部写入。
 - 恢复 Product Design 路由后补 focused audit；当前 catalog 缺失已如实登记，不能伪造完成。
 

@@ -1,14 +1,15 @@
 # 前端真实组件索引（全局 UI 治理核对，2026-09-15）
 
-固定审计基线为 a4a89ce55e3dc745aca0baf6634d684700bbce8；当前 main 为 `23a3174260d7f7646fb58c94de4644fc82a7300d`，已含此前记录的 #345/#348/#349/#350/#352/#351/#343/#347/#353，以及 #340/#346/#354/#357/#355。#358/#359/#360/#361 和 tests/governance 仍须随最终 merge 重新核对。索引用于选择现有入口，不授权跨领域读取或写入；动工前除路径外，还要追踪 canonical 路由、handler／adapter、Render* 或挂载、manifest assets 和页面调用。链路固定为 canonical route -> handler／领域 UI adapter -> Render* 或对应 mount -> manifest asset -> page caller。未挂载实现、历史快照和构建产物不能单独作为当前标准；冻结 donor 只作行为／视觉证据，禁止修改。
+固定审计基线为 a4a89ce55e3dc745aca0baf6634d684700bbce8；当前 main 为 `09f6d7243228f6415cf550dc8711e28b4003889f`，已含此前记录的 #345/#348/#349/#350/#352/#351/#343/#347/#353、#340/#346/#354/#357/#355，以及 #358=`03a06d0a`、#359=`08a33879`、#360=`7552ebd3`、#361=`09f6d724`。tests/governance 候选仍须随最终 merge 重新核对。索引用于选择现有入口，不授权跨领域读取或写入；动工前除路径外，还要追踪 canonical 路由、handler／adapter、Render* 或挂载、manifest assets 和页面调用。链路固定为 canonical route -> handler／领域 UI adapter -> Render* 或对应 mount -> manifest asset -> page caller。未挂载实现、历史快照和构建产物不能单独作为当前标准；冻结 donor 只作行为／视觉证据，禁止修改。
 
-2026-09-16 路由证据补记：`/admin/couponData.html` 继续由 Coupon Owner → frozen `AdminController` → `couponAdapter` 装配；展示只能使用该页已有 Coupon DTO，技术 `targetRefs` 不能跨 Product Owner 反查。`/q/{slug}` → Survey OAuth/session Owner → `h5AuthAdapter` → `surveyPublicHost` → frozen H5 runtime；实际可达 H5 状态是 auth/all/one/error/result，分别有 PostgreSQL Chromium 375/390/430 候选证据。`index/loading/done/signup/active/expired/pay/qr` 仅是 build carrier，渠道没有独立公共移动 UI；它们不作为缺页开发或成功业务流。所有候选浏览器图仍不等于 production readback。
+2026-09-16 路由证据补记：`/admin/couponData.html` 继续由 Coupon Owner → frozen `AdminController` → `couponAdapter` 装配；展示只能使用该页已有 Coupon DTO，技术 `targetRefs` 不能跨 Product Owner 反查。`/q/{slug}` → Survey OAuth/session Owner → `h5AuthAdapter` → `surveyPublicHost` → frozen H5 runtime；#361 已在构建阶段为 auth/all/one/result/error 注入 Host 与样式，实际可达 H5 状态是 auth/all/one/error/result，分别有 PostgreSQL Chromium 375/390/430 证据。`index/loading/done/signup/active/expired/pay/qr` 仅是 build carrier，渠道没有独立公共移动 UI；它们不作为缺页开发或成功业务流。隔离浏览器图仍不等于 production readback。
 
 | 场景 | 入口 | 调用／装配 | 边界 |
 | --- | --- | --- | --- |
 | 管理端单壳 | `internal/webshell/templates/admin_base.html` | `internal/webshell/renderer.go` 的 `RenderDistribution` | 仅一个 `.admin-sidebar` 和 `.admin-topbar`；分销领域只提供经 manifest 验证的正文 assets。 |
 | 企微客户侧边栏 | `web/v3/sidebar/main.ts`、`web/v3/sidebar/presentation.css` | `RenderSidebar` → sidebar manifest assets → `sidebar_workbench_v3_overlay.js` | 仅复用签名 context 与 `SidebarBridge`；不挂员工、群、标签 picker 或自动化话术目录。403／context 失效清空客户缓存和操作入口；素材标签来自 Media Owner。 |
 | 问卷管理与编辑器 | `web/v3/surveyAdapter.ts`、`web/src/admin/sections/questionnaireEditor.ts` | `internal/survey/ui.go` 解析 manifest，`RenderSurvey` 在冻结 admin bundle 前装配列表 bridge；编辑器由 `questionnaireEditor` 入口挂载 | 一级列表复用冻结 table、检索和操作；bridge 仅映射问卷名称。编辑页保留标题用于答题/预览，状态以服务端 readback 为准。 |
+| 公共问卷 H5 | `web/v3/surveyPublicHost.ts`、`web/v3/surveyPublic.css` | `internal/survey/http.Handler.publicEntry` 的 `/q/{slug}` 保留 OAuth/session 入口；构建阶段只为 auth、all、one、result、error 注入 Host 与样式，再由 Survey manifest 装配 | Host 只呈现既有题目、校验、提交中、错误、失效链接与结果读回状态；提交 key、答案写入、OAuth/OneID 和结果 token 始终归 Survey Owner。 |
 | 通用详情抽屉 | `web/v3/shared/ui/detailDrawer.ts`、`web/v3/shared/ui/detailDrawer.css` | `distributionAdmin.ts` 导入行为，`sharedDetailDrawerStyles` 由 `admin_base` 挂载 | 组件只负责焦点回收、Escape/关闭和视觉容器；调用方必须读取自己的受权服务端事实，不能由抽屉伪造状态。 |
 | 顶栏动态操作 | `web/v3/shared/ui/pageHeaderActions.ts` | 挂载既有 `.admin-topbar > .admin-topbar-meta`；`distributionAdmin.ts`、图片库与 `pageHeaderActionHost.ts`（企微标签、AI 计划详情）复用 | SSR `PageAction` 仅承载链接；客户端命令可新建，或以 `mountPageHeaderActionElements` 移动调用页已绑定的原节点。不得创建第二标题栏、复制领域命令或跨 owner 转移控件。 |
 | 商品编辑分销配置 | `web/v3/productAdapter.ts`、`web/v3/productDistribution.css` | Product UI 的 `ProductCSS` 经 `admin_base` 装配 | 仅“售卖信息”承载启用分销开关、本商品佣金比例与退款复核等待天数；其他维度不写 `distribution_policy`，商品编辑页不提供申请链接、复制或二维码。公共分销中心保持其既有入口；不新增壳、配色、身份或资金模型。 |
@@ -53,7 +54,7 @@
 
 ## 路由／页面条目逐项验收矩阵（2026-09-15）
 
-本矩阵以历史 clean main 3eda04cbd56d7bfdf44ba2a15d573ee29703926a 的实际路由装配为初始盘点基线；固定审计基线为 a4a89ce55e3dc745aca0baf6634d684700bbce8，当前 main 为 `23a3174260d7f7646fb58c94de4644fc82a7300d`，已含 #345、#348、#349、#350、#351、#352、#343、#347、#353、#340、#346、#354、#357、#355。未合入能力的 branch head、CI 和本地证据单独记录，不能写成 main 已发布；候选 head 与 main、部署、认证 readback 分栏理解。条目总数以表中连续编号自动核算，涵盖 canonical route、alias、reserved placeholder、登录／退出和构建 artifact，不能描述为相同数量的 canonical 页面。C0 只表示源码路由、Host 和 assets 静态核对，不能当作页面通过；C1 是共享组件合同测试，C2 是实际挂载壳与视口证据，C3 才是认证业务数据和保存后读回。视口要求按页面类型执行：后台桌面 1280/1440、企微 sidebar 360/420、公开或 H5 375/390/430。除已测证据明确列出的子集外，表中的状态统一表示未执行/待验收的逐项检查集合。
+本矩阵以历史 clean main 3eda04cbd56d7bfdf44ba2a15d573ee29703926a 的实际路由装配为初始盘点基线；固定审计基线为 a4a89ce55e3dc745aca0baf6634d684700bbce8，当前 main 为 `09f6d7243228f6415cf550dc8711e28b4003889f`，已含 #345、#348、#349、#350、#351、#352、#343、#347、#353、#340、#346、#354、#357、#355、#358、#359、#360、#361。未合入能力的 branch head、CI 和本地证据单独记录，不能写成 main 已发布；候选 head 与 main、部署、认证 readback 分栏理解。条目总数以表中连续编号自动核算，涵盖 canonical route、alias、reserved placeholder、登录／退出和构建 artifact，不能描述为相同数量的 canonical 页面。C0 只表示源码路由、Host 和 assets 静态核对，不能当作页面通过；C1 是共享组件合同测试，C2 是实际挂载壳与视口证据，C3 才是认证业务数据和保存后读回。视口要求按页面类型执行：后台桌面 1280/1440、企微 sidebar 360/420、公开或 H5 375/390/430。除已测证据明确列出的子集外，表中的状态统一表示未执行/待验收的逐项检查集合。
 
 99 条连续条目是治理台账，不是页面数量或 99 个页面全通过：当前表混合 canonical route/view、alias/carrier、reserved placeholder、login/logout 和 H5/build artifact。alias 只验证重定向、query、权限和 active state，不能复制 canonical 页面证据；reserved 只记录受控不可用态；login/logout 单独验证认证边界；artifact 只记录生成器与资源闭包。每个条目仍按 C0–C3 逐项升级，任何未知、无权限、不可用、真实零值和失败必须保持可区分。
 
@@ -84,8 +85,8 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 | 19 | `/admin/cloud-orchestrator/observability`（reserved placeholder） | WB | admin shell | 受控 placeholder | 1280/1440 | unavailable、错误、只读 | C0 | 观测真实 projection 和状态颜色逐页验收 |
 | 20 | `/admin/external-effects` → `/admin/campaigns.html?view=external-effects` | WB/External Effects | tokens/labs/admin | External Effects shell | 1280/1440 | 重定向、loading、空、错误、outcome_unknown | C0：`externaleffects/ui.go` | 外部效果只读事实、对账和 job query 的认证浏览器 readback |
 | 21 | `/admin/campaigns.html?view=external-effects&job={id}`（campaign artifact） | WB/External Effects | 同上 | 外部效果详情/历史 | 1280/1440 | loading、404、accepted/attempted/unknown/reconciled | C0 | 逐项绑定 execution status 和 receipt；不把历史 CI 当页面证据 |
-| 22 | `/admin/message-archive`（archive list） | WB | admin shell + archive assets | 客户/会话存档列表 | 1280/1440 | loading、空、错误、403、只读 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 entry 1280；#358 runtime 尚待合入 | 旧证据的重复 topbar/card title 已被拒绝；隔离单标题几何通过，认证客户选择、已入库消息 readback 和 PII 脱敏仍待 main/生产验收 |
-| 23 | `/admin/message-archive/customers/{id}`（archive detail） | WB | 同上 | 客户会话详情 | 1280/1440 | loading、无记录、错误、403、只读 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 detail 1440；#358 runtime 尚待合入 | Customer/Identity 归属、时间线真实数据和发布后 readback 仍待验收 |
+| 22 | `/admin/message-archive`（archive list） | WB | admin shell + archive assets | 客户/会话存档列表 | 1280/1440 | loading、空、错误、403、只读 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 entry 1280；#358=`03a06d0a` 已入 main | 旧证据的重复 topbar/card title 已被拒绝；隔离单标题几何通过，认证客户选择、已入库消息 readback 和 PII 脱敏仍待生产验收 |
+| 23 | `/admin/message-archive/customers/{id}`（archive detail） | WB | 同上 | 客户会话详情 | 1280/1440 | loading、无记录、错误、403、只读 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 detail 1440；#358=`03a06d0a` 已入 main | Customer/Identity 归属、时间线真实数据和发布后 readback 仍待验收 |
 | 24 | `/admin/customers`（`customers.html`） | WB | admin shell + customer Host | 客户列表、筛选、分页 | 1280/1440 | loading、空、错误、403、只读 | C0：`renderer.go` customers 分支 | OneID/客户 API 认证读回、分页和手机号脱敏 |
 | 25 | `/admin/customers/{id}`（`customerDetail.html`） | WB | admin shell + customer assets | 客户档案与历史入口 | 1280/1440 | loading、404、冲突、错误、只读 | C3 子旅程：#316 merge `645f19b2d5a267ca620d15e19a6f7fe7e26880a5`，run `34933355598` 全必跑 lane PASS，canonical customer/OneID/phone/profile/tab 证据 | 订单、问卷、存档分区逐页认证读回、发布仍待验收；main 代码不等于线上页面完成 |
 | 26 | `/admin/user-ops/ui`（reserved placeholder） | WB | admin shell | 漏斗/用户运营 placeholder | 1280/1440 | unavailable、403、只读 | C0：route registry | 不得把 HXC 或 overview 证据套用到此页；确认真实 Host |
@@ -112,7 +113,7 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 | 47 | `/admin/service-period-products`（`spProducts.html`） | PROD | product host + standard CSS/Host | 周期商品列表 | 1280/1440 | loading、空、错误、403、只读 | C0 | 周期商品真实数据、分页和入口 |
 | 48 | `/admin/service-period-products/new`（`spProductForm.html` new） | PROD | 同上 | 周期商品表单 | 1280/1440 | 草稿、校验失败、保存失败、只读 | C0 | 真实保存/发布 readback |
 | 49 | `/admin/service-period-products/{id}/edit`（`spProductForm.html` edit） | PROD | 同上 | 周期商品编辑 | 1280/1440 | loading、404、脏表单、冲突、只读 | C0 | 真实详情与会员数据入口 |
-| 50 | `/admin/spProductData.html?id={id}`（member grid；aliases `/admin/wechat-pay/spProductData.html`, `/admin/wechat-pay/products/spProductData.html`, `/admin/service-period-products/spProductData.html`） | PROD/member-grid | product member-grid assets | 会员数据表格 | 1280/1440 | loading、空、错误、403、只读、分页 | C2（隔离）：`74743a12` 1280/1440 与 `e2dded70f8f0` public Grid 复核；#359=`17be2718` 已审、待 main | 旧截图把 `null` 算成总数 0，且折叠分组不等于已加载行；管理员和公开页均以“当前显示 N 行”描述可见 DOM，真实分页、授权和会员 projection readback仍待 main/生产验收 |
+| 50 | `/admin/spProductData.html?id={id}`（member grid；aliases `/admin/wechat-pay/spProductData.html`, `/admin/wechat-pay/products/spProductData.html`, `/admin/service-period-products/spProductData.html`） | PROD/member-grid | product member-grid assets | 会员数据表格 | 1280/1440 | loading、空、错误、403、只读、分页 | C2（隔离）：`74743a12` 1280/1440 与 `e2dded70f8f0` public Grid 复核；#359=`08a33879` 已入 main | 旧截图把 `null` 算成总数 0，且折叠分组不等于已加载行；管理员和公开页均以“当前显示 N 行”描述可见 DOM，真实分页、授权和会员 projection readback仍待生产验收 |
 | 51 | `/admin/coupons`（`coupons.html`） | COUP | coupon host + tokens/labs | 优惠券规则列表 | 1280/1440 | loading、空、错误、403、只读 | C0 | 规则、领取事实和核销快照真实读回 |
 | 52 | `/admin/couponForm.html`（`couponForm.html` new） | COUP | 同上 | 优惠券表单 | 1280/1440 | 草稿、校验失败、保存失败、只读 | C0 | 创建后 slug/规则 readback |
 | 53 | `/admin/couponForm.html?id={id}`（edit；alias `/admin/coupons/{id}/edit`） | COUP | 同上 | 优惠券编辑 | 1280/1440 | loading、404、脏表单、冲突、只读 | C0 | alias/canonical 一致性与保存后事实 |
@@ -146,15 +147,15 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 | 81 | `/pay/{code}`（public product checkout） | PUB-PROD | product public handler | 商品结算 | 375/390/430 | 授权中、可购买、已购买、失败、outcome_unknown | C2 子旅程：#325 publicCommerceJourney、manifest fail-closed、nested UoW 修复和有效视口证据已入 main，run `34938888021` 必跑 lane 与 quality-report PASS | 未部署；支付幂等、原订单保留、真实 provider receipt 和生产回读仍待完成，不把页面成功当到账 |
 | 82 | `/s/{code}`（service-period detail） | PUB-SERVICE | service-period public handler | 周期商品详情 | 375/390/430 | loading、失效、已购买、错误 | C0 | 周期商品与会员权益 readback |
 | 83 | `/s/{code}/pay`（service-period checkout） | PUB-SERVICE | service-period public handler | 周期商品结算 | 375/390/430 | 授权中、可购买、失败、unknown | C0 | 原订单恢复、幂等和支付 receipt |
-| 84 | `/c/{slug}`（coupon public claim） | PUB-COUP | coupon public handler | 优惠券详情/领取 | 375/390/430 | loading、失效、已领取、不可用、错误 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 Coupon 390；runtime 尚待合入 | active-window fixture 与隔离 Chromium 证据已通过局部状态；领取事实、客户归属、重复领取反馈和失败态仍待 main/生产 readback |
-| 85 | `/q/{key}`（public survey share entry） | PUB-SUR | survey public handler | 问卷分享入口 | 375/390/430 | loading、需授权、过期、错误、已完成 | C3 子旅程：#346=`aec4c260` 已入 main；#361 停止态候选的 `fc8f7239` UTF8 PG Chromium 覆盖实际 H5 auth/all/one/error/result 的 375/390/430 | #361 尚未入 main／未部署；移动端 readback、问卷提交结果和业务写入回执仍待单独验收 |
-| 86 | `/shared/service-period-member-grid`（shared member grid） | PUB-SERVICE/member-grid | member-grid assets/icons | 会员数据共享表格 | 375/390/430 | loading、空、错误、过期、只读、分页 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 Grid 390；#359=`17be2718` 已审、待 main | 旧 `Number(null)`/折叠分组证据已拒绝；管理员和公开页均显示当前可见行，token scope、分页、过期链接和 main/生产 readback仍待完成 |
+| 84 | `/c/{slug}`（coupon public claim） | PUB-COUP | coupon public handler | 优惠券详情/领取 | 375/390/430 | loading、失效、已领取、不可用、错误 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 Coupon 390；相关 runtime 已入 main | active-window fixture 与隔离 Chromium 证据已通过局部状态；领取事实、客户归属、重复领取反馈和失败态仍待生产 readback |
+| 85 | `/q/{key}`（public survey share entry） | PUB-SUR | survey public handler | 问卷分享入口 | 375/390/430 | loading、需授权、过期、错误、已完成 | C3 子旅程：#346=`aec4c260` 与 #361=`09f6d724` 已入 main；`fc8f7239` UTF8 PG Chromium 覆盖实际 H5 auth/all/one/error/result 的 375/390/430 | 未部署；移动端 readback、问卷提交结果和业务写入回执仍待单独验收 |
+| 86 | `/shared/service-period-member-grid`（shared member grid） | PUB-SERVICE/member-grid | member-grid assets/icons | 会员数据共享表格 | 375/390/430 | loading、空、错误、过期、只读、分页 | C2（隔离）：clean tree `e2dded70f8f0` 已复核 Grid 390；#359=`08a33879` 已入 main | 旧 `Number(null)`/折叠分组证据已拒绝；管理员和公开页均显示当前可见行，token scope、分页、过期链接和生产 readback仍待完成 |
 | 87 | `/h5/index.html`（H5 index artifact） | PUB-SUR | build carrier | 构建入口／分流载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
-| 88 | `/h5/auth.html`（H5 auth artifact） | PUB-SUR | `h5AuthAdapter → surveyPublicHost` | 授权停止态 | 375/390/430 | 授权失败、受控回跳 | `fc8f7239` 候选三宽证据；#361 尚待 main |
+| 88 | `/h5/auth.html`（H5 auth artifact） | PUB-SUR | `h5AuthAdapter → surveyPublicHost` | 授权停止态 | 375/390/430 | 授权失败、受控回跳 | `fc8f7239` 三宽证据；#361=`09f6d724` 已入 main |
 | 89 | `/h5/all.html`（H5 all artifact） | PUB-SUR | `surveyPublicHost` | 全量答题 | 375/390/430 | 已挂载答题／提交 | `fc8f7239` 候选三宽证据；业务回执另验 |
 | 90 | `/h5/one.html`（H5 one artifact） | PUB-SUR | `surveyPublicHost` | 单题答题 | 375/390/430 | 已挂载答题／校验 | `fc8f7239` 候选三宽证据；业务回执另验 |
 | 91 | `/h5/loading.html`（H5 loading artifact） | PUB-SUR | build carrier | 加载载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
-| 92 | `/h5/error.html`（H5 error artifact） | PUB-SUR | `surveyPublicHost` | 错误停止态 | 375/390/430 | Owner 受控错误、无重试写入 | `fc8f7239` 候选三宽证据；#361 尚待 main |
+| 92 | `/h5/error.html`（H5 error artifact） | PUB-SUR | `surveyPublicHost` | 错误停止态 | 375/390/430 | Owner 受控错误、无重试写入 | `fc8f7239` 三宽证据；#361=`09f6d724` 已入 main |
 | 93 | `/h5/result.html`（H5 result artifact） | PUB-SUR | `surveyPublicHost` | 结果页 | 375/390/430 | 已挂载只读结果 | `fc8f7239` 候选三宽证据；结果 readback 另验 |
 | 94 | `/h5/done.html`（H5 done artifact） | PUB-SUR | build carrier | 完成载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
 | 95 | `/h5/signup.html`（H5 signup artifact） | PUB-SUR | build carrier | 注册载体 | N/A | N/A | 未挂载为独立用户路由；不伪造页面验收 |
@@ -174,17 +175,17 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 | 10、13 | C3（子旅程） | #300 GroupOps 详情的 owner scope／`chat_reference`／保存读回，以及 #287 渠道真实 PostgreSQL／Chromium composition 与 Enter Journey；不含发布或整页所有状态。 |
 | 25 | C3（子旅程） | #316 canonical customer／OneID／phone／profile／tab 证据；不含所有分区和生产认证 readback。 |
 | 35、36 | C2（子范围） | #324 Radar 分页/筛选与 #296 picker 布局／单项 callback；不含真实素材 save/GET。 |
-| 22–23 | C2（隔离） | clean tree `e2dded70f8f0` 的 archive entry/detail 1280/1440 已通过并由根审复核；#356 旧栈候选保留历史，#358 runtime 尚待合入，生产 readback未验。 |
+| 22–23 | C2（隔离） | clean tree `e2dded70f8f0` 的 archive entry/detail 1280/1440 已通过并由根审复核；#356 旧栈候选保留历史，#358=`03a06d0a` 已入 main，生产 readback未验。 |
 | 42–43 | C3（子旅程） | #301 订单级冻结分销快照／稳定 Read Port 与 E-ORD 视口证据；#347 head `66143cd`、CI `35033284745`、merge `040eb675` 已进入 main；部署和最新订单认证 readback仍待。 |
 | 45–46 | C3（子旅程） | #291 商品售卖信息的分销开关／比例／等待天数唯一配置；不含生产页面 readback。 |
 | 59–61 | C0/C1（子范围） | fixed_script #344 main `dca8065f`／CI `34967296577` 已有授权 PUT→GET；Prompt 与其它 lifecycle 仍未闭合，当前只以 #344 主线事实为准。 |
 | 76 | C0/C2（子范围） | #330 merge `65d69b54a2336c98da9bff2ab218562683205445`，review `754cbce2`，run `34944435507` PASS，deploy SKIPPED；仅表示企微 sidebar scoped presentation 子范围；未部署，真实企微宿主授权、绑定读回与 Provider receipt 仍待完成。 |
-| 50、86 | C2（隔离） | `74743a12` 的后台 1280/1440 与 clean tree `e2dded70f8f0` 的 Grid 375/390/430 证据已通过，根审复核当前显示 1 行；#359=`17be2718` 已审、待 main，不能写成 main/生产已加载。 |
+| 50、86 | C2（隔离） | `74743a12` 的后台 1280/1440 与 clean tree `e2dded70f8f0` 的 Grid 375/390/430 证据已通过，根审复核当前显示 1 行；#359=`08a33879` 已入 main，不能写成生产已加载。 |
 | 77–78 | C0/C2（子范围） | #309 基础分销管理已在 main；公共生命周期 #351=`d2eda00`、管理确认 #352=`b4bb355`、settlement #343=`d8f4a73`、paid records #347=`040eb67`、compact #353=`ada1bdc9` 已进入 main；CI `35034837242` 全适用 lane、check、quality 通过，clean source/tree `dff54688`/`d17da85` 与 review 一致。仍待部署、公共中心和管理页生产 readback；分销状态不代替结算确认。 |
 | 79 | C2（隔离） | clean tree `e2dded70f8f0` 的 Radar 375/390/430 证据已通过，根审复核 Radar 390，早期 1px fixture 已消除；#355 已入 main，可见 fixture 与 Owner receipt 已验，公开授权和生产认证 readback仍待。 |
 | 84 | C2（隔离） | clean tree `e2dded70f8f0` 的 Coupon 375/390/430 证据已通过；active-window fixture 仍只是局部合同，领取事实、失效、重复和失败态服务端证据仍待。 |
 | 80–81 | C0/C2（子范围） | #325 auth/manifest/nested-UoW 与有效视口证据已入 main；未部署、未做真实支付/provider 回执。 |
-| 85 | C3（子范围） | #346=`aec4c260` 已入 main；`fc8f7239` 候选在 UTF8 PG Chromium 下覆盖 H5 auth/all/one/error/result 三宽。#361、部署、真实移动端 readback，以及问卷提交结果和业务写入回执仍待单独验收。 |
+| 85 | C3（子范围） | #346=`aec4c260` 与 #361=`09f6d724` 已入 main；`fc8f7239` 在 UTF8 PG Chromium 下覆盖 H5 auth/all/one/error/result 三宽。部署、真实移动端 readback，以及问卷提交结果和业务写入回执仍待单独验收。 |
 | 1、3–8、11–12、14–21、24、26–34、37–41、44、47–49、51–58、62–75、80–83 | C0 | 仅路由、Host、assets 或未完成页面边界核对；逐页真实数据、失败态、权限与 readback 尚待验收。 |
 
-矩阵当前覆盖的是 clean main 能确认的 route/view 与既有 artifact；`C0`、共享组件测试、注入式 Host 或单一页面截图都不会自动升级为 `C3`。四类曾识别的真实缺口已有 remaining-pages clean tree `e2dded70f8f0` 隔离 Chromium 证据，#355 已入 main，#358/#359/#360/#361 仍待；生产认证 readback、部署和 Provider receipt 仍待。`/admin/coupons`、couponForm、couponData、`/admin/service-period-products`、`/admin/external-effects`、`/admin/channels/new`、`/admin/api-docs`／runtime releases、`/admin/owner-migration` 已有后台 1280/1440 证据。H5 auth/all/one/error/result 有候选三宽证据；其余八个 H5 build carrier 与无独立公共 UI 的渠道按代码可达性记 N/A。当前未发现应新增页面的遗漏，也不扩大业务验收范围。GroupOps 标准群运营、运营闭环、自动化话术、AI 助手四类页面也必须保持独立记录。
+矩阵当前覆盖的是 clean main 能确认的 route/view 与既有 artifact；`C0`、共享组件测试、注入式 Host 或单一页面截图都不会自动升级为 `C3`。四类曾识别的真实缺口已有 remaining-pages clean tree `e2dded70f8f0` 隔离 Chromium 证据，#355/#358/#359/#360/#361 已入 main；生产认证 readback、部署和 Provider receipt 仍待。`/admin/coupons`、couponForm、couponData、`/admin/service-period-products`、`/admin/external-effects`、`/admin/channels/new`、`/admin/api-docs`／runtime releases、`/admin/owner-migration` 已有后台 1280/1440 证据。H5 auth/all/one/error/result 有三宽证据；其余八个 H5 build carrier 与无独立公共 UI 的渠道按代码可达性记 N/A。当前未发现应新增页面的遗漏，也不扩大业务验收范围。GroupOps 标准群运营、运营闭环、自动化话术、AI 助手四类页面也必须保持独立记录。

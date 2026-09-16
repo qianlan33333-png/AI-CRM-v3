@@ -20,6 +20,16 @@
   // the explicit unavailable renewal marker.
   const nativeFetch = typeof window.fetch === "function" ? window.fetch.bind(window) : null;
   const memberGridRoot = () => document.getElementById("spMemberGrid");
+  let memberGridQueryHasReliableTotal = false;
+  const isMemberGridQuery = (pathname) => pathname === "/api/public/service-period-member-grid/query" || /^\/api\/admin\/service-period-products\/[^/]+\/member-grid\/query$/.test(pathname);
+  const rememberMemberGridTotal = (target, payload) => {
+    if (!isMemberGridQuery(target.pathname)) return;
+    // The current Product contracts intentionally omit total. If a future
+    // owner provides one, preserve it only when it is an explicit nonnegative
+    // JSON integer instead of treating null, a string, or an invalid value as
+    // a factual zero.
+    memberGridQueryHasReliableTotal = Number.isSafeInteger(payload?.total) && payload.total >= 0;
+  };
   const memberGridStaffURL = () => {
     const productID = String(memberGridRoot()?.dataset?.serviceProductId || "");
     if (!/^[1-9][0-9]*$/.test(productID)) return null;
@@ -41,7 +51,10 @@
       }
       const response = await nativeFetch(...args);
       if (response.ok) {
-        try { remember(await response.clone().json()); } catch (_error) { /* non-JSON response */ }
+        try {
+          const payload = remember(await response.clone().json());
+          rememberMemberGridTotal(target, payload);
+        } catch (_error) { /* non-JSON response */ }
       }
       return response;
     };
@@ -95,5 +108,21 @@
     if (recordID && unavailableRenewalByMember.has(recordID) && cell.textContent.trim() === "0") cell.textContent = "—";
   });
   new MutationObserver(renderUnavailableRenewals).observe(document.documentElement, {childList:true, subtree:true});
+
+  // Both Product query contracts intentionally omit a global total. The frozen
+  // renderer treats its null sentinel as Number(null) and reports “共 0 行” even
+  // when it has rendered rows. Group collapse intentionally removes data rows
+  // from the DOM, so the Host states only the current visible-row count. It
+  // neither invents a total nor adds another pagination state.
+  const renderUnknownMemberGridVisibleRows = () => {
+    const mode = memberGridRoot()?.dataset?.mode;
+    if (mode !== "internal" && mode !== "public") return;
+    if (memberGridQueryHasReliableTotal) return;
+    const summary = document.getElementById("spResultSummary");
+    const rows = document.querySelectorAll("#spGridBody tr[data-record-id]").length;
+    if (summary && /^共\s*0\s*行(?:，(?:已加载|当前显示)\s*\d+\s*行)?$/.test(summary.textContent.trim())) summary.textContent = `当前显示 ${rows} 行`;
+  };
+  new MutationObserver(renderUnknownMemberGridVisibleRows).observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+  renderUnknownMemberGridVisibleRows();
 
 })(window, document);
