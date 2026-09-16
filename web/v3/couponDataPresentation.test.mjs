@@ -88,6 +88,10 @@ try {
   assert.match(rendered, /已使用/, 'a redeemed claim must retain its lifecycle presentation');
   assert.match(rendered, /当前可用\s*2/, 'current-page summary must count both current claimed and available records');
   assert.equal(document.querySelector('[data-v3-coupon-data-claim-label]')?.textContent, '领取时间', 'the coupon header must name its claim-start/end interval accurately');
+  assert.equal(document.querySelector('[data-v3-coupon-data-issue-label]')?.textContent, '已领取 / 发行量', 'the coupon issue order label must match its existing claim/issue value');
+  assert.match(rendered, /累计领取\s*51\s*发行 5/, 'the current total card must state the coupon issue total, not the claimed count');
+  assert.match(rendered, /适用范围\s*指定商品（1项）/, 'coupon data must not expose a technical target reference as a product name');
+  assert.doesNotMatch(rendered, /standard_product:9/, 'coupon data must not expose a technical target reference');
   assert.match(rendered, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 至 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, 'coupon and claim windows must use Shanghai display times');
   assert.doesNotMatch(rendered, /published|claimed|T\d{2}:\d{2}:\d{2}\.\d{3}Z|88001/, 'the view must not expose raw lifecycle, ISO timestamps, or canonical customer ids');
   const denied = await dom.window.fetch('/api/admin/coupons/41/claims?forbidden=1');

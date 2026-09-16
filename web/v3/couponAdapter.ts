@@ -682,12 +682,25 @@ function couponDataWindow(coupon: Json): string {
   return `${formatShanghaiDateTime(coupon.claimStartsAt)} 至 ${formatShanghaiDateTime(coupon.claimEndsAt)}`;
 }
 
-function couponDataStats(page: Json): unknown {
+function couponDataScope(coupon: Json): string {
+  const refs = Array.isArray(coupon.targetRefs) ? coupon.targetRefs : [];
+  return refs.length ? `指定商品（${refs.length}项）` : '适用商品暂不可用';
+}
+
+function couponDataIssuedTotal(coupon: Json): string | null {
+  const parts = typeof coupon.issue === 'string' ? coupon.issue.split('/').map((part) => part.trim()) : [];
+  return parts.length === 2 && /^[0-9]+$/.test(parts[1]) ? parts[1] : null;
+}
+
+function couponDataStats(page: Json, coupon: Json): unknown {
   const claims = Array.isArray(page.claims) ? page.claims.map(asJson) : [];
-  if (!claims.some((claim) => claim.status === '待确认') || !Array.isArray(page.stats)) return page.stats;
+  if (!Array.isArray(page.stats)) return page.stats;
+  const hasUnconfirmedClaim = claims.some((claim) => claim.status === '待确认');
+  const issuedTotal = couponDataIssuedTotal(coupon);
   return page.stats.map((value) => {
     const stat = asJson(value);
-    if (stat.label !== '当前可用' && stat.label !== '已过期') return stat;
+    if (stat.label === '累计领取') return issuedTotal ? { ...stat, sub: `发行 ${issuedTotal}` } : stat;
+    if (!hasUnconfirmedClaim || (stat.label !== '当前可用' && stat.label !== '已过期')) return stat;
     const suffix = typeof stat.sub === 'string' && stat.sub ? `${stat.sub}；当前页含待确认记录` : '当前页含待确认记录';
     return { ...stat, value: '—', sub: suffix };
   });
@@ -695,9 +708,15 @@ function couponDataStats(page: Json): unknown {
 
 function applyCouponDataLabels(): void {
   document.querySelectorAll<HTMLElement>('#stage div').forEach((node) => {
-    if (node.dataset.v3CouponDataClaimLabel || node.textContent?.trim() !== '有效期') return;
-    node.dataset.v3CouponDataClaimLabel = 'claim-window';
-    node.textContent = '领取时间';
+    const text = node.textContent?.trim();
+    if (text === '有效期' && !node.dataset.v3CouponDataClaimLabel) {
+      node.dataset.v3CouponDataClaimLabel = 'claim-window';
+      node.textContent = '领取时间';
+    }
+    if (text === '发行量 / 已领取' && !node.dataset.v3CouponDataIssueLabel) {
+      node.dataset.v3CouponDataIssueLabel = 'claim-total';
+      node.textContent = '已领取 / 发行量';
+    }
   });
 }
 
@@ -716,8 +735,8 @@ function installCouponDataPresentationBridge(): void {
         ...page,
         // The Controller database retains the canonical lifecycle for route
         // and edit decisions. This copy is only the frozen template's view.
-        coupon: { ...coupon, status: couponStatusLabel(coupon.status), window: couponDataWindow(coupon) },
-        stats: couponDataStats(page),
+        coupon: { ...coupon, status: couponStatusLabel(coupon.status), scope: couponDataScope(coupon), window: couponDataWindow(coupon) },
+        stats: couponDataStats(page, coupon),
       },
     };
   };
