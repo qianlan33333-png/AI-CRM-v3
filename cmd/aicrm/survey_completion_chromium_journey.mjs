@@ -21,7 +21,7 @@ class CDP {
   call(method, params = {}) { return new Promise((resolve, reject) => { const id = ++this.id; this.pending.set(id, { resolve, reject }); this.socket.send(JSON.stringify({ id, method, params })); }); }
 }
 const domEvidence = async (cdp) => {
-  const result = await cdp.call('Runtime.evaluate', { expression: `(() => ({path:location.pathname, title:document.title, headings:[...document.querySelectorAll('h1,h2,h3')].map((item)=>item.textContent.trim()).slice(0,12), ids:[...document.querySelectorAll('[id]')].map((item)=>item.id).filter((id)=>/ops|configuration|toast|questionnaire/i.test(id)).slice(0,24), configuration_tag:document.querySelector('#opsConfigurationReference')?.tagName||'', buttons:[...document.querySelectorAll('button')].map((item)=>item.textContent.trim()).filter(Boolean).slice(0,16), forms:[...document.forms].map((item)=>item.getAttribute('action')||'').slice(0,8)}))()`, returnByValue: true });
+  const result = await cdp.call('Runtime.evaluate', { expression: `(() => ({path:location.pathname, title:document.title, headings:[...document.querySelectorAll('h1,h2,h3')].map((item)=>item.textContent.trim()).slice(0,12), ids:[...document.querySelectorAll('[id]')].map((item)=>item.id).filter((id)=>/ops|configuration|toast|questionnaire/i.test(id)).slice(0,24), configuration_tag:document.querySelector('#opsConfigurationReference')?.tagName||'', toast:document.querySelector('[data-toast]')?.textContent||'', buttons:[...document.querySelectorAll('button')].map((item)=>item.textContent.trim()).filter(Boolean).slice(0,16), forms:[...document.forms].map((item)=>item.getAttribute('action')||'').slice(0,8)}))()`, returnByValue: true });
   return JSON.stringify(result.result?.value || {});
 };
 const evaluate = async (cdp, expression, step = 'evaluate') => {
@@ -32,7 +32,7 @@ const evaluate = async (cdp, expression, step = 'evaluate') => {
   }
   return result.result?.value;
 };
-const waitFor = async (cdp, expression, message) => { for (let i = 0; i < 180; i += 1) { if (await evaluate(cdp, expression, message + ' probe')) return; await delay(50); } throw new Error(message + ' dom=' + await domEvidence(cdp)); };
+const waitFor = async (cdp, expression, message) => { for (let i = 0; i < 400; i += 1) { if (await evaluate(cdp, expression, message + ' probe')) return; await delay(50); } throw new Error(message + ' dom=' + await domEvidence(cdp)); };
 const portURL = async (profile) => { for (let i = 0; i < 160; i += 1) { try { const port = String(await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; if (/^\d+$/.test(port)) return 'http://127.0.0.1:' + port; } catch (_) {} await delay(50); } throw new Error('Chromium DevTools did not start'); };
 
 const waitForBrowserExit = async (child, timeoutMilliseconds) => {
@@ -69,14 +69,14 @@ try {
   await waitFor(cdp, "location.pathname === '/admin/questionnaireOps.html'", 'login did not reach questionnaire operations');
   await waitFor(cdp, "Boolean(document.querySelector('.qo-page')) && document.querySelector('[data-push-enabled]')?.checked === false", 'legacy-parity operations configuration did not render');
   await evaluate(cdp, "document.querySelector('[data-tab=\"push\"]')?.click(); true", 'open external push tab');
-  await waitFor(cdp, "Boolean(document.querySelector('#qo-push-url')) && Boolean(document.querySelector('[data-save-current]'))", 'legacy external push fields did not render');
+  await waitFor(cdp, "Boolean(document.querySelector('#qo-push-url')) && Boolean(document.querySelector('[data-save-push]'))", 'legacy external push fields did not render');
   await evaluate(cdp, `(() => {
     const set=(selector,value)=>{const node=document.querySelector(selector);if(!node)throw new Error('missing '+selector);node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));};
     const toggle=document.querySelector('[data-push-enabled]'); toggle.checked=true; toggle.dispatchEvent(new Event('change',{bubbles:true}));
     set('[data-webhook]',${JSON.stringify(webhook)}); set('[data-push-type]','subscription'); set('[data-expires]','2147483000'); set('[data-day]','45'); set('[data-frequency]','2'); set('[data-remark]','browser parity');
     if(!document.querySelector('[data-param-name]'))document.querySelector('[data-add-param]').click();
     set('[data-param-name]','campaign'); set('[data-param-value]','survey-browser');
-    document.querySelector('[data-save-current]').click(); return true;
+    document.querySelector('[data-save-push]').click(); return true;
   })()`, 'enable and save legacy external push fields');
   await waitFor(cdp, "document.querySelector('[data-toast]')?.textContent === '外部推送已保存'", 'visible configuration save confirmation did not render');
   if(cdp.saveRequests!==1) throw new Error('header save request count='+cdp.saveRequests);

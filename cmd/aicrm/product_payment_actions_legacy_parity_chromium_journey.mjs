@@ -95,7 +95,7 @@ async function capturePanel(cdp, name, selector) {
 }
 
 function actionReadyExpression() {
-  return "Boolean(document.querySelector('[data-product-purchase-action]')) && Boolean(document.querySelector('[data-product-parity-push]')) && !document.querySelector('[data-external-push-configuration]') && !document.querySelector('#product-v3-external-push-custom-params')";
+  return "Boolean(document.querySelector('[data-product-purchase-action]')) && Boolean(document.querySelector('[data-product-parity-push]')) && Boolean(document.querySelector('[data-product-parity-param-row]')) && document.querySelector('[data-product-parity-push-save]')?.disabled === false && !document.querySelector('[data-external-push-configuration]') && !document.querySelector('#product-v3-external-push-custom-params')";
 }
 
 async function configureH5Action(cdp, productPath, productAPIPath) {
