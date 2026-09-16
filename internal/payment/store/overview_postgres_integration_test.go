@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -96,6 +97,103 @@ func TestPostgreSQLOverviewPaymentUsesTrustedHistoryTimeAndLatestRefundAppend(t 
 	// trusted historical completion remains in the window.
 	if refunds.CompletedCount != 1 || len(refunds.Completed) != 1 || refunds.Completed[0].AmountMinor != 40 || refunds.MissingCompletionEvidence != 1 {
 		t.Fatalf("refund aggregate=%+v", refunds)
+	}
+}
+
+func TestPostgreSQLPaidOverviewRecordsUseExactPaymentFactKeyset(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 9, 14, 16, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	confirmedAt := start.Add(8 * time.Hour)
+	repository := paymentstore.NewPostgreSQL()
+	for index := 0; index < 26; index++ {
+		paymentID := insertOverviewPayment(t, ctx, pool, "records-page-"+strconv.Itoa(index), int64(index+1), index%2 == 0, &confirmedAt, int64(index+10))
+		if index == 0 {
+			if _, err = pool.Exec(ctx, `UPDATE payments SET payer_customer_id=NULL,payer_identity_id=NULL,beneficiary_customer_id=NULL,historical=true WHERE id=$1`, paymentID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The provider/reference pair must survive the Payment page. The same
+	// merchant reference exists on both providers, which is why callers cannot
+	// safely form a detail link from the reference alone.
+	firstCollision := insertOverviewPayment(t, ctx, pool, "records-collision-pay", 90, false, &confirmedAt, 100)
+	secondCollision := insertOverviewPayment(t, ctx, pool, "records-collision-shop", 91, true, &confirmedAt, 101)
+	if _, err = pool.Exec(ctx, `UPDATE orders SET provider='wechat_shop',merchant_order_no='M-records-provider-collision'
+		WHERE id=(SELECT order_id FROM payments WHERE id=$1)`, secondCollision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE payments SET provider='wechat_shop',merchant_order_no='M-records-provider-collision' WHERE id=$1`, secondCollision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE orders SET merchant_order_no='M-records-provider-collision'
+		WHERE id=(SELECT order_id FROM payments WHERE id=$1)`, firstCollision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE payments SET merchant_order_no='M-records-provider-collision' WHERE id=$1`, firstCollision); err != nil {
+		t.Fatal(err)
+	}
+	atEnd := end
+	_ = insertOverviewPayment(t, ctx, pool, "records-exclusive-end", 400, false, &atEnd, 200)
+	_ = insertOverviewPayment(t, ctx, pool, "records-no-confirmation", 500, true, nil, 201)
+
+	window := paymentport.OverviewWindow{Start: start, End: end}
+	var overview paymentport.PaidOverview
+	var first, second paymentport.PaidOverviewRecordPage
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		overview, readErr = repository.ReadPaidOverview(tx, window)
+		if readErr != nil {
+			return readErr
+		}
+		first, readErr = repository.ReadPaidOverviewRecords(tx, window, nil, 25)
+		if readErr != nil {
+			return readErr
+		}
+		second, readErr = repository.ReadPaidOverviewRecords(tx, window, first.NextCursor, 25)
+		return readErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Items) != 25 || first.NextCursor == nil || len(second.Items) != 3 || second.NextCursor != nil {
+		t.Fatalf("record pages first=%+v second=%+v", first, second)
+	}
+	seen := map[string]struct{}{}
+	var total int64
+	var missingPayer bool
+	providersForCollision := map[string]bool{}
+	for _, page := range []paymentport.PaidOverviewRecordPage{first, second} {
+		for _, item := range page.Items {
+			key := item.Provider + "\x00" + item.OrderReference
+			if _, exists := seen[key]; exists {
+				t.Fatalf("duplicate record %q", key)
+			}
+			seen[key] = struct{}{}
+			total += item.AmountMinor
+			if item.PayerCustomerID == nil {
+				missingPayer = true
+			}
+			if item.OrderReference == "M-records-provider-collision" {
+				providersForCollision[item.Provider] = true
+			}
+			if !item.PaidConfirmedAt.Equal(confirmedAt) {
+				t.Fatalf("record confirmation=%s want %s", item.PaidConfirmedAt, confirmedAt)
+			}
+		}
+	}
+	if len(seen) != int(overview.OrderCount) || total != overview.Gross[0].AmountMinor || !missingPayer || !providersForCollision["wechat_pay"] || !providersForCollision["wechat_shop"] {
+		t.Fatalf("records=%d total=%d overview=%+v missingPayer=%t providers=%v", len(seen), total, overview, missingPayer, providersForCollision)
 	}
 }
 

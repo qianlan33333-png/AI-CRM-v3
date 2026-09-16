@@ -919,6 +919,13 @@ func AdminLayoutScreenshotDirectory() string {
 	return os.Getenv("AICRM_ADMIN_LAYOUT_SCREENSHOT_DIR")
 }
 
+// ChannelCenterScreenshotDirectory returns the optional evidence directory for
+// the authenticated Channel Center Chromium journey. It is test-only; callers
+// validate an absolute path before writing browser evidence.
+func ChannelCenterScreenshotDirectory() string {
+	return os.Getenv("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR")
+}
+
 // AccessGovernanceScreenshotDirectory returns the optional evidence directory
 // for the Access governance Chromium journey. The test validates filesystem
 // constraints before it writes the rendered screenshots.
@@ -959,6 +966,19 @@ func AudienceConfirmationScreenshotDirectory() string {
 // a supplied path is absolute before it writes local screenshots.
 func PublicCommerceScreenshotDirectory() string {
 	return os.Getenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR")
+}
+
+// PublicSurveyScreenshotDirectory returns the optional evidence directory for
+// the public Survey Chromium journey. The test validates that a supplied path
+// is absolute before it writes local screenshots.
+func PublicSurveyScreenshotDirectory() string {
+	return os.Getenv("AICRM_PUBLIC_SURVEY_SCREENSHOT_DIR")
+}
+
+// QuestionnaireListScreenshotDirectory returns the optional evidence directory
+// for the authenticated questionnaire list Chromium journey.
+func QuestionnaireListScreenshotDirectory() string {
+	return os.Getenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR")
 }
 
 // NamedDatabaseURL is restricted to explicit target and read-only source roles

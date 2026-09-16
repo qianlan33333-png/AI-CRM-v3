@@ -210,7 +210,7 @@ type ComponentStatesAssets struct {
 // OverviewAssets is the V3-owned stylesheet and Host module for the read-only
 // operating overview. The shell receives only manifest-derived URLs; all
 // business facts remain in the authorized overview HTTP endpoint.
-type OverviewAssets struct{ CSS, AdminJS string }
+type OverviewAssets struct{ CSS, DetailDrawerCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -323,7 +323,7 @@ func (renderer *Renderer) RenderComponentStates(writer http.ResponseWriter, data
 // shell. The Host independently fetches the already-authorized read-only API;
 // this package never receives or resolves operating facts.
 func (renderer *Renderer) RenderOverview(writer http.ResponseWriter, data AdminPageData, assets OverviewAssets) error {
-	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" {
+	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.DetailDrawerCSS == "" || assets.AdminJS == "" {
 		return errors.New("overview shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -487,7 +487,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 4 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.ProductCSS == "" || assets.HostJS == "" || assets.StandardHostJS == "" || len(assets.StandardCSS) != 5 || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)

@@ -55,6 +55,10 @@ func (stub overviewStoreStub) ReadPaidOverviewPayerPage(_ context.Context, _ pay
 	return paymentport.PaidOverviewPayerPage{CustomerIDs: append([]customerdomain.CustomerID{}, stub.pages[after]...)}, nil
 }
 
+func (overviewStoreStub) ReadPaidOverviewRecords(context.Context, paymentport.OverviewWindow, *paymentport.PaidOverviewRecordCursor, int) (paymentport.PaidOverviewRecordPage, error) {
+	return paymentport.PaidOverviewRecordPage{}, nil
+}
+
 func (overviewStoreStub) ReadRefundOverview(context.Context, paymentport.OverviewWindow) (paymentport.RefundOverview, error) {
 	return paymentport.RefundOverview{}, nil
 }

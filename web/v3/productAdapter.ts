@@ -8,7 +8,7 @@ import { AdminController } from '../src/admin/controller';
 import { apiRequestOptions, request } from '../src/api/transport';
 import type { AdminDb, Product, Tone } from '../src/shared/api/types';
 import { emptyAdminDb, productPageDto, type AdminReadContext } from '../src/api/admin';
-import { downloadQr, renderQr } from '../src/admin/sections/qr';
+import { downloadQr } from '../src/admin/sections/qr';
 import { confirmBox } from '../src/shared/ui/feedback';
 import { rememberActionClicks, rememberActionInputs, runAction } from './actionFeedback';
 import { createTagCatalogPageLoader, unresolvedTagRecord, type TagPickerRecord } from './shared/ui/tagPickerAdapter';
@@ -16,6 +16,7 @@ import { mountTableActionMenu, type TableActionMenu } from './shared/ui/tableAct
 import { mountPageHeaderActionElements, pageHeaderActionElementsHaveConnectedOrigins } from './shared/ui/pageHeaderActions';
 import { formatShanghaiDateTime } from './adminDateTime';
 import { installMaterialPickerAdapter, type MaterialPickerLoadRequest, type MaterialPickerRecord } from './shared/ui/materialPickerAdapter';
+import { openShareQrDialog } from './shared/ui/shareQrDialog';
 import { renderMaterialThumbnail } from './shared/ui/materialThumbnailPresentation';
 
 type RecordValue = Record<string, unknown>;
@@ -696,40 +697,16 @@ function showMessage(message: string, success = false): void {
 }
 
 function showShare(product: ProductProjection, url: string): void {
-  document.getElementById('product-share-overlay')?.remove();
-  const overlay = document.createElement('div');
-  overlay.id = 'product-share-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;display:grid;place-items:center;background:rgba(15,23,42,.38);padding:20px';
-  const panel = document.createElement('section');
-  panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-modal', 'true');
-  panel.style.cssText = 'width:min(520px,100%);border-radius:12px;background:#fff;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.22);box-sizing:border-box';
-  const title = document.createElement('h2');
-  title.textContent = `商品分享 · ${product.name}`;
-  title.style.cssText = 'margin:0 0 16px;font-size:18px';
-  const input = document.createElement('input');
-  input.readOnly = true;
-  input.value = url;
-  input.style.cssText = 'width:100%;height:38px;padding:0 10px;border:1px solid #DEE0E3;border-radius:6px;box-sizing:border-box';
-  const qr = document.createElement('div');
-  qr.id = 'shareQrBox';
-  qr.style.cssText = 'width:220px;height:220px;margin:18px auto';
-  const actions = document.createElement('div');
-  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap';
-  const copy = button('复制链接');
-  const preview = button('预览');
-  const save = button('保存二维码');
-  const close = button('关闭');
-  copy.addEventListener('click', () => void navigator.clipboard?.writeText(url).catch(() => undefined));
-  preview.addEventListener('click', () => window.open(url, '_blank', 'noopener,noreferrer'));
-  save.addEventListener('click', () => downloadQr(url, `${product.code || product.resourceId}-qr.svg`));
-  close.addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (event) => { if (event.target === overlay) overlay.remove(); });
-  actions.append(copy, preview, save, close);
-  panel.append(title, input, qr, actions);
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
-  renderQr(qr, url, '商品分享');
+  openShareQrDialog({
+    title: `商品分享 · ${product.name}`,
+    url,
+    qrLabel: '商品分享',
+    actions: [
+      { label: '复制链接', onClick: () => navigator.clipboard?.writeText(url).catch(() => undefined) },
+      { label: '预览', onClick: () => { window.open(url, '_blank', 'noopener,noreferrer'); } },
+      { label: '保存二维码', onClick: () => downloadQr(url, `${product.code || product.resourceId}-qr.svg`) },
+    ],
+  });
 }
 
 document.addEventListener('click', (event) => {
