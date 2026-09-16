@@ -37,7 +37,7 @@ async function waitForCondition(condition, message) { for (let attempt = 0; atte
 async function stopBrowser(browser) { if (!browser || browser.exitCode !== null || browser.signalCode !== null) return; browser.kill("SIGTERM"); await Promise.race([new Promise(resolve => browser.once("exit", resolve)), delay(3000)]); if (browser.exitCode === null && browser.signalCode === null) browser.kill("SIGKILL"); }
 
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-remaining-pages-chromium-"));
-let browser; let cdp;
+let browser; let cdp; let failed = false;
 try {
   await fs.mkdir(screenshotDirectory, { recursive: true, mode: 0o700 });
   browser = spawn(browserBinary(), ["--headless=new", "--no-sandbox", "--ignore-certificate-errors", "--allow-insecure-localhost", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "about:blank"], { stdio: "ignore" });
@@ -123,8 +123,13 @@ try {
   assert.match(await evaluate(cdp, "document.querySelector('#spResultSummary')?.textContent || ''"), /无法访问共享数据/, "invalid member-grid share must disclose unavailable shared data");
   if (exceptions.length) throw new Error(`runtime exceptions: ${exceptions.join('; ')}`);
   console.log(`remaining_pages_chromium: PASS revision=${revision} screenshots=${screenshotDirectory}`);
+} catch (error) {
+  failed = true;
+  throw error;
 } finally {
   if (cdp) cdp.close();
   await stopBrowser(browser);
-  await fs.rm(profile, { recursive: true, force: true });
+  // Chromium can finish a late profile write after its root process exits.
+  // Keep cleanup bounded and preserve the actual journey failure when present.
+  try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch (error) { if (!failed) throw error; }
 }
