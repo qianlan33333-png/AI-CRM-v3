@@ -1442,28 +1442,6 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "19ce90a3e10d717afbc4a9321a77a4151381d047f348ec6af357f0f332b0ebdf",
-          "head_sha256": "f344faa0e146a82c5115a80e826bb20da764bee56b0e84ade309dc26a5ce8b6a"
-        },
-        {
-          "path": "web/donor-sources/source-index.json",
-          "base_sha256": "eedcdb6f08279c6ad598fbf4a6dffc31af989d0b71eb9e00843d0ffb82cd2977",
-          "head_sha256": "8d8fd13b0d0e53dde5a0c998cd374b10dcafc638911860b02512a0dc2179c70a"
-        },
-        {
-          "path": "web/donor-sources/source-lock.json",
-          "base_sha256": "8955e54a923cd24d55f081cf4e0cb76ae27bd361ce89bb2a27363be1562db63e",
-          "head_sha256": "d2bb25e79dbd2b76aa10151417dbba62fc4083098f0ba42920be2415c77fe6ee"
-        }
-      ],
-      "reason": "Authorize the v3 public Survey contract for canonical-Customer single submission and the safe completion action. The change adds a separately configured, HTTPS-only opaque navigation allowlist; it neither resolves or creates identities nor accepts an external Provider effect.",
-      "review_reference": "User instruction in this Codex thread: PLEASE IMPLEMENT THIS PLAN, with the approved product specification docs/prd/2026-09-16-questionnaire-single-submit-completion.md. This records product authorization only; ordinary PR review of this exact gate output and required CI remain pending."
-    },
-    {
-      "base_commit": "772ce1e2eadc921230d819f3682cfd8865168bbb",
-      "changes": [
-        {
-          "path": "api/openapi.yaml",
-          "base_sha256": "19ce90a3e10d717afbc4a9321a77a4151381d047f348ec6af357f0f332b0ebdf",
           "head_sha256": "d982fd92aaf7da1effc5460cbb345635ec67bbbb4981876e71981dfba66d7e06"
         },
         {
