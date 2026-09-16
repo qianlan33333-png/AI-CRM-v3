@@ -57,6 +57,23 @@ type TagCatalogMutationWriter interface {
 	MutateTagCatalog(context.Context, TagCatalogMutation) (TagCatalogMutationResult, error)
 }
 
+// ExternalContactDescriptionUpdate is an Outbound-only provider request for
+// one existing follow relationship. It carries no customer identity: the
+// caller must freeze and persist that local identity separately before it may
+// resolve these provider identifiers at execution time.
+type ExternalContactDescriptionUpdate struct {
+	EmployeeID     string
+	ExternalUserID string
+	Description    string
+}
+
+// ExternalContactDescriptionWriter is intentionally a one-operation port.
+// The WeCom adapter can implement the leaf, but only Outbound may receive it
+// from composition and invoke it through an external effect.
+type ExternalContactDescriptionWriter interface {
+	UpdateExternalContactDescription(context.Context, ExternalContactDescriptionUpdate) error
+}
+
 // ProviderCallFailure identifies only whether the catalog request itself may
 // have crossed a network boundary. It never carries Provider status/body data.
 type ProviderCallFailure interface {

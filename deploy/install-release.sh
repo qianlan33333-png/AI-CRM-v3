@@ -193,6 +193,8 @@ test -f "$release_dir/migrations/0163_payment_profit_sharing_receiver_recovery.s
 test -f "$release_dir/migrations/0165_payment_profit_sharing_receiver_failure_class.sql"
 test -f "$release_dir/migrations/0166_payment_profit_sharing_instruction_failure_class.sql"
 test -f "$release_dir/migrations/0167_distribution_settlement_not_paid_exception.sql"
+test -f "$release_dir/migrations/0170_wecom_contact_description_effect.sql"
+test -f "$release_dir/migrations/0171_wecom_contact_description_source_coverage.sql"
 test -f "$release_dir/migrations/0067_survey_completion_snapshots.sql"
 test -f "$release_dir/migrations/0084_hxc_shared_facts.sql"
 test -f "$release_dir/migrations/0090_survey_oauth_state_redirect.sql"

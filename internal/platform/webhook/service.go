@@ -56,6 +56,14 @@ type Store interface {
 	Complete(context.Context, Completion) (Delivery, error)
 }
 
+// DeliveryReader is intentionally optional so existing ingest-only adapters do
+// not gain a new obligation. A durable follow-up worker may use it to reload
+// an already authenticated Inbox payload by its internal ID; it never exposes
+// payloads through HTTP.
+type DeliveryReader interface {
+	Get(context.Context, int64) (Delivery, error)
+}
+
 // RetryStore is intentionally separate from Store so existing provider and
 // in-memory stores remain ingest-only unless they explicitly support the
 // privileged operational retry transition.
@@ -183,6 +191,17 @@ func (service *Service) Complete(ctx context.Context, completion Completion) (De
 		return Delivery{}, ErrInvalidDelivery
 	}
 	return service.store.Complete(ctx, completion)
+}
+
+func (service *Service) Get(ctx context.Context, id int64) (Delivery, error) {
+	if id < 1 {
+		return Delivery{}, ErrInvalidDelivery
+	}
+	reader, ok := service.store.(DeliveryReader)
+	if !ok {
+		return Delivery{}, ErrInvalidDelivery
+	}
+	return reader.Get(ctx, id)
 }
 
 func validProvider(value string) bool {

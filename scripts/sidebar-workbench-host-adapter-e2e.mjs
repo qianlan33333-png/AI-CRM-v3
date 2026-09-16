@@ -21,6 +21,10 @@ for (const removed of ["other_staff_messages", "其他客服聊天", "chat_activ
 for (const contract of ["window.__AICRMSidebarBridge", "bridge.request(url, options || {})", "await bridge.start()", "__AICRMSidebarBridge.send"]) {
   assert.equal(overlay.includes(contract), true, `generated overlay lacks trusted bridge contract: ${contract}`);
 }
+assert.match(overlay, /customer-oneid/, "generated overlay must render the OneID field");
+assert.match(overlay, /\^CID-\[1-9\]\[0-9\]\*\$/, "generated overlay must reject non-canonical OneID values");
+assert.match(bridge, /const oneID = canonicalOneID\(profile\.oneid\)/, "Host must retain only a validated backend OneID from the ready workbench");
+assert.match(bridge, /oneid: this\.oneID/, "Host must pass the ready-context OneID to the overlay");
 assert.equal(overlay.includes("window.fetch ="), false, "overlay must not monkey-patch global fetch");
 assert.equal(overlay.includes("getCurExternalContact"), false, "overlay must not own WeCom identity lookup");
 assert.equal(overlay.includes("sendChatMessage"), false, "overlay must not invoke WeCom directly");

@@ -48,6 +48,8 @@ sha_missing_0164=c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8
 sha_missing_0165=c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8
 sha_missing_0166=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9
 sha_missing_0167=cacacacacacacacacacacacacacacacacacacaca
+sha_missing_0170=1717171717171717171717171717171717171717
+sha_missing_0171=1818181818181818181818181818181818181818
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -203,6 +205,8 @@ make_release() {
     0165_payment_profit_sharing_receiver_failure_class.sql \
     0166_payment_profit_sharing_instruction_failure_class.sql \
     0167_distribution_settlement_not_paid_exception.sql \
+    0170_wecom_contact_description_effect.sql \
+    0171_wecom_contact_description_source_coverage.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -372,6 +376,8 @@ for missing_release in \
   "$sha_missing_0165:migrations/0165_payment_profit_sharing_receiver_failure_class.sql" \
   "$sha_missing_0166:migrations/0166_payment_profit_sharing_instruction_failure_class.sql" \
   "$sha_missing_0167:migrations/0167_distribution_settlement_not_paid_exception.sql" \
+  "$sha_missing_0170:migrations/0170_wecom_contact_description_effect.sql" \
+  "$sha_missing_0171:migrations/0171_wecom_contact_description_source_coverage.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \
