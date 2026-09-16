@@ -47,7 +47,7 @@ func (sink *CompletionSink) CompleteEffect(ctx context.Context, effectRef string
 	}
 	shouldReconcile := envelope.Kind == effectport.KindWeChatShopRefund && result.Completion == effectport.StateExecuted ||
 		envelope.Kind == effectport.KindWeChatPayRefund && (result.Completion == effectport.StateExecuted || result.Completion == effectport.StateUnknown) ||
-		envelope.Kind == effectport.KindWeChatPayPrepay && result.Completion == effectport.StateUnknown
+		envelope.Kind == effectport.KindWeChatPayPrepay && (result.Completion == effectport.StateExecuted || result.Completion == effectport.StateUnknown)
 	if !shouldReconcile {
 		return nil
 	}

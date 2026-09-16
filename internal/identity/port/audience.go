@@ -41,3 +41,13 @@ type OutboundIdentity struct {
 type OutboundIdentityReader interface {
 	VerifiedOutboundIdentity(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (OutboundIdentity, bool, error)
 }
+
+// VerifiedOutboundPhoneReader is the narrow vault-backed phone read for an
+// already-authorized Outbound Provider payload. It is deliberately separate
+// from ExternalIdentityValueReader: a phone can never be exposed through the
+// generic external-identity seam. Implementations must accept only the
+// explicit CN11 scope, return a single active verified fact, and decrypt only
+// in memory for the current transaction.
+type VerifiedOutboundPhoneReader interface {
+	VerifiedOutboundPhone(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+}

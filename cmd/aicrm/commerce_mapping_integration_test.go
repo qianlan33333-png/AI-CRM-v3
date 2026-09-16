@@ -84,6 +84,10 @@ func TestPostgreSQLCommerceLegacyPaidIgnoresHistoricalMappingAndExpiry(t *testin
 		t.Fatal(err)
 	}
 	_ = orderService.SetContactCipher(contact)
+	var customerID int64
+	if err = pool.QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
 	var received []byte
 	var headerEvent, headerDelivery string
 	var calls int
@@ -119,7 +123,7 @@ func TestPostgreSQLCommerceLegacyPaidIgnoresHistoricalMappingAndExpiry(t *testin
 		{Key: "delivery_id", Source: "fixed", ValueType: "string", Value: json.RawMessage(`"mapped-id"`)},
 	}}
 	configuration := &commerceFundsPushConfiguration{value: productport.ExternalPushConfiguration{ProductID: 7, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: target.Reference, Revision: 1, FieldMapping: mapping}}
-	service, err := outbound.NewCommercePushService(pool, uow, effectStore, configuration, commerceFundsPushIdentityReader{}, &commerceFundsPushTargets{target: target}, cipher)
+	service, err := outbound.NewCommercePushService(pool, uow, effectStore, configuration, commerceFundsPushIdentityReader{customerID: customerID}, &commerceFundsPushTargets{target: target}, cipher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,10 +142,6 @@ func TestPostgreSQLCommerceLegacyPaidIgnoresHistoricalMappingAndExpiry(t *testin
 	}
 	capture := &mappingPaidCapture{service: service}
 	_ = orderService.SetPaidEventConsumer(capture)
-	var customerID int64
-	if err = pool.QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&customerID); err != nil {
-		t.Fatal(err)
-	}
 	productID := int64(7)
 	created, err := orderService.Create(ctx, orderport.CreateCommand{Actor: 1, IdempotencyKey: "mapping-order-create-0001", Input: orderdomain.NewOrderInput{Provider: orderdomain.ProviderWeChatPay, SourceSystem: "aicrm-v3", SourceKey: "mapping-order", MerchantOrderNo: "mapping-order", PayerCustomerID: &customerID, BeneficiaryCustomerID: &customerID, Amount: orderdomain.Money{AmountMinor: 990, Currency: "CNY"}, Items: []orderdomain.ItemSnapshot{{LineNo: 1, ProductID: &productID, ProductCode: "mapping-product", ProductName: "映射商品", Quantity: 1, UnitAmountMinor: 990, LineAmountMinor: 990}}, RecordOrigin: orderdomain.RecordOriginNative}})
 	if err != nil {
@@ -158,8 +158,9 @@ func TestPostgreSQLCommerceLegacyPaidIgnoresHistoricalMappingAndExpiry(t *testin
 		t.Fatal(err)
 	}
 	var before []byte
-	if err = pool.QueryRow(ctx, "SELECT payload_ciphertext FROM outbound_commerce_push_intents WHERE source_kind='order_paid'").Scan(&before); err != nil {
-		t.Fatal(err)
+	var beforeState string
+	if err = pool.QueryRow(ctx, "SELECT state,payload_ciphertext FROM outbound_commerce_push_intents WHERE source_kind='order_paid'").Scan(&beforeState, &before); err != nil || beforeState != "queued" || len(before) < 29 {
+		t.Fatalf("paid intent state=%q ciphertext=%d err=%v", beforeState, len(before), err)
 	}
 	// Historic mapping data remains persisted for compatibility but a fresh
 	// transaction.paid intent now uses the frozen legacy protocol.
@@ -170,11 +171,11 @@ func TestPostgreSQLCommerceLegacyPaidIgnoresHistoricalMappingAndExpiry(t *testin
 	}
 	var count int
 	var after []byte
+	var afterState string
 	if err = pool.QueryRow(ctx, "SELECT count(*) FROM outbound_commerce_push_intents WHERE source_kind='order_paid'").Scan(&count); err != nil || count != 1 {
 		t.Fatal("replay duplicated intent", err)
 	}
-	_ = pool.QueryRow(ctx, "SELECT payload_ciphertext FROM outbound_commerce_push_intents WHERE source_kind='order_paid'").Scan(&after)
-	if len(before) < 29 || string(before) != string(after) {
+	if err = pool.QueryRow(ctx, "SELECT state,payload_ciphertext FROM outbound_commerce_push_intents WHERE source_kind='order_paid'").Scan(&afterState, &after); err != nil || afterState != "queued" || string(before) != string(after) {
 		t.Fatal("queued frozen payload changed")
 	}
 	run := func(kind string) {
@@ -194,6 +195,12 @@ func TestPostgreSQLCommerceLegacyPaidIgnoresHistoricalMappingAndExpiry(t *testin
 	var paid map[string]json.RawMessage
 	if json.Unmarshal(received, &paid) != nil || string(paid["event"]) != `"transaction.paid"` || len(paid["transaction"]) == 0 || len(paid["order"]) == 0 || len(paid["product"]) == 0 || len(paid["buyer"]) == 0 {
 		t.Fatalf("sent body was not the legacy paid protocol: %s", received)
+	}
+	var buyer struct {
+		Phone string `json:"phone"`
+	}
+	if err = json.Unmarshal(paid["buyer"], &buyer); err != nil || buyer.Phone != "13800138000" {
+		t.Fatalf("decrypted buyer phone=%q err=%v", buyer.Phone, err)
 	}
 	for _, forbidden := range []string{"mobile", "nickname", "amount", "custom_params", "expires_at_ts"} {
 		if _, found := paid[forbidden]; found {

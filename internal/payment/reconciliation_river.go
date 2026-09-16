@@ -13,7 +13,12 @@ import (
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
-const ReconciliationQueue = "payment-reconciliation"
+const (
+	ReconciliationQueue = "payment-reconciliation"
+
+	defaultReconciliationMaxAttempts          = 12
+	weChatPayPaymentReconciliationMaxAttempts = 16
+)
 
 var errReconciliationPending = errors.New("payment reconciliation is pending")
 
@@ -36,6 +41,13 @@ func NewRiverReconciliationEnqueuer(client *river.Client[pgx.Tx]) (*RiverReconci
 	return &RiverReconciliationEnqueuer{client: client}, nil
 }
 
+func reconciliationMaxAttempts(target paymentport.ReconciliationTarget) int {
+	if target.Provider == domain.ProviderWeChatPay && target.PaymentID > 0 && target.RefundID == 0 {
+		return weChatPayPaymentReconciliationMaxAttempts
+	}
+	return defaultReconciliationMaxAttempts
+}
+
 func (enqueuer *RiverReconciliationEnqueuer) EnqueueWithin(ctx context.Context, target paymentport.ReconciliationTarget) error {
 	validPayment := target.Provider == domain.ProviderWeChatPay && target.PaymentID > 0 && target.RefundID == 0
 	validRefund := (target.Provider == domain.ProviderWeChatPay || target.Provider == domain.ProviderWeChatShop) && target.RefundID > 0 && target.PaymentID == 0
@@ -46,7 +58,7 @@ func (enqueuer *RiverReconciliationEnqueuer) EnqueueWithin(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	_, err = enqueuer.client.InsertTx(ctx, tx, ReconciliationJobArgs{Provider: target.Provider, PaymentID: target.PaymentID, RefundID: target.RefundID}, &river.InsertOpts{Queue: ReconciliationQueue, MaxAttempts: 12})
+	_, err = enqueuer.client.InsertTx(ctx, tx, ReconciliationJobArgs{Provider: target.Provider, PaymentID: target.PaymentID, RefundID: target.RefundID}, &river.InsertOpts{Queue: ReconciliationQueue, MaxAttempts: reconciliationMaxAttempts(target)})
 	return err
 }
 

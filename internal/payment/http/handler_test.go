@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -812,6 +813,23 @@ func TestCheckoutStatusReportsUnknownWithoutHandoffOrClearingSession(t *testing.
 	body := response.Body.String()
 	if response.Code != http.StatusAccepted || !strings.Contains(body, `"prepay_state":"outcome_unknown"`) || !strings.Contains(body, `"ready":false`) || strings.Contains(body, `"handoff"`) || len(response.Result().Cookies()) != 0 {
 		t.Fatalf("unexpected checkout: code=%d body=%s", response.Code, body)
+	}
+}
+
+func TestCallbackApplicationFailureStageIsFixedAndSafe(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{err: paymentport.ErrInvalid, want: "application_invalid"},
+		{err: fmt.Errorf("wrapped: %w", paymentport.ErrNotFound), want: "application_not_found"},
+		{err: paymentport.ErrConflict, want: "application_conflict"},
+		{err: errors.New("transaction 4200000000000000 customer 7"), want: "application_unavailable"},
+	}
+	for _, test := range tests {
+		if got := callbackApplicationFailureStage(test.err); got != test.want {
+			t.Fatalf("error=%v stage=%q want=%q", test.err, got, test.want)
+		}
 	}
 }
 

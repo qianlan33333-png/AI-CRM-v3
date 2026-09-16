@@ -18,7 +18,18 @@ import (
 type commercePushIdentityStub map[identitydomain.Kind]string
 
 func (s commercePushIdentityStub) VerifiedExternalIdentityValue(_ context.Context, _ customerdomain.CustomerID, kind identitydomain.Kind, _ string) (string, bool, error) {
+	if kind == identitydomain.KindPhone {
+		return "", false, nil
+	}
 	value, found := s[kind]
+	return value, found, nil
+}
+
+func (s commercePushIdentityStub) VerifiedOutboundPhone(_ context.Context, _ customerdomain.CustomerID, scope string) (string, bool, error) {
+	if scope != "phone:cn11" {
+		return "", false, nil
+	}
+	value, found := s[identitydomain.KindPhone]
 	return value, found, nil
 }
 

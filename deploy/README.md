@@ -22,6 +22,47 @@ one bounded callback-inbox claim or creates a scheduled customer-sync run. The
 long-running effects worker is the single River runtime for both durable queues;
 there is no ticker or scheduler inside a domain package.
 
+### Controlled WeChat Pay confirmation recovery
+
+`payment-reconcile` is an exceptional, one-shot operations role for a known
+existing V3 Payment whose signed WeChat Pay query must repair a missing paid
+confirmation. It is not a service or timer. Run it only on the sole production
+host with existing operations authorization, after the deployed release has
+passed its normal readiness gate. A local `pending_payment` status is not proof
+that the Provider did not succeed: first use the approved read-only operations
+path to identify the exact numeric Payment ID for the authorized case.
+
+Do not source `/etc/aicrm/aicrm.env` in a shell or copy values from it. Let
+systemd load its native EnvironmentFile format and run the exact installed
+binary as `aicrm`:
+
+```bash
+sudo systemd-run --wait --collect --pipe --service-type=exec \
+  --unit="aicrm-payment-reconcile-<payment-id>" \
+  --property=User=aicrm \
+  --property=Group=aicrm \
+  --property=WorkingDirectory=/opt/aicrm/current \
+  --property=RuntimeMaxSec=60s \
+  --property=EnvironmentFile=/etc/aicrm/aicrm.env \
+  --property=EnvironmentFile=-/opt/aicrm/current/release.env \
+  /usr/bin/env AICRM_ROLE=payment-reconcile AICRM_PAYMENT_RECONCILE_ID=<payment-id> \
+  /opt/aicrm/current/bin/aicrm
+```
+
+The role accepts only a positive numeric Payment ID; it cannot take a merchant
+order number, create a payment, issue a refund, or call a WeChat Provider write
+endpoint. It performs the normal signed Provider *read* and then reuses the
+same Payment/Order transaction and paid-event consumers as a callback. A valid
+paid result can therefore queue ordinary configured post-payment work (for
+example, a product push); it must be verified and delivered by the normal
+effects worker, not inferred from the command exit. Its completion log contains
+only Payment ID, final status and release SHA—never transaction, customer,
+merchant-order, callback body, certificate or credential data.
+`AICRM_ROLE` and `AICRM_PAYMENT_RECONCILE_ID` are deliberately assignments on
+the executed `/usr/bin/env` command—not `systemd-run --setenv` values—so any
+same-named legacy EnvironmentFile value cannot turn this one-shot into an API
+listener or change its target.
+
 Official WeCom tag directory writes stay disabled until an operator starts the
 `ci` workflow on `main` with **Activate official WeCom tag catalog writes**.
 That deployment-owned action changes only

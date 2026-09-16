@@ -33,6 +33,20 @@ func run() error {
 		return err
 	}
 	defer application.Close()
+	if cfg.Role == platformconfig.RolePaymentReconcile {
+		if application.paymentReconciliation == nil {
+			return errors.New("payment reconciliation is not composed")
+		}
+		payment, reconcileErr := application.paymentReconciliation.ReconcileWeChatPayPayment(ctx, cfg.PaymentReconcileID)
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		// Keep this operational proof deliberately narrow: no merchant order,
+		// provider transaction, customer or secret enters the log. The service
+		// itself has performed the signed Provider read and its same-UoW fanout.
+		slog.Info("payment reconciliation complete", "payment_id", payment.ID, "status", payment.Status, "provider_query_performed", true, "release_sha", cfg.ReleaseSHA)
+		return nil
+	}
 	if cfg.Role == platformconfig.RoleWorker {
 		processed := 0
 		var processErr error

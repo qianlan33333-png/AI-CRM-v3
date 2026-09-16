@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -989,29 +990,66 @@ func matchesVerifiedWeChatTransaction(payment domain.Payment, confirmation strin
 
 func (handler *Handler) callback(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost || handler.verifier == nil {
+		callbackDiagnostic("route", request, nil)
 		writeError(writer, http.StatusNotFound, "not_found")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, maxBody))
 	if err != nil {
+		callbackDiagnostic("body", request, nil)
 		writeError(writer, http.StatusBadRequest, "invalid_callback")
 		return
 	}
 	headers, err := paymentprovider.CallbackHeaders(request)
 	if err != nil {
+		callbackDiagnostic("headers", request, body)
 		writeError(writer, http.StatusUnauthorized, "invalid_signature")
 		return
 	}
 	callback, err := handler.verifier.Verify(request.Context(), body, headers)
-	if err != nil || strings.HasSuffix(request.URL.Path, "/payment") != (callback.Kind == "payment") {
+	if err != nil {
+		callbackDiagnostic(paymentprovider.CallbackFailureStage(err), request, body)
+		writeError(writer, http.StatusUnauthorized, "invalid_signature")
+		return
+	}
+	if strings.HasSuffix(request.URL.Path, "/payment") != (callback.Kind == "payment") {
+		callbackDiagnostic("route_kind", request, body)
 		writeError(writer, http.StatusUnauthorized, "invalid_signature")
 		return
 	}
 	if err = handler.app.ApplyVerifiedCallback(request.Context(), callback); err != nil {
+		callbackDiagnostic(callbackApplicationFailureStage(err), request, body)
 		resultError(writer, err)
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]string{"code": "SUCCESS", "message": "成功"})
+}
+
+// callbackDiagnostic allows production operators to distinguish ingress,
+// verification, decryption, routing, and business-transaction failures
+// without putting callback credentials or payment/customer identifiers in logs.
+func callbackDiagnostic(stage string, request *http.Request, body []byte) {
+	digest := sha256.Sum256(body)
+	// The callback handler is mounted only for the two exact WeChat Pay routes.
+	// Do not place request.URL.Path (an inbound value) in operational logs: the
+	// stable route label is enough to correlate an ingress failure safely.
+	slog.Warn("wechat_pay_callback_rejected", "stage", stage, "route", "wechat_pay_callback", "body_bytes", len(body), "body_sha256", fmt.Sprintf("%x", digest[:]))
+}
+
+// callbackApplicationFailureStage intentionally records an operationally
+// actionable, fixed category rather than an error string.  Callback errors can
+// wrap provider values, merchant references, or downstream consumer details.
+func callbackApplicationFailureStage(err error) string {
+	switch {
+	case errors.Is(err, paymentport.ErrInvalid):
+		return "application_invalid"
+	case errors.Is(err, paymentport.ErrNotFound):
+		return "application_not_found"
+	case errors.Is(err, paymentport.ErrConflict):
+		return "application_conflict"
+	default:
+		return "application_unavailable"
+	}
 }
 
 func (handler *Handler) shopCallback(writer http.ResponseWriter, request *http.Request) {

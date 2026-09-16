@@ -21,6 +21,10 @@ const (
 	RoleAPI           Role = "api"
 	RoleWorker        Role = "worker"
 	RoleEffectsWorker Role = "effects-worker"
+	// RolePaymentReconcile is a deliberately single-purpose, one-shot runtime
+	// for an explicitly selected existing WeChat Pay payment.  It has no HTTP
+	// listener and cannot create a payment or call a Provider write API.
+	RolePaymentReconcile Role = "payment-reconcile"
 
 	// These defaults are the deployment policy used when a Runtime is assembled
 	// without an environment loader, for example by an isolated composition
@@ -54,6 +58,7 @@ type Runtime struct {
 	WeChatShop                 WeChatShop
 	WorkerOwner                string
 	WorkerLimit                int
+	PaymentReconcileID         int64
 	CustomerSyncTrigger        string
 	HXCDashboard               HXCDashboard
 	OperationCycleServiceToken string
@@ -574,9 +579,19 @@ func Load() (Runtime, error) {
 		return Runtime{}, errors.New("invalid AICRM_RELEASE_SHA")
 	}
 	switch cfg.Role {
-	case RoleAPI, RoleWorker, RoleEffectsWorker:
+	case RoleAPI, RoleWorker, RoleEffectsWorker, RolePaymentReconcile:
 	default:
 		return Runtime{}, errors.New("invalid AICRM_ROLE")
+	}
+	if cfg.Role == RolePaymentReconcile {
+		raw, ok := os.LookupEnv("AICRM_PAYMENT_RECONCILE_ID")
+		if !ok || raw == "" || strings.TrimSpace(raw) != raw {
+			return Runtime{}, errors.New("invalid AICRM_PAYMENT_RECONCILE_ID")
+		}
+		cfg.PaymentReconcileID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || cfg.PaymentReconcileID < 1 {
+			return Runtime{}, errors.New("invalid AICRM_PAYMENT_RECONCILE_ID")
+		}
 	}
 	if strings.TrimSpace(cfg.DatabaseURL) != cfg.DatabaseURL || cfg.DatabaseURL == "" {
 		return Runtime{}, errors.New("invalid database URL")

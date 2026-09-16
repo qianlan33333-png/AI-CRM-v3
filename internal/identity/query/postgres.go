@@ -32,6 +32,7 @@ var _ identityport.OutboundWeComIdentityReader = PostgreSQL{}
 var _ identityport.CanonicalLineageReader = PostgreSQL{}
 var _ identityport.CanonicalCustomerRootsReader = PostgreSQL{}
 var _ identityport.AdminRadarVisitorIdentityReader = PostgreSQL{}
+var _ identityport.VerifiedOutboundPhoneReader = PostgreSQL{}
 
 func (PostgreSQL) VerifiedWeComIdentityForCustomer(ctx context.Context, customerID customerdomain.CustomerID, corpID string) (string, bool, error) {
 	if customerID < 1 || strings.TrimSpace(corpID) != corpID || corpID == "" {
@@ -244,6 +245,84 @@ func (PostgreSQL) VerifiedOutboundIdentity(ctx context.Context, customerID custo
 		return identityport.OutboundIdentity{}, false, errors.New("outbound identity is ambiguous")
 	}
 	return matches[0], true, nil
+}
+
+// VerifiedOutboundPhone keeps the sensitive phone path outside the generic
+// external-identity reader. Phone facts are vault protected, so only one
+// active verified CN11 fact on the canonical customer root may be decrypted.
+// A missing or ambiguous fact is intentionally not an error: Outbound must
+// preserve the payment and record its planned identity-unavailable state
+// rather than send an untrusted value.
+func (store PostgreSQL) VerifiedOutboundPhone(ctx context.Context, customerID customerdomain.CustomerID, scope string) (string, bool, error) {
+	if customerID < 1 || scope != "phone:cn11" {
+		return "", false, ErrInvalidQuery
+	}
+	if store.phoneVault == nil {
+		return "", false, errors.New("identity phone vault unavailable")
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	lineage, err := store.CanonicalLineage(ctx, customerID)
+	if err != nil {
+		return "", false, err
+	}
+	rows, err := tx.Query(ctx, `SELECT id FROM customers WHERE id=ANY($1::bigint[]) AND status<>'merged' ORDER BY id LIMIT 2`, lineage)
+	if err != nil {
+		return "", false, fmt.Errorf("query verified outbound phone root: %w", err)
+	}
+	var roots []customerdomain.CustomerID
+	for rows.Next() {
+		var root customerdomain.CustomerID
+		if err = rows.Scan(&root); err != nil {
+			rows.Close()
+			return "", false, fmt.Errorf("scan verified outbound phone root: %w", err)
+		}
+		roots = append(roots, root)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return "", false, fmt.Errorf("iterate verified outbound phone root: %w", err)
+	}
+	rows.Close()
+	if len(roots) != 1 {
+		return "", false, ErrInvalidQuery
+	}
+	root := roots[0]
+	rows, err = tx.Query(ctx, `
+	SELECT p.ciphertext
+	FROM customer_identities i
+	LEFT JOIN identity_phone_secrets p ON p.identity_id=i.id
+	WHERE i.customer_id=$1 AND i.kind='phone' AND i.scope_key='phone:cn11' AND i.assurance='verified' AND i.status='active'
+	ORDER BY i.id LIMIT 2`, root)
+	if err != nil {
+		return "", false, fmt.Errorf("query verified outbound phone: %w", err)
+	}
+	defer rows.Close()
+	var ciphertexts [][]byte
+	for rows.Next() {
+		var ciphertext []byte
+		if err = rows.Scan(&ciphertext); err != nil {
+			return "", false, fmt.Errorf("scan verified outbound phone: %w", err)
+		}
+		ciphertexts = append(ciphertexts, ciphertext)
+	}
+	if err = rows.Err(); err != nil {
+		return "", false, fmt.Errorf("iterate verified outbound phone: %w", err)
+	}
+	if len(ciphertexts) != 1 || len(ciphertexts[0]) == 0 {
+		return "", false, nil
+	}
+	phone, err := store.phoneVault.Decrypt(ciphertexts[0])
+	if err != nil {
+		return "", false, errors.New("identity phone decrypt failed")
+	}
+	normalized, err := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: scope, Value: phone, Assurance: identitydomain.AssuranceVerified, Source: "identity.outbound_phone"})
+	if err != nil {
+		return "", false, errors.New("identity phone vault value invalid")
+	}
+	return normalized.NormalizedValue, true, nil
 }
 
 func (PostgreSQL) VerifiedPaymentIdentity(ctx context.Context, identityID int64, kind identitydomain.Kind, scope string) (identityport.VerifiedCommerceIdentity, bool, error) {

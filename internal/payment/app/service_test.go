@@ -388,6 +388,36 @@ func TestVerifiedCallbackAppIDMustMatchFrozenPaymentChannel(t *testing.T) {
 	}
 }
 
+func TestVerifiedCallbackReplaysCanonicalPostgreSQLConfirmationTime(t *testing.T) {
+	now := time.Date(2026, 9, 16, 1, 0, 0, 0, time.UTC)
+	providerConfirmedAt := time.Date(2026, 9, 16, 1, 2, 3, 123456789, time.UTC)
+	transactionReference := "tx-postgres-confirmation-time"
+	storedConfirmedAt := providerConfirmedAt.Truncate(time.Microsecond)
+	store := &storeStub{payment: domain.Payment{
+		ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, Channel: domain.ChannelMiniProgram,
+		MerchantOrderNo: "M-postgres-confirmation-time", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid,
+		ProviderTransactionReference: transactionReference, ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", transactionReference)),
+		PaidConfirmedAt: &storedConfirmedAt, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}}
+	service := NewService(uowStub{}, store, orderStub{nativeOrder()}, sessionStub{}, &effectStub{})
+	callback := paymentprovider.CallbackResult{
+		Kind: "payment", MerchantOrderNo: store.payment.MerchantOrderNo, ProviderTransactionReference: transactionReference,
+		ProviderTransactionDigest: string(effectport.Hash("wechatpay.transaction", transactionReference)), AmountMinor: 1000, Currency: "CNY",
+		OccurredAt: providerConfirmedAt, EventDigest: [32]byte{1}, BodyDigest: [32]byte{2},
+	}
+	if err := service.ApplyVerifiedCallback(context.Background(), callback); err != nil {
+		t.Fatalf("canonical PostgreSQL replay err=%v", err)
+	}
+	if store.callbackClaims != 1 || store.callbackOutcome != "replayed" {
+		t.Fatalf("callback claims=%d outcome=%q", store.callbackClaims, store.callbackOutcome)
+	}
+
+	callback.OccurredAt = providerConfirmedAt.Add(time.Microsecond)
+	if err := service.ApplyVerifiedCallback(context.Background(), callback); !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("distinct canonical confirmation time err=%v", err)
+	}
+}
+
 func TestVerifiedRefundCallbackCompletesUnknownOnceAndReplays(t *testing.T) {
 	now := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
 	store := &storeStub{
@@ -596,6 +626,24 @@ func TestWeChatPayPaymentReconciliationUsesPaymentForeignKey(t *testing.T) {
 	result, err := service.ReconcileWeChatPayPayment(context.Background(), 7)
 	if err != nil || result.Status != domain.StatusPaid || store.paymentReconciliationID != 7 || store.refundReconciliationID != 0 {
 		t.Fatalf("payment=%+v payment_reconciliation=%d refund_reconciliation=%d err=%v", result, store.paymentReconciliationID, store.refundReconciliationID, err)
+	}
+}
+
+func TestWeChatPayPaymentReconciliationRejectsUnexpectedChannelAppID(t *testing.T) {
+	updatedAt := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, Channel: domain.ChannelMiniProgram, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusAwaitingPayment, Version: 2, CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt}}
+	service := NewService(uowStub{}, store, orderStub{snapshot: nativeOrder()}, sessionStub{}, &effectStub{})
+	if err := service.SetPaymentChannelAppIDs("expected-mini-program-app", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetWeChatPayReconciler(payReconcilerStub{payment: paymentport.WeChatPayPaymentQuery{AppID: "other-app", MerchantOrderNo: "M-7", Currency: "CNY", Status: "SUCCESS", TransactionReference: "tx-pay-query-M-7", AmountMinor: 1000, OccurredAt: updatedAt.Add(time.Minute), EvidenceDigest: effectport.Hash("pay-query", "M-7"), TransactionDigest: effectport.Hash("wechatpay.transaction", "tx-pay-query-M-7")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReconcileWeChatPayPayment(context.Background(), 7); !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("unexpected AppID reconcile error=%v", err)
+	}
+	if store.payment.Status != domain.StatusAwaitingPayment || store.paymentReconciliationID != 0 {
+		t.Fatalf("unexpected AppID changed payment=%+v reconciliation=%d", store.payment, store.paymentReconciliationID)
 	}
 }
 

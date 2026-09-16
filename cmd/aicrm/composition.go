@@ -140,6 +140,11 @@ type composedApplication struct {
 	// exercise an EER terminal callback through the exact Production observer
 	// wiring without contacting a Provider.
 	paymentDistribution effectport.CompletionSink
+	// paymentReconciliation is retained only for the explicit one-shot
+	// payment-reconcile runtime role.  It is the same fully composed service as
+	// the public callback and River worker path, rather than an operations-only
+	// store shortcut.
+	paymentReconciliation *paymentapp.Service
 	// paymentSession remains private to the Composition Root. Same-package
 	// PostgreSQL browser journeys use it only to issue a provider-verified test
 	// session through the exact OneID-backed session service before exercising
@@ -2104,13 +2109,20 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 	}
-	// Record only after every configuration-dependent Adapter and route has
-	// been constructed successfully. A failed startup therefore leaves no
-	// application fact that could be mistaken for a running process.
-	if err = runtimeReleaseService.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: runtimeSnapshot.Revision, Source: runtimeSnapshot.Source, Role: string(cfg.Role), ReleaseSHA: cfg.ReleaseSHA, SnapshotChecksum: runtimeSnapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
-		return fail(err)
+	// A one-shot payment repair is not a long-lived runtime application and is
+	// intentionally outside the immutable runtime-application role catalog.
+	// It still performs the full Composition below and its service persists the
+	// normal Payment/Order/audit/outbox facts; it simply must not claim a daemon
+	// was started or widen the catalog/migration for an emergency operation.
+	if cfg.Role != platformconfig.RolePaymentReconcile {
+		// Record only after every configuration-dependent Adapter and route has
+		// been constructed successfully. A failed startup therefore leaves no
+		// application fact that could be mistaken for a running process.
+		if err = runtimeReleaseService.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: runtimeSnapshot.Revision, Source: runtimeSnapshot.Source, Role: string(cfg.Role), ReleaseSHA: cfg.ReleaseSHA, SnapshotChecksum: runtimeSnapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
+			return fail(err)
+		}
 	}
-	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, paymentSession: paymentSession, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, paymentReconciliation: paymentService, paymentSession: paymentSession, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
