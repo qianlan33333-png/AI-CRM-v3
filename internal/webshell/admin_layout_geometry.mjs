@@ -921,11 +921,12 @@ try {
   // harness. Each route stays on the composed Access session and its existing
   // Owner Host, then proves the requested viewport, shell geometry, a visible
   // page-specific operation or seeded fact, and no horizontal overflow.
-  const captureDesktopEvidence = async ({ label, pathname, ready, kind, titleSelector, assertPage, finalPath = pathname, assertShell = true }) => {
+  const captureDesktopEvidence = async ({ label, pathname, ready, kind, titleSelector, assertPage, expectedResponse = '', finalPath = pathname, assertShell = true }) => {
     for (const width of [1280, 1440]) {
       await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
       const step = `${label}-desktop-${width}`;
       try {
+        const responseStart = responses.length;
         await cdp.call("Page.navigate", { url: baseURL + pathname });
         await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, step + " did not navigate");
         await waitFor(cdp, ready, step + " Host did not become ready");
@@ -933,6 +934,7 @@ try {
         if (assertShell) await assertLayout(kind, step, titleSelector);
         const evidence = await evaluate(cdp, assertPage);
         if (!evidence?.ready || evidence.width !== width || evidence.overflow) throw new Error(step + " visible page evidence invalid " + JSON.stringify(evidence));
+        if (expectedResponse && !responses.slice(responseStart).includes(expectedResponse)) throw new Error(step + " did not complete expected Owner read " + expectedResponse);
         await capture(step);
       } catch (error) {
         await recordRouteFailure(step, error);
@@ -1254,9 +1256,10 @@ try {
   });
   await captureDesktopEvidence({
     label: "coupon-form", pathname: "/admin/couponForm.html?id=" + couponID,
-    ready: "document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券')",
+    ready: `(() => { const stage=document.querySelector('#stage'); const amount=document.querySelector('#couponAmount'); const limit=document.querySelector('#couponIssueLimit'); const start=document.querySelector('#couponClaimStart'); const end=document.querySelector('#couponClaimEnd'); return Boolean(stage?.textContent?.includes('后台页面验收优惠券') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券') && amount instanceof HTMLInputElement && amount.value === '12.00' && limit instanceof HTMLInputElement && limit.value === '100' && stage.textContent?.replace(/\\s/g,'').includes('已选1个商品') && start instanceof HTMLInputElement && Boolean(start.value) && end instanceof HTMLInputElement && Boolean(end.value)); })()`,
     kind: "embedded", titleSelector: "#couponForm h2", assertShell: false,
-    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const compact=text.replace(/\\s/g,''); const title=document.querySelector('#stage .coupon-editor-title-row h2'); return {ready:title?.textContent?.trim() === '编辑优惠券' && document.querySelectorAll('#stage .coupon-editor-title-row h2').length === 1 && compact.includes('后台页面验收优惠券') && compact.includes('已选1个商品') && Boolean(document.querySelector('#stage #saveCoupon')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
+    expectedResponse: "GET /api/admin/coupons/" + couponID + ":200",
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const compact=text.replace(/\\s/g,''); const title=document.querySelector('#stage .coupon-editor-title-row h2'); const amount=document.querySelector('#couponAmount'); const limit=document.querySelector('#couponIssueLimit'); const start=document.querySelector('#couponClaimStart'); const end=document.querySelector('#couponClaimEnd'); return {ready:title?.textContent?.trim() === '编辑优惠券' && document.querySelectorAll('#stage .coupon-editor-title-row h2').length === 1 && compact.includes('后台页面验收优惠券') && compact.includes('已选1个商品') && amount instanceof HTMLInputElement && amount.value === '12.00' && limit instanceof HTMLInputElement && limit.value === '100' && start instanceof HTMLInputElement && Boolean(start.value) && end instanceof HTMLInputElement && Boolean(end.value) && Boolean(document.querySelector('#stage #saveCoupon')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
   });
   await captureDesktopEvidence({
     label: "coupon-data", pathname: "/admin/couponData.html?id=" + couponID,
