@@ -14,6 +14,7 @@ import (
 type overviewStore interface {
 	ReadPaidOverview(context.Context, paymentport.OverviewWindow) (paymentport.PaidOverview, error)
 	ReadPaidOverviewPayerPage(context.Context, paymentport.OverviewWindow, customerdomain.CustomerID, int) (paymentport.PaidOverviewPayerPage, error)
+	ReadPaidOverviewRecords(context.Context, paymentport.OverviewWindow, *paymentport.PaidOverviewRecordCursor, int) (paymentport.PaidOverviewRecordPage, error)
 	ReadRefundOverview(context.Context, paymentport.OverviewWindow) (paymentport.RefundOverview, error)
 }
 
@@ -48,6 +49,23 @@ func (reader *OverviewReader) ReadPaidOverview(ctx context.Context, window payme
 			return readErr
 		}
 		return fmt.Errorf("%w: %v", paymentport.ErrCanonicalPayerUnavailable, readErr)
+	})
+	return result, err
+}
+
+// ReadPaidOverviewRecords keeps the paid-detail page inside Payment's narrow
+// repeatable-read reporting boundary. It neither resolves historical payers
+// nor accesses Order: a provider/reference pair remains the safe locator for
+// the separately owned Order detail Host.
+func (reader *OverviewReader) ReadPaidOverviewRecords(ctx context.Context, window paymentport.OverviewWindow, after *paymentport.PaidOverviewRecordCursor, limit int) (paymentport.PaidOverviewRecordPage, error) {
+	if reader == nil || reader.uow == nil || reader.store == nil || !window.Valid() || limit < 1 || limit > 100 || (after != nil && !after.Valid()) {
+		return paymentport.PaidOverviewRecordPage{}, paymentport.ErrInvalid
+	}
+	var result paymentport.PaidOverviewRecordPage
+	err := reader.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		result, readErr = reader.store.ReadPaidOverviewRecords(tx, window, after, limit)
+		return readErr
 	})
 	return result, err
 }

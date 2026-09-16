@@ -25,6 +25,10 @@ func (r *Repository) ReadOverview(ctx context.Context, window distributionport.O
 		COALESCE(COUNT(*) FILTER (WHERE c.paid_confirmed_at >= $1 AND c.paid_confirmed_at < $2),0),
 		COALESCE(SUM(CASE WHEN c.status NOT IN ('paid','cancelled','zero_commission') THEN GREATEST(c.current_payable_minor-c.paid_minor,0) ELSE 0 END),0),
 		COALESCE(SUM(c.paid_minor),0),
+		(SELECT COALESCE(COUNT(DISTINCT c.order_id),0)
+			FROM distribution_exceptions e
+			JOIN distribution_commissions c ON c.id=e.commission_id
+			WHERE e.status IN ('open','querying')),
 		(SELECT COALESCE(COUNT(*),0) FROM distribution_exceptions e WHERE e.status IN ('open','querying'))
 		FROM distribution_commissions c`, window.Start.UTC(), window.End.UTC()).Scan(
 		&result.PeriodPaidSalesMinor,
@@ -32,6 +36,7 @@ func (r *Repository) ReadOverview(ctx context.Context, window distributionport.O
 		&result.PeriodCommissionCount,
 		&result.CurrentUnsettledMinor,
 		&result.CurrentSettledMinor,
+		&result.CurrentExceptionOrderCount,
 		&result.OpenExceptionCount,
 	)
 	if err != nil {

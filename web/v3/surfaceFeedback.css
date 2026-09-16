@@ -89,3 +89,28 @@
 [data-ui-surface="h5"] .surface-feedback__error button,
 [data-ui-surface="sidebar"] .surface-feedback__error button,
 [data-ui-surface="share"] .surface-feedback__error button { min-height: 44px; }
+
+/* Shared table reader states. Hosts decide only from verified read outcomes,
+ * never from an empty tbody. */
+.surface-feedback__table-read-state {
+  padding: 18px 16px;
+  color: #646a73;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+}
+.surface-feedback__table-read-state--error {
+  color: #b42318;
+  background: #fff7f6;
+}
+.surface-feedback__table-read-state-retry {
+  min-height: 32px;
+  margin-left: 10px;
+  padding: 5px 10px;
+  border: 1px solid #dee0e3;
+  border-radius: 6px;
+  background: #fff;
+  color: #245bdb;
+  cursor: pointer;
+  font: inherit;
+}
