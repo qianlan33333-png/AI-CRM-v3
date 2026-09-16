@@ -118,7 +118,7 @@ try {
   // A fragment-only navigation keeps the already-mounted grid document alive.
   // Reload so the public host rereads the fragment as a fresh credential.
   await cdp.call("Page.reload", { ignoreCache: true });
-  await waitFor(cdp, "(document.querySelector('#spGridState')?.textContent || '').trim() !== ''", "member-grid invalid share boundary did not render");
+  await waitFor(cdp, "(document.querySelector('#spResultSummary')?.textContent || '').includes('无法访问共享数据')", "member-grid invalid share boundary did not render");
   assert.equal(await evaluate(cdp, "Boolean(document.querySelector('#spGridBody tr[data-record-id]'))"), false, "invalid member-grid share must not render data");
   assert.match(await evaluate(cdp, "document.querySelector('#spResultSummary')?.textContent || ''"), /无法访问共享数据/, "invalid member-grid share must disclose unavailable shared data");
   if (exceptions.length) throw new Error(`runtime exceptions: ${exceptions.join('; ')}`);
