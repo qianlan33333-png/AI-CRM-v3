@@ -1437,7 +1437,7 @@
       "review_reference": "Root reviewed the exact bd79ddb current-base authority diff and approved the non-PII source coverage shape on 2026-09-16; deployment and full backfill remain subject to ordinary PR review and required CI."
     },
     {
-      "base_commit": "d12f8ee0a248fe4874b074ddd8bdbb6a7c428706",
+      "base_commit": "772ce1e2eadc921230d819f3682cfd8865168bbb",
       "changes": [
         {
           "path": "api/openapi.yaml",
