@@ -19,6 +19,22 @@ const activeClaim = {
   claim_id: 91, customer_id: 88001, coupon_id: 41, status: 'claimed', claim_no_masked: '***1',
   claimed_at: new Date(now - 5_000).toISOString(), valid_from: new Date(now - 60_000).toISOString(), valid_until: new Date(now + 60_000).toISOString(), redeemed_at: null,
 };
+const availableClaim = {
+  claim_id: 93, customer_id: 88003, coupon_id: 41, status: 'available', claim_no_masked: '***3',
+  claimed_at: new Date(now - 5_000).toISOString(), valid_from: new Date(now - 60_000).toISOString(), valid_until: new Date(now + 60_000).toISOString(), redeemed_at: null,
+};
+const futureClaim = {
+  claim_id: 94, customer_id: 88004, coupon_id: 41, status: 'claimed', claim_no_masked: '***4',
+  claimed_at: new Date(now - 5_000).toISOString(), valid_from: new Date(now + 60_000).toISOString(), valid_until: new Date(now + 120_000).toISOString(), redeemed_at: null,
+};
+const expiredClaim = {
+  claim_id: 95, customer_id: 88005, coupon_id: 41, status: 'claimed', claim_no_masked: '***5',
+  claimed_at: new Date(now - 120_000).toISOString(), valid_from: new Date(now - 120_000).toISOString(), valid_until: new Date(now - 60_000).toISOString(), redeemed_at: null,
+};
+const redeemedClaim = {
+  claim_id: 96, customer_id: 88006, coupon_id: 41, status: 'redeemed', claim_no_masked: '***6',
+  claimed_at: new Date(now - 120_000).toISOString(), valid_from: new Date(now - 120_000).toISOString(), valid_until: new Date(now + 60_000).toISOString(), redeemed_at: new Date(now - 30_000).toISOString(),
+};
 const unconfirmedClaim = {
   claim_id: 92, customer_id: 88002, coupon_id: 41, status: 'claimed', claim_no_masked: '***2',
   claimed_at: new Date(now - 5_000).toISOString(), valid_from: null, valid_until: null, redeemed_at: null,
@@ -45,7 +61,7 @@ const dom = new JSDOM(`<!doctype html><body class="admin-shell" data-page="coupo
       if (url.pathname === '/api/admin/coupons/41/claims') {
         if (url.searchParams.get('forbidden') === '1') return Response.json({ code: 'forbidden' }, { status: 403 });
         const second = url.searchParams.get('offset') === '50';
-        return Response.json({ ok: true, coupon_id: 41, items: second ? [unconfirmedClaim] : [activeClaim], total: 2, limit: 50, offset: second ? 50 : 0 });
+        return Response.json({ ok: true, coupon_id: 41, items: second ? [unconfirmedClaim] : [activeClaim, availableClaim, futureClaim, expiredClaim, redeemedClaim], total: 51, limit: 50, offset: second ? 50 : 0 });
       }
       if (url.pathname === '/api/admin/coupons/product-options') return Response.json({ ok: true, items: [], total: 0, limit: 50, offset: 0 });
       if (url.pathname === '/api/admin/coupons') return Response.json({ ok: true, items: [coupon], total: 1, limit: 50, offset: 0 });
@@ -66,8 +82,12 @@ try {
   await waitFor(() => (document.querySelector('#stage')?.textContent || '').includes('领取展示券'), 'couponData did not render its HTTP projection');
   const rendered = document.querySelector('#stage')?.textContent || '';
   assert.match(rendered, /已发布/, 'header status must use the existing Coupon presentation label');
-  assert.match(rendered, /可用/, 'a current claimed window must become the confirmed available presentation');
-  assert.match(rendered, /当前可用\s*1/, 'current-page summary must count the confirmed available claim');
+  assert.match(rendered, /可用/, 'current claimed and available windows must become the confirmed available presentation');
+  assert.match(rendered, /待生效/, 'a confirmed future window must not be counted as currently available');
+  assert.match(rendered, /已过期/, 'a confirmed expired window must retain its lifecycle presentation');
+  assert.match(rendered, /已使用/, 'a redeemed claim must retain its lifecycle presentation');
+  assert.match(rendered, /当前可用\s*2/, 'current-page summary must count both current claimed and available records');
+  assert.equal(document.querySelector('[data-v3-coupon-data-claim-label]')?.textContent, '领取时间', 'the coupon header must name its claim-start/end interval accurately');
   assert.match(rendered, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 至 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, 'coupon and claim windows must use Shanghai display times');
   assert.doesNotMatch(rendered, /published|claimed|T\d{2}:\d{2}:\d{2}\.\d{3}Z|88001/, 'the view must not expose raw lifecycle, ISO timestamps, or canonical customer ids');
   const denied = await dom.window.fetch('/api/admin/coupons/41/claims?forbidden=1');
@@ -76,7 +96,9 @@ try {
   document.querySelector('#claim-next')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
   await waitFor(() => (document.querySelector('#stage')?.textContent || '').includes('待确认'), 'missing windows must remain explicitly unconfirmed on the next page');
   const nextPage = document.querySelector('#stage')?.textContent || '';
-  assert.match(nextPage, /当前可用\s*0/, 'unconfirmed windows must not fabricate an available count');
+  assert.match(nextPage, /当前可用\s*—/, 'unconfirmed windows must not fabricate an available count');
+  assert.match(nextPage, /已过期\s*—/, 'unconfirmed windows must not fabricate an expired count');
+  assert.match(nextPage, /当前页含待确认记录/);
   assert.match(nextPage, /有效期待确认/);
   assert.deepEqual(errors, []);
 } finally {

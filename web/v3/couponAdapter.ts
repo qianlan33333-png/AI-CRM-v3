@@ -177,8 +177,9 @@ function couponClaimPresentation(value: unknown): Json {
   const claim = asJson(value);
   return {
     ...claim,
-    // Keep the read-model's canonical keys intact. These aliases are only the
-    // frozen couponData template's existing display contract.
+    // This is a browser-local couponData display DTO over a cloned successful
+    // response. The native server response and every non-couponData route keep
+    // their canonical lifecycle and timestamps unchanged.
     status: couponClaimStatus(claim.status, claim.valid_from, claim.valid_until),
     claimed_at: couponClaimTime(claim.claimed_at, '领取时间待确认'),
     valid_window: couponClaimValidWindow(claim.valid_from, claim.valid_until),
@@ -681,6 +682,25 @@ function couponDataWindow(coupon: Json): string {
   return `${formatShanghaiDateTime(coupon.claimStartsAt)} 至 ${formatShanghaiDateTime(coupon.claimEndsAt)}`;
 }
 
+function couponDataStats(page: Json): unknown {
+  const claims = Array.isArray(page.claims) ? page.claims.map(asJson) : [];
+  if (!claims.some((claim) => claim.status === '待确认') || !Array.isArray(page.stats)) return page.stats;
+  return page.stats.map((value) => {
+    const stat = asJson(value);
+    if (stat.label !== '当前可用' && stat.label !== '已过期') return stat;
+    const suffix = typeof stat.sub === 'string' && stat.sub ? `${stat.sub}；当前页含待确认记录` : '当前页含待确认记录';
+    return { ...stat, value: '—', sub: suffix };
+  });
+}
+
+function applyCouponDataLabels(): void {
+  document.querySelectorAll<HTMLElement>('#stage div').forEach((node) => {
+    if (node.dataset.v3CouponDataClaimLabel || node.textContent?.trim() !== '有效期') return;
+    node.dataset.v3CouponDataClaimLabel = 'claim-window';
+    node.textContent = '领取时间';
+  });
+}
+
 function installCouponDataPresentationBridge(): void {
   if (document.body.dataset.page !== 'couponData') return;
   const prototype = AdminController.prototype as unknown as { renderVals(this: { page: string }): Json };
@@ -697,9 +717,12 @@ function installCouponDataPresentationBridge(): void {
         // The Controller database retains the canonical lifecycle for route
         // and edit decisions. This copy is only the frozen template's view.
         coupon: { ...coupon, status: couponStatusLabel(coupon.status), window: couponDataWindow(coupon) },
+        stats: couponDataStats(page),
       },
     };
   };
+  new MutationObserver(applyCouponDataLabels).observe(document.documentElement, { childList: true, subtree: true });
+  applyCouponDataLabels();
 }
 
 async function mountCouponEditor(): Promise<void> {
