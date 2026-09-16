@@ -72,6 +72,9 @@ func (p *ContactDescriptionProvider) Execute(ctx context.Context, envelope effec
 	if err != nil {
 		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash(string(base), "read_before_write_failed")}, err
 	}
+	if live.ExternalUserID != target.ExternalUserID {
+		return contactDescriptionFinal("relationship_unavailable", 0, effectport.Hash(string(base), "external_userid_mismatch")), nil
+	}
 	current, projection := contactDescriptionForEmployee(live, target.EmployeeUserID)
 	if !projection.relationship {
 		return contactDescriptionFinal("relationship_unavailable", 0, effectport.Hash(string(base), "relationship_unavailable")), nil

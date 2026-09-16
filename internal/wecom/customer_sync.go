@@ -105,6 +105,21 @@ type SyncItem struct {
 	ErrorCode            string
 }
 
+// ContactDescriptionSourceCoverage is a digest-safe count of the distinct
+// customer-follow pairs observed by one directory run. It deliberately records
+// a missing description field separately from an explicit empty description.
+// Neither omission nor an unsubmitted projected pair can satisfy backfill
+// completion.
+type ContactDescriptionSourceCoverage struct {
+	Observed  int64 `json:"observed"`
+	Projected int64 `json:"projected"`
+	Omitted   int64 `json:"omitted"`
+}
+
+type ContactDescriptionSourceCoverageReader interface {
+	ContactDescriptionSourceCoverage(context.Context, int64) (ContactDescriptionSourceCoverage, error)
+}
+
 type CustomerSyncStore interface {
 	Create(context.Context, CreateCustomerSyncRun) (CustomerSyncRun, bool, error)
 	Active(context.Context) (CustomerSyncRun, bool, error)
@@ -138,11 +153,34 @@ type CustomerSyncService struct {
 	// Outbound-owned immutable dispatch store. Its nil default preserves the
 	// current read-only directory sync behavior.
 	DescriptionIntents outboundport.ContactDescriptionIntentWriter
-	Audit              interface {
+	// DescriptionSourceCoverage remains owned by WeCom. It supplies the
+	// directory-response field-presence denominator to the admin read model;
+	// Outbound retains ownership of queued and completed effect outcomes.
+	DescriptionSourceCoverage ContactDescriptionSourceCoverageReader
+	Audit                     interface {
 		Append(context.Context, platformaudit.Event) (platformaudit.Event, error)
 	}
 	UOW platformport.UnitOfWork
 	Now func() time.Time
+}
+
+func (service CustomerSyncService) ContactDescriptionSourceStats(ctx context.Context, runID int64) (ContactDescriptionSourceCoverage, error) {
+	if runID < 1 || service.DescriptionSourceCoverage == nil || service.UOW == nil {
+		return ContactDescriptionSourceCoverage{}, ErrSyncNotReady
+	}
+	var coverage ContactDescriptionSourceCoverage
+	err := service.UOW.Within(ctx, func(txContext context.Context) error {
+		var readErr error
+		coverage, readErr = service.DescriptionSourceCoverage.ContactDescriptionSourceCoverage(txContext, runID)
+		return readErr
+	})
+	if err != nil {
+		return ContactDescriptionSourceCoverage{}, err
+	}
+	if coverage.Observed < 0 || coverage.Projected < 0 || coverage.Omitted < 0 || coverage.Observed != coverage.Projected+coverage.Omitted {
+		return ContactDescriptionSourceCoverage{}, ErrSyncCAS
+	}
+	return coverage, nil
 }
 
 func (service CustomerSyncService) Ready() bool {

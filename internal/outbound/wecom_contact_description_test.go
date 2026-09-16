@@ -110,6 +110,19 @@ func TestContactDescriptionProviderSkipsWhenDescriptionWasNotProjected(t *testin
 	}
 }
 
+func TestContactDescriptionProviderRejectsDifferentLiveExternalIdentity(t *testing.T) {
+	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
+	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{{ExternalUserID: "external-other", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1", Description: stringPointer("manual"), DescriptionProjected: true}}}}}
+	writer := &descriptionWriterStub{}
+	p, _ := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "manual")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
+	result, err := p.Execute(context.Background(), descriptionEnvelope(target, "manual"), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effectport.StateFinalFailed || writer.calls != 0 || string(result.Artifact.Payload) != `{"reason":"relationship_unavailable"}` {
+		t.Fatalf("result=%+v calls=%d err=%v", result, writer.calls, err)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
 func TestContactDescriptionProviderSkipsSnapshotChange(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
 	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{descriptionContact("edited after scheduling")}}

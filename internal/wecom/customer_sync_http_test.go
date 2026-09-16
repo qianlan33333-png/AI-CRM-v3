@@ -2,6 +2,7 @@ package wecom
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,4 +129,14 @@ func TestContactDescriptionBackfillRoutesRequireGateAndAuthorization(t *testing.
 			t.Fatalf("status=%d scheduler=%+v stats_calls=%d body=%q", response.Code, scheduler, status.calls, response.Body.String())
 		}
 	})
+}
+
+func TestContactDescriptionCoverageLeavesUnsubmittedProjectedPairsVisible(t *testing.T) {
+	coverage, err := contactDescriptionCoverage(ContactDescriptionSourceCoverage{Observed: 5, Projected: 3, Omitted: 2}, outboundport.ContactDescriptionRunStats{Discovered: 2})
+	if err != nil || coverage.Observed != 5 || coverage.Projected != 3 || coverage.Omitted != 2 || coverage.Submitted != 2 || coverage.NotSubmitted != 1 {
+		t.Fatalf("coverage=%+v err=%v", coverage, err)
+	}
+	if _, err = contactDescriptionCoverage(ContactDescriptionSourceCoverage{Observed: 5, Projected: 3, Omitted: 2}, outboundport.ContactDescriptionRunStats{Discovered: 4}); !errors.Is(err, ErrSyncCAS) {
+		t.Fatalf("over-submitted err=%v", err)
+	}
 }

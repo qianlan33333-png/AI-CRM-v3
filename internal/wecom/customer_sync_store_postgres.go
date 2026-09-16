@@ -214,10 +214,22 @@ func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context
 			}
 			seenTags[tag.ProviderTagID] = struct{}{}
 		}
+		projected := follow.DescriptionProjected && follow.Description != nil
 		if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_owner_observations(customer_id,corp_scope,employee_id,remark,relationship_status,last_seen_run_id,observed_at)
 			VALUES($1,$2,$3,$4,'active',$5,$6) ON CONFLICT(customer_id,corp_scope,employee_id) DO UPDATE SET
 			remark=EXCLUDED.remark,relationship_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`,
 			customerID, corpScope, employeeID, follow.Remark, runID, observedAt.UTC()); err != nil {
+			return err
+		}
+		// This run-scoped ledger is intentionally separate from the current owner
+		// projection: a later sync may replace last_seen_run_id while this run's
+		// Outbound effects are still pending. Repeated observations in this run
+		// preserve a proven field projection; a new run starts from its own fact.
+		if _, err = tx.Exec(ctx, `INSERT INTO wecom_contact_description_source_observations(source_run_id,customer_id,corp_scope,employee_id,description_projected,observed_at)
+			VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(source_run_id,customer_id,corp_scope,employee_id) DO UPDATE SET
+			description_projected=wecom_contact_description_source_observations.description_projected OR EXCLUDED.description_projected,
+			observed_at=EXCLUDED.observed_at`,
+			runID, customerID, corpScope, employeeID, projected, observedAt.UTC()); err != nil {
 			return err
 		}
 		// The watermark is a shared version row for both a full page and a
@@ -236,6 +248,23 @@ func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context
 		}
 	}
 	return nil
+}
+
+func (PostgreSQLCustomerSyncStore) ContactDescriptionSourceCoverage(ctx context.Context, runID int64) (ContactDescriptionSourceCoverage, error) {
+	if runID < 1 {
+		return ContactDescriptionSourceCoverage{}, ErrSyncNotFound
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return ContactDescriptionSourceCoverage{}, err
+	}
+	var coverage ContactDescriptionSourceCoverage
+	err = tx.QueryRow(ctx, `SELECT COUNT(*),
+		COUNT(*) FILTER (WHERE description_projected),
+		COUNT(*) FILTER (WHERE NOT description_projected)
+		FROM wecom_contact_description_source_observations
+		WHERE source_run_id=$1`, runID).Scan(&coverage.Observed, &coverage.Projected, &coverage.Omitted)
+	return coverage, err
 }
 
 // CustomerBusinessDetails exposes only completed directory observations. It

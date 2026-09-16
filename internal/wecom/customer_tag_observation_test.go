@@ -139,6 +139,54 @@ func TestProviderTagCustomerListerUsesOnlyActiveOfficialTagsFromCompletedRuns(t 
 	}
 }
 
+func TestContactDescriptionSourceCoverageCountsCurrentDistinctFollowPairs(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store := PostgreSQLCustomerSyncStore{}
+	at := time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC)
+	runID := seedObservationRun(t, ctx, pool.Native(), "description-source-coverage", "manual", "wecom-corp:coverage", "staff-1", at)
+	first := newObservationCustomer(t, ctx, pool.Native())
+	second := newObservationCustomer(t, ctx, pool.Native())
+	present := "manual"
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		if err := store.UpsertProfileObservations(tx, runID, "wecom-corp:coverage", first, []wecomport.ExternalContactFollowInfo{
+			{EmployeeID: "staff-1", Description: &present, DescriptionProjected: true},
+			{EmployeeID: "staff-2"},
+		}, at); err != nil {
+			return err
+		}
+		// A repeated observation within one run must never turn a proven field
+		// projection into an omission. The next run remains authoritative.
+		if err := store.UpsertProfileObservations(tx, runID, "wecom-corp:coverage", first, []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1"}}, at.Add(time.Second)); err != nil {
+			return err
+		}
+		return store.UpsertProfileObservations(tx, runID, "wecom-corp:coverage", second, []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-3", Description: &present, DescriptionProjected: true}}, at)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondRunID := seedObservationRun(t, ctx, pool.Native(), "description-source-coverage-next", "manual", "wecom-corp:coverage", "staff-1", at.Add(time.Minute))
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		return store.UpsertProfileObservations(tx, secondRunID, "wecom-corp:coverage", first, []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1"}}, at.Add(time.Minute))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := CustomerSyncService{DescriptionSourceCoverage: store, UOW: unit}
+	coverage, err := service.ContactDescriptionSourceStats(ctx, runID)
+	if err != nil || coverage.Observed != 3 || coverage.Projected != 2 || coverage.Omitted != 1 {
+		t.Fatalf("first coverage=%+v err=%v", coverage, err)
+	}
+	secondCoverage, err := service.ContactDescriptionSourceStats(ctx, secondRunID)
+	if err != nil || secondCoverage.Observed != 1 || secondCoverage.Projected != 0 || secondCoverage.Omitted != 1 {
+		t.Fatalf("second coverage=%+v err=%v", secondCoverage, err)
+	}
+}
+
 func TestCustomerTagRefreshWinsOverInProgressFullSyncAndIsHiddenFromSyncListPostgreSQL(t *testing.T) {
 	pool, cleanup := wecomIntegrationPool(t)
 	defer cleanup()

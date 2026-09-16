@@ -23,7 +23,7 @@
 
 现仓也已有企微回调 Inbox、异步处理和侧边栏 `BootstrapViewer`。侧边栏先以 `external_userid` 解析一个已存在的 CRM Customer，再签发 Customer-scoped token；当前安全 profile 刻意不返回 raw 外部标识。因而本期应在现有工作台响应上新增安全的 `oneid` 展示字段，不能在浏览器另行匹配身份。
 
-需要新增的不是另一个身份或队列，而是 Outbound 所有的“企微联系人 description”外部效果。读取、写入和写后验证必须分开记录。为使 River 重试、回调重放和全量 run 恢复后仍可执行，新增 Outbound 所有的 immutable description dispatch/receipt：它只保存本地 `customer_id`、跟进员工本地引用、目标/原文/策略摘要、`effect_ref` 与完成状态，绝不把原始 `external_userid` 或人工 `description` 放进 EER、任务参数或结构化日志；执行时才经既有 identity/relationship port 在内存中解析外部 ID。EER 仍是唯一队列、重试和效果状态内核。
+需要新增的不是另一个身份或队列，而是 Outbound 所有的“企微联系人 description”外部效果。读取、写入和写后验证必须分开记录。为使 River 重试、回调重放和全量 run 恢复后仍可执行，新增 Outbound 所有的 immutable description dispatch/receipt：它只保存本地 `customer_id`、跟进员工本地引用、目标/原文/策略摘要、`effect_ref` 与完成状态，绝不把原始 `external_userid` 或人工 `description` 放进 EER、任务参数或结构化日志。执行时只经既有 Identity Port 解析带 corp scope 的 verified external ID；即时 Provider 读回必须返回相同 external ID 与计划员工的 follow 记录，callback 生命周期关系行不能充当历史目录全量资格门槛。EER 仍是唯一队列、重试和效果状态内核。
 
 分类结论：
 
@@ -67,7 +67,7 @@ run 采用已有 PostgreSQL/River 任务基础、游标和 CAS；同一 run key 
 
 旧批处理是安全子集，而不是本期完成定义：它仅扫描 `relation_status='active'` 且本地 `description` 为空的关系，先发 detail effect 再发 update effect，默认上限为 24,999 个联系人、每批 500，并要求显式授权。这证明全量过程应有硬上限、预览和恢复，但不能替代用户要求的“全量用户补打”。v3 全量 run 必须枚举全部 active 关系、对每条真实读 `description` 后执行上述“已含则跳过、否则追加”规则，并分别报告空描述写入、人工描述追加、`description_changed` 跳过和超长跳过；非空且缺 ID 不得静默计为成功。
 
-Run 至少展示：发现关系数、identity 未解析/冲突数、已含目标 ID 数、已排队数、写入已执行数、读回确认数、超长跳过数、无权限跳过数、可重试失败数、终态失败数和未决 `outcome_unknown` 数。完成门槛为输入关系数等于各终态和未决状态之和；只有 `readback_confirmed + already_present` 是已完成补打。
+Run 至少展示：发现关系数、identity 未解析/冲突数、已含目标 ID 数、已排队数、写入已执行数、读回确认数、超长跳过数、无权限跳过数、可重试失败数、终态失败数和未决 `outcome_unknown` 数。详情还必须给出当前 run 的 distinct `(customer, corp_scope, employee)` Provider 来源分母：观察到的关系数、description 字段明确投影数、字段省略数、已提交 Outbound 数和已投影但未提交数。字段省略是 source-to-projected gap，已投影但未提交是 projected-to-Outbound-intent gap；二者独立、不得推断为空，也不得计入完成。完成门槛为输入关系数等于各终态和未决状态之和；只有 `readback_confirmed + already_present` 是已完成补打。
 
 限速由 Outbound Provider adapter 按企微响应和明确配置执行，保持可续跑；不在 callback handler 或浏览器中批量请求。
 
@@ -112,7 +112,7 @@ Run 至少展示：发现关系数、identity 未解析/冲突数、已含目标
 
 ## 9. 本次交付契约
 
-- 管理员 API 为 `POST /api/admin/wecom/contact-description-backfills`、`GET /api/admin/wecom/contact-description-backfills/{run_id}`，以及同一路径的 `GET`/`POST .../{run_id}/readback`。创建入口复用既有 `CustomerSync` manual full run，不另建扫描或队列；四个入口均要求管理员权限，写入口还要求 CSRF。`AICRM_WECOM_CONTACT_DESCRIPTION_PROVIDER_ENABLED=false` 时，已认证管理员收到明确的 disabled 状态，不能据此执行任何 Provider 调用。
+- 管理员 API 为 `POST /api/admin/wecom/contact-description-backfills`、`GET /api/admin/wecom/contact-description-backfills/{run_id}`，以及同一路径的 `GET`/`POST .../{run_id}/readback`。创建入口复用既有 `CustomerSync` manual full run，不另建扫描或队列；四个入口均要求管理员权限，写入口还要求 CSRF。GET 详情同时返回 Outbound 状态和安全的 `observed/projected/omitted/submitted/not_submitted` 来源覆盖，不返回 Provider 原值。`AICRM_WECOM_CONTACT_DESCRIPTION_PROVIDER_ENABLED=false` 时，已认证管理员收到明确的 disabled 状态，不能据此执行任何 Provider 调用。
 - 回调 HTTP 链路只持久 Inbox 并 ACK。已完成客户/关系生命周期的完整新增事件通过既有 River 队列登记单联系人读取任务；任务校验 Provider 返回的 `external_userid` 与事件目标一致后，才在同一个 PostgreSQL UoW 接受 Outbound intent 与效果收据。半联系人、未知、在途或结果未知的既有计划不触发盲目重写。
 - `readback_failed` 只能创建 `readback` 操作：它再次读取并登记 confirmed/failed，不会写 description。`outcome_unknown` 保留原 effect/receipt key，只能对账或等待可信新观测；显式 replan 创建新的 immutable revision，不能改写旧快照。
 - 0170 的完成行仅允许状态、结果、readback、安全的 Provider 数值拒绝码和更新时间变化；删除和 TRUNCATE 均被数据库触发器拒绝。安装包显式要求带有 0170 migration，运行期开关维持环境变量所有权且默认关闭。

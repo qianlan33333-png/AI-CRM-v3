@@ -35,6 +35,18 @@ type CustomerSyncHTTPHandler struct {
 	UOW                  platformport.UnitOfWork
 }
 
+// ContactDescriptionCoverage joins WeCom's directory field-presence facts
+// with Outbound's submitted-effect count at the HTTP composition boundary.
+// The two domains retain their separate stores; this response makes any gap
+// explicit instead of treating an omitted Provider field as completion.
+type ContactDescriptionCoverage struct {
+	Observed     int64 `json:"observed"`
+	Projected    int64 `json:"projected"`
+	Omitted      int64 `json:"omitted"`
+	Submitted    int64 `json:"submitted"`
+	NotSubmitted int64 `json:"not_submitted"`
+}
+
 func (handler CustomerSyncHTTPHandler) Routes() nethttp.Handler {
 	mux := nethttp.NewServeMux()
 	mux.HandleFunc("POST /api/admin/customer-sync-runs", handler.create)
@@ -191,7 +203,17 @@ func (handler CustomerSyncHTTPHandler) getDescriptionBackfill(response nethttp.R
 		writeSyncError(response, err)
 		return
 	}
-	writeSyncJSON(response, nethttp.StatusOK, map[string]any{"run": run, "description_backfill": stats})
+	source, err := handler.Service.ContactDescriptionSourceStats(request.Context(), id)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	coverage, err := contactDescriptionCoverage(source, stats)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	writeSyncJSON(response, nethttp.StatusOK, map[string]any{"run": run, "description_backfill": stats, "description_source_coverage": coverage})
 }
 
 func (handler CustomerSyncHTTPHandler) scheduleDescriptionReadback(response nethttp.ResponseWriter, request *nethttp.Request) {
@@ -240,6 +262,13 @@ func (handler CustomerSyncHTTPHandler) scheduleDescriptionReadback(response neth
 
 func (handler CustomerSyncHTTPHandler) descriptionReady() bool {
 	return handler.DescriptionEnabled && handler.DescriptionStatus != nil && handler.DescriptionReadbacks != nil && handler.UOW != nil
+}
+
+func contactDescriptionCoverage(source ContactDescriptionSourceCoverage, stats outboundport.ContactDescriptionRunStats) (ContactDescriptionCoverage, error) {
+	if source.Observed < 0 || source.Projected < 0 || source.Omitted < 0 || source.Observed != source.Projected+source.Omitted || stats.Discovered < 0 || stats.Discovered > source.Projected {
+		return ContactDescriptionCoverage{}, ErrSyncCAS
+	}
+	return ContactDescriptionCoverage{Observed: source.Observed, Projected: source.Projected, Omitted: source.Omitted, Submitted: stats.Discovered, NotSubmitted: source.Projected - stats.Discovered}, nil
 }
 
 func parseCustomerSyncRunID(request *nethttp.Request) (int64, error) {

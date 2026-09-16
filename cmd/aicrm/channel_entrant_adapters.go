@@ -128,24 +128,20 @@ var _ channelport.WelcomeMessageFreezer = channelEntrantActionReaderAdapter{}
 var _ channelport.WelcomeMaterialSnapshotResolver = channelWelcomeMaterialAdapter{}
 var _ wecomport.CurrentExternalContactReader = channelCurrentContactAdapter{}
 
-// contactDescriptionTargetAdapter resolves an active follow relationship by
-// its persisted WeCom employee userid. It is deliberately independent of an
-// admin user: directory backfill covers every active relationship, including
-// follow staff not represented by a local operator account.
+// contactDescriptionTargetAdapter resolves the verified, corp-scoped external
+// identity for a directory-observed follow employee. The directory observation
+// is the source of the run's relationship eligibility; callback relationship
+// rows are a separate lifecycle projection and are intentionally not required
+// for a historical full sync.
 type contactDescriptionTargetAdapter struct {
-	uow           platformport.UnitOfWork
-	corpID        string
-	relationships entrantRelationshipReader
-	identities    identityport.ExternalIdentityValueReader
+	uow        platformport.UnitOfWork
+	corpID     string
+	identities identityport.ExternalIdentityValueReader
 }
 
 func (a contactDescriptionTargetAdapter) ResolveContactDescriptionTarget(ctx context.Context, customerID customerdomain.CustomerID, employeeID string) (wecomport.CurrentExternalContact, error) {
 	var result wecomport.CurrentExternalContact
 	err := a.uow.Within(ctx, func(tx context.Context) error {
-		active, err := a.relationships.IsActive(tx, a.corpID, employeeID, customerID)
-		if err != nil || !active {
-			return errors.New("current WeCom relationship unavailable")
-		}
 		value, found, err := a.identities.VerifiedExternalIdentityValue(tx, customerID, identitydomain.KindWeComExternalUserID, "wecom-corp:"+a.corpID)
 		if err != nil || !found {
 			return errors.New("current WeCom identity unavailable")

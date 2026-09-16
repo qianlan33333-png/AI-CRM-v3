@@ -7328,10 +7328,22 @@ components:
     ContactDescriptionBackfillStatus:
       type: object
       additionalProperties: false
-      required: [run, description_backfill]
+      required: [run, description_backfill, description_source_coverage]
       properties:
         run: {$ref: "#/components/schemas/CustomerSyncRun"}
         description_backfill: {$ref: "#/components/schemas/ContactDescriptionBackfillStats"}
+        description_source_coverage: {$ref: "#/components/schemas/ContactDescriptionSourceCoverage"}
+    ContactDescriptionSourceCoverage:
+      type: object
+      additionalProperties: false
+      description: Current-run distinct customer-corp-employee observations. omitted is the source-to-projected gap; not_submitted is the projected-to-Outbound-intent gap. Neither is a completed backfill result.
+      required: [observed, projected, omitted, submitted, not_submitted]
+      properties:
+        observed: {type: integer, minimum: 0}
+        projected: {type: integer, minimum: 0}
+        omitted: {type: integer, minimum: 0}
+        submitted: {type: integer, minimum: 0}
+        not_submitted: {type: integer, minimum: 0}
     ContactDescriptionReadbackAccepted:
       type: object
       additionalProperties: false

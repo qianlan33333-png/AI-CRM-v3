@@ -1607,7 +1607,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	contactDescriptionProvider, err := outbound.NewContactDescriptionProvider(cfg.WeCom.ContactDescriptionProviderEnabled, contactDescriptionIntents, contactDescriptionTargetAdapter{uow: uow, corpID: cfg.WeCom.CorpID, relationships: relationships, identities: queries}, providerClient, providerClient)
+	contactDescriptionProvider, err := outbound.NewContactDescriptionProvider(cfg.WeCom.ContactDescriptionProviderEnabled, contactDescriptionIntents, contactDescriptionTargetAdapter{uow: uow, corpID: cfg.WeCom.CorpID, identities: queries}, providerClient, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -1715,7 +1715,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	weComArchiveProcessor := wecom.ArchiveInboxProcessor{Enabled: cfg.WeCom.MessageArchiveEnabled, Inbox: inboxService, UOW: uow, Archive: archiveService}
 	customerSync := wecom.CustomerSyncService{Enabled: cfg.WeCom.CustomerSyncEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient,
 		Identity: oneID, Projection: customerStore, Timeline: customerStore, Store: customerProfileStore, Outbox: platformoutbox.NewPostgreSQL(),
-		Enqueuer: customerSyncEnqueuer, Audit: auditService, UOW: uow}
+		Enqueuer: customerSyncEnqueuer, DescriptionSourceCoverage: customerProfileStore, Audit: auditService, UOW: uow}
 	if cfg.WeCom.ContactDescriptionProviderEnabled {
 		customerSync.DescriptionIntents = contactDescriptionIntents
 	}
