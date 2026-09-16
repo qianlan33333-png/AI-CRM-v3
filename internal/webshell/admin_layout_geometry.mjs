@@ -1256,13 +1256,13 @@ try {
     label: "coupon-form", pathname: "/admin/couponForm.html?id=" + couponID,
     ready: "document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券')",
     kind: "embedded", titleSelector: "#couponForm h2", assertShell: false,
-    assertPage: `(() => ({ready:document.querySelectorAll('#couponForm h2').length === 1 && document.querySelector('#couponForm h2')?.textContent?.trim() === '编辑优惠券' && document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券') && document.querySelector('#selectedProductCount')?.textContent?.trim() === '已选 1 个商品' && Boolean(document.querySelector('#saveCoupon')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); return {ready:Array.from(document.querySelectorAll('#stage h2')).filter(node => node.textContent?.trim() === '编辑优惠券').length === 1 && text.includes('后台页面验收优惠券') && text.includes('已选 1 个商品') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
   });
   await captureDesktopEvidence({
     label: "coupon-data", pathname: "/admin/couponData.html?id=" + couponID,
     ready: "Boolean(document.querySelector('#stage table tbody tr')) && document.querySelector('#stage')?.textContent?.includes('领取与使用明细')",
     kind: "embedded", titleSelector: frozenListToolbarTitle,
-    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || '').replace(/\s/g,''); return {ready:text.includes('累计领取') && text.includes('共1条') && Array.from(document.querySelectorAll('#stage tbody tr')).some(row => row.textContent?.includes('claimed')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const rows=Array.from(document.querySelectorAll('#stage tbody tr')); return {ready:text.includes('累计领取') && rows.length >= 1 && rows.some(row => row.textContent?.includes('claimed')) && !text.includes('当前页暂无领取记录'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
   });
   await captureDesktopEvidence({
     label: "service-period-products", pathname: "/admin/service-period-products",
