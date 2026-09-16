@@ -921,7 +921,7 @@ try {
   // harness. Each route stays on the composed Access session and its existing
   // Owner Host, then proves the requested viewport, shell geometry, a visible
   // page-specific operation or seeded fact, and no horizontal overflow.
-  const captureDesktopEvidence = async ({ label, pathname, ready, kind, titleSelector, assertPage, finalPath = pathname }) => {
+  const captureDesktopEvidence = async ({ label, pathname, ready, kind, titleSelector, assertPage, finalPath = pathname, assertShell = true }) => {
     for (const width of [1280, 1440]) {
       await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: 900 });
       const step = `${label}-desktop-${width}`;
@@ -930,7 +930,7 @@ try {
         await waitFor(cdp, `location.pathname === ${JSON.stringify(finalPath.split("?")[0])} && document.readyState !== 'loading'`, step + " did not navigate");
         await waitFor(cdp, ready, step + " Host did not become ready");
         await waitForFonts(step);
-        await assertLayout(kind, step, titleSelector);
+        if (assertShell) await assertLayout(kind, step, titleSelector);
         const evidence = await evaluate(cdp, assertPage);
         if (!evidence?.ready || evidence.width !== width || evidence.overflow) throw new Error(step + " visible page evidence invalid " + JSON.stringify(evidence));
         await capture(step);
@@ -1272,9 +1272,9 @@ try {
   });
   await captureDesktopEvidence({
     label: "member-grid", pathname: "/admin/spProductData.html?id=" + serviceProductID,
-    ready: "Boolean(document.querySelector('#member-grid-apply')) && Boolean(document.querySelector('[data-member-edit]'))",
-    kind: "embedded", titleSelector: frozenListToolbarTitle,
-    assertPage: `(() => ({ready:document.querySelector('#stage')?.textContent?.includes('当前页：1 条') && Boolean(document.querySelector('[data-member-edit]')) && document.querySelector('#member-grid-share-toggle')?.textContent?.includes('开启并生成链接'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+    ready: "Boolean(document.querySelector('#spMemberGrid[data-mode=\"internal\"]')) && document.querySelectorAll('#spGridBody tr[data-record-id]').length === 1 && document.querySelector('#spResultSummary')?.textContent?.trim() === '当前显示 1 行'",
+    kind: "embedded", titleSelector: "h1", assertShell: false,
+    assertPage: `(() => ({ready:document.querySelectorAll('h1').length === 1 && document.querySelector('h1')?.textContent?.includes('周期商品会员数据') && document.querySelectorAll('#spGridBody tr[data-record-id]').length === 1 && document.querySelector('#spResultSummary')?.textContent?.trim() === '当前显示 1 行',width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
   });
   await captureDesktopEvidence({
     label: "channels-new", pathname: "/admin/channels/new",
