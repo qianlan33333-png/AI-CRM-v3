@@ -899,7 +899,7 @@ func TestSurveyEditorUsesFullWidthDonorWorkspaceInsideAdminShell(t *testing.T) {
 		AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/questionnaireDetail.html?id=11", nil), "问卷编辑", "", "api.admin_questionnaires"),
 		"questionnaireDetail",
 		`<div class="shell"><header class="topbar">问卷工具栏</header><div class="workspace">编辑区</div></div><div id="questionnaire-editor-config" hidden>{}</div>`,
-		SurveyAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", EditorJS: "/assets/editor.js", EditorCSS: "/assets/editor.css"},
+		SurveyAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", EditorJS: "/assets/editor.js", EditorCSS: "/assets/editor.css", OperationsHostJS: "/assets/survey-operations.js", OperationsCSS: "/assets/survey-operations.css"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -921,7 +921,7 @@ func TestSurveyListUsesV3HostAsItsOnlyRuntimeEntrypoint(t *testing.T) {
 		AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/questionnaires.html", nil), "问卷管理", "", "api.admin_questionnaires"),
 		"questionnaires",
 		`<section>问卷列表</section>`,
-		SurveyAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", SurveyHostJS: "/assets/survey-host.js", EditorJS: "/assets/editor.js", EditorCSS: "/assets/editor.css"},
+		SurveyAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js", SurveyHostJS: "/assets/survey-host.js", EditorJS: "/assets/editor.js", EditorCSS: "/assets/editor.css", OperationsHostJS: "/assets/survey-operations.js", OperationsCSS: "/assets/survey-operations.css"},
 	)
 	if err != nil {
 		t.Fatal(err)

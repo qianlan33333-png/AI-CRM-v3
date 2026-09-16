@@ -20,4 +20,23 @@ export default defineConfig({
       prettier: true,
     },
   },
+  surveyPublic: {
+    input: {
+      target: './api/openapi.yaml',
+      filters: {
+        mode: 'include',
+        tags: ['SurveyPublic'],
+        // Orval retains global response aliases while filtering operations.
+        // Include their direct dependencies so the generated standalone client
+        // never points at omitted types.
+        schemas: [/^SurveyPublic/, /^SurveySafeRedirectURL$/, /^CompletionAction$/, /^PositiveID$/, /^ErrorResponse$/, /^GroupOpsWebhookError$/, /^OpenPlatformOAuthError$/, /^OpenPlatformV1Error$/, /^OpenPlatformV1Failure$/],
+      },
+    },
+    output: {
+      target: './web/v3/generated/survey-public.ts',
+      client: 'fetch',
+      clean: false,
+      prettier: true,
+    },
+  },
 });

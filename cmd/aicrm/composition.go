@@ -160,11 +160,11 @@ type composedApplication struct {
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
-	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, wecomadapter.New, nil)
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, wecomadapter.New, nil, outbound.SurveyCompletionNetwork{})
 }
 
 func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error)) (*composedApplication, error) {
-	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, providerFactory, nil)
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, providerFactory, nil, outbound.SurveyCompletionNetwork{})
 }
 
 func weComProviderConfig(cfg platformconfig.Runtime) wecomadapter.Config {
@@ -178,7 +178,7 @@ func weComProviderConfig(cfg platformconfig.Runtime) wecomadapter.Config {
 // composeWithWeComClientFactoryAndSurveyCompletionHTTPClient keeps a supplied
 // HTTPS client inside test Composition only. Production Composition passes nil
 // and therefore retains the outbound provider's locked default transport.
-func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error), surveyCompletionHTTPClient *http.Client) (*composedApplication, error) {
+func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error), surveyCompletionHTTPClient *http.Client, surveyCompletionNetwork outbound.SurveyCompletionNetwork) (*composedApplication, error) {
 	if providerFactory == nil {
 		return nil, errors.New("WeCom client factory is required")
 	}
@@ -767,7 +767,16 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Identities: queries})
+	surveyCompletionRuntime, err := outbound.NewStaticSurveyCompletionTargets(surveyCompletionTargets)
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionRefs := make([]string, 0, len(surveyCompletionTargets))
+	for _, target := range surveyCompletionTargets {
+		surveyCompletionRefs = append(surveyCompletionRefs, target.Reference)
+	}
+	surveyCompletionEndpoints := outbound.NewSurveyCompletionEndpoints(pool.Native(), surveyCompletionRuntime, surveyCompletionRefs)
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Resolver: surveyCompletionEndpoints, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Network: surveyCompletionNetwork, Identities: queries})
 	if err != nil {
 		return fail(err)
 	}
@@ -784,6 +793,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = surveySubmissions.BindCompletionIdentity(surveyCompletionProvider); err != nil {
 		return fail(err)
 	}
+	if err = surveySubmissions.BindCompletionEndpoints(surveyCompletionEndpoints); err != nil {
+		return fail(err)
+	}
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
 		return fail(err)
 	}
@@ -797,10 +809,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
 	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled).SetCompletionTargetCatalog(surveyCompletionProvider)
-	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
-	if err != nil {
-		return fail(err)
-	}
 	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
 	if err = tagCatalog.RequireProviderMutations(); err != nil {
 		return fail(err)
@@ -1010,6 +1018,27 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
 		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository, profiles: groupOpsRepository})
 	segmentBindings.Handler.BindAudienceChannelReferences(audienceChannelReferenceAdapter{channels: channelCatalogService})
+	publicCompletionTargets, err := platformconfig.ParseSurveyCompletionNavigationTargets(cfg.Survey.CompletionNavigationTargetsJSON)
+	if err != nil {
+		return fail(err)
+	}
+	publicCompletionResolver, err := newSurveyCompletionNavigationResolver(publicCompletionTargets)
+	if err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindPublicCompletionTarget(publicCompletionResolver); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindPublicLeadQRCode(channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+		return fail(err)
+	}
+	// Bind Survey HTTP only after its two public completion read boundaries are
+	// available. Survey still receives neither Channel tables nor an outbound
+	// Provider endpoint.
+	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
+	if err != nil {
+		return fail(err)
+	}
 	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Summaries: channelstore.NewPostgreSQLCatalogSummaryReader(uow), Security: requestSecurity, CursorSigningKey: channelCursorKey})
 	if err != nil {
 		return fail(err)
@@ -2009,7 +2038,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	surveyUI := surveyModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets surveymodule.UIAssets) error {
 		titles := map[string]string{"questionnaires": "问卷管理", "questionnaireDetail": "问卷编辑", "questionnaireOps": "问卷运营"}
-		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, titles[page], "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donorTemplate, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, SurveyHostJS: assets.SurveyHostJS, StandardCSS: assets.StandardCSS})
+		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, titles[page], "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donorTemplate, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, SurveyHostJS: assets.SurveyHostJS, OperationsHostJS: assets.OperationsHostJS, OperationsCSS: assets.OperationsCSS, StandardCSS: assets.StandardCSS})
 	})
 	surveyPublicUI := surveyModule.PublicUIBinding("web/dist")
 	operationUI := operationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets operationcycle.UIAssets) error {

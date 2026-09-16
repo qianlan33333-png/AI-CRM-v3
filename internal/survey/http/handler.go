@@ -424,7 +424,17 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 	parts := strings.Split(tail, "/")
 	slug := parts[0]
 	if len(parts) == 1 && r.Method == http.MethodGet {
-		if _, ok := h.requireResolvedSurveySession(w, r); !ok {
+		identity, ok := h.requireResolvedSurveySession(w, r)
+		if !ok {
+			return
+		}
+		status, err := h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		if status.Submitted {
+			writeAlreadySubmitted(w, status.CompletionAction)
 			return
 		}
 		q, err := h.submissions.ReadPublic(r.Context(), slug)
@@ -454,10 +464,21 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 		}
 		receipt, err := h.submissions.Submit(r.Context(), surveyport.SubmitCommand{Slug: slug, DefinitionVersion: body.Version, SubmissionKey: body.SubmissionKey, Answers: body.Answers, Identity: identity, SourceChannel: body.SourceChannel, CampaignID: body.CampaignID, StaffID: body.StaffID})
 		if err != nil {
+			var duplicate *surveyport.AlreadySubmittedError
+			if errors.As(err, &duplicate) {
+				writeAlreadySubmitted(w, duplicate.CompletionAction)
+				return
+			}
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 201, map[string]any{"receipt": receipt, "result_token": receipt.ResultToken})
+		// Preserve the legacy top-level result-query credential while keeping it
+		// out of the nested receipt. The completion H5 flow ignores this field and
+		// uses only completion_action, but existing result-query clients recover
+		// their receipt from the top-level compatibility projection.
+		publicReceipt := receipt
+		publicReceipt.ResultToken = ""
+		writeJSON(w, 201, map[string]any{"receipt": publicReceipt, "result_token": receipt.ResultToken, "completion_action": receipt.CompletionAction})
 		return
 	}
 	method(w, "GET or POST")
@@ -551,18 +572,34 @@ func (h *Handler) publicEntry(w http.ResponseWriter, r *http.Request, slug strin
 		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_unavailable", http.StatusSeeOther)
 		return
 	}
-	questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
-	if err != nil {
-		resultError(w, err)
-		return
-	}
 	identity, resolved := h.surveySession(r)
 	if resolved && identity.State == surveyport.IdentityResolved {
+		status, statusErr := h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
+		if statusErr != nil {
+			resultError(w, statusErr)
+			return
+		}
+		if status.Submitted {
+			http.Redirect(w, r, completionLocation(slug, status.CompletionAction), http.StatusSeeOther)
+			return
+		}
+		questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
 		display := "all"
 		if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
 			display = "one"
 		}
 		http.Redirect(w, r, "/h5/"+display+".html?slug="+slug, http.StatusSeeOther)
+		return
+	}
+	// An anonymous or conflicted session has no trusted canonical Customer to
+	// match against a claim, so it remains subject to the ordinary public
+	// availability gate.
+	if _, err := h.submissions.ReadPublic(r.Context(), slug); err != nil {
+		resultError(w, err)
 		return
 	}
 	if resolved && identity.State == surveyport.IdentityConflict {
@@ -582,12 +619,27 @@ func (h *Handler) oauthSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := r.URL.Query().Get("slug")
+	identity, ok := h.surveySession(r)
+	display := "all"
+	status := surveyport.PublicSubmissionStatus{CompletionAction: surveyport.DefaultCompletionAction()}
+	if ok && identity.State == surveyport.IdentityResolved && identity.CustomerID != nil {
+		var err error
+		status, err = h.submissions.PublicSubmissionStatus(r.Context(), slug, identity)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		if status.Submitted {
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display, "submitted": true, "completion_action": status.CompletionAction})
+			return
+		}
+	}
 	questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
 	if err != nil {
 		resultError(w, err)
 		return
 	}
-	identity, ok := h.surveySession(r)
 	if !ok || identity.State == surveyport.IdentityAnonymous {
 		writeError(w, http.StatusUnauthorized, "survey_oauth_required")
 		return
@@ -596,12 +648,22 @@ func (h *Handler) oauthSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "survey_identity_conflict")
 		return
 	}
-	display := "all"
 	if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
 		display = "one"
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display})
+	writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display, "submitted": status.Submitted, "completion_action": status.CompletionAction})
+}
+
+func completionLocation(slug string, action surveyport.CompletionAction) string {
+	if action.Type == surveyport.CompletionActionRedirect && safeCompletionRedirectURL(action.RedirectURL) {
+		return action.RedirectURL
+	}
+	return "/h5/done.html?slug=" + url.QueryEscape(slug)
+}
+
+func safeCompletionRedirectURL(raw string) bool {
+	return surveyport.ValidPublicCompletionURL(raw)
 }
 
 func (h *Handler) surveySession(r *http.Request) (surveyport.SubmissionIdentity, bool) {
@@ -901,7 +963,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			writeError(w, http.StatusServiceUnavailable, "configuration_target_catalog_unavailable")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "metadata": config.ExternalPushMetadata}, "available_configuration_references": references, "target_catalog_available": catalogAvailable, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": h.completionProviderEnabled, "local_only": !h.completionProviderEnabled, "items": items, "total": total, "real_external_call_executed": false})
+		writeJSON(w, 200, operationConfigurationResponse(id, config, references, catalogAvailable, h.completionProviderEnabled, items, total))
 		return
 	}
 	principal, ok := h.write(w, r)
@@ -916,18 +978,43 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 		}
 		if strings.HasSuffix(r.URL.Path, "/completion") {
 			var body struct {
-				NavigationTargetID string `json:"navigation_target_id"`
-				ChannelID          *int64 `json:"channel_id"`
+				Enabled            *bool           `json:"enabled"`
+				ActionType         string          `json:"action_type"`
+				NavigationTargetID string          `json:"navigation_target_id"`
+				ChannelID          *int64          `json:"channel_id"`
+				LeadChannelID      *int64          `json:"lead_channel_id"`
+				LeadQRTitle        string          `json:"lead_qr_title"`
+				LeadQRSubtitle     string          `json:"lead_qr_subtitle"`
+				CompletionTarget   json.RawMessage `json:"completion_target"`
 			}
 			if decode(r, &body) != nil {
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
+			if body.Enabled == nil {
+				config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
+			} else if !*body.Enabled {
+				config.CompletionNavigationRef, config.CompletionChannelID, config.CompletionTarget = "", nil, json.RawMessage(`{}`)
+			} else if body.ActionType == "lead_qr" {
+				config.CompletionNavigationRef, config.CompletionTarget, config.CompletionChannelID = "", json.RawMessage(`{}`), body.LeadChannelID
+				config.LeadQRTitle, config.LeadQRSubtitle = body.LeadQRTitle, body.LeadQRSubtitle
+			} else if body.ActionType == "redirect" && len(body.CompletionTarget) > 0 {
+				config.CompletionNavigationRef, config.CompletionChannelID, config.CompletionTarget = "", nil, body.CompletionTarget
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid_completion_action")
+				return
+			}
 		} else {
 			var body struct {
 				Enabled                bool             `json:"enabled"`
 				ConfigurationReference string           `json:"configuration_reference"`
+				WebhookURL             string           `json:"webhook_url"`
+				PushType               string           `json:"type"`
+				ExpiresAtTS            *int64           `json:"expires_at_ts"`
+				Day                    *int64           `json:"day"`
+				Frequency              *int64           `json:"frequency"`
+				Remark                 string           `json:"remark"`
+				CustomParams           json.RawMessage  `json:"custom_params"`
 				Metadata               *json.RawMessage `json:"metadata"`
 				ConfigurationVersion   *int64           `json:"configuration_version"`
 			}
@@ -947,7 +1034,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 				writeError(w, 400, "configuration_version_required")
 				return
 			}
-			if body.Enabled {
+			if body.Enabled && body.WebhookURL == "" {
 				references, catalogAvailable, catalogErr := h.completionTargetReferences(r.Context())
 				if catalogErr != nil {
 					writeError(w, http.StatusServiceUnavailable, "configuration_target_catalog_unavailable")
@@ -958,9 +1045,17 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 					return
 				}
 			}
-			config.ExternalPushEnabled, config.ExternalPushConfigurationRef = body.Enabled, body.ConfigurationReference
+			config.ExternalPushEnabled, config.ExternalPushConfigurationRef, config.ExternalPushURL = body.Enabled, body.ConfigurationReference, body.WebhookURL
 			if body.Metadata != nil {
 				config.ExternalPushMetadata = *body.Metadata
+			} else if body.WebhookURL != "" || len(body.CustomParams) > 0 || body.PushType != "" || body.ExpiresAtTS != nil || body.Day != nil || body.Frequency != nil || body.Remark != "" {
+				params, paramErr := surveyCustomParams(body.CustomParams)
+				if paramErr != nil {
+					writeError(w, http.StatusBadRequest, "invalid_custom_params")
+					return
+				}
+				metadata, _ := json.Marshal(map[string]any{"type": body.PushType, "expires_at_ts": body.ExpiresAtTS, "day": body.Day, "frequency": body.Frequency, "remark": body.Remark, "custom_params": params})
+				config.ExternalPushMetadata = metadata
 			}
 		}
 		stored, err := h.submissions.SaveOperationConfiguration(r.Context(), config, principal.InternalID, idempotency(r))
@@ -968,7 +1063,8 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef, "metadata": stored.ExternalPushMetadata}, "configuration_version": stored.Version, "operation_enabled": stored.ExternalPushEnabled, "local_only": !h.completionProviderEnabled, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": false})
+		stored.ExternalPushURL = config.ExternalPushURL
+		writeJSON(w, 200, operationConfigurationResponse(id, stored, nil, h.completionTargets != nil, h.completionProviderEnabled, nil, 0))
 		return
 	}
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/operations/external-push/test") {
@@ -1031,6 +1127,54 @@ func containsCompletionTargetReference(references []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func surveyCustomParams(raw json.RawMessage) (map[string]string, error) {
+	params := map[string]string{}
+	if len(raw) == 0 || string(raw) == "null" {
+		return params, nil
+	}
+	if json.Unmarshal(raw, &params) == nil {
+		return params, nil
+	}
+	var rows []struct {
+		Name  string `json:"name"`
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(raw, &rows) != nil {
+		return nil, surveyport.ErrInvalid
+	}
+	for _, row := range rows {
+		key := strings.TrimSpace(row.Name)
+		if key == "" {
+			key = strings.TrimSpace(row.Key)
+		}
+		if key != "" {
+			params[key] = row.Value
+		}
+	}
+	return params, nil
+}
+func operationConfigurationResponse(id int64, config surveyport.OperationConfiguration, references []string, catalogAvailable, providerEnabled bool, items []surveyport.OperationReceipt, total int64) map[string]any {
+	var target map[string]any
+	_ = json.Unmarshal(config.CompletionTarget, &target)
+	if target == nil {
+		target = map[string]any{}
+	}
+	targetEnabled, _ := target["enabled"].(bool)
+	completionEnabled := targetEnabled || config.CompletionNavigationRef != "" || config.CompletionChannelID != nil
+	mode := "lead_qr"
+	if targetEnabled || config.CompletionNavigationRef != "" {
+		mode = "redirect"
+	}
+	var metadata map[string]any
+	_ = json.Unmarshal(config.ExternalPushMetadata, &metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	external := map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "webhook_url": config.ExternalPushURL, "metadata": metadata, "type": metadata["type"], "expires_at_ts": metadata["expires_at_ts"], "day": metadata["day"], "frequency": metadata["frequency"], "remark": metadata["remark"], "custom_params": metadata["custom_params"]}
+	return map[string]any{"questionnaire_id": id, "completion": map[string]any{"enabled": completionEnabled, "mode": mode, "navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID, "lead_channel_id": config.CompletionChannelID, "lead_qr_title": config.LeadQRTitle, "lead_qr_subtitle": config.LeadQRSubtitle, "completion_target": target}, "external_push": external, "available_configuration_references": references, "target_catalog_available": catalogAvailable, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": providerEnabled, "local_only": !providerEnabled, "items": items, "total": total, "real_external_call_executed": false}
 }
 
 func (h *Handler) legacyAdminTail(w http.ResponseWriter, r *http.Request, tail string) {
@@ -1240,6 +1384,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]any{"ok": false, "code": code, "message": code})
 }
+func writeAlreadySubmitted(w http.ResponseWriter, action surveyport.CompletionAction) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "code": "already_submitted", "message": "already_submitted", "completion_action": action})
+}
 func resultError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, surveyport.ErrInvalid):
@@ -1248,6 +1396,8 @@ func resultError(w http.ResponseWriter, err error) {
 		writeError(w, 404, "questionnaire_not_found")
 	case errors.Is(err, surveyport.ErrConflict):
 		writeError(w, 409, "definition_version_conflict")
+	case errors.Is(err, surveyport.ErrAlreadySubmitted):
+		writeAlreadySubmitted(w, surveyport.DefaultCompletionAction())
 	case errors.Is(err, surveyport.ErrReferenced):
 		writeError(w, 409, "questionnaire_has_history")
 	default:

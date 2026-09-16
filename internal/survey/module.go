@@ -48,7 +48,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("survey module dependencies required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest(ARRAY['survey_questionnaires','survey_definition_versions','survey_definition_questions','survey_definition_options','survey_score_rules','survey_submissions','survey_submission_answers','survey_result_tokens','survey_oauth_states','survey_identity_sessions','survey_phone_binding_receipts','survey_operation_configurations','survey_external_operation_receipts','survey_completion_test_push_snapshots','survey_audit_events','survey_outbox','survey_migration_batches','survey_migration_source_map','survey_migration_quarantine','survey_legacy_external_projections']) required(name) WHERE to_regclass(current_schema()||'.'||required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest(ARRAY['survey_questionnaires','survey_definition_versions','survey_definition_questions','survey_definition_options','survey_score_rules','survey_submissions','survey_submission_claims','survey_submission_answers','survey_result_tokens','survey_oauth_states','survey_identity_sessions','survey_phone_binding_receipts','survey_operation_configurations','survey_external_operation_receipts','survey_completion_test_push_snapshots','survey_audit_events','survey_outbox','survey_migration_batches','survey_migration_source_map','survey_migration_quarantine','survey_legacy_external_projections']) required(name) WHERE to_regclass(current_schema()||'.'||required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}
@@ -96,6 +96,20 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	}
 	if !assessmentBusinessKeyConstraintsReady {
 		return errors.New("survey assessment business key constraints are not ready")
+	}
+	var legacyOperationStructureReady bool
+	err = pool.QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='survey_operation_configurations' AND column_name='completion_target' AND data_type='jsonb' AND is_nullable='NO')
+		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='survey_operation_configurations' AND column_name='lead_qr_title' AND data_type='text' AND is_nullable='NO')
+		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='survey_operation_configurations' AND column_name='lead_qr_subtitle' AND data_type='text' AND is_nullable='NO')
+		AND EXISTS(SELECT 1 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace WHERE ns.nspname=current_schema() AND rel.relname='survey_operation_configurations' AND c.conname='survey_operation_completion_target_object' AND pg_get_constraintdef(c.oid) LIKE '%jsonb_typeof(completion_target) = ''object''%')
+		AND EXISTS(SELECT 1 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace WHERE ns.nspname=current_schema() AND rel.relname='survey_operation_configurations' AND c.conname='survey_operation_lead_qr_title_length' AND pg_get_constraintdef(c.oid) LIKE '%length(lead_qr_title) <= 40%')
+		AND EXISTS(SELECT 1 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace WHERE ns.nspname=current_schema() AND rel.relname='survey_operation_configurations' AND c.conname='survey_operation_lead_qr_subtitle_length' AND pg_get_constraintdef(c.oid) LIKE '%length(lead_qr_subtitle) <= 100%')`).Scan(&legacyOperationStructureReady)
+	if err != nil {
+		return err
+	}
+	if !legacyOperationStructureReady {
+		return errors.New("survey legacy operation completion schema is not ready")
 	}
 	return nil
 }

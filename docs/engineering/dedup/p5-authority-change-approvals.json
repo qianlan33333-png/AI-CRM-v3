@@ -1435,6 +1435,28 @@
       ],
       "reason": "Expose the canonical OneID label and administrator-only WeCom contact-description backfill contract, including current-run non-PII source coverage. The coverage distinguishes observed, projected, omitted, submitted, and not_submitted relationships; omission and unsubmitted gaps are not completion.",
       "review_reference": "Root reviewed the exact bd79ddb current-base authority diff and approved the non-PII source coverage shape on 2026-09-16; deployment and full backfill remain subject to ordinary PR review and required CI."
+    },
+    {
+      "base_commit": "a4259c6a7712b57f90ae4b8ca1450e225f42c30d",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "19ce90a3e10d717afbc4a9321a77a4151381d047f348ec6af357f0f332b0ebdf",
+          "head_sha256": "53fa0b1257e40a1a2fdf979351cabb36c4f067b92a379f37b931a6f212bb1e2e"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "eedcdb6f08279c6ad598fbf4a6dffc31af989d0b71eb9e00843d0ffb82cd2977",
+          "head_sha256": "e9a6de8de9c81d4605b18c259bfec1b23a74c6502b0d29828fd29439b0839308"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "8955e54a923cd24d55f081cf4e0cb76ae27bd361ce89bb2a27363be1562db63e",
+          "head_sha256": "670f173cd84c685fba478552bab573b7ca77407b604b2b9c1fb8e26633110f55"
+        }
+      ],
+      "reason": "Authorize the public Survey completion and operations contract: opaque safe navigation, legacy external-push configuration, release migration closure, a minimal nested completion receipt without a result token, and the retained top-level result-query compatibility token. Identity continues to read canonical Customer only; Provider writes remain in the existing External Effects and Outbound path.",
+      "review_reference": "User instructions in this Codex thread: implement the approved questionnaire single-submit and completion PRD, align the actual operations API, do not expose a normal completion token in the nested receipt or H5 flow, and preserve existing result-query compatibility with a nonempty top-level result_token. This is product authorization only; ordinary PR review and required CI remain pending."
     }
   ]
 }

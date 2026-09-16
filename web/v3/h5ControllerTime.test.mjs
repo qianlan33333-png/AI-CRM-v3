@@ -10,9 +10,9 @@ const bundle = await build({
   plugins: [{
     name: 'h5-time-test-dependencies',
     setup(builder) {
-      builder.onResolve({ filter: /^(?:\.\.\/shared|\.\.\/api)\// }, (args) => ({ path: args.path, namespace: 'h5-time-dependency' }));
+      builder.onResolve({ filter: /^(?:\.\.\/shared|\.\.\/api|\.\.\/\.\.\/v3\/surveyPublicApi)/ }, (args) => ({ path: args.path, namespace: 'h5-time-dependency' }));
       builder.onLoad({ filter: /.*/, namespace: 'h5-time-dependency' }, () => ({
-        contents: 'export class PageBase {} export class ApiError extends Error {} export const toast=()=>{}; export const readPublicSurvey=()=>{}; export const readSurveyResult=()=>{}; export const submitSurvey=()=>{};', loader: 'js',
+        contents: 'export class PageBase {} export class ApiError extends Error {} export const toast=()=>{}; export const completionAction=(value)=>value||{type:"default"}; export const completionActionFromCarrier=(value)=>value?.completion_action||{type:"default"}; export const readPublicSurvey=()=>{}; export const readSurveyResult=()=>{}; export const submitSurvey=()=>{};', loader: 'js',
       }));
     },
   }],

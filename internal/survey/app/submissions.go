@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -32,7 +35,10 @@ type PersistSubmission struct {
 type SubmissionStore interface {
 	Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error)
 	LockQuestionnaireStatus(context.Context, surveyport.ID) (surveyport.QuestionnaireStatus, error)
+	GetBySlug(context.Context, string) (surveyport.Questionnaire, error)
 	GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error)
+	FindSubmissionByKey(context.Context, surveyport.ID, [32]byte, [32]byte) (surveyport.Submission, bool, error)
+	HasSubmissionClaim(context.Context, surveyport.ID, customerdomain.CustomerID) (bool, error)
 	CreateSubmission(context.Context, PersistSubmission) (surveyport.Submission, bool, error)
 	GetSubmissionByTokenDigest(context.Context, [32]byte) (surveyport.Submission, error)
 	ListSubmissions(context.Context, surveyport.ID, int32, int32, surveyport.IdentityState) ([]surveyport.Submission, int64, error)
@@ -76,16 +82,27 @@ type externalSubmissionStore interface {
 }
 
 type SubmissionService struct {
-	uow                platformport.UnitOfWork
-	store              SubmissionStore
-	cipher             *secure.Cipher
-	timeline           customerport.TimelineWriter
-	phoneAttacher      identityport.DeclaredPhoneAttacher
-	phoneProjection    customerport.ProjectionWriter
-	completion         surveyport.CompletionIntentAccepter
-	completionPolicy   surveyport.CompletionPolicyResolver
-	completionIdentity surveyport.CompletionIdentitySnapshotter
-	now                func() time.Time
+	uow                 platformport.UnitOfWork
+	store               SubmissionStore
+	cipher              *secure.Cipher
+	timeline            customerport.TimelineWriter
+	phoneAttacher       identityport.DeclaredPhoneAttacher
+	phoneProjection     customerport.ProjectionWriter
+	completion          surveyport.CompletionIntentAccepter
+	completionPolicy    surveyport.CompletionPolicyResolver
+	completionIdentity  surveyport.CompletionIdentitySnapshotter
+	completionEndpoints surveyport.CompletionEndpointManager
+	publicRedirect      surveyport.PublicCompletionTargetResolver
+	publicLeadQR        channelport.PublicLeadQRCodeReader
+	now                 func() time.Time
+}
+
+func (s *SubmissionService) BindCompletionEndpoints(manager surveyport.CompletionEndpointManager) error {
+	if s == nil || manager == nil {
+		return surveyport.ErrInvalid
+	}
+	s.completionEndpoints = manager
+	return nil
 }
 
 func (s *SubmissionService) BindCompletionPolicy(resolver surveyport.CompletionPolicyResolver) error {
@@ -100,6 +117,29 @@ func (s *SubmissionService) BindCompletionIdentity(snapshotter surveyport.Comple
 		return surveyport.ErrInvalid
 	}
 	s.completionIdentity = snapshotter
+	return nil
+}
+
+// BindPublicCompletionTarget supplies only the public, allowlisted completion
+// destination resolver. It is intentionally unrelated to external completion
+// Provider targets and remains optional: an absent or failed resolver safely
+// yields the default completion page.
+func (s *SubmissionService) BindPublicCompletionTarget(resolver surveyport.PublicCompletionTargetResolver) error {
+	if s == nil || resolver == nil {
+		return surveyport.ErrInvalid
+	}
+	s.publicRedirect = resolver
+	return nil
+}
+
+// BindPublicLeadQRCode supplies Channel's active public QR projection through
+// its stable read port. Survey neither reads Channel tables nor writes Channel
+// state.
+func (s *SubmissionService) BindPublicLeadQRCode(reader channelport.PublicLeadQRCodeReader) error {
+	if s == nil || reader == nil {
+		return surveyport.ErrInvalid
+	}
+	s.publicLeadQR = reader
 	return nil
 }
 
@@ -149,8 +189,50 @@ func (s *SubmissionService) ReadPublic(ctx context.Context, slug string) (survey
 	return result, classify(err)
 }
 
+// PublicSubmissionStatus only accepts an already trusted, resolved Survey
+// session. The claim table is Survey-owned and deliberately starts empty at
+// cutover, so historical submissions do not retrospectively consume a user's
+// entitlement.
+func (s *SubmissionService) PublicSubmissionStatus(ctx context.Context, slug string, identity surveyport.SubmissionIdentity) (surveyport.PublicSubmissionStatus, error) {
+	result := surveyport.PublicSubmissionStatus{CompletionAction: surveyport.DefaultCompletionAction()}
+	if s == nil || s.uow == nil || s.store == nil || !validSlug(slug) || identity.State != surveyport.IdentityResolved || identity.CustomerID == nil || *identity.CustomerID < 1 {
+		return surveyport.PublicSubmissionStatus{}, surveyport.ErrInvalid
+	}
+	var configuration surveyport.OperationConfiguration
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		questionnaire, err := s.store.GetBySlug(tx, slug)
+		if err != nil {
+			return err
+		}
+		claimed, err := s.store.HasSubmissionClaim(tx, questionnaire.ID, *identity.CustomerID)
+		if err != nil {
+			return err
+		}
+		result.Submitted = claimed
+		if claimed {
+			configuration, err = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+			return err
+		}
+		// Only an already-submitted trusted customer may reach the retained
+		// completion action after a questionnaire is disabled or archived.
+		// New visitors still use the normal public-published gate.
+		_, err = s.store.GetPublishedBySlug(tx, slug)
+		return err
+	})
+	if err != nil {
+		return result, classify(err)
+	}
+	if result.Submitted {
+		// Channel and Composition-owned target reads must happen after the
+		// Survey UoW commits. Neither port is assumed to participate in this
+		// transaction, and a failed public read safely falls back below.
+		result.CompletionAction = s.resolvePublicCompletionAction(ctx, configuration)
+	}
+	return result, nil
+}
+
 func (s *SubmissionService) Submit(ctx context.Context, command surveyport.SubmitCommand) (surveyport.SubmissionReceipt, error) {
-	if s == nil || s.uow == nil || s.store == nil || s.cipher == nil || s.phoneAttacher == nil || s.phoneProjection == nil || !validSlug(command.Slug) || command.DefinitionVersion < 1 || !validPublicKey(command.SubmissionKey) || command.Identity.State != surveyport.IdentityResolved || command.Identity.CustomerID == nil || !validIdentity(command.Identity) || len(command.SourceChannel) > 100 || len(command.CampaignID) > 200 || len(command.StaffID) > 200 {
+	if s == nil || s.uow == nil || s.store == nil || s.cipher == nil || s.phoneAttacher == nil || s.phoneProjection == nil || !validSlug(command.Slug) || !validPublicKey(command.SubmissionKey) || command.Identity.State != surveyport.IdentityResolved || command.Identity.CustomerID == nil || !validIdentity(command.Identity) || len(command.SourceChannel) > 100 || len(command.CampaignID) > 200 || len(command.StaffID) > 200 {
 		return surveyport.SubmissionReceipt{}, surveyport.ErrInvalid
 	}
 	canonical, _ := json.Marshal(struct {
@@ -168,10 +250,46 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 	tokenDigest := sha256.Sum256([]byte(token))
 	now := s.now().UTC()
 	var stored surveyport.Submission
+	completionAction := surveyport.DefaultCompletionAction()
+	var completionConfiguration surveyport.OperationConfiguration
+	alreadySubmitted := false
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		questionnaire, e := s.store.GetPublishedBySlug(tx, command.Slug)
+		// Idempotency and the post-cutover customer claim intentionally precede
+		// the mutable public definition. A retained same-key receipt must be
+		// recoverable after re-publish, and a claimed customer must not see a
+		// validation error merely because the questionnaire later stopped.
+		questionnaire, e := s.store.GetBySlug(tx, command.Slug)
 		if e != nil {
 			return e
+		}
+		var found bool
+		stored, found, e = s.store.FindSubmissionByKey(tx, questionnaire.ID, submissionKeyDigest, payloadDigest)
+		if e != nil {
+			return e
+		}
+		if found {
+			completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+			return e
+		}
+		claimed, e := s.store.HasSubmissionClaim(tx, questionnaire.ID, *command.Identity.CustomerID)
+		if e != nil {
+			return e
+		}
+		if claimed {
+			completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+			if e != nil {
+				return e
+			}
+			alreadySubmitted = true
+			return nil
+		}
+
+		questionnaire, e = s.store.GetPublishedBySlug(tx, command.Slug)
+		if e != nil {
+			return e
+		}
+		if command.DefinitionVersion < 1 {
+			return surveyport.ErrInvalid
 		}
 		if questionnaire.DefinitionVersion != command.DefinitionVersion {
 			return surveyport.ErrConflict
@@ -194,10 +312,19 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 		var created bool
 		stored, created, e = s.store.CreateSubmission(tx, PersistSubmission{Questionnaire: questionnaire, Command: command, SubmissionKeyDigest: submissionKeyDigest, PayloadDigest: payloadDigest, TokenDigest: tokenDigest, Token: token, TotalScore: total, Result: result, Answers: answers, Now: now})
 		if e != nil {
+			if errors.Is(e, surveyport.ErrAlreadySubmitted) {
+				completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+				if e != nil {
+					return e
+				}
+				alreadySubmitted = true
+				return nil
+			}
 			return e
 		}
 		if !created {
-			return nil
+			completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+			return e
 		}
 		for _, answer := range stored.Answers {
 			if answer.QuestionType != surveyport.QuestionMobile {
@@ -282,16 +409,58 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 			}
 		}
 		if command.Identity.CustomerID != nil && s.timeline != nil {
-			return s.timeline.AppendTimeline(tx, customerport.TimelineEvent{CustomerID: *command.Identity.CustomerID,
+			if e = s.timeline.AppendTimeline(tx, customerport.TimelineEvent{CustomerID: *command.Identity.CustomerID,
 				SourceDomain: "survey", SourceEventID: "submission:" + fmt.Sprint(stored.ID), EventType: "customer.survey_submitted",
-				Title: "问卷已提交", OccurredAt: now})
+				Title: "问卷已提交", OccurredAt: now}); e != nil {
+				return e
+			}
 		}
-		return nil
+		completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
+		return e
 	})
 	if err != nil {
 		return surveyport.SubmissionReceipt{}, classify(err)
 	}
-	return surveyport.SubmissionReceipt{QuestionnaireID: stored.QuestionnaireID, QuestionnaireSlug: stored.QuestionnaireSlug, DefinitionVersion: stored.DefinitionVersion, SubmissionID: stored.ID, ResultToken: token}, nil
+	completionAction = s.resolvePublicCompletionAction(ctx, completionConfiguration)
+	if alreadySubmitted {
+		return surveyport.SubmissionReceipt{}, &surveyport.AlreadySubmittedError{CompletionAction: completionAction}
+	}
+	return surveyport.SubmissionReceipt{QuestionnaireID: stored.QuestionnaireID, QuestionnaireSlug: stored.QuestionnaireSlug, DefinitionVersion: stored.DefinitionVersion, SubmissionID: stored.ID, ResultToken: token, CompletionAction: completionAction}, nil
+}
+
+// resolvePublicCompletionAction deliberately runs after Survey's transaction
+// has ended. Channel and composition resolver ports may own another Unit of
+// Work; nesting them under Survey would split or deadlock the write boundary.
+// All resolver and QR failures degrade to the non-sensitive default page.
+func (s *SubmissionService) resolvePublicCompletionAction(ctx context.Context, configuration surveyport.OperationConfiguration) surveyport.CompletionAction {
+	fallback := surveyport.DefaultCompletionAction()
+	if len(configuration.CompletionTarget) > 0 {
+		if redirectURL, found := s.resolveStoredCompletionTarget(ctx, configuration.CompletionTarget); found && safePublicCompletionURL(redirectURL) {
+			return surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: redirectURL}
+		}
+	}
+	if configuration.CompletionNavigationRef != "" {
+		if s.publicRedirect == nil {
+			return fallback
+		}
+		redirectURL, found, resolveErr := s.publicRedirect.ResolvePublicCompletionTarget(ctx, configuration.CompletionNavigationRef)
+		if resolveErr != nil || !found || !safePublicCompletionURL(redirectURL) {
+			return fallback
+		}
+		return surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: redirectURL}
+	}
+	if configuration.CompletionChannelID == nil || s.publicLeadQR == nil {
+		return fallback
+	}
+	lead, readErr := s.publicLeadQR.ReadPublicLeadQRCode(ctx, *configuration.CompletionChannelID)
+	if readErr != nil || !safePublicCompletionURL(lead.URL) {
+		return fallback
+	}
+	return surveyport.CompletionAction{Type: surveyport.CompletionActionLeadQR, LeadQR: &surveyport.CompletionLeadQRCode{URL: lead.URL, Title: configuration.LeadQRTitle, Subtitle: configuration.LeadQRSubtitle}}
+}
+
+func safePublicCompletionURL(raw string) bool {
+	return safeStoredSurveyRedirect(raw)
 }
 
 func completionIntent(questionnaireID, submissionID surveyport.ID, configurationRef string, submissionPayloadDigest [32]byte, now time.Time) surveyport.CompletionIntent {
@@ -537,6 +706,9 @@ func (s *SubmissionService) GetOperationConfiguration(ctx context.Context, id su
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var e error
 		value, e = s.store.GetOperationConfiguration(tx, id)
+		if e == nil && s.completionEndpoints != nil {
+			value.ExternalPushURL, e = s.completionEndpoints.ReadSurveyCompletionEndpointWithin(tx, id, value.ExternalPushConfigurationRef)
+		}
 		return e
 	})
 	return value, classify(err)
@@ -545,11 +717,24 @@ func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, valu
 	if len(value.ExternalPushMetadata) == 0 {
 		value.ExternalPushMetadata = json.RawMessage(`{}`)
 	}
+	if len(value.CompletionTarget) == 0 {
+		value.CompletionTarget = json.RawMessage(`{}`)
+	}
+	if !json.Valid(value.CompletionTarget) || len(value.LeadQRTitle) > 40 || len(value.LeadQRSubtitle) > 100 {
+		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
+	}
+	target, targetErr := parseSurveyCompletionTarget(value.CompletionTarget)
+	if targetErr != nil {
+		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
+	}
+	if target.Enabled {
+		value.CompletionNavigationRef = ""
+	}
 	var metadata map[string]json.RawMessage
 	if !json.Valid(value.ExternalPushMetadata) || json.Unmarshal(value.ExternalPushMetadata, &metadata) != nil || metadata == nil {
 		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
 	}
-	if s == nil || s.uow == nil || s.store == nil || value.QuestionnaireID < 1 || actor < 1 || !validPublicKeyish(key) || !validOpaque(value.CompletionNavigationRef) || !validOpaque(value.ExternalPushConfigurationRef) || value.CompletionChannelID != nil && *value.CompletionChannelID < 1 || value.ExternalPushEnabled && value.ExternalPushConfigurationRef == "" {
+	if s == nil || s.uow == nil || s.store == nil || value.QuestionnaireID < 1 || actor < 1 || !validPublicKeyish(key) || !validOpaque(value.CompletionNavigationRef) || !validOpaque(value.ExternalPushConfigurationRef) || value.CompletionChannelID != nil && *value.CompletionChannelID < 1 || value.ExternalPushEnabled && value.ExternalPushURL == "" && value.ExternalPushConfigurationRef == "" {
 		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
 	}
 	now := s.now().UTC()
@@ -564,6 +749,15 @@ func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, valu
 		}
 		if status == surveyport.StatusArchived {
 			return surveyport.ErrNotFound
+		}
+		if s.completionEndpoints != nil && (value.ExternalPushURL != "" || strings.HasPrefix(value.ExternalPushConfigurationRef, "survey-endpoint:")) {
+			value.ExternalPushConfigurationRef, e = s.completionEndpoints.SaveSurveyCompletionEndpointWithin(tx, value.QuestionnaireID, value.ExternalPushConfigurationRef, value.ExternalPushURL, value.ExternalPushMetadata)
+			if e != nil {
+				return e
+			}
+		}
+		if value.ExternalPushEnabled && value.ExternalPushConfigurationRef == "" {
+			return surveyport.ErrInvalid
 		}
 		stored, e = s.store.SaveOperationConfiguration(tx, value, actor, now)
 		if e != nil {

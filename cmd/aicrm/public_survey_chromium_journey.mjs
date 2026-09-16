@@ -5,10 +5,15 @@ import { spawn, spawnSync } from 'node:child_process';
 
 const base = process.env.AICRM_PUBLIC_SURVEY_BROWSER_URL;
 const session = process.env.AICRM_PUBLIC_SURVEY_BROWSER_SESSION;
+const secondSession = process.env.AICRM_PUBLIC_SURVEY_BROWSER_SECOND_SESSION;
 const successSlug = process.env.AICRM_PUBLIC_SURVEY_BROWSER_SUCCESS_SLUG;
 const failureSlug = process.env.AICRM_PUBLIC_SURVEY_BROWSER_FAILURE_SLUG;
+const redirectSlug = process.env.AICRM_PUBLIC_SURVEY_BROWSER_REDIRECT_SLUG;
+const leadQRSlug = process.env.AICRM_PUBLIC_SURVEY_BROWSER_LEAD_QR_SLUG;
+const redirectTarget = process.env.AICRM_PUBLIC_SURVEY_BROWSER_REDIRECT_TARGET;
+const leadQRURL = process.env.AICRM_PUBLIC_SURVEY_BROWSER_LEAD_QR_URL;
 const screenshots = process.env.AICRM_PUBLIC_SURVEY_SCREENSHOT_DIR;
-if (!/^https:\/\//.test(base || '') || !/^[A-Za-z0-9_-]{43}$/.test(session || '') || !/^[a-z0-9-]{1,128}$/.test(successSlug || '') || !/^[a-z0-9-]{1,128}$/.test(failureSlug || '') || !path.isAbsolute(screenshots || '')) throw new Error('public Survey Chromium journey configuration is invalid');
+if (!/^https:\/\//.test(base || '') || !/^[A-Za-z0-9_-]{43}$/.test(session || '') || !/^[A-Za-z0-9_-]{43}$/.test(secondSession || '') || session === secondSession || !/^[a-z0-9-]{1,128}$/.test(successSlug || '') || !/^[a-z0-9-]{1,128}$/.test(failureSlug || '') || !/^[a-z0-9-]{1,128}$/.test(redirectSlug || '') || !/^[a-z0-9-]{1,128}$/.test(leadQRSlug || '') || !redirectTarget?.startsWith(base + '/') || !leadQRURL?.startsWith(base + '/') || !path.isAbsolute(screenshots || '')) throw new Error('public Survey Chromium journey configuration is invalid');
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const chrome = () => {
@@ -18,14 +23,17 @@ const chrome = () => {
 };
 class CDP {
   constructor(socket) {
-    this.socket = socket; this.id = 0; this.successSubmissions = 0; this.failureSubmissions = 0; this.pending = new Map();
+    this.socket = socket; this.id = 0; this.successSubmissions = 0; this.failureSubmissions = 0; this.redirectSubmissions = 0; this.leadQRSubmissions = 0; this.topLevelNavigations = []; this.pending = new Map();
     socket.addEventListener('message', (event) => {
       const message = JSON.parse(String(event.data));
       if (message.method === 'Network.requestWillBeSent' && message.params?.request?.method === 'POST') {
         const requestURL = message.params.request.url || '';
         if (requestURL.includes('/api/public/questionnaires/' + successSlug + '/submissions')) this.successSubmissions += 1;
         if (requestURL.includes('/api/public/questionnaires/' + failureSlug + '/submissions')) this.failureSubmissions += 1;
+        if (requestURL.includes('/api/public/questionnaires/' + redirectSlug + '/submissions')) this.redirectSubmissions += 1;
+        if (requestURL.includes('/api/public/questionnaires/' + leadQRSlug + '/submissions')) this.leadQRSubmissions += 1;
       }
+      if (message.method === 'Page.frameNavigated' && !message.params?.frame?.parentId) this.topLevelNavigations.push(message.params.frame.url || '');
       const pending = this.pending.get(message.id); if (!pending) return;
       this.pending.delete(message.id); message.error ? pending.reject(new Error('CDP request failed')) : pending.resolve(message.result || {});
     });
@@ -72,7 +80,10 @@ let browser;
 let failed = false;
 try {
   await fs.mkdir(screenshots, { recursive: true, mode: 0o700 });
-  browser = spawn(chrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--no-first-run', '--ignore-certificate-errors', '--allow-insecure-localhost', '--user-agent=Mozilla/5.0 MicroMessenger/8.0', 'about:blank'], { stdio: 'ignore' });
+  // Keep every configured completion URL public-looking. This Chrome-only
+  // resolver maps the controlled hostname to the local TLS fixture without
+  // weakening production completion-target validation or application config.
+  browser = spawn(chrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--no-first-run', '--ignore-certificate-errors', '--allow-insecure-localhost', '--no-proxy-server', '--host-resolver-rules=MAP example.com 127.0.0.1', '--user-agent=Mozilla/5.0 MicroMessenger/8.0', 'about:blank'], { stdio: 'ignore' });
   let address;
   try { address = await portURL(profile); } catch (error) { if (process.platform === 'darwin') { console.log('public_survey_chromium: SKIP_DEVTOOLS'); process.exit(0); } throw error; }
   const target = await (await fetch(address + '/json/new?about:blank', { method: 'PUT' })).json();
@@ -115,13 +126,22 @@ try {
   await evaluate(cdp, `document.querySelector('#screen label[data-option-id]').click(); true`, 'select public answer');
   await waitFor(cdp, `document.querySelector('#screen label[data-option-id]')?.getAttribute('aria-pressed') === 'true'`, 'selected answer did not remain visible');
   await evaluate(cdp, `(() => { const button=document.querySelector('#screen [data-h5-submit]'); button.click(); button.click(); return true; })()`, 'double click public submit');
-  await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-receipt] [data-h5-result-link]'))`, 'successful submission receipt did not render');
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.body?.dataset.v3PublicSurvey === 'done' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷' && !document.querySelector('#screen [data-h5-lead-qr]')`, 'successful submission did not replace the answer page with the default completion page');
   if (cdp.successSubmissions !== 1) throw new Error(`success submission requests=${cdp.successSubmissions}`);
-  await evaluate(cdp, `document.querySelector('#screen [data-h5-result-link]').click(); true`, 'open actual submission result');
-  await waitFor(cdp, `location.pathname === '/h5/result.html' && Boolean(document.querySelector('#screen [data-h5-result]')) && document.querySelector('#screen')?.textContent?.includes('提交已确认')`, 'actual result GET did not render');
-  const successfulResult = await evaluate(cdp, `(() => { const text=document.querySelector('#screen')?.textContent || ''; const id=text.match(/提交编号\\s*(\\d+)/)?.[1] || ''; return { submissionID: Number(id), time: text.includes('提交时间'), version: text.includes('问卷版本'), internalScope: /处理范围|仅本地处理|外部效果/.test(text) }; })()`, 'read rendered result receipt');
-  if (!successfulResult?.submissionID || !successfulResult.time || !successfulResult.version || successfulResult.internalScope) throw new Error(`public result receipt presentation is incomplete: ${JSON.stringify(successfulResult)}`);
-  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-result-${width}.png`);
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-done-${width}.png`);
+  await cdp.call('Page.navigate', { url: `${base}/q/${successSlug}` });
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷'`, 'revisiting a submitted survey did not bypass the answer route');
+  if (cdp.successSubmissions !== 1) throw new Error(`submitted survey revisit created a second submission=${cdp.successSubmissions}`);
+  await evaluate(cdp, 'history.back(); true', 'go back after default completion');
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷' && !document.querySelector('#screen [data-question-id], #screen [data-h5-submit]')`, 'browser back returned a submitted visitor to the answer form');
+  if (cdp.successSubmissions !== 1) throw new Error(`browser back created a second success submission=${cdp.successSubmissions}`);
+  await cdp.call('Network.deleteCookies', { name: '__Host-aicrm_survey_identity', url: base });
+  await cdp.call('Network.setCookie', { name: '__Host-aicrm_survey_identity', value: secondSession, url: base, path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
+  await cdp.call('Page.navigate', { url: `${base}/q/${successSlug}` });
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷' && !document.querySelector('#screen [data-question-id], #screen [data-h5-submit]')`, 'a second session for the same canonical customer bypassed the submission gate');
+  if (cdp.successSubmissions !== 1) throw new Error(`second session created a second success submission=${cdp.successSubmissions}`);
+  await cdp.call('Page.navigate', { url: `${base}/h5/all.html?slug=${successSlug}` });
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.body?.dataset.v3PublicSurvey === 'done' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷' && !document.querySelector('#screen [data-question-id], #screen [data-h5-submit]')`, 'direct all-in-one H5 route bypassed the submitted-session gate');
 
   await cdp.call('Page.navigate', { url: `${base}/q/${failureSlug}` });
   await waitFor(cdp, `location.pathname === '/h5/one.html' && document.body?.dataset.v3PublicSurvey === 'one' && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('1 / 2')`, 'authorized one-by-one route or progress did not mount');
@@ -138,13 +158,34 @@ try {
   await evaluate(cdp, `document.querySelector('#screen [data-h5-next]').click(); true`, 'return to final retry step');
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-submit]'))`, 'final retry submit step did not restore');
   await evaluate(cdp, `document.querySelector('#screen [data-h5-submit]').click(); true`, 'retry reaches the real Survey Owner');
-  await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-receipt] [data-h5-result-link]'))`, 'recovered one-by-one submission receipt did not render');
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷'`, 'recovered one-by-one submission did not finish at the default completion page');
   if (cdp.failureSubmissions !== 2) throw new Error(`recovery submission requests=${cdp.failureSubmissions}`);
-  await evaluate(cdp, `document.querySelector('#screen [data-h5-result-link]').click(); true`, 'open recovered submission result');
-  await waitFor(cdp, `location.pathname === '/h5/result.html' && Boolean(document.querySelector('#screen [data-h5-result]')) && document.querySelector('#screen')?.textContent?.includes('提交已确认')`, 'recovered submission result GET did not render');
-  const recoveredResult = await evaluate(cdp, `(() => { const text=document.querySelector('#screen')?.textContent || ''; return Number(text.match(/提交编号\\s*(\\d+)/)?.[1] || 0); })()`, 'read recovered result receipt');
-  if (!recoveredResult) throw new Error('recovered result receipt has no submission ID');
-  console.log(JSON.stringify({ submission_id: successfulResult.submissionID, recovery_submission_id: recoveredResult }));
+  await cdp.call('Page.navigate', { url: `${base}/h5/one.html?slug=${failureSlug}` });
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.body?.dataset.v3PublicSurvey === 'done' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷' && !document.querySelector('#screen [data-question-id], #screen [data-h5-submit]')`, 'direct one-by-one H5 route bypassed the submitted-session gate');
+
+  await cdp.call('Page.navigate', { url: `${base}/q/${redirectSlug}` });
+  await waitFor(cdp, `location.pathname === '/h5/all.html' && document.body?.dataset.v3PublicSurvey === 'all' && Boolean(document.querySelector('#screen [data-h5-submit]'))`, 'redirect questionnaire did not mount its public answer form');
+  const redirectNavigationStart = cdp.topLevelNavigations.length;
+  await evaluate(cdp, `document.querySelector('#screen label[data-option-id]').click(); document.querySelector('#screen [data-h5-submit]').click(); true`, 'submit redirect questionnaire');
+  await waitFor(cdp, `location.href === ${JSON.stringify(redirectTarget)} && document.querySelector('#browser-completion-redirect')?.textContent === '受控完成跳转目标' && !document.querySelector('[data-h5-done]')`, 'redirect completion did not replace the answer page with its safe target');
+  if (cdp.redirectSubmissions !== 1) throw new Error(`redirect submission requests=${cdp.redirectSubmissions}`);
+  if (cdp.topLevelNavigations.slice(redirectNavigationStart).some((target) => target.includes('/h5/done.html'))) throw new Error(`redirect completion flashed default done page: ${JSON.stringify(cdp.topLevelNavigations.slice(redirectNavigationStart))}`);
+  await evaluate(cdp, 'history.back(); true', 'go back after redirect completion');
+  await waitFor(cdp, `!document.querySelector('[data-question-id], [data-h5-submit]') && (document.querySelector('[data-h5-done] h1')?.textContent === '收到你的问卷' || document.querySelector('#browser-completion-redirect')?.textContent === '受控完成跳转目标')`, 'browser back after redirect completion returned to an answer form');
+  if (cdp.redirectSubmissions !== 1) throw new Error(`redirect browser back created a second submission=${cdp.redirectSubmissions}`);
+  const redirectRevisitNavigationStart = cdp.topLevelNavigations.length;
+  await cdp.call('Page.navigate', { url: `${base}/q/${redirectSlug}` });
+  await waitFor(cdp, `location.href === ${JSON.stringify(redirectTarget)} && document.querySelector('#browser-completion-redirect')?.textContent === '受控完成跳转目标' && !document.querySelector('[data-h5-done], [data-question-id], [data-h5-submit]')`, 'revisiting a redirect completion did not use the safe target');
+  if (cdp.redirectSubmissions !== 1) throw new Error(`redirect revisit created a second submission=${cdp.redirectSubmissions}`);
+  if (cdp.topLevelNavigations.slice(redirectRevisitNavigationStart).some((target) => target.includes('/h5/done.html'))) throw new Error(`redirect revisit flashed default done page: ${JSON.stringify(cdp.topLevelNavigations.slice(redirectRevisitNavigationStart))}`);
+
+  await cdp.call('Page.navigate', { url: `${base}/q/${leadQRSlug}` });
+  await waitFor(cdp, `location.pathname === '/h5/all.html' && document.body?.dataset.v3PublicSurvey === 'all' && Boolean(document.querySelector('#screen [data-h5-submit]'))`, 'lead QR questionnaire did not mount its public answer form');
+  await evaluate(cdp, `document.querySelector('#screen label[data-option-id]').click(); document.querySelector('#screen [data-h5-submit]').click(); true`, 'submit lead QR questionnaire');
+  await waitFor(cdp, `location.pathname === '/h5/done.html' && document.body?.dataset.v3PublicSurvey === 'done' && document.querySelector('#screen [data-h5-done] h1')?.textContent === '收到你的问卷' && document.querySelector('#screen [data-h5-lead-qr] img')?.src === ${JSON.stringify(leadQRURL)} && document.querySelector('#screen [data-h5-lead-qr] img')?.complete === true && document.querySelector('#screen [data-h5-lead-qr] img')?.naturalWidth > 0`, 'lead QR completion did not render its authorized image');
+  if (cdp.leadQRSubmissions !== 1) throw new Error(`lead QR submission requests=${cdp.leadQRSubmissions}`);
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-lead-qr-${width}.png`);
+  console.log(JSON.stringify({ success_submission_requests: cdp.successSubmissions, recovery_submission_requests: cdp.failureSubmissions, redirect_submission_requests: cdp.redirectSubmissions, lead_qr_submission_requests: cdp.leadQRSubmissions }));
   console.log('public_survey_chromium: PASS');
   socket.close();
 } catch (error) {

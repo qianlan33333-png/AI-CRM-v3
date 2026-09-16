@@ -16,7 +16,7 @@ const registry = JSON.parse(read('src/admin/registry.json'));
 const campaign = registry.screens.find((item) => item.key === 'campaigns');
 ok(campaign?.isNav === false, 'Cloud Campaign 只能作为隐藏路由保留');
 
-const blockedPages = ['active', 'done', 'error', 'expired', 'pay', 'qr', 'signup'];
+const blockedPages = ['active', 'error', 'expired', 'pay', 'qr', 'signup'];
 for (const page of blockedPages) {
   const dom = new JSDOM(`<body>${read(`src/h5/templates/${page}.html`)}</body>`);
   const banner = dom.window.document.querySelector('[data-h5-blocked]');
@@ -31,15 +31,17 @@ ok(authButtons.length === 1 && authButtons[0].getAttribute('onClick') === '{{ ac
 ok(authButtons[0].closest('sc-if')?.getAttribute('value') === '{{ authRetry }}', 'H5 auth 仅授权失败后显示重试按钮，不拦截首次自动授权');
 const loading = read('src/h5/templates/loading.html');
 ok(!loading.includes('data-h5-blocked') && !loading.includes('blockedReason'), 'H5 loading 骨架屏不得渲染 blocked 横幅');
-for (const page of ['done', 'qr']) {
+for (const page of ['qr']) {
   const html = read(`src/h5/templates/${page}.html`);
   ok(html.includes('data-h5-local-exit'), `H5 ${page} 必须提供非禁用的纯本地出口（链接/导航元素）`);
 }
 
 const all = read('src/h5/templates/all.html');
 const one = read('src/h5/templates/one.html');
-ok(all.includes('list="{{ questions }}"') && all.includes('data-h5-receipt'), 'H5 整页问卷必须遍历真实题目并显示回执');
-ok(one.includes('{{ qTitle }}') && one.includes('data-h5-progress') && one.includes('data-h5-receipt'), 'H5 逐题页必须消费真实题干、进度与回执');
+ok(all.includes('list="{{ questions }}"') && !all.includes('data-h5-receipt') && !all.includes('data-h5-result-link'), 'H5 整页问卷必须遍历真实题目，成功后不显示结果回执链接');
+ok(one.includes('{{ qTitle }}') && one.includes('data-h5-progress') && !one.includes('data-h5-receipt') && !one.includes('data-h5-result-link'), 'H5 逐题页必须消费真实题干，成功后不显示结果回执链接');
+const done = read('src/h5/templates/done.html');
+ok(done.includes('data-h5-local-exit'), 'H5 done 冻结载体必须保留本地出口；完成页由 V3 Host 构建期替换');
 
 const config = read('src/admin/templates/config.html');
 ok(config.includes('open-setup-wizard') && config.includes('open-admin-access'), '接入和访问控制必须收进原配置类目表');

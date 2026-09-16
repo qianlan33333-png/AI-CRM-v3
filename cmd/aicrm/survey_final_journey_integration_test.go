@@ -446,7 +446,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		ResultToken string                       `json:"result_token"`
 	}
 	mustSurveyJourneyJSON(t, submitted, &submissionResult)
-	if submissionResult.Receipt.SubmissionID < 1 || submissionResult.ResultToken == "" || submissionResult.Receipt.ResultToken != submissionResult.ResultToken {
+	if submissionResult.Receipt.SubmissionID < 1 || submissionResult.ResultToken == "" || submissionResult.Receipt.ResultToken != "" {
 		t.Fatalf("submission receipt=%+v token=%q", submissionResult.Receipt, submissionResult.ResultToken)
 	}
 	var concurrentResult struct {
@@ -565,10 +565,11 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("one-mode submit status=%d body=%s", oneSubmitted.Code, oneSubmitted.Body.String())
 	}
 	var oneReceipt struct {
-		Receipt surveyport.SubmissionReceipt `json:"receipt"`
+		Receipt     surveyport.SubmissionReceipt `json:"receipt"`
+		ResultToken string                       `json:"result_token"`
 	}
 	mustSurveyJourneyJSON(t, oneSubmitted, &oneReceipt)
-	oneResultBody, err := json.Marshal(map[string]string{"result_token": oneReceipt.Receipt.ResultToken})
+	oneResultBody, err := json.Marshal(map[string]string{"result_token": oneReceipt.ResultToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +645,7 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 	}
 	dist := surveyJourneyBuiltDist(t, root)
 	ui := surveymodule.NewModuleRegistration().UIBinding(dist, func(writer http.ResponseWriter, request *http.Request, page, donor string, assets surveymodule.UIAssets) error {
-		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, SurveyHostJS: assets.SurveyHostJS})
+		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS, StandardHostJS: assets.StandardHostJS, SurveyHostJS: assets.SurveyHostJS, OperationsHostJS: assets.OperationsHostJS, OperationsCSS: assets.OperationsCSS})
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/admin/questionnaires", ui)

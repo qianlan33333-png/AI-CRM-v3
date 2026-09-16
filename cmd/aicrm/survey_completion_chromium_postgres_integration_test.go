@@ -39,7 +39,7 @@ func TestPostgreSQLSurveyCompletionChromiumJourney(t *testing.T) {
 	}
 	fixture := newSurveyCompletionChromiumFixture(t)
 	command := exec.CommandContext(fixture.ctx, "node", filepath.Join(filepath.Dir(fixture.script), "survey_completion_chromium_journey.mjs"))
-	command.Env = append(os.Environ(), "AICRM_SURVEY_BROWSER_URL="+fixture.server.URL, "AICRM_SURVEY_BROWSER_USERNAME=survey-browser-owner", "AICRM_SURVEY_BROWSER_PASSWORD=survey-browser-owner-password", "AICRM_SURVEY_BROWSER_QUESTIONNAIRE_ID="+strconv.FormatInt(fixture.questionnaireID, 10), "AICRM_SURVEY_BROWSER_TARGET=survey.browser.target")
+	command.Env = append(os.Environ(), "AICRM_SURVEY_BROWSER_URL="+fixture.server.URL, "AICRM_SURVEY_BROWSER_USERNAME=survey-browser-owner", "AICRM_SURVEY_BROWSER_PASSWORD=survey-browser-owner-password", "AICRM_SURVEY_BROWSER_QUESTIONNAIRE_ID="+strconv.FormatInt(fixture.questionnaireID, 10), "AICRM_SURVEY_BROWSER_WEBHOOK="+fixture.receiverURL)
 	output, err := command.CombinedOutput()
 	if strings.Contains(string(output), "survey_completion_chromium: SKIP_DEVTOOLS") && runtime.GOOS == "darwin" {
 		t.Skip("local Chromium DevTools is unavailable; Linux CI runs the required journey")
@@ -61,7 +61,8 @@ func TestPostgreSQLSurveyCompletionChromiumJourney(t *testing.T) {
 		t.Fatalf("controlled receiver protocol=%s", receiverFailure)
 	}
 	var ref string
-	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT external_push_configuration_ref FROM survey_operation_configurations WHERE questionnaire_id=$1`, fixture.questionnaireID).Scan(&ref); err != nil || ref != "survey.browser.target" {
+	wantRef := "survey-endpoint:" + strconv.FormatInt(fixture.questionnaireID, 10)
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT external_push_configuration_ref FROM survey_operation_configurations WHERE questionnaire_id=$1`, fixture.questionnaireID).Scan(&ref); err != nil || ref != wantRef {
 		t.Fatalf("saved target ref=%q err=%v", ref, err)
 	}
 	var status string
@@ -90,6 +91,7 @@ type surveyCompletionChromiumFixture struct {
 	receiverCalls   atomic.Int64
 	receiverMu      sync.Mutex
 	receiverFailure string
+	receiverURL     string
 	script          string
 }
 
@@ -122,11 +124,14 @@ func newSurveyCompletionChromiumFixture(t *testing.T) *surveyCompletionChromiumF
 		}
 		var payload struct {
 			UserID      string `json:"user_id"`
+			Type        string `json:"type"`
 			Day         int64  `json:"day"`
 			Frequency   int64  `json:"frequency"`
 			ExpiresAtTS int64  `json:"expires_at_ts"`
+			Remark      string `json:"remark"`
+			Campaign    string `json:"campaign"`
 		}
-		if failure == "" && (json.Unmarshal(raw, &payload) != nil || payload.UserID != "questionnaire_test" || payload.Day != 30 || payload.Frequency != 1 || payload.ExpiresAtTS != 2147483647) {
+		if failure == "" && (json.Unmarshal(raw, &payload) != nil || payload.UserID != "questionnaire_test" || payload.Type != "subscription" || payload.Day != 45 || payload.Frequency != 2 || payload.ExpiresAtTS != 2147483000 || payload.Remark != "browser parity" || payload.Campaign != "survey-browser") {
 			failure = "payload"
 		}
 		fixture.receiverMu.Lock()
@@ -140,13 +145,15 @@ func newSurveyCompletionChromiumFixture(t *testing.T) *surveyCompletionChromiumF
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(receiver.Close)
-	targets, err := json.Marshal(map[string]any{"survey.browser.target": map[string]any{"endpoint": receiver.URL, "signing_key": base64.RawStdEncoding.EncodeToString(key[:]), "client_id": "survey-browser", "version": "v1", "identity_kind": "unionid", "identity_scope": "wechat-open-platform:browser", "day": 30, "frequency": 1, "expires_at_ts": 2147483647}})
+	receiverEndpoint, receiverNetwork := surveyCompletionTLSEndpoint(t, receiver, "example.com")
+	fixture.receiverURL = receiverEndpoint
+	targets, err := json.Marshal(map[string]any{"survey.browser.target": map[string]any{"endpoint": receiverEndpoint, "signing_key": base64.RawStdEncoding.EncodeToString(key[:]), "client_id": "survey-browser", "version": "v1", "identity_kind": "unionid", "identity_scope": "wechat-open-platform:browser", "day": 30, "frequency": 1, "expires_at_ts": 2147483647}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
 	origin := "https://" + server.Listener.Addr().String()
-	application, err := composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, platformconfig.Runtime{Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin, ReleaseSHA: "survey-completion-chromium", WorkerOwner: "survey-completion-chromium", WorkerLimit: 1, GroupOps: platformconfig.GroupOps{WebhookSecret: "survey-browser-webhook-secret"}, Survey: platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(key[:]), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(key[:]), CompletionProviderEnabled: true, CompletionTargetsJSON: string(targets)}, Effects: platformconfig.Effects{ProviderEnabled: true}, Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "survey-browser-owner", Password: "survey-browser-owner-password", DisplayName: "Survey Browser Owner"}}, wecomadapter.New, receiver.Client())
+	application, err := composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, platformconfig.Runtime{Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin, ReleaseSHA: "survey-completion-chromium", WorkerOwner: "survey-completion-chromium", WorkerLimit: 1, GroupOps: platformconfig.GroupOps{WebhookSecret: "survey-browser-webhook-secret"}, Survey: platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(key[:]), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(key[:]), CompletionProviderEnabled: true, CompletionTargetsJSON: string(targets)}, Effects: platformconfig.Effects{ProviderEnabled: true}, Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "survey-browser-owner", Password: "survey-browser-owner-password", DisplayName: "Survey Browser Owner"}}, wecomadapter.New, receiver.Client(), receiverNetwork)
 	if err != nil {
 		t.Fatal(err)
 	}

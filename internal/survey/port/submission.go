@@ -21,6 +21,59 @@ type SubmissionReceipt struct {
 	DefinitionVersion int64  `json:"definition_version"`
 	SubmissionID      ID     `json:"submission_id"`
 	ResultToken       string `json:"result_token,omitempty"`
+	// CompletionAction is used by the application to carry the resolved public
+	// action to HTTP. The public POST envelope emits it once at top level; it
+	// must not be duplicated inside the legacy receipt projection.
+	CompletionAction CompletionAction `json:"-"`
+}
+
+// CompletionAction is the deliberately small public completion projection.
+// It never identifies a customer, submission, result token, provider target,
+// or channel internals.
+type CompletionAction struct {
+	Type        CompletionActionType  `json:"type"`
+	RedirectURL string                `json:"redirect_url,omitempty"`
+	LeadQR      *CompletionLeadQRCode `json:"lead_qr,omitempty"`
+}
+
+type CompletionActionType string
+
+const (
+	CompletionActionDefault  CompletionActionType = "default"
+	CompletionActionRedirect CompletionActionType = "redirect"
+	CompletionActionLeadQR   CompletionActionType = "lead_qr"
+)
+
+type CompletionLeadQRCode struct {
+	URL      string `json:"url"`
+	Title    string `json:"title,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
+}
+
+func DefaultCompletionAction() CompletionAction {
+	return CompletionAction{Type: CompletionActionDefault}
+}
+
+// AlreadySubmittedError preserves the safe completion projection for a
+// duplicate public submit. Callers must test errors.Is(err,
+// ErrAlreadySubmitted), not the message text.
+type AlreadySubmittedError struct {
+	CompletionAction CompletionAction
+}
+
+func (e *AlreadySubmittedError) Error() string { return ErrAlreadySubmitted.Error() }
+func (e *AlreadySubmittedError) Unwrap() error { return ErrAlreadySubmitted }
+
+// PublicSubmissionStatus is intentionally scoped to the current trusted
+// Survey session. It does not disclose a submission, Customer, identity, or
+// result token.
+type PublicSubmissionStatus struct {
+	Submitted        bool             `json:"submitted"`
+	CompletionAction CompletionAction `json:"completion_action"`
+}
+
+type PublicSubmissionStatusReader interface {
+	PublicSubmissionStatus(context.Context, string, SubmissionIdentity) (PublicSubmissionStatus, error)
 }
 
 type AnswerSnapshot struct {
@@ -188,9 +241,13 @@ type OperationReceipt struct {
 type OperationConfiguration struct {
 	QuestionnaireID              ID              `json:"-"`
 	CompletionNavigationRef      string          `json:"navigation_target_id,omitempty"`
+	CompletionTarget             json.RawMessage `json:"completion_target,omitempty"`
 	CompletionChannelID          *int64          `json:"channel_id,omitempty"`
+	LeadQRTitle                  string          `json:"lead_qr_title,omitempty"`
+	LeadQRSubtitle               string          `json:"lead_qr_subtitle,omitempty"`
 	ExternalPushEnabled          bool            `json:"external_push_enabled"`
 	ExternalPushConfigurationRef string          `json:"configuration_reference,omitempty"`
+	ExternalPushURL              string          `json:"webhook_url,omitempty"`
 	ExternalPushMetadata         json.RawMessage `json:"metadata,omitempty"`
 	Version                      int64           `json:"version"`
 	UpdatedAt                    time.Time       `json:"updated_at,omitempty"`
@@ -215,6 +272,7 @@ type LegacyAnswer struct {
 
 type PublicApplication interface {
 	ReadPublic(context.Context, string) (Questionnaire, error)
+	PublicSubmissionStatusReader
 	Submit(context.Context, SubmitCommand) (SubmissionReceipt, error)
 	QueryResult(context.Context, string) (Submission, error)
 }

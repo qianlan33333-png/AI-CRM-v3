@@ -212,6 +212,23 @@ assert.ok(
 );
 resultDOM.window.close();
 
+const donePage = fs.readFileSync(path.join(root, "web/dist/h5/done.html"), "utf8");
+const doneDOM = new JSDOM(donePage, {
+  url: "https://test.invalid/h5/done.html?slug=survey",
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+});
+doneDOM.window.eval(authHost);
+doneDOM.window.eval(publicHost);
+const doneScreen = doneDOM.window.document.getElementById("screen");
+assert.equal(doneDOM.window.document.body.dataset.v3PublicSurvey, "done", "completion page is included in the public Survey Host");
+doneScreen.innerHTML = '<section data-h5-done role="status" aria-live="polite" tabindex="-1"><h1>收到你的问卷</h1></section>';
+await new Promise((resolve) => setTimeout(resolve, 0));
+const doneCard = doneScreen.querySelector("[data-h5-done]");
+assert.equal(doneCard?.getAttribute("data-v3-survey-done"), "", "rendered completion confirmation receives the V3 presentation hook");
+assert.equal(doneDOM.window.document.activeElement, doneCard, "rendered completion confirmation receives focus after a confirmed submission");
+doneDOM.window.close();
+
 const failurePage = fs.readFileSync(path.join(root, "web/dist/h5/error.html"), "utf8");
 const renderFailure = async (url) => {
   const failureDOM = new JSDOM(failurePage, {

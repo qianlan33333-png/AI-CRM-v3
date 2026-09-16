@@ -35,5 +35,4 @@
     <button data-h5-submit onClick="{{ act.submitAll }}" style="width:100%;height:48px;border:0;border-radius:12px;background:var(--accent,#3370ff);color:#fff;font-size:16px;font-weight:600;cursor:pointer">提交</button>
     <sc-if value="{{ submitting }}"><div role="status" style="text-align:center;margin-top:10px;color:#8F959E">正在提交，请勿重复操作…</div></sc-if>
   </sc-if>
-  <sc-if value="{{ submitted }}"><div data-h5-receipt style="background:#fff;border-radius:14px;padding:18px"><h2 style="margin:0;font-size:18px">已收到本地提交回执</h2><p style="font-size:13px;color:#646A73">外部推送、支付和授权均未执行。</p><a data-h5-result-link href="{{ resultPath }}" style="color:#245BDB">查询真实提交结果</a></div></sc-if>
 </div>

@@ -23,6 +23,7 @@ const TEST_BUNDLES = {
   productHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/productAdapter.ts')),
   orderHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/orderAdapter.ts')),
   questionnaireEditor: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/sections/questionnaireEditor.ts')),
+  surveyOperationsHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/surveyOperationsHost.ts')),
   h5: await buildTestBrowserBundle(path.join(ROOT, 'src/h5/main.ts')),
   sidebar: await buildTestBrowserBundle(path.join(ROOT, 'v3/sidebar/main.ts')),
   memberGridShare: (await build({ entryPoints: [path.join(ROOT, 'v3/memberGridFeedbackHost.ts')], bundle: true, write: false, format: 'iife', plugins: [memberGridPresentationPlugin] })).outputFiles[0].text,
@@ -150,6 +151,25 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
   return { dom, trace };
 }
 
+async function loadSurveyOperations(id = 1) {
+  const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
+  return new JSDOM(`<!doctype html><body data-page="questionnaireOps"><main id="stage"></main><script>${TEST_BUNDLES.surveyOperationsHost}</script></body>`, {
+    url: `http://localhost/admin/questionnaireOps.html?id=${id}`,
+    runScripts: 'dangerously',
+    pretendToBeVisual: true,
+    beforeParse(window) {
+      window.Headers = Headers;
+      window.fetch = async (input) => {
+        const url = new URL(String(input), window.location.origin);
+        if (url.pathname === `/api/admin/questionnaires/${id}`) return json({ questionnaire: { id, title: '运营验收问卷', slug: 'ops-e2e', public_path: '/q/ops-e2e', is_disabled: false, submission_count: 3 } });
+        if (url.pathname === `/api/admin/questionnaires/${id}/operations`) return json({ questionnaire_id: id, configuration_version: 2, provider_enabled: true, completion: { enabled: true, mode: 'lead_qr', lead_channel_id: 49, lead_qr_title: '扫码继续', lead_qr_subtitle: '添加顾问', completion_target: {} }, external_push: { enabled: true, webhook_url: 'https://hooks.example.test/survey', type: 'subscription', day: 30, frequency: 1, remark: '问卷激活', custom_params: { source: 'survey' } } });
+        if (url.pathname === '/api/admin/channels') return json({ channels: [{ channel_id: 49, channel_name: '问卷渠道', status: 'active', carrier_type: 'qrcode', qrcode_asset_id: 9, qrcode_status: 'active', qr_url: 'https://cdn.example.test/survey-qr.png' }] });
+        return json({ code: 'unexpected_questionnaire_operations_request' }, 500);
+      };
+    },
+  });
+}
+
 async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, customerDetailHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false, ownerHandoffHttp = false } = {}) {
   const file = path.join(DIST, rel);
   // ownerMig is served by the Go Webshell Host, not the unrelated historical
@@ -163,6 +183,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     const bundle = name.startsWith('sidebar') ? TEST_BUNDLES.sidebar : TEST_BUNDLES[name];
     return `<script>${productHttp ? TEST_BUNDLES.productHost : bundle}</script>`;
   });
+  html = html.replace(/<script type="module" src="[^"]*assets\/surveyOperationsHost-[^"]+\.js"><\/script>/, `<script>${TEST_BUNDLES.surveyOperationsHost}</script>`);
   if (rel === 'sidebar/index.html') html = html.replace(/<script src="[^"]*assets\/sidebarImageResourceLoader-[^"]+\.js"><\/script>/, `<script>${SIDEBAR_IMAGE_RESOURCE_LOADER}</script>`);
   // ownerMig's Host is a separately served V3 adapter. Inline the exact built
   // adapter here so this regression executes the frozen donor mount rather
@@ -192,6 +213,18 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
       if (h5WeChat) Object.defineProperty(window.navigator, 'userAgent', { value: 'MicroMessenger/8.0', configurable: true });
       // Mock 仅由 DOM 回归测试显式注入；浏览器默认运行态不会走此路径。
       window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || customerDetailHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp || ownerHandoffHttp);
+      if (rel === 'admin/questionnaireOps.html' && id != null) {
+        window.Headers = Headers;
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
+        window.fetch = async (input) => {
+          const url = new URL(String(input), window.location.origin);
+          if (url.pathname === `/api/admin/questionnaires/${id}`) return json({ questionnaire: { id, title: '运营验收问卷', slug: 'ops-e2e', public_path: '/q/ops-e2e', is_disabled: false, submission_count: 3 } });
+          if (url.pathname === `/api/admin/questionnaires/${id}/operations`) return json({ questionnaire_id: id, configuration_version: 2, provider_enabled: true, completion: { enabled: true, mode: 'lead_qr', lead_channel_id: 49, lead_qr_title: '扫码继续', lead_qr_subtitle: '添加顾问', completion_target: {} }, external_push: { enabled: true, webhook_url: 'https://hooks.example.test/survey', type: 'subscription', day: 30, frequency: 1, remark: '问卷激活', custom_params: { source: 'survey' } } });
+          if (url.pathname === '/api/admin/channels') return json({ channels: [{ channel_id: 49, channel_name: '问卷渠道', status: 'active', carrier_type: 'qrcode', qrcode_asset_id: 9, qrcode_status: 'active', qr_url: 'https://cdn.example.test/survey-qr.png' }] });
+          return json({ code: 'unexpected_questionnaire_operations_request' }, 500);
+        };
+        return;
+      }
       if (ownerHandoffHttp) {
         window.Headers = Headers;
         const staff = [
@@ -570,7 +603,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.pathname === '/api/public/questionnaires/uat-survey/submissions') {
             const status = h5Http.submissionStatuses?.[submissionAttempt++] ?? 202;
             if (status === 'network') throw new Error('network outcome unknown');
-            return json(status === 202 ? { result_token: 'r'.repeat(43), receipt: { questionnaire_id: 7, definition_version: 3, submission_id: 901 } } : { code: 'unavailable' }, status);
+            return json(status === 202 ? { completion_action: { type: 'default' }, receipt: { questionnaire_id: 7, definition_version: 3, submission_id: 901 } } : { code: 'unavailable' }, status);
           }
           if (url.pathname === '/api/public/survey-submission-results/query') return json(h5Http.result, h5Http.resultStatus || 200);
           return json({ code: 'unexpected_h5_request' }, 500);
@@ -2179,28 +2212,20 @@ console.log('admin/wecom-tags.html（新建标签测试 Mock 建行）');
   dom.window.close();
 }
 
-console.log('admin/questionnaireOps.html?id=1（opaque 本地运营配置）');
+console.log('admin/questionnaireOps.html?id=1（旧版同款问卷提交后动作与外部推送）');
 {
-  const dom = await loadPage('admin/questionnaireOps.html', { id: 1 });
+  const dom = await loadSurveyOperations(1);
   const d = dom.window.document;
-  ok('二维码卡片展示渠道选择器与渠道资源 ID', !!d.querySelector('#opsChannelResourceId') && d.body.textContent.includes('绑定渠道码') && !d.querySelector('#opsNavigationTarget'));
-  click(dom, [...d.querySelectorAll('div')].find((el) => el.textContent.trim() === '直接跳转'));
+  await waitFor(() => !!d.querySelector('.qo-page'), 3500);
+  ok('问卷运营页使用旧版同款布局与两个独立维度', !!d.querySelector('.qo-page') && !!d.querySelector('.qo-summary-grid') && d.querySelectorAll('.qo-nav button').length === 2);
+  ok('二维码卡片展示渠道选择器与标题副标题', !!d.querySelector('#qo-lead-channel') && !!d.querySelector('[data-qr-title]') && !!d.querySelector('[data-qr-subtitle]'));
+  click(dom, d.querySelector('[data-mode="redirect"]'));
   await sleep(30);
-  ok('跳转卡片只展示 opaque navigation target，不出 URL 输入', !!d.querySelector('#opsNavigationTarget') && !d.querySelector('#opsChannelResourceId') && !d.querySelector('#opsRedirectUrl'));
-  ok('外部推送只接受 configuration reference', !!d.querySelector('#opsConfigurationReference') && !d.querySelector('#opsWebhook'));
-  input(dom, d.querySelector('#opsLogKeyword'), '#20478');
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '应用筛选'));
+  ok('直接跳转复刻 H5 与动态 URL Link 配置', !!d.querySelector('[data-target-type]') && !!d.querySelector('[data-h5-url]') && !!d.querySelector('[data-source-url]') && !!d.querySelector('[data-response-key]'));
+  click(dom, d.querySelector('[data-tab="push"]'));
   await sleep(30);
-  ok('问卷外推日志按测试记录 ID 筛选', d.querySelectorAll('tbody tr').length === 1 && d.body.textContent.includes('#20478'));
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '重置'));
-  await sleep(30);
-  ok('问卷外推日志重置恢复完整视图', d.querySelectorAll('tbody tr').length === 3);
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '全部问卷'));
-  await sleep(30);
-  ok('全局问卷外推日志测试模式失败关闭且不回退 Mock', d.querySelector('#fb-toast')?.textContent.includes('backend_blocked') && d.body.textContent.includes('当前问卷本地外推测试记录'));
-  click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.includes('测试推送')));
-  await sleep(30);
-  ok('测试外推明确为本地 queued 记录且未宣称派发', d.querySelector('#fb-body').textContent.includes('不执行外部派发'));
+  ok('外部推送复刻 Webhook 与业务参数', !!d.querySelector('#qo-push-url') && !!d.querySelector('[data-push-type]') && !!d.querySelector('[data-expires]') && !!d.querySelector('[data-day]') && !!d.querySelector('[data-frequency]') && !!d.querySelector('[data-remark]'));
+  ok('外部推送保留自定义参数、测试推送与独立保存', !!d.querySelector('[data-add-param]') && !!d.querySelector('[data-test]') && !!d.querySelector('[data-save-push]'));
   dom.window.close();
 }
 
@@ -3084,8 +3109,7 @@ console.log('h5/all.html（真实定义、答案与幂等重试）');
   click(dom, d.querySelector('[data-option-id="11"]'));
   click(dom, d.querySelector('[data-h5-submit]'));
   await sleep(30);
-  ok('H5 改答案使用新key并只按真实回执显示受理', submissions().length === 3 && submissions()[2].body.submission_key !== firstKey && submissions()[2].body.answers[0].option_ids[0] === 11 && !!d.querySelector('[data-h5-receipt]') && !d.querySelector('[data-h5-submit]'));
-  ok('H5 结果凭据放fragment，不加入API查询串', d.querySelector('[data-h5-result-link]')?.getAttribute('href') === 'result.html#result_token=' + 'r'.repeat(43));
+  ok('H5 改答案使用新key并按真实 completion action 结束答题页', submissions().length === 3 && submissions()[2].body.submission_key !== firstKey && submissions()[2].body.answers[0].option_ids[0] === 11 && !d.querySelector('[data-h5-receipt]') && !d.querySelector('[data-h5-result-link]'));
   dom.window.close();
 }
 
@@ -3172,13 +3196,28 @@ for (const scenario of [
   ok('H5 auth 微信内先读取安全会话并自动发起一次授权', ![...insideDocument.querySelectorAll('#screen button')].some((button) => !button.disabled) && inside.window.sessionStorage.getItem('survey.oauth:uat-survey') === 'started' && inside.window.__h5HttpTest.calls.length === 1 && inside.window.__h5HttpTest.calls[0].path === '/api/h5/surveys/session');
   inside.window.close();
 }
-for (const page of ['error', 'done', 'signup', 'active', 'expired', 'pay', 'qr']) {
+for (const page of ['error', 'signup', 'active', 'expired', 'pay', 'qr']) {
   const dom = await loadPage(`h5/${page}.html`, { h5Http: {} });
   const d = dom.window.document;
   ok(`H5 ${page} 保留原壳但明确blocked，不调用Provider`, !!d.querySelector('[data-h5-blocked]') && d.body.textContent.includes('后端能力未就绪') && [...d.querySelectorAll('#screen button')].every((button) => button.disabled) && dom.window.__h5HttpTest.calls.length === 0 && !d.body.textContent.includes('诊断报告已生成'));
   dom.window.close();
 }
-for (const page of ['done', 'qr']) {
+{
+  const dom = await loadPage('h5/done.html', { q: 'slug=uat-survey', h5Http: { sessionStatus: 200, session: { submitted: true, completion_action: { type: 'default' } } } });
+  const d = dom.window.document;
+  ok('H5 默认完成页只显示收到问卷的确认，不显示技术回执或结果入口', d.querySelector('[data-h5-done] h1')?.textContent === '收到你的问卷' && !d.querySelector('[data-h5-lead-qr]') && !d.querySelector('[data-h5-blocked]') && !d.querySelector('[data-h5-local-exit]'));
+  dom.window.close();
+}
+for (const [label, session] of [
+  ['未确认提交', { submitted: false, completion_action: { type: 'default' } }],
+  ['redirect 动作', { submitted: true, completion_action: { type: 'redirect', redirect_url: 'https://completion.example/next' } }],
+]) {
+  const dom = await loadPage('h5/done.html', { q: 'slug=uat-survey', h5Http: { sessionStatus: 200, session } });
+  const d = dom.window.document;
+  ok(`H5 完成页${label}不闪现确认文案`, !d.querySelector('[data-h5-done]') && !d.body.textContent.includes('收到你的问卷'));
+  dom.window.close();
+}
+for (const page of ['qr']) {
   const dom = await loadPage(`h5/${page}.html`, { h5Http: {} });
   const d = dom.window.document;
   ok(`H5 ${page} 提供可用的纯本地出口（非禁用按钮、不发请求）`, !!d.querySelector('#screen a[data-h5-local-exit]') && dom.window.__h5HttpTest.calls.length === 0);

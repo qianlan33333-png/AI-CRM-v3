@@ -11,9 +11,13 @@ import (
 )
 
 var (
-	ErrInvalid           = errors.New("invalid survey command")
-	ErrNotFound          = errors.New("survey questionnaire not found")
-	ErrConflict          = errors.New("survey questionnaire conflict")
+	ErrInvalid  = errors.New("invalid survey command")
+	ErrNotFound = errors.New("survey questionnaire not found")
+	ErrConflict = errors.New("survey questionnaire conflict")
+	// ErrAlreadySubmitted is distinct from an idempotency payload conflict. It
+	// means this resolved canonical customer has already consumed this
+	// questionnaire's post-cutover submission entitlement with another key.
+	ErrAlreadySubmitted  = errors.New("survey questionnaire already submitted")
 	ErrReferenced        = errors.New("survey questionnaire has retained history")
 	ErrUnavailable       = errors.New("survey service unavailable")
 	ErrIdentityConflict  = errors.New("survey identity conflict")

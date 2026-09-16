@@ -500,10 +500,79 @@ func (r *Repository) GetPublishedBySlug(ctx context.Context, slug string) (surve
 	return q, nil
 }
 
+// GetBySlug is the minimal Survey-owned lookup used to recover a retained
+// idempotency receipt or completion claim. It deliberately does not make the
+// questionnaire publicly readable: callers must still use GetPublishedBySlug
+// before serving a new answer form.
+func (r *Repository) GetBySlug(ctx context.Context, slug string) (surveyport.Questionnaire, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.Questionnaire{}, err
+	}
+	q, _, err := scanBase(t.QueryRow(ctx, `SELECT `+baseColumns+` FROM survey_questionnaires q WHERE q.slug=$1`, slug))
+	return q, err
+}
+
+// FindSubmissionByKey keeps payload conflict comparison within Survey's
+// persistence boundary. The returned Submission is application-internal;
+// public handlers only receive its safe receipt projection.
+func (r *Repository) FindSubmissionByKey(ctx context.Context, questionnaireID surveyport.ID, keyDigest, payloadDigest [32]byte) (surveyport.Submission, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.Submission{}, false, err
+	}
+	var id int64
+	var existingPayload []byte
+	err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, questionnaireID, keyDigest[:]).Scan(&id, &existingPayload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return surveyport.Submission{}, false, nil
+	}
+	if err != nil {
+		return surveyport.Submission{}, false, mapError(err)
+	}
+	if string(existingPayload) != string(payloadDigest[:]) {
+		return surveyport.Submission{}, false, surveyport.ErrConflict
+	}
+	stored, err := r.GetSubmission(ctx, surveyport.ID(id))
+	return stored, true, err
+}
+
 func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.PersistSubmission) (surveyport.Submission, bool, error) {
 	t, err := tx(ctx)
 	if err != nil {
 		return surveyport.Submission{}, false, err
+	}
+	// Preserve the established same-key replay before the new customer claim is
+	// considered. This also keeps historical, pre-cutover submission-key
+	// receipts readable without backfilling them into the new claim table.
+	existing, found, err := r.FindSubmissionByKey(ctx, input.Questionnaire.ID, input.SubmissionKeyDigest, input.PayloadDigest)
+	if err != nil {
+		return surveyport.Submission{}, false, err
+	}
+	if found {
+		return existing, false, nil
+	}
+
+	// The PK serializes competing submission keys for the same canonical
+	// customer and questionnaire. Because this runs in the caller's UoW, a
+	// later failure rolls the placeholder back with the submission, answers,
+	// audit, Outbox, and any accepted external effect.
+	claim, err := t.Exec(ctx, `INSERT INTO survey_submission_claims(questionnaire_id,customer_id,claimed_at) VALUES($1,$2,$3) ON CONFLICT(questionnaire_id,customer_id) DO NOTHING`, input.Questionnaire.ID, input.Command.Identity.CustomerID, input.Now)
+	if err != nil {
+		return surveyport.Submission{}, false, mapError(err)
+	}
+	if claim.RowsAffected() != 1 {
+		// A concurrent same-key request may have observed no submission before
+		// blocking on the claim. Re-read it after the conflict to preserve the
+		// original idempotent receipt; all other keys are already-submitted.
+		existing, found, err = r.FindSubmissionByKey(ctx, input.Questionnaire.ID, input.SubmissionKeyDigest, input.PayloadDigest)
+		if err != nil {
+			return surveyport.Submission{}, false, err
+		}
+		if found {
+			return existing, false, nil
+		}
+		return surveyport.Submission{}, false, surveyport.ErrAlreadySubmitted
 	}
 	var definitionID int64
 	if err = t.QueryRow(ctx, `SELECT active_definition_version_id FROM survey_questionnaires WHERE id=$1 AND status='published' FOR SHARE`, input.Questionnaire.ID).Scan(&definitionID); err != nil {
@@ -511,22 +580,15 @@ func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.Persi
 	}
 	resultRaw, _ := json.Marshal(input.Result)
 	var submissionID int64
-	var existingPayload []byte
-	err = t.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,identity_reason,evidence_digest,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) ON CONFLICT(questionnaire_id,submission_key_digest) DO NOTHING RETURNING id`, input.Questionnaire.ID, definitionID, input.Questionnaire.DefinitionVersion, input.Command.Identity.CustomerID, input.Command.Identity.State, decodeEvidence(input.Command.Identity.EvidenceDigest), input.SubmissionKeyDigest[:], input.PayloadDigest[:], input.Questionnaire.Slug, input.Questionnaire.Title, input.Questionnaire.Mode, input.TotalScore, resultRaw, input.Command.SourceChannel, input.Command.CampaignID, input.Command.StaffID, input.Now).Scan(&submissionID)
-	created := err == nil
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = t.QueryRow(ctx, `SELECT id,payload_digest FROM survey_submissions WHERE questionnaire_id=$1 AND submission_key_digest=$2 FOR UPDATE`, input.Questionnaire.ID, input.SubmissionKeyDigest[:]).Scan(&submissionID, &existingPayload)
+	err = t.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,identity_reason,evidence_digest,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) RETURNING id`, input.Questionnaire.ID, definitionID, input.Questionnaire.DefinitionVersion, input.Command.Identity.CustomerID, input.Command.Identity.State, decodeEvidence(input.Command.Identity.EvidenceDigest), input.SubmissionKeyDigest[:], input.PayloadDigest[:], input.Questionnaire.Slug, input.Questionnaire.Title, input.Questionnaire.Mode, input.TotalScore, resultRaw, input.Command.SourceChannel, input.Command.CampaignID, input.Command.StaffID, input.Now).Scan(&submissionID)
+	if err != nil {
+		return surveyport.Submission{}, false, mapError(err)
+	}
+	if claim, err = t.Exec(ctx, `UPDATE survey_submission_claims SET submission_id=$3 WHERE questionnaire_id=$1 AND customer_id=$2 AND submission_id IS NULL`, input.Questionnaire.ID, input.Command.Identity.CustomerID, submissionID); err != nil || claim.RowsAffected() != 1 {
 		if err != nil {
 			return surveyport.Submission{}, false, mapError(err)
 		}
-		if string(existingPayload) != string(input.PayloadDigest[:]) {
-			return surveyport.Submission{}, false, surveyport.ErrConflict
-		}
-		stored, getErr := r.GetSubmission(ctx, surveyport.ID(submissionID))
-		return stored, false, getErr
-	}
-	if err != nil {
-		return surveyport.Submission{}, false, mapError(err)
+		return surveyport.Submission{}, false, surveyport.ErrUnavailable
 	}
 	if _, err = t.Exec(ctx, `INSERT INTO survey_result_tokens(submission_id,token_digest,created_at) VALUES($1,$2,$3)`, submissionID, input.TokenDigest[:], input.Now); err != nil {
 		return surveyport.Submission{}, false, mapError(err)
@@ -551,7 +613,17 @@ func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.Persi
 		}
 	}
 	stored, err := r.GetSubmission(ctx, surveyport.ID(submissionID))
-	return stored, created, err
+	return stored, true, err
+}
+
+func (r *Repository) HasSubmissionClaim(ctx context.Context, questionnaireID surveyport.ID, customerID customerdomain.CustomerID) (bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	var claimed bool
+	err = t.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_submission_claims WHERE questionnaire_id=$1 AND customer_id=$2 AND submission_id IS NOT NULL)`, questionnaireID, customerID).Scan(&claimed)
+	return claimed, mapError(err)
 }
 
 func (r *Repository) RecordPhoneBinding(ctx context.Context, submissionID, answerID surveyport.ID, customerID, identityID int64, status identityport.DeclaredAttachStatus, evidence [32]byte, now time.Time) error {
@@ -1116,7 +1188,7 @@ func (r *Repository) GetOperationConfiguration(ctx context.Context, id surveypor
 		return surveyport.OperationConfiguration{}, err
 	}
 	var value surveyport.OperationConfiguration
-	err = t.QueryRow(ctx, `SELECT q.id,COALESCE(c.completion_navigation_ref,''),c.completion_channel_id,COALESCE(c.external_push_enabled,FALSE),COALESCE(c.external_push_configuration_ref,''),COALESCE(c.external_push_metadata,'{}'::jsonb),COALESCE(c.version,0),COALESCE(c.updated_at,q.updated_at) FROM survey_questionnaires q LEFT JOIN survey_operation_configurations c ON c.questionnaire_id=q.id WHERE q.id=$1`, id).Scan(&value.QuestionnaireID, &value.CompletionNavigationRef, &value.CompletionChannelID, &value.ExternalPushEnabled, &value.ExternalPushConfigurationRef, &value.ExternalPushMetadata, &value.Version, &value.UpdatedAt)
+	err = t.QueryRow(ctx, `SELECT q.id,COALESCE(c.completion_navigation_ref,''),COALESCE(c.completion_target,'{}'::jsonb),c.completion_channel_id,COALESCE(c.lead_qr_title,''),COALESCE(c.lead_qr_subtitle,''),COALESCE(c.external_push_enabled,FALSE),COALESCE(c.external_push_configuration_ref,''),COALESCE(c.external_push_metadata,'{}'::jsonb),COALESCE(c.version,0),COALESCE(c.updated_at,q.updated_at) FROM survey_questionnaires q LEFT JOIN survey_operation_configurations c ON c.questionnaire_id=q.id WHERE q.id=$1`, id).Scan(&value.QuestionnaireID, &value.CompletionNavigationRef, &value.CompletionTarget, &value.CompletionChannelID, &value.LeadQRTitle, &value.LeadQRSubtitle, &value.ExternalPushEnabled, &value.ExternalPushConfigurationRef, &value.ExternalPushMetadata, &value.Version, &value.UpdatedAt)
 	return value, mapError(err)
 }
 
@@ -1126,7 +1198,7 @@ func (r *Repository) SaveOperationConfiguration(ctx context.Context, value surve
 		return surveyport.OperationConfiguration{}, err
 	}
 	var stored surveyport.OperationConfiguration
-	err = t.QueryRow(ctx, `INSERT INTO survey_operation_configurations(questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,external_push_metadata,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(questionnaire_id) DO UPDATE SET completion_navigation_ref=EXCLUDED.completion_navigation_ref,completion_channel_id=EXCLUDED.completion_channel_id,external_push_enabled=EXCLUDED.external_push_enabled,external_push_configuration_ref=EXCLUDED.external_push_configuration_ref,external_push_metadata=EXCLUDED.external_push_metadata,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at,version=survey_operation_configurations.version+1 WHERE survey_operation_configurations.version=$9 RETURNING questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,external_push_metadata,version,updated_at`, value.QuestionnaireID, value.CompletionNavigationRef, value.CompletionChannelID, value.ExternalPushEnabled, value.ExternalPushConfigurationRef, value.ExternalPushMetadata, actor, now, value.Version).Scan(&stored.QuestionnaireID, &stored.CompletionNavigationRef, &stored.CompletionChannelID, &stored.ExternalPushEnabled, &stored.ExternalPushConfigurationRef, &stored.ExternalPushMetadata, &stored.Version, &stored.UpdatedAt)
+	err = t.QueryRow(ctx, `INSERT INTO survey_operation_configurations(questionnaire_id,completion_navigation_ref,completion_target,completion_channel_id,lead_qr_title,lead_qr_subtitle,external_push_enabled,external_push_configuration_ref,external_push_metadata,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(questionnaire_id) DO UPDATE SET completion_navigation_ref=EXCLUDED.completion_navigation_ref,completion_target=EXCLUDED.completion_target,completion_channel_id=EXCLUDED.completion_channel_id,lead_qr_title=EXCLUDED.lead_qr_title,lead_qr_subtitle=EXCLUDED.lead_qr_subtitle,external_push_enabled=EXCLUDED.external_push_enabled,external_push_configuration_ref=EXCLUDED.external_push_configuration_ref,external_push_metadata=EXCLUDED.external_push_metadata,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at,version=survey_operation_configurations.version+1 WHERE survey_operation_configurations.version=$12 RETURNING questionnaire_id,completion_navigation_ref,completion_target,completion_channel_id,lead_qr_title,lead_qr_subtitle,external_push_enabled,external_push_configuration_ref,external_push_metadata,version,updated_at`, value.QuestionnaireID, value.CompletionNavigationRef, value.CompletionTarget, value.CompletionChannelID, value.LeadQRTitle, value.LeadQRSubtitle, value.ExternalPushEnabled, value.ExternalPushConfigurationRef, value.ExternalPushMetadata, actor, now, value.Version).Scan(&stored.QuestionnaireID, &stored.CompletionNavigationRef, &stored.CompletionTarget, &stored.CompletionChannelID, &stored.LeadQRTitle, &stored.LeadQRSubtitle, &stored.ExternalPushEnabled, &stored.ExternalPushConfigurationRef, &stored.ExternalPushMetadata, &stored.Version, &stored.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return surveyport.OperationConfiguration{}, surveyport.ErrConflict
 	}

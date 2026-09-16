@@ -150,6 +150,14 @@ body[data-ui-surface="h5"][data-v3-public-survey] #screen [data-v3-survey-receip
   box-shadow: 0 4px 14px rgb(31 35 41 / 5%);
 }
 
+body[data-ui-surface="h5"][data-v3-public-survey] #screen [data-v3-survey-done]:focus {
+  outline: 0;
+}
+
+body[data-ui-surface="h5"][data-v3-public-survey] #screen [data-h5-lead-qr] img {
+  border-radius: 8px;
+}
+
 body[data-ui-surface="h5"][data-v3-public-survey] #screen[data-v3-survey-submitting="true"] [data-v3-survey-action] {
   pointer-events: none;
 }
