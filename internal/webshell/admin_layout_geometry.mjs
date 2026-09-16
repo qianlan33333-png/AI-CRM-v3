@@ -1256,7 +1256,7 @@ try {
     label: "coupon-form", pathname: "/admin/couponForm.html?id=" + couponID,
     ready: "document.querySelector('#stage')?.textContent?.includes('后台页面验收优惠券') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券')",
     kind: "embedded", titleSelector: "#couponForm h2", assertShell: false,
-    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); return {ready:Array.from(document.querySelectorAll('#stage h2')).filter(node => node.textContent?.trim() === '编辑优惠券').length === 1 && text.includes('后台页面验收优惠券') && text.includes('已选 1 个商品') && Array.from(document.querySelectorAll('#stage button')).some(button => button.textContent?.trim() === '保存优惠券'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const compact=text.replace(/\\s/g,''); const title=document.querySelector('#stage .coupon-editor-title-row h2'); return {ready:title?.textContent?.trim() === '编辑优惠券' && document.querySelectorAll('#stage .coupon-editor-title-row h2').length === 1 && compact.includes('后台页面验收优惠券') && compact.includes('已选1个商品') && Boolean(document.querySelector('#stage #saveCoupon')),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
   });
   await captureDesktopEvidence({
     label: "coupon-data", pathname: "/admin/couponData.html?id=" + couponID,
