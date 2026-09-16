@@ -1265,7 +1265,7 @@ try {
     label: "coupon-data", pathname: "/admin/couponData.html?id=" + couponID,
     ready: "Boolean(document.querySelector('#stage table tbody tr')) && document.querySelector('#stage')?.textContent?.includes('领取与使用明细')",
     kind: "embedded", titleSelector: frozenListToolbarTitle,
-    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const rows=Array.from(document.querySelectorAll('#stage tbody tr')); return {ready:text.includes('累计领取') && text.includes('领取时间') && rows.length >= 1 && rows.some(row => row.textContent?.includes('可用') && !row.textContent?.includes('claimed')) && !text.includes('claimed') && !text.includes('published') && !text.includes('当前页暂无领取记录'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
+    assertPage: `(() => { const text=String(document.querySelector('#stage')?.textContent || ''); const rows=Array.from(document.querySelectorAll('#stage tbody tr')); return {ready:text.includes('累计领取') && text.includes('领取时间') && text.includes('已领取 / 发行量') && /累计领取\\s*1\\s*发行 100/.test(text) && text.includes('指定商品（1项）') && rows.length >= 1 && rows.some(row => row.textContent?.includes('可用') && !row.textContent?.includes('claimed')) && !text.includes('claimed') && !text.includes('published') && !text.includes('standard_product:1') && !text.includes('当前页暂无领取记录'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}; })()`
   });
   await captureDesktopEvidence({
     label: "service-period-products", pathname: "/admin/service-period-products",
