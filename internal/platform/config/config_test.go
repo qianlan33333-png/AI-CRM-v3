@@ -645,6 +645,17 @@ func TestPublicSurveyScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) 
 	}
 }
 
+func TestQuestionnaireListScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR", "")
+	if value := QuestionnaireListScreenshotDirectory(); value != "" {
+		t.Fatalf("missing questionnaire list screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR", "/tmp/aicrm-questionnaire-list-evidence")
+	if value := QuestionnaireListScreenshotDirectory(); value != "/tmp/aicrm-questionnaire-list-evidence" {
+		t.Fatalf("questionnaire list screenshot directory=%q", value)
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	allowed := map[string]string{
 		"AICRM_DATABASE_URL":                 "postgres://target@localhost/aicrm",
