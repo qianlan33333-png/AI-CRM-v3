@@ -75,7 +75,7 @@ function sendState(value: string): string {
 
 function recipient(value: JsonRecord, count = 1): JsonRecord {
   const execution = executionLabel(String(value.execution_state || ''));
-  return { recipient_id: value.id, display_name: value.customer_name || `客户 #${value.customer_id}`,
+  return { recipient_id: value.id, display_name: value.customer_name || `用户 #${value.customer_id}`,
     external_userid: `${value.oneid_label || `OneID #${value.customer_id}`} · ${execution}`, owner_userid: value.staff_display_name || `员工 #${value.staff_id}`,
     updated_at: value.updated_at, planned_message_count: count, approval_status: value.review_state === 'pending_review' ? 'pending' : value.review_state,
     send_status: sendState(value.execution_state), supports_recipient_approval: true, version: value.version };

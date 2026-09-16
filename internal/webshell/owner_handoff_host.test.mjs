@@ -94,6 +94,9 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
     init: stage?.dataset.ownerHandoffInit || "missing",
     http_status: stage?.dataset.ownerHandoffInitStatus || "",
     page: Boolean(page),
+    owner_heading: page?.querySelector("h1")?.textContent?.trim() || "",
+    scope_copy: [...(page?.querySelectorAll(".owner-migration-hint") || [])].map((node) => node.textContent?.trim() || ""),
+    confirm_placeholder: page?.querySelector("[data-confirm-phrase-input]")?.getAttribute("placeholder") || "",
     has_curly_marker: Boolean(page?.innerHTML.includes("{{")),
     has_block_marker: Boolean(page?.innerHTML.includes("{%")),
     operator_ready: Boolean(page?.querySelector("#operator")?.value.startsWith("管理员 #")),
@@ -126,7 +129,7 @@ async function mountFixture(contextBody, contextStatus = 200, exercisePicker = f
 }
 
 const ready = await mountFixture({ staff: [], operator: "管理员 #42" });
-if (ready.init !== "ready" || !ready.page || ready.has_curly_marker || ready.has_block_marker || !ready.operator_ready || !ready.welcome_ready || !ready.wecom_checked || ready.donor_gets !== 1 || ready.context_gets !== 1) throw new Error(`owner handoff Host ready fixture mismatch ${JSON.stringify(ready)}`);
+if (ready.init !== "ready" || !ready.page || ready.has_curly_marker || ready.has_block_marker || !ready.operator_ready || !ready.welcome_ready || !ready.wecom_checked || ready.donor_gets !== 1 || ready.context_gets !== 1 || ready.owner_heading !== "用户负责人迁移 / 在职继承" || !ready.scope_copy.includes("迁移原负责人当前全部候选用户。保留现有能力。") || ready.confirm_placeholder !== "确认将 0 个用户从 source 迁移到 target") throw new Error(`owner handoff Host ready fixture mismatch ${JSON.stringify(ready)}`);
 
 const denied = await mountFixture({ error: "forbidden fixture" }, 403);
 if (denied.init !== "context_error" || denied.page || denied.http_status !== "403" || denied.donor_gets !== 1 || denied.context_gets !== 1 || denied.user_message !== "负责人迁移页面不可用。") throw new Error(`owner handoff Host context failure fixture mismatch ${JSON.stringify(denied)}`);

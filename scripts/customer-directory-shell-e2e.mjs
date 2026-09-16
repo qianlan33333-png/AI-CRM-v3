@@ -162,7 +162,7 @@ try {
   await sleep(30);
   const search = listRequests.filter((item) => item.url.pathname === '/api/admin/customers').at(-1);
   if (search?.url.searchParams.get('phone') !== '13812345678') fail('phone search did not send the visible local number');
-  const selector = document.querySelector('input[aria-label="选择客户 42"]');
+  const selector = document.querySelector('input[aria-label="选择用户 42"]');
   selector.checked = true;
   selector.dispatchEvent(new list.window.Event('change', { bubbles: true }));
   const batch = document.querySelector('#customer-tag-batch');
@@ -240,7 +240,7 @@ try {
   for (const expected of ['风险等级：未知（必要信息暂时不可用）', '身份信息暂时不可用，当前风险无法完整判定。', '订单信息暂时不可用，当前风险无法完整判定。', '已发现退款相关订单。', '已发现支付失败订单。']) {
     if (!risk.includes(expected)) fail(`degraded risk summary omitted ${expected}`);
   }
-  if (!orders.includes('该分区暂时不可用，其他客户信息不受影响。') || orders.includes('订单总数：')) fail('degraded order summary rendered unavailable values');
+  if (!orders.includes('该分区暂时不可用，其他用户信息不受影响。') || orders.includes('订单总数：')) fail('degraded order summary rendered unavailable values');
   console.log('  ✓ customer detail keeps known risk facts visible when required sections degrade');
 } finally {
   degradedRisk.window.close();

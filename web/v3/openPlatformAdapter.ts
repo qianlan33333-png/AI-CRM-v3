@@ -384,13 +384,13 @@ function staticDocumentation(onClients: () => void): HTMLElement {
   }
 
   const quickstart = docSection('quickstart', '快速 OAuth 接入');
-  quickstart.append(element('p', '使用一个已激活、只含 read scope 的专用调用方换取短期 Bearer Token。不要把 client secret、access token、客户 ID 或真实响应写入命令历史、静态文档或测试输出。'));
+  quickstart.append(element('p', '使用一个已激活、只含 read scope 的专用调用方换取短期 Bearer Token。不要把 client secret、access token、用户 ID 或真实响应写入命令历史、静态文档或测试输出。'));
   quickstart.append(codeExample(`export AICRM_BASE_URL='https://<deployed-aicrm-host>'\nexport AICRM_CLIENT_ID='<dedicated-client-id>'\nexport AICRM_CLIENT_SECRET='<secret-from-secret-store>'\n\nTOKEN_RESPONSE="$(curl --fail-with-body --silent --show-error \\\n  --user \"$AICRM_CLIENT_ID:$AICRM_CLIENT_SECRET\" \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  --data-urlencode 'grant_type=client_credentials' \\\n  --data-urlencode 'audience=external_integration' \\\n  --data-urlencode 'scope=read' \\\n  \"$AICRM_BASE_URL/oauth/token\")"\nexport AICRM_ACCESS_TOKEN="$(jq -er '.access_token' <<<\"$TOKEN_RESPONSE\")"`));
   const openapi = element('a', '下载已认证 OpenAPI YAML'); openapi.href = '/api/admin/config/openapi.yaml'; openapi.className = 'open-platform-button'; openapi.download = 'aicrm-openapi.yaml'; quickstart.append(openapi);
   const quickNote = element('p', '在“密钥管理”中创建调用方、确认一次性密钥、激活、轮换、停用和查看审计。创建或轮换后密钥只展示一次；复制确认前调用方保持停用。'); quickNote.className = 'open-platform-doc-note'; quickstart.append(quickNote);
 
   const operations = docSection('operations', '11 个专用只读接口');
-  operations.append(element('p', '下表是当前 v1 只读合同：10 个 capability 对应 11 个 operation。客户活动摘要、AI 写工作流和操作状态不属于本专用只读 profile。'));
+  operations.append(element('p', '下表是当前 v1 只读合同：10 个 capability 对应 11 个 operation。用户活动摘要、AI 写工作流和操作状态不属于本专用只读 profile。'));
   const operationTable = docTable(['Operation', 'REST', 'Capability'], [
     ['platform.capabilities.list', 'GET /open/v1/capabilities', 'platform.capabilities.read'],
     ['customer.resolve', 'POST /open/v1/customers:resolve', 'customer.resolve'],
@@ -429,7 +429,7 @@ function staticDocumentation(onClients: () => void): HTMLElement {
   const oneid = docSection('oneid', 'OneID 与安全查询');
   oneid.append(element('p', '先用 references 数组中的明确 kind、scope、value 调用 customer.resolve，再以返回的 canonical customer_id 查询订单、问卷、聊天或 Radar 点击。解析只读，不会建客、绑定或合并身份。OpenID 必须带 App scope；UnionID 必须带开放平台 scope。'));
   oneid.append(codeExample(`curl --fail-with-body --silent --show-error \\\n  -X POST \"$AICRM_BASE_URL/open/v1/customers:resolve\" \\\n  -H \"Authorization: Bearer $AICRM_ACCESS_TOKEN\" \\\n  -H 'Content-Type: application/json' \\\n  --data '{"references":[{"kind":"unionid","scope":"<wechat-open-platform-scope>","value":"<authorized-identity-value>"}]}'`));
-  const oneidNote = element('p', '没有唯一可信证据时，按 pending、conflict 或 unresolved 处理；不得猜测客户归属或把空响应当成身份已打通。'); oneidNote.className = 'open-platform-doc-note'; oneid.append(oneidNote);
+  const oneidNote = element('p', '没有唯一可信证据时，按 pending、conflict 或 unresolved 处理；不得猜测用户归属或把空响应当成身份已打通。'); oneidNote.className = 'open-platform-doc-note'; oneid.append(oneidNote);
 
   const pagination = docSection('pagination', '分页与游标');
   pagination.append(element('p', '订单、问卷、Chat 与 Radar 列表使用签名 opaque cursor。首请求不带 cursor；只在响应存在 next_cursor 时原样回传。该合同没有 has_more 字段。游标与 operation、筛选、effective grant、auth version 和必要水位绑定，筛选或授权变化后应从第一页重新同步。'));
@@ -453,9 +453,9 @@ function staticDocumentation(onClients: () => void): HTMLElement {
   errors.append(element('p', '成功 envelope 为 { data, error: null, request_id }；失败 envelope 为 { data: null, error: { code }, request_id }，同时读取 X-Request-ID。'));
 
   const testing = docSection('testing', '调用前验证');
-  testing.append(element('p', '在测试环境依次确认当前 Token 的 capabilities、OneID 解析、已授权的业务查询和 cursor 续页行为。下载完整 API 合同后，以返回的 request_id 关联问题排查；不要记录 Token、身份值或原始客户响应。'));
+  testing.append(element('p', '在测试环境依次确认当前 Token 的 capabilities、OneID 解析、已授权的业务查询和 cursor 续页行为。下载完整 API 合同后，以返回的 request_id 关联问题排查；不要记录 Token、身份值或原始用户响应。'));
   const contractDownload = element('a', '下载完整 API 合同'); contractDownload.href = '/api/admin/config/openapi.yaml'; contractDownload.className = 'open-platform-button'; contractDownload.download = 'aicrm-openapi.yaml'; testing.append(contractDownload);
-  const testingNote = element('p', '此页面提供调用合同与占位示例，不提供在线试调，也不回传真实客户、订单、身份或凭据。'); testingNote.className = 'open-platform-doc-note'; testing.append(testingNote);
+  const testingNote = element('p', '此页面提供调用合同与占位示例，不提供在线试调，也不回传真实用户、订单、身份或凭据。'); testingNote.className = 'open-platform-doc-note'; testing.append(testingNote);
   main.append(quickstart, operations, oneid, pagination, orders, errors, testing);
   const operationRows = [...operationTable.querySelectorAll<HTMLTableRowElement>('tbody tr')];
   operationRows.forEach((row, index) => { row.dataset.apiDocOperation = operationExamples[index][0]; });

@@ -248,7 +248,7 @@ export function mountChannelAdmissionStandard() {
             "<p><strong>" + row.querySelector("strong").textContent + "</strong></p>" +
             "<p class=\"channel-muted\">以下为最近渠道用户。</p>" +
             "<h3>渠道用户列表</h3>" +
-            "<table class=\"admin-table channel-table\"><thead><tr><th>客户</th><th>进入次数</th><th>最近进入</th></tr></thead><tbody>" +
+            "<table class=\"admin-table channel-table\"><thead><tr><th>用户</th><th>进入次数</th><th>最近进入</th></tr></thead><tbody>" +
             contactRows +
             "</tbody></table>";
         });

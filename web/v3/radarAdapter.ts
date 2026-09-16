@@ -1071,7 +1071,7 @@ function radarDisplayTime(value: string): string {
 
 function radarAttributionLabel(value: string): string {
   return ({
-    resolved: '已识别客户',
+    resolved: '已识别用户',
     anonymous: '未识别访客',
     pending: '身份待确认',
     conflict: '身份冲突待确认',

@@ -110,7 +110,7 @@ await new Promise((resolve) => setTimeout(resolve, 20));
 if (tagCalls.length !== 2 || tagCalls[0].path !== "/api/v1/customer-tag-commands/preview" || tagCalls[1].path !== "/api/v1/customer-tag-commands" || tagCalls[1].options.headers.get("X-CSRF-Token") !== "test-csrf") throw new Error("tag preview/confirm did not use the controlled Host contract");
 const commandBody = JSON.parse(tagCalls[1].options.body);
 if (commandBody.customer_ids[0] !== 42 || commandBody.add_tag_ids.join(",") !== "9,10" || commandBody.remove_tag_ids.length !== 0) throw new Error("tag command body was not canonical");
-if (!dom.window.document.querySelector("#customer-tag-batch-result").textContent.includes("客户 #42：已执行") || dom.window.document.querySelector("#customer-tag-batch-result").textContent.includes("executed")) throw new Error("tag history refresh did not present the persisted per-customer result in Chinese");
+if (!dom.window.document.querySelector("#customer-tag-batch-result").textContent.includes("用户 #42：已执行") || dom.window.document.querySelector("#customer-tag-batch-result").textContent.includes("executed")) throw new Error("tag history refresh did not present the persisted per-user result in Chinese");
 const refresh = dom.window.document.querySelector("#customer-tag-batch-refresh");
 if (refresh.hidden) throw new Error("accepted tag command did not expose an explicit result refresh action");
 refresh.click();
@@ -278,10 +278,10 @@ const failedFilterReset = latestListRequest();
 if (!obsoleteRequest.options.signal.aborted) throw new Error("a superseded list request was not aborted");
 obsoleteRequest.reject(new Error("late network failure"));
 await settle();
-if (!customerRefresh.disabled || !customerPrevious.disabled || !customerNext.disabled || concurrencyDOM.window.document.querySelector("[data-customer-directory-root]").getAttribute("aria-busy") !== "true" || !concurrencyDOM.window.document.getElementById("customer-list-state").textContent.includes("正在加载客户")) throw new Error("a rejected superseded request changed the latest loading state");
+if (!customerRefresh.disabled || !customerPrevious.disabled || !customerNext.disabled || concurrencyDOM.window.document.querySelector("[data-customer-directory-root]").getAttribute("aria-busy") !== "true" || !concurrencyDOM.window.document.getElementById("customer-list-state").textContent.includes("正在加载用户")) throw new Error("a rejected superseded request changed the latest loading state");
 failedFilterReset.resolve(response({ error: "temporary_failure" }, 503));
 await settle();
-if (!concurrencyDOM.window.document.getElementById("customer-list-state").textContent.includes("客户列表暂时不可用") || customerRefresh.disabled || !customerPrevious.disabled || !customerNext.disabled) throw new Error("failed filter reset did not leave only its retry available");
+if (!concurrencyDOM.window.document.getElementById("customer-list-state").textContent.includes("用户列表暂时不可用") || customerRefresh.disabled || !customerPrevious.disabled || !customerNext.disabled) throw new Error("failed filter reset did not leave only its retry available");
 const requestCountBeforeDisabledNavigation = listRequests.length;
 customerPrevious.dispatchEvent(new concurrencyDOM.window.Event("click", { bubbles: true, cancelable: true }));
 customerNext.dispatchEvent(new concurrencyDOM.window.Event("click", { bubbles: true, cancelable: true }));
@@ -305,10 +305,10 @@ await settle();
 const currentRequest = latestListRequest();
 lateSuccess.resolve(customerPage(2, 99, "stale-page-2", "过期客户"));
 await settle();
-if (!customerRefresh.disabled || concurrencyDOM.window.document.querySelector("[data-customer-directory-root]").getAttribute("aria-busy") !== "true" || concurrencyDOM.window.document.getElementById("customer-list-summary").textContent !== "共 7 位客户") throw new Error("a late aborted success changed the current loading state");
+if (!customerRefresh.disabled || concurrencyDOM.window.document.querySelector("[data-customer-directory-root]").getAttribute("aria-busy") !== "true" || concurrencyDOM.window.document.getElementById("customer-list-summary").textContent !== "共 7 位用户") throw new Error("a late aborted success changed the current loading state");
 currentRequest.resolve(customerPage(3, 8, "latest-page-2", "最新筛选客户"));
 await settle();
-if (!concurrencyDOM.window.document.getElementById("customer-list-body").textContent.includes("最新筛选客户") || concurrencyDOM.window.document.getElementById("customer-list-summary").textContent !== "共 8 位客户" || customerRefresh.disabled) throw new Error("latest response did not replace the stale list state");
+if (!concurrencyDOM.window.document.getElementById("customer-list-body").textContent.includes("最新筛选客户") || concurrencyDOM.window.document.getElementById("customer-list-summary").textContent !== "共 8 位用户" || customerRefresh.disabled) throw new Error("latest response did not replace the stale list state");
 concurrencyDOM.window.close();
 
 {
@@ -384,7 +384,7 @@ if (tagAssetAttempts !== 2 || tagCatalogReads !== 1 || tagCommandCalls !== 0) th
 if (tagRetryDom.window.document.querySelector("[data-customer-tag-loader-error]") || tagRetryDom.window.document.querySelector('[name="add_tag_ids"]').disabled) throw new Error("successful tag retry did not clear the local error and restore the native control");
 if ([...tagRetryDom.window.document.querySelectorAll("button")].filter((button) => button.textContent === "选择标签").length !== 2) throw new Error("tag retry duplicated picker buttons");
 if (typeof tagRetryDom.window.AICRMTagPicker?.open !== "function") throw new Error("tag retry did not restore the V3 tag picker adapter");
-if (!tagRetryDom.window.document.querySelector("#customer-list-summary")?.textContent.includes("共 0 位客户")) throw new Error("tag asset failure blocked the independent customer list read");
+if (!tagRetryDom.window.document.querySelector("#customer-list-summary")?.textContent.includes("共 0 位用户")) throw new Error("tag asset failure blocked the independent customer list read");
 tagRetryDom.window.close();
 }
 
@@ -430,11 +430,11 @@ await new Promise((resolve) => setTimeout(resolve, 20));
 const detailText = detailDom.window.document.getElementById("customer-360-main")?.textContent || "";
 if (!detailText.includes("订单总数1") || !detailText.includes("退款相关0") || !detailText.includes("MO-71") || !detailText.includes("已支付") || detailText.includes("paid")) throw new Error(`customer record table did not retain known facts without a machine status: ${detailText}`);
 const detailMetaText = detailDom.window.document.getElementById("customer-profile-meta")?.textContent || "";
-if (!detailMetaText.includes("客户类型微信用户") || detailMetaText.includes("客户类型1")) throw new Error(`customer contact type was not rendered as an Owner-defined business label: ${detailMetaText}`);
+if (!detailMetaText.includes("用户类型微信用户") || detailMetaText.includes("用户类型1")) throw new Error(`customer contact type was not rendered as an Owner-defined business label: ${detailMetaText}`);
 if (!detailText.includes("待确认")) throw new Error(`missing order time was presented as a known value: ${detailText}`);
 if (!detailText.includes("首份问卷") || !detailText.includes("后续问卷") || !detailText.includes("评分 0")) throw new Error(`questionnaire records were truncated or an actual zero score was hidden: ${detailText}`);
 const touchpointText = detailDom.window.document.getElementById("customer-360-sidebar")?.textContent || "";
-if (!touchpointText.includes("首次触达") || !touchpointText.includes("后续触达") || !touchpointText.includes("历史触点") || !touchpointText.includes("客户档案") || !touchpointText.includes("交易") || !touchpointText.includes("其他（legacy_import）")) throw new Error(`approved touchpoint records were truncated or source labels leaked: ${touchpointText}`);
+if (!touchpointText.includes("首次触达") || !touchpointText.includes("后续触达") || !touchpointText.includes("历史触点") || !touchpointText.includes("用户档案") || !touchpointText.includes("交易") || !touchpointText.includes("其他（legacy_import）")) throw new Error(`approved touchpoint records were truncated or source labels leaked: ${touchpointText}`);
 const detailTagForm = detailDom.window.document.getElementById("customer-tag-single");
 const detailTagButton = [...detailTagForm.querySelectorAll("button")].find((button) => button.textContent === "选择标签");
 if (!detailTagButton) throw new Error("customer detail did not mount the V3 tag picker entry");

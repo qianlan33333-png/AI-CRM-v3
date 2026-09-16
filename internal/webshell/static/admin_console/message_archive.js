@@ -71,7 +71,7 @@
     meta.className = "admin-profile-message-meta";
     const sent = document.createElement("span");
     const speaker = document.createElement("span");
-    const direction = message.direction === "customer_to_staff" ? "客户发出" : message.direction === "staff_to_customer" ? "员工发出" : "方向待确认";
+    const direction = message.direction === "customer_to_staff" ? "用户发出" : message.direction === "staff_to_customer" ? "员工发出" : "方向待确认";
     const staffNames = (message.staff_names || []).join("、");
     sent.textContent = format(message.occurred_at);
     speaker.textContent = direction + (staffNames ? " · " + staffNames : "") + " · " + (message.chat_type === "group" ? "群聊" : "单聊");

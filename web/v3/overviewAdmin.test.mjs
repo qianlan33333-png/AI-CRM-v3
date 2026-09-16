@@ -76,6 +76,7 @@ assert.equal(calls[0].pathname, '/api/admin/overview');
 assert.equal(calls[0].search, '?period=today', 'initial request must explicitly use today');
 const topbar = dom.window.document.querySelector('.admin-topbar');
 const headerActions = topbar?.querySelector('[data-page-header-actions="overview-range"]');
+const themeActions = topbar?.querySelector('[data-page-header-actions="overview-theme"]');
 assert.equal(dom.window.document.querySelectorAll('.admin-topbar').length, 1, 'overview must retain the shell’s single topbar');
 assert.equal(dom.window.document.querySelectorAll('.admin-page-title').length, 1, 'overview must retain the shell’s single title');
 assert.equal(headerActions?.querySelectorAll('button').length, 4, 'all four interval controls must mount once in the shell header');
@@ -84,15 +85,26 @@ assert.equal(dom.window.document.querySelector('[data-overview-period]'), null, 
 assert.equal(dom.window.document.querySelector('.overview-toolbar'), null, 'the content area must not repeat the overview heading');
 assert.equal(dom.window.document.body.textContent.includes('统计口径以各项数据的确认时间为准'), false, 'the redundant statistics-copy must be removed');
 assert.equal(headerActions?.querySelector('[data-page-header-action="period-today"]')?.getAttribute('aria-pressed'), 'true', 'the active header range must expose its state');
-assert.ok(dom.window.document.body.textContent.includes('来源待核实'), 'missing provenance must be visible');
-assert.ok(dom.window.document.body.textContent.includes('最近读取：'), 'a warning must retain its section observation time');
-assert.ok(dom.window.document.body.textContent.includes('数据读取：支付'), 'the unified observation summary must include normal section timestamps');
+assert.equal(themeActions?.querySelectorAll('button').length, 3, 'all three visual templates must mount once in the existing shell header');
+assert.equal(dom.window.document.body.textContent.includes('来源待核实'), false, 'the former provenance copy must not occupy the dashboard');
+assert.equal(dom.window.document.body.textContent.includes('最近读取：'), false, 'normal dashboard cards must not repeat observation timestamps');
+assert.equal(dom.window.document.body.textContent.includes('数据读取：支付'), false, 'normal dashboard cards must not repeat the unified observation summary');
+assert.equal(dom.window.document.querySelectorAll('.overview-status[aria-label="数据待确认"]').length, 1, 'missing provenance must retain an accessible compact state marker');
+assert.equal(dom.window.document.body.textContent.includes('支付客户'), false, 'overview-visible customer terminology must be renamed');
+assert.ok(dom.window.document.body.textContent.includes('支付用户'), 'overview-visible user terminology must render');
 assert.equal(dom.window.document.querySelector('a[href="/admin/distribution"]')?.textContent?.includes('分销异常待处理'), true, 'real todo route must stay usable');
 assert.equal(dom.window.document.body.textContent.includes('OneID'), false, 'internal identity terminology must not render');
 assert.equal(dom.window.document.body.textContent.toLowerCase().includes('contract'), false, 'API contract must not render');
 assert.equal(dom.window.document.querySelectorAll('.overview-metric a').length, 0, 'metric cards must not fabricate a date-filtered drill-down');
 assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 1, 'today must use a narrow single trend column');
 assert.equal(dom.window.document.querySelector('.overview-chart__bar')?.getAttribute('height'), '112', 'the maximum payment amount must use the defined SVG plot height');
+
+const overviewCallsBeforeTheme = calls.filter((call) => call.pathname === '/api/admin/overview').length;
+themeActions?.querySelector('[data-page-header-action="theme-dark"]')?.click();
+assert.equal(dom.window.document.querySelector('#overview-admin-root')?.dataset.overviewTheme, 'dark', 'dark template must apply without a rerendered business state');
+assert.equal(dom.window.localStorage.getItem('aicrm.overview.theme'), 'dark', 'template choice must persist only in browser storage');
+assert.equal(calls.filter((call) => call.pathname === '/api/admin/overview').length, overviewCallsBeforeTheme, 'template switching must not issue an overview request');
+assert.equal(themeActions?.querySelector('[data-page-header-action="theme-dark"]')?.getAttribute('aria-pressed'), 'true', 'selected template must expose its state');
 
 scenario = 'deferred';
 const sevenDayButton = headerActions?.querySelector('[data-page-header-action="period-7d"]');
@@ -103,10 +115,17 @@ assert.equal(topbar?.querySelector('[data-page-header-action="period-7d"]'), sev
 assert.equal(dom.window.document.activeElement, sevenDayButton, 'loading must preserve the current header action focus');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '自定义').click();
 assert.equal(dom.window.document.querySelector('[data-overview-custom]')?.classList.contains('is-open'), true, 'custom draft must open while a preset request is pending');
+const customFrom = dom.window.document.querySelector('[data-overview-custom] [name="from"]');
+customFrom.value = '2026-09-01';
+const overviewCallsBeforeAurora = calls.filter((call) => call.pathname === '/api/admin/overview').length;
+themeActions?.querySelector('[data-page-header-action="theme-aurora"]')?.click();
+assert.equal(dom.window.document.querySelector('#overview-admin-root')?.dataset.overviewTheme, 'aurora', 'aurora template must apply while a custom draft is open');
+assert.equal(dom.window.document.querySelector('[data-overview-custom] [name="from"]')?.value, '2026-09-01', 'template switching must retain the unsubmitted custom-date draft');
+assert.equal(calls.filter((call) => call.pathname === '/api/admin/overview').length, overviewCallsBeforeAurora, 'template switching must not interrupt the pending preset request');
 releaseDeferred();
 await delay(30);
 assert.equal(dom.window.document.querySelector('[data-overview-custom]')?.classList.contains('is-open'), true, 'an obsolete preset response must not close the custom draft');
-assert.ok(dom.window.document.body.textContent.includes('当前显示：今日（北京时间 2026-09-15 至 2026-09-15）（上次成功读取）'), 'a custom draft must retain the range of the last successful response');
+assert.ok(dom.window.document.body.textContent.includes('当前展示：今日（北京时间 2026-09-15 至 2026-09-15）（上次成功读取）'), 'a custom draft must retain the range of the last successful response');
 
 scenario = 'today';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
@@ -114,7 +133,7 @@ await waitFor(() => dom.window.document.querySelector('[data-overview-paid-recor
 
 const paidRecordsButton = dom.window.document.querySelector('[data-overview-paid-records]');
 assert.ok(paidRecordsButton, 'only the confirmed-payment metric must expose its detail action');
-assert.equal([...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付客户'))?.querySelector('[data-overview-paid-records]'), null, 'canonical payer count must not reuse payment-order records as an invalid drill-down');
+assert.equal([...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付用户'))?.querySelector('[data-overview-paid-records]'), null, 'canonical payer count must not reuse payment-order records as an invalid drill-down');
 paidRecordsButton.focus();
 scenario = 'paid-records-pending';
 paidRecordsButton.click();
@@ -127,16 +146,22 @@ const paidInitialCall = calls[calls.length - 1];
 assert.equal(paidInitialCall.pathname, '/api/admin/overview/paid-records');
 assert.equal(paidInitialCall.search, '?period=custom&from=2026-09-15&to=2026-09-15', 'drawer must freeze the already-rendered Beijing range, including across midnight');
 assert.equal(dom.window.document.querySelector('.overview-paid-records a')?.getAttribute('href'), '/admin/orderDetail.html?id=M-OVERVIEW-COLLISION&provider=wechat', 'Payment wechat_pay must use the existing provider-scoped Order detail URL');
-assert.ok(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17'), 'historical payer fact must be labelled without pretending it is a current root');
+assert.ok(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时用户 #17'), 'historical payer fact must be labelled without pretending it is a current root');
+assert.ok(dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('付款时用户是历史事实，不代表当前归并用户。'), 'the drawer must retain the necessary historical-identity boundary');
+const overviewCallsBeforeDrawerTheme = calls.filter((call) => call.pathname === '/api/admin/overview').length;
+themeActions?.querySelector('[data-page-header-action="theme-business"]')?.click();
+assert.equal(dom.window.document.querySelector('#overview-admin-root')?.dataset.overviewTheme, 'business', 'template selection must apply while the drawer remains open');
+assert.equal(Boolean(dom.window.document.querySelector('.shared-detail-drawer[open] .overview-paid-records')), true, 'template selection must not close the paid-record drawer');
+assert.equal(calls.filter((call) => call.pathname === '/api/admin/overview').length, overviewCallsBeforeDrawerTheme, 'template selection must not reload the overview while the drawer is open');
 
 scenario = 'paid-records-more-fail-once';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '加载更多').click();
 await waitFor(() => dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('HTTP 503'), 'load-more failure did not remain inside the drawer');
-assert.ok(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17'), 'load-more failure must retain the successful first page');
+assert.ok(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时用户 #17'), 'load-more failure must retain the successful first page');
 assert.equal(calls[calls.length - 1].search, '?cursor=next-paid-records-page', 'load-more must send the original continuation alone');
 scenario = 'paid-records';
 [...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '重试').click();
-await waitFor(() => dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户待确认'), 'load-more retry did not preserve and extend the original page');
+await waitFor(() => dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时用户待确认'), 'load-more retry did not preserve and extend the original page');
 assert.equal(dom.window.document.querySelector('.overview-paid-records a[href*="provider=wechat_shop"]')?.getAttribute('href'), '/admin/orderDetail.html?id=M-OVERVIEW-COLLISION&provider=wechat_shop', 'Payment wechat_shop must retain its provider-scoped Order detail URL');
 
 [...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '关闭').click();
@@ -150,12 +175,12 @@ assert.ok(dom.window.document.querySelector('.shared-detail-drawer [data-overvie
 
 scenario = 'paid-records';
 paidRecordsButton.click();
-await waitFor(() => dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17'), 'fresh drawer did not read its first page before permission loss');
+await waitFor(() => dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时用户 #17'), 'fresh drawer did not read its first page before permission loss');
 scenario = 'paid-records-more-forbidden';
 [...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '加载更多').click();
 await waitFor(() => dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('没有查看支付记录的权限'), 'drawer did not disclose its independent 403 state');
 assert.equal(dom.window.document.querySelector('.shared-detail-drawer')?.textContent.includes('已确认无支付记录'), false, '403 must not be presented as a confirmed zero');
-assert.equal(Boolean(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时客户 #17')), false, '403 after a successful page must clear records that are no longer authorized');
+assert.equal(Boolean(dom.window.document.querySelector('.overview-paid-records')?.textContent.includes('付款时用户 #17')), false, '403 after a successful page must clear records that are no longer authorized');
 assert.equal(dom.window.document.querySelector('.shared-detail-drawer [data-overview-paid-records-retry]'), null, '403 must remove a retry that cannot restore authorization');
 [...dom.window.document.querySelectorAll('.shared-detail-drawer button')].find((button) => button.textContent === '关闭').click();
 
@@ -163,7 +188,7 @@ scenario = 'network';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 7 天').click();
 await waitFor(() => dom.window.document.body.textContent.includes('网络暂时不可用'), 'failed refresh did not expose retry');
 assert.ok(dom.window.document.body.textContent.includes('¥125.00'), 'ordinary failed refresh must retain prior values');
-assert.ok(dom.window.document.body.textContent.includes('当前显示：今日（北京时间 2026-09-15 至 2026-09-15）（上次成功读取）'), 'retained figures must disclose their actual successful range');
+assert.ok(dom.window.document.body.textContent.includes('当前展示：今日（北京时间 2026-09-15 至 2026-09-15）（上次成功读取）'), 'retained figures must disclose their actual successful range');
 
 scenario = 'seven';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '重试').click();
@@ -175,27 +200,27 @@ assert.ok([...dom.window.document.querySelectorAll('.overview-chart__bar')].some
 
 scenario = 'trend-missing';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 30 天').click();
-await waitFor(() => dom.window.document.body.textContent.includes('部分历史支付缺少确认时间'), 'missing payment evidence did not render');
-assert.ok(dom.window.document.body.textContent.includes('暂无可定位到日期的支付记录，仍有数据待核实'), 'missing payment evidence must not be shown as a confirmed zero');
+await waitFor(() => dom.window.document.body.textContent.includes('暂无可用趋势数据'), 'missing payment evidence did not render');
+assert.ok(dom.window.document.querySelector('.overview-panel--wide .overview-status[aria-label="数据待确认"]'), 'missing payment evidence must retain a compact accessible state marker');
 assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 0, 'data-missing payment trends must not infer zero-value dates');
 
 scenario = 'canonical-payer-unavailable';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
-await waitFor(() => dom.window.document.body.textContent.includes('付款客户归并关系暂时无法核实'), 'unknown canonical payer count did not expose its reason');
-const payerMetric = [...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付客户'));
+await waitFor(() => [...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付用户'))?.querySelector('strong')?.textContent === '—', 'unknown canonical payer count did not expose its state');
+const payerMetric = [...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付用户'));
 assert.equal(payerMetric?.querySelector('strong')?.textContent, '—', 'omitted canonical payer count must not render as zero');
 
 scenario = 'payment-timeout';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '近 7 天').click();
 await waitFor(() => dom.window.document.body.textContent.includes('已确认支付读取超时'), 'payment timeout did not expose its reason');
-assert.equal([...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付客户'))?.querySelector('strong')?.textContent, '—', 'timed-out omitted payer count must not render as zero');
+assert.equal([...dom.window.document.querySelectorAll('.overview-metric')].find((metric) => metric.textContent.includes('支付用户'))?.querySelector('strong')?.textContent, '—', 'timed-out omitted payer count must not render as zero');
 
 scenario = 'distribution-not-configured';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
 await waitFor(() => dom.window.document.body.textContent.includes('分销数据暂未接入，暂无法确认待处理事项'), 'unconfigured distribution did not expose its unavailable todo state');
 const distributionValues = [...dom.window.document.querySelectorAll('.overview-panel')].find((panel) => panel.textContent.includes('分销进度'))?.querySelectorAll('dd') || [];
 assert.deepEqual([...distributionValues].map((node) => node.textContent), ['—', '—', '—', '—'], 'unconfigured distribution must not present default zeroes as known amounts');
-assert.equal([...dom.window.document.querySelectorAll('.overview-status')].filter((node) => node.textContent === '暂未接入').length, 2, 'unconfigured distribution and todos must disclose that their source is not connected');
+assert.equal([...dom.window.document.querySelectorAll('.overview-panel')].filter((panel) => panel.textContent.includes('分销进度') || panel.textContent.includes('待处理事项')).filter((panel) => Boolean(panel.querySelector('.overview-status[aria-label="数据待确认"]'))).length, 2, 'unconfigured distribution and todos must disclose their unknown state');
 assert.equal(dom.window.document.body.textContent.includes('暂无需要处理的事项。'), false, 'unconfigured distribution must not present an empty todo list as confirmed');
 
 scenario = 'negative';
@@ -205,7 +230,7 @@ await waitFor(() => dom.window.document.body.textContent.includes('-¥7.00'), 'a
 scenario = 'network';
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '今日').click();
 await waitFor(() => dom.window.document.body.textContent.includes('网络暂时不可用'), 'a same-period retry must mark its previous-day-capable cache as stale');
-assert.ok(dom.window.document.body.textContent.includes('当前显示：今日（北京时间 2026-09-15 至 2026-09-15）（上次成功读取）'), 'same-period cached data must show its actual successful range');
+assert.ok(dom.window.document.body.textContent.includes('当前展示：今日（北京时间 2026-09-15 至 2026-09-15）（上次成功读取）'), 'same-period cached data must show its actual successful range');
 assert.ok(dom.window.document.body.textContent.includes('-¥7.00'), 'same-period failure must retain the last verified figures');
 
 scenario = 'refund-zero';
@@ -238,7 +263,7 @@ scenario = 'long-custom';
 custom.querySelector('[name="from"]').value = '2026-01-02';
 custom.querySelector('[name="to"]').value = '2026-02-03';
 custom.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
-await waitFor(() => dom.window.document.body.textContent.includes('展示有确认支付的日期'), 'long custom ranges must explain that their trends are sparse payment dates');
+await waitFor(() => dom.window.document.querySelectorAll('.overview-chart__column').length === 1, 'long custom ranges must retain their existing sparse payment-date strategy');
 assert.equal(dom.window.document.querySelectorAll('.overview-chart__column').length, 1, 'long custom ranges must not fabricate every date');
 
 custom = dom.window.document.querySelector('[data-overview-custom]');
@@ -249,4 +274,17 @@ await waitFor(() => dom.window.document.body.textContent.includes('请选择有�
 assert.equal(dom.window.document.querySelector('[name="from"]').value, '2026-09-01', 'custom-range draft must survive validation feedback');
 
 dom.window.close();
+
+const storageBlocked = new JSDOM('<!doctype html><header class="admin-topbar"><div class="admin-topbar-head"><h1 class="admin-page-title">经营总览</h1></div></header><main id="overview-admin-root"></main>', {
+  url: 'https://crm.example/admin', runScripts: 'outside-only', pretendToBeVisual: true,
+  beforeParse(window) {
+    window.Response = Response; window.Headers = Headers;
+    Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new Error('storage unavailable'); } });
+    window.fetch = async () => reply(overview('today'));
+  },
+});
+storageBlocked.window.eval(bundle);
+await waitFor(() => storageBlocked.window.document.body.textContent.includes('已确认支付'), 'blocked localStorage prevented the overview from loading');
+assert.equal(storageBlocked.window.document.querySelector('#overview-admin-root')?.dataset.overviewTheme, 'business', 'blocked localStorage must fall back to the business template');
+storageBlocked.window.close();
 console.log('overview admin host: PASS');

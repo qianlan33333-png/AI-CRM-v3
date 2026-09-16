@@ -25,7 +25,7 @@ func newDistFixture(t *testing.T) string {
 		}
 	}
 	write("admin/index.html", `<!doctype html><title>dist home</title><body data-page="index">新壳首页</body>`)
-	write("admin/customers.html", `<!doctype html><title>dist customers</title><body data-page="customers">新壳客户列表</body>`)
+	write("admin/customers.html", `<!doctype html><title>dist customers</title><body data-page="customers">新壳用户列表</body>`)
 	write("admin/automation.html", `<!doctype html><title>dist automation</title><body data-page="automation">新壳自动化运营</body>`)
 	write("admin/cycles.html", `<!doctype html><title>dist cycles</title><body data-page="cycles">新壳运营闭环</body>`)
 	write("admin/channels.html", `<!doctype html><title>dist channels</title><body data-page="channels">新壳渠道码中心</body>`)

@@ -400,7 +400,7 @@ func AdminPageForRequest(request *http.Request, title, summary, activeEndpoint s
 		ActiveEndpoint: activeEndpoint,
 		RequestPath:    requestPath,
 		Breadcrumbs: []Breadcrumb{
-			{Label: "客户管理后台", Href: AdminPathFor("api.admin_console_dashboard")},
+			{Label: "用户管理后台", Href: AdminPathFor("api.admin_console_dashboard")},
 		},
 		NavItems:          NavItems(activeEndpoint),
 		ShowPageHeader:    true,
@@ -414,7 +414,7 @@ func DefaultLoginPage(nextPath string) LoginPageData {
 	nextPath = SafeNextPath(nextPath)
 	return LoginPageData{
 		PageTitle:   "后台登录",
-		PageSummary: "企业微信负责“你是谁”，客户管理后台负责“你能做什么”。",
+		PageSummary: "企业微信负责“你是谁”，用户管理后台负责“你能做什么”。",
 		NextPath:    nextPath,
 		FormAction:  LoginPath,
 		LoginLinks: LoginLinks{

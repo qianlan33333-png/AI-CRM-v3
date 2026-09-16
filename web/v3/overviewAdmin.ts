@@ -2,6 +2,7 @@ import { openDetailDrawer } from './shared/ui/detailDrawer';
 import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 
 type Period = 'today' | '7d' | '30d' | 'custom';
+type OverviewTheme = 'business' | 'dark' | 'aurora';
 type SectionStatus = 'ready' | 'zero' | 'data_missing' | 'failed';
 type Money = { amount_minor: number; currency: string };
 type Section = { status: SectionStatus; as_of: string; scope: string; reason_code?: string };
@@ -24,16 +25,19 @@ type ViewState = { data: Overview | null; query: Query; customDraft: { from: str
 const root = document.querySelector<HTMLElement>('#overview-admin-root');
 const state: ViewState = { data: null, query: { period: 'today' }, customDraft: { from: '', to: '' }, loading: false, stale: false, error: '', access: 'none', requestID: 0 };
 const labels: Record<Period, string> = { today: '今日', '7d': '近 7 天', '30d': '近 30 天', custom: '自定义区间' };
+const themeLabels: Record<OverviewTheme, string> = { business: '清爽', dark: '深色', aurora: '科技' };
+const overviewThemeStorageKey = 'aicrm.overview.theme';
+const allowedThemes = new Set<OverviewTheme>(Object.keys(themeLabels) as OverviewTheme[]);
 const reasonMessages: Record<string, string> = {
   paid_confirmation_time_missing: '部分历史支付缺少确认时间，已确认部分仍会显示。',
-  payer_customer_missing: '部分支付客户待核实。',
+  payer_customer_missing: '部分支付用户待确认。',
   net_paid_confirmation_time_missing: '净收款仅包含确认时间完整的支付记录。',
   net_paid_aggregate_unavailable: '净收款暂时无法计算，退款金额仍会显示。',
   refund_completed_at_missing: '部分退款完成时间待核实。',
-  customer_creation_source_unknown: '部分客户来源待核实。',
-  customer_provenance_aggregate_timeout: '客户来源读取超时，可稍后重试。',
+  customer_creation_source_unknown: '部分新增用户暂待确认。',
+  customer_provenance_aggregate_timeout: '用户来源读取超时，可稍后重试。',
   payment_aggregate_timeout: '已确认支付读取超时，可稍后重试。',
-  canonical_payer_unavailable: '付款客户归并关系暂时无法核实，人数未显示。',
+  canonical_payer_unavailable: '付款用户归并关系暂时无法确认，人数未显示。',
   refund_aggregate_timeout: '退款数据读取超时，可稍后重试。',
   distribution_aggregate_timeout: '分销数据读取超时，可稍后重试。',
   distribution_todo_aggregate_timeout: '待处理事项读取超时，可稍后重试。',
@@ -111,6 +115,27 @@ function isPaidRecordsPage(value: unknown): value is PaidRecordsPage {
     && value.items.every(isPaidRecord) && typeof value.next_cursor === 'string' && value.next_cursor.length <= 2048;
 }
 function unavailable(section: Section): boolean { return section.status === 'failed'; }
+function storedTheme(): OverviewTheme {
+  try {
+    const value = window.localStorage.getItem(overviewThemeStorageKey);
+    return allowedThemes.has(value as OverviewTheme) ? value as OverviewTheme : 'business';
+  } catch { return 'business'; }
+}
+let overviewTheme = storedTheme();
+let trendLayoutFrame = 0;
+const trendResizeObserver = typeof ResizeObserver === 'function'
+  ? new ResizeObserver(() => scheduleTrendLabelLayout())
+  : null;
+function applyTheme(): void {
+  if (root) root.dataset.overviewTheme = overviewTheme;
+}
+function setTheme(next: OverviewTheme): void {
+  if (!allowedThemes.has(next)) return;
+  overviewTheme = next;
+  applyTheme();
+  try { window.localStorage.setItem(overviewThemeStorageKey, next); } catch { /* browser privacy settings retain the in-memory choice */ }
+  syncThemeHeaderActions();
+}
 function amount(money: Money): string {
   const value = money.amount_minor / 100;
   try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: money.currency, currencyDisplay: 'narrowSymbol' }).format(value); } catch { return `${money.currency} ${value.toFixed(2)}`; }
@@ -134,18 +159,19 @@ function timestamp(value: string): string {
 }
 function statusBadge(section: Section): string {
   if (section.status === 'ready' || section.status === 'zero') return '';
-  const label = section.status === 'data_missing'
-    ? (section.reason_code === 'distribution_not_configured' ? '暂未接入' : '来源待核实')
-    : '暂时无法读取';
-  return `<span class="overview-status overview-status--${section.status}">${label}</span>`;
+  if (section.status === 'data_missing') return '<span class="overview-status overview-status--data_missing" role="img" aria-label="数据待确认">?</span>';
+  return '<span class="overview-status overview-status--failed">读取失败</span>';
 }
-function hint(section: Section): string {
-  if (section.reason_code && reasonMessages[section.reason_code]) return `${reasonMessages[section.reason_code]} · 最近读取：${timestamp(section.as_of)}`;
-  return section.status === 'zero' ? `已确认无记录 · 最近读取：${timestamp(section.as_of)}` : `最近读取：${timestamp(section.as_of)}`;
+function failureHint(section: Section): string {
+  return section.status === 'failed' && section.reason_code && reasonMessages[section.reason_code]
+    ? reasonMessages[section.reason_code]
+    : '';
 }
-function metric(title: string, value: string, section: Section, detail = '', action = ''): string {
-  const summary = detail ? `${detail} · ${hint(section)}` : section.status === 'ready' ? '' : hint(section);
-  return `<article class="overview-metric"><div class="overview-metric__head"><span>${escapeHTML(title)}</span>${statusBadge(section)}</div><strong>${escapeHTML(value)}</strong>${summary ? `<p>${escapeHTML(summary)}</p>` : ''}${action}</article>`;
+function metric(title: string, value: string, section: Section, action = ''): string {
+  const summary = section.status === 'failed' ? failureHint(section) : '';
+  const density = value.length > 14 ? ' overview-metric__value--compact' : '';
+  const scrollable = value.length > 22 ? ' overview-metric__value--scrollable' : '';
+  return `<article class="overview-metric"><div class="overview-metric__head"><span>${escapeHTML(title)}</span>${statusBadge(section)}</div><strong class="overview-metric__value${density}${scrollable}">${escapeHTML(value)}</strong>${summary ? `<p>${escapeHTML(summary)}</p>` : ''}${action}</article>`;
 }
 function customRangeControls(): string {
   if (state.query.period !== 'custom') return '';
@@ -169,6 +195,10 @@ function actualRangeLabel(data: Overview): string {
   const dates = actualRangeDates(data);
   return `${labels[data.range.period]}${dates ? `（${dates}）` : ''}`;
 }
+function staleRangeNotice(data: Overview): string {
+  if (rangeMatches(data) && !state.loading && !state.stale) return '';
+  return `<p class="overview-snapshot">当前展示：${escapeHTML(actualRangeLabel(data))}（上次成功读取）</p>`;
+}
 function rangeMatches(data: Overview): boolean {
   if (data.range.period !== state.query.period) return false;
   if (state.query.period !== 'custom') return true;
@@ -176,12 +206,6 @@ function rangeMatches(data: Overview): boolean {
 }
 function sameReportingRange(left: Overview['range'], right: Overview['range']): boolean {
   return left.timezone === right.timezone && new Date(left.start).getTime() === new Date(right.start).getTime() && new Date(left.end).getTime() === new Date(right.end).getTime();
-}
-function snapshotLabel(data: Overview): string {
-  const range = actualRangeLabel(data);
-  return rangeMatches(data) && !state.loading && !state.stale
-    ? `统计区间：${range}`
-    : `当前显示：${range}（上次成功读取）`;
 }
 function rangeDayCount(range: Overview['range']): number | null {
   const start = beijingDate(range.start);
@@ -216,9 +240,9 @@ function errorMessage(error: unknown): string {
 function renderTrend(source: TrendPoint[], section: Section, range: Overview['range']): string {
   const points = completeReadyTrend(source, section, range);
   if (unavailable(section)) return '<p class="overview-empty">支付趋势暂时无法读取。</p>';
-  if (!points.length) return `<p class="overview-empty">${section.status === 'data_missing' ? '暂无可定位到日期的支付记录，仍有数据待核实。' : '该区间已确认无支付趋势记录。'}</p>`;
+  if (!points.length) return `<p class="overview-empty">${section.status === 'data_missing' ? '暂无可用趋势数据。' : '该区间已确认无支付趋势记录。'}</p>`;
   const currencies = [...new Set(points.flatMap((point) => point.gross.map((money) => money.currency)))];
-  if (!currencies.length) return `<p class="overview-empty">${section.status === 'data_missing' ? '暂无可定位到日期的支付记录，仍有数据待核实。' : '该区间已确认无支付趋势记录。'}</p>`;
+  if (!currencies.length) return `<p class="overview-empty">${section.status === 'data_missing' ? '暂无可用趋势数据。' : '该区间已确认无支付趋势记录。'}</p>`;
   const chartCurrency = currencies.length === 1 ? currencies[0] : '';
   const values = chartCurrency ? points.map((point) => Math.max(0, point.gross.find((money) => money.currency === chartCurrency)?.amount_minor || 0)) : [];
   const max = Math.max(...values, 0);
@@ -250,16 +274,12 @@ function paidRecordsAction(data: Overview): string {
 }
 function renderData(data: Overview): string {
   const { paid, customers, refunds, distribution, todos } = data;
-  const paidNote = paid.missing_confirmation_evidence_count ? `另有 ${integer(paid.missing_confirmation_evidence_count, paid)} 笔历史支付待核实` : '';
-  const customerNote = customers.unknown_source_count ? `另有 ${integer(customers.unknown_source_count, customers)} 位客户来源待核实` : '';
-  const observations = [['支付', paid], ['客户', customers], ['退款', refunds], ['分销', distribution], ['待处理', todos]] as const;
-  const trendSubtitle = (rangeDayCount(data.range) || 0) > 31 ? '展示有确认支付的日期' : '按已确认支付时间统计';
-  return `<div class="overview-snapshot"><span>${escapeHTML(snapshotLabel(data))}</span><span class="overview-snapshot__times">数据读取：${observations.map(([label, section]) => `${label} ${timestamp(section.as_of)}`).join(' · ')}</span></div><div class="overview-dashboard">
-    <section class="overview-metrics overview-metrics--primary" aria-label="核心经营指标">${metric('已确认支付', amounts(paid.gross, paid), paid, paidNote, paidRecordsAction(data))}${metric('支付订单', integer(paid.order_count, paid), paid)}${metric('支付客户', integer(paid.distinct_canonical_payers, paid), paid, paid.missing_payer_count ? `${integer(paid.missing_payer_count, paid)} 位付款客户待核实` : '')}${metric('新增客户', integer(customers.new_canonical_customers, customers), customers, customerNote)}</section>
-    <section class="overview-metrics overview-metrics--secondary" aria-label="补充经营指标">${metric('完成退款', amounts(refunds.completed_amount, refunds, '0（本期无退款）'), refunds, refunds.missing_completion_evidence_count ? `${integer(refunds.missing_completion_evidence_count, refunds)} 笔退款完成时间待核实` : '')}${metric('净收款', amounts(refunds.net_amount, refunds), refunds)}</section>
-    <section class="overview-panels"><article class="overview-panel overview-panel--wide"><div class="overview-panel__head"><div><h2>支付趋势</h2><p>${escapeHTML(trendSubtitle)}</p></div>${statusBadge(paid)}</div>${renderTrend(paid.trend, paid, data.range)}<p class="overview-panel__hint">${escapeHTML(hint(paid))}</p></article>
-      <article class="overview-panel"><div class="overview-panel__head"><div><h2>分销进度</h2><p>区间业绩与当前结算分开显示</p></div>${statusBadge(distribution)}</div><dl class="overview-facts"><div><dt>区间支付业绩</dt><dd>${escapeHTML(minorAmount(distribution.period_paid_sales_minor, distribution.currency, distribution))}</dd></div><div><dt>区间初始佣金</dt><dd>${escapeHTML(minorAmount(distribution.period_initial_commission_minor, distribution.currency, distribution))}</dd></div><div><dt>当前待结算</dt><dd>${escapeHTML(minorAmount(distribution.current_unsettled_minor, distribution.currency, distribution))}</dd></div><div><dt>当前已结算</dt><dd>${escapeHTML(minorAmount(distribution.current_settled_minor, distribution.currency, distribution))}</dd></div></dl><p class="overview-panel__hint">${escapeHTML(hint(distribution))}</p></article>
-      <article class="overview-panel"><div class="overview-panel__head"><div><h2>待处理事项</h2><p>只显示已有处理入口的真实数量</p></div>${statusBadge(todos)}</div>${renderTodos(todos.items, todos)}<p class="overview-panel__hint">${escapeHTML(hint(todos))}</p></article></section></div>`;
+  return `${staleRangeNotice(data)}<div class="overview-dashboard">
+    <section class="overview-metrics overview-metrics--primary" aria-label="核心经营指标">${metric('已确认支付', amounts(paid.gross, paid), paid, paidRecordsAction(data))}${metric('支付订单', integer(paid.order_count, paid), paid)}${metric('支付用户', integer(paid.distinct_canonical_payers, paid), paid)}${metric('新增用户', integer(customers.new_canonical_customers, customers), customers)}</section>
+    <section class="overview-metrics overview-metrics--secondary" aria-label="补充经营指标">${metric('完成退款', amounts(refunds.completed_amount, refunds, '0（本期无退款）'), refunds)}${metric('净收款', amounts(refunds.net_amount, refunds), refunds)}</section>
+    <section class="overview-panels"><article class="overview-panel overview-panel--wide"><div class="overview-panel__head"><h2>支付趋势</h2>${statusBadge(paid)}</div>${renderTrend(paid.trend, paid, data.range)}${failureHint(paid) ? `<p class="overview-panel__hint">${escapeHTML(failureHint(paid))}</p>` : ''}</article>
+      <article class="overview-panel"><div class="overview-panel__head"><h2>分销进度</h2>${statusBadge(distribution)}</div><dl class="overview-facts"><div><dt>区间支付业绩</dt><dd>${escapeHTML(minorAmount(distribution.period_paid_sales_minor, distribution.currency, distribution))}</dd></div><div><dt>区间初始佣金</dt><dd>${escapeHTML(minorAmount(distribution.period_initial_commission_minor, distribution.currency, distribution))}</dd></div><div><dt>当前待结算</dt><dd>${escapeHTML(minorAmount(distribution.current_unsettled_minor, distribution.currency, distribution))}</dd></div><div><dt>当前已结算</dt><dd>${escapeHTML(minorAmount(distribution.current_settled_minor, distribution.currency, distribution))}</dd></div></dl>${failureHint(distribution) ? `<p class="overview-panel__hint">${escapeHTML(failureHint(distribution))}</p>` : ''}</article>
+      <article class="overview-panel"><div class="overview-panel__head"><h2>待处理事项</h2>${statusBadge(todos)}</div>${renderTodos(todos.items, todos)}${failureHint(todos) ? `<p class="overview-panel__hint">${escapeHTML(failureHint(todos))}</p>` : ''}</article></section></div>`;
 }
 function initialPaidRecordsURL(data: Overview): string | null {
   const from = beijingDate(data.range.start);
@@ -287,9 +307,9 @@ function renderPaidRecordRows(items: PaidRecord[], loaded: boolean): string {
   if (!items.length) return '<p class="overview-empty">该统计区间已确认无支付记录。</p>';
   return `<ol class="overview-paid-records">${items.map((item) => {
     const href = paidRecordDetailHref(item);
-    const payer = item.payer_customer_id === null ? '付款时客户待确认' : `付款时客户 #${item.payer_customer_id}`;
+    const payer = item.payer_customer_id === null ? '付款时用户待确认' : `付款时用户 #${item.payer_customer_id}`;
     const order = href ? `<a href="${escapeHTML(href)}">查看订单</a>` : '<span>订单详情暂不可定位</span>';
-    return `<li><div class="overview-paid-records__head"><strong>${escapeHTML(amount({ amount_minor: item.amount_minor, currency: item.currency }))}</strong>${order}</div><dl><div><dt>支付确认时间</dt><dd>${escapeHTML(timestamp(item.paid_confirmed_at))}</dd></div><div><dt>付款时客户</dt><dd>${escapeHTML(payer)}</dd></div><div><dt>订单号</dt><dd>${escapeHTML(item.order_reference)}</dd></div></dl></li>`;
+    return `<li><div class="overview-paid-records__head"><strong>${escapeHTML(amount({ amount_minor: item.amount_minor, currency: item.currency }))}</strong>${order}</div><dl><div><dt>支付确认时间</dt><dd>${escapeHTML(timestamp(item.paid_confirmed_at))}</dd></div><div><dt>付款时用户</dt><dd>${escapeHTML(payer)}</dd></div><div><dt>订单号</dt><dd>${escapeHTML(item.order_reference)}</dd></div></dl></li>`;
   }).join('')}</ol>`;
 }
 function openPaidRecordsDrawer(data: Overview): void {
@@ -309,7 +329,7 @@ function openPaidRecordsDrawer(data: Overview): void {
   let lastURL = initialURL;
   const partialNote = data.paid.status === 'data_missing' && data.paid.missing_confirmation_evidence_count
     ? '仅展示可定位到当前统计区间的支付记录；缺少确认时间的历史支付未计入本明细。'
-    : '记录按系统确认支付时间排序。付款时客户是历史事实，不代表当前归并客户。';
+    : '记录按系统确认支付时间排序。付款时用户是历史事实，不代表当前归并用户。';
   const renderDrawer = (): void => {
     const feedback = loading ? '<p class="overview-paid-records-drawer__loading" aria-live="polite">正在读取支付记录…</p>' : '';
     const failure = error ? `<div class="overview-error" role="alert"><span>${escapeHTML(error)}</span>${accessDenied ? '' : '<button type="button" class="admin-button admin-button--secondary" data-overview-paid-records-retry>重试</button>'}</div>` : '';
@@ -356,11 +376,14 @@ function accessPanel(): string {
 }
 function render(): void {
   if (!root) return;
+  applyTheme();
   root.setAttribute('aria-busy', String(state.loading));
   const loading = state.loading ? '<span class="overview-feedback">正在更新数据…</span>' : '';
   const error = state.error ? `<div class="overview-error" role="alert"><span>${escapeHTML(state.error)}</span>${state.access === 'none' ? '<button type="button" class="admin-button admin-button--secondary" data-overview-retry>重试</button>' : ''}</div>` : '';
   const content = state.access !== 'none' ? accessPanel() : state.data ? renderData(state.data) : '<section class="overview-empty-state"><strong>暂未读取到经营数据</strong><p>请重试后再查看。</p></section>';
   root.innerHTML = `<div class="overview-admin">${loading ? `<p class="overview-read-status" role="status">${loading}</p>` : ''}${customRangeControls()}${error}${content}</div>`;
+  observeTrendCharts();
+  syncTrendLabelLayout();
   syncRangeHeaderActions();
 }
 async function load(query: Query): Promise<void> {
@@ -418,6 +441,52 @@ function syncRangeHeaderActions(): void {
   }
 }
 
+function syncThemeHeaderActions(): void {
+  for (const theme of Object.keys(themeLabels) as OverviewTheme[]) {
+    const control = document.querySelector<HTMLButtonElement>(`[data-page-header-actions="overview-theme"] [data-page-header-action="theme-${theme}"]`);
+    if (!control) continue;
+    const selected = overviewTheme === theme;
+    control.classList.toggle('is-active', selected);
+    control.setAttribute('aria-pressed', String(selected));
+  }
+}
+
+function syncTrendLabelLayout(): void {
+  if (!root) return;
+  for (const chart of Array.from(root.querySelectorAll<HTMLElement>('.overview-chart:not(.overview-chart--dense)'))) {
+    chart.style.removeProperty('--overview-chart-column-min');
+    const labels = Array.from(chart.querySelectorAll<HTMLElement>('.overview-chart__value')).filter((label) => label.textContent?.trim());
+    if (!labels.length) continue;
+    const required = labels.map((label) => {
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      const naturalWidth = typeof range.getBoundingClientRect === 'function' ? range.getBoundingClientRect().width : 0;
+      const labelWidth = label.getBoundingClientRect().width;
+      const overflowed = naturalWidth > labelWidth + 0.5 || label.scrollWidth > label.clientWidth + 1;
+      return overflowed && naturalWidth > 0 ? Math.ceil(naturalWidth) + 8 : 0;
+    });
+    const widest = Math.max(...required);
+    // The chart owns horizontal scrolling on narrow viewports. Only an actual
+    // label overflow expands its independent label lane; an already-fitting
+    // chart retains its native layout and compact bars.
+    if (widest > 0) chart.style.setProperty('--overview-chart-column-min', `${Math.max(58, widest)}px`);
+  }
+}
+
+function scheduleTrendLabelLayout(): void {
+  if (trendLayoutFrame) return;
+  trendLayoutFrame = window.requestAnimationFrame(() => {
+    trendLayoutFrame = 0;
+    syncTrendLabelLayout();
+  });
+}
+
+function observeTrendCharts(): void {
+  if (!root || !trendResizeObserver) return;
+  trendResizeObserver.disconnect();
+  for (const chart of Array.from(root.querySelectorAll<HTMLElement>('.overview-chart:not(.overview-chart--dense)'))) trendResizeObserver.observe(chart);
+}
+
 function mountRangeHeaderActions(): void {
   mountPageHeaderActions('overview-range', (Object.keys(labels) as Period[]).map((period) => ({
     id: `period-${period}`,
@@ -428,6 +497,16 @@ function mountRangeHeaderActions(): void {
   syncRangeHeaderActions();
 }
 
+function mountThemeHeaderActions(): void {
+  mountPageHeaderActions('overview-theme', (Object.keys(themeLabels) as OverviewTheme[]).map((theme) => ({
+    id: `theme-${theme}`,
+    label: themeLabels[theme],
+    variant: 'ghost',
+    onClick: () => setTheme(theme),
+  })));
+  syncThemeHeaderActions();
+}
+
 if (root) {
   root.addEventListener('click', (event) => {
     const target = (event.target as Element | null)?.closest<HTMLElement>('[data-overview-retry], [data-overview-paid-records]');
@@ -436,6 +515,8 @@ if (root) {
     if (state.data && rangeMatches(state.data) && !state.loading && !state.stale && state.data.paid.status !== 'failed') openPaidRecordsDrawer(state.data);
   });
   root.addEventListener('submit', (event) => { const form = (event.target as Element | null)?.closest<HTMLFormElement>('[data-overview-custom]'); if (!form) return; event.preventDefault(); applyCustom(form); });
+  window.addEventListener('resize', scheduleTrendLabelLayout, { passive: true });
   mountRangeHeaderActions();
+  mountThemeHeaderActions();
   void load({ period: 'today' });
 }
