@@ -118,3 +118,18 @@ Run 至少展示：发现关系数、identity 未解析/冲突数、已含目标
 - 0170 的完成行仅允许状态、结果、readback、安全的 Provider 数值拒绝码和更新时间变化；删除和 TRUNCATE 均被数据库触发器拒绝。安装包显式要求带有 0170 migration，运行期开关维持环境变量所有权且默认关闭。
 - 本地 PostgreSQL 16.0.13 验证覆盖 0170、同 UoW 回滚、no-op 终态完成、run 真实统计、Provider 数值拒绝码及 TRUNCATE guard。实际命令为 `go test ./internal/outbound ./internal/wecom ./internal/externaleffects ./cmd/aicrm -count=1`、在独立临时本地库上运行的 `AICRM_DATABASE_URL=... go test ./internal/outbound -run '^TestPostgreSQLContactDescriptionIntentMigrationUOWNoopAndRunStats$' -count=1` 和 `DATABASE_URL=... go test ./internal/externaleffects -run '^TestPostgreSQLContactDescriptionNoopCompletionIsTerminal$' -count=1`，以及 `python3 scripts/dev_preflight.py compile` 与 `node scripts/validate-openapi.mjs`。临时库已删除。
 - 此证据不代表生产部署、企微实写、目标应用权限验证或真实全量补打已经执行。发布 Actions 的 deploy 变量尚不可用，生产 SSH host key 已变更且未绕过；因此本期不执行生产发布或补打。
+
+## 10. 2026-09-16 目标 description 读取缺陷修正
+
+单联系人 detail 同时包含全部跟进关系及其 tags。全量补打和回调的 description
+效果只需要一个已经确定的 `(external_userid, employee_userid)`；若复用全量严格
+投影，任一无关关系的 tag 格式异常会使目标读取失败，即使 Provider 成功且目标关系
+与 description 均有效。新增 WeCom 专用目标读取 Port：沿用同一 contact token、HTTP
+超时、响应大小上限、HTTP/errcode 分类和一次 token 刷新，只把成功响应投影为精确的
+外部联系人 ID、唯一且有效的目标员工关系和 description。无关关系及其 tags 不参与该
+投影；通用 `ExternalContactReader` 继续保持完整 tags 校验，供客户标签和切换流程使用。
+
+`description` 只有显式 JSON string（包括 `""`）才是已投影值。字段缺失或 JSON
+`null` 都是未投影，不能当作空字符串生成快照、来源台账或 Outbound intent；非 string、
+目标 ID 不一致、目标关系不存在或重复均保守拒绝。回调和效果执行均传入明确的目标员工，
+由该 Port 在写前和读回时执行相同验证。

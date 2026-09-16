@@ -40,7 +40,7 @@ type ContactDescriptionProvider struct {
 	enabled  bool
 	dispatch ContactDescriptionDispatchReader
 	contacts ContactDescriptionTargetResolver
-	reader   wecomport.ExternalContactReader
+	reader   wecomport.ExternalContactDescriptionTargetReader
 	writer   wecomport.ExternalContactDescriptionWriter
 }
 
@@ -48,7 +48,7 @@ type ContactDescriptionTargetResolver interface {
 	ResolveContactDescriptionTarget(context.Context, customerdomain.CustomerID, string) (wecomport.CurrentExternalContact, error)
 }
 
-func NewContactDescriptionProvider(enabled bool, dispatch ContactDescriptionDispatchReader, contacts ContactDescriptionTargetResolver, reader wecomport.ExternalContactReader, writer wecomport.ExternalContactDescriptionWriter) (*ContactDescriptionProvider, error) {
+func NewContactDescriptionProvider(enabled bool, dispatch ContactDescriptionDispatchReader, contacts ContactDescriptionTargetResolver, reader wecomport.ExternalContactDescriptionTargetReader, writer wecomport.ExternalContactDescriptionWriter) (*ContactDescriptionProvider, error) {
 	if dispatch == nil || contacts == nil || reader == nil || writer == nil {
 		return nil, errors.New("contact description provider dependencies are required")
 	}
@@ -68,20 +68,14 @@ func (p *ContactDescriptionProvider) Execute(ctx context.Context, envelope effec
 	if err != nil || target.EmployeeUserID == "" || target.ExternalUserID == "" || dispatch.TargetDigest != effectport.Hash("wecom.contact.description.target.v1", target.EmployeeUserID, target.ExternalUserID) {
 		return contactDescriptionFinal("target_changed", 0, effectport.Hash(string(base), "target_changed")), nil
 	}
-	live, err := p.reader.ReadExternalContact(ctx, target.ExternalUserID)
+	live, err := p.reader.ReadExternalContactDescriptionTarget(ctx, target.ExternalUserID, target.EmployeeUserID)
 	if err != nil {
 		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash(string(base), "read_before_write_failed")}, err
 	}
-	if live.ExternalUserID != target.ExternalUserID {
-		return contactDescriptionFinal("relationship_unavailable", 0, effectport.Hash(string(base), "external_userid_mismatch")), nil
-	}
-	current, projection := contactDescriptionForEmployee(live, target.EmployeeUserID)
-	if !projection.relationship {
-		return contactDescriptionFinal("relationship_unavailable", 0, effectport.Hash(string(base), "relationship_unavailable")), nil
-	}
-	if !projection.description {
+	if !live.Projected {
 		return contactDescriptionResult("description_unavailable", "not_requested", effectport.Hash(string(base), "description_unavailable")), nil
 	}
+	current := live.Description
 	if dispatch.Operation == outboundport.ContactDescriptionOperationReadback {
 		if strings.Contains(current, target.ExternalUserID) {
 			return contactDescriptionResult("readback_checked", "confirmed", effectport.Hash(string(base), "readback_confirmed")), nil
@@ -113,26 +107,12 @@ func (p *ContactDescriptionProvider) Execute(ctx context.Context, envelope effec
 		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash(string(base), "provider_error"), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}
 	readback := "failed"
-	if observed, readErr := p.reader.ReadExternalContact(ctx, target.ExternalUserID); readErr == nil {
-		if after, observedProjection := contactDescriptionForEmployee(observed, target.EmployeeUserID); observedProjection.relationship && observedProjection.description && after == desired {
+	if observed, readErr := p.reader.ReadExternalContactDescriptionTarget(ctx, target.ExternalUserID, target.EmployeeUserID); readErr == nil {
+		if observed.Projected && observed.Description == desired {
 			readback = "confirmed"
 		}
 	}
 	return contactDescriptionResult("written", readback, effectport.Hash(string(base), "written", readback)), nil
-}
-
-type contactDescriptionProjection struct{ relationship, description bool }
-
-func contactDescriptionForEmployee(contact wecomport.ExternalContact, employeeID string) (string, contactDescriptionProjection) {
-	for _, follow := range contact.FollowInfo {
-		if follow.EmployeeID == employeeID {
-			if !follow.DescriptionProjected || follow.Description == nil {
-				return "", contactDescriptionProjection{relationship: true}
-			}
-			return *follow.Description, contactDescriptionProjection{relationship: true, description: true}
-		}
-	}
-	return "", contactDescriptionProjection{}
 }
 
 func contactDescriptionResult(status, readback string, receipt effectport.Digest) effectport.AdapterResult {

@@ -106,3 +106,20 @@ type ContactStaffProfileReader interface {
 type ExternalContactReader interface {
 	ReadExternalContact(context.Context, string) (ExternalContact, error)
 }
+
+// ExternalContactDescriptionTarget is the minimum trusted projection needed
+// to compare and update one employee's description for one external contact.
+// Projected distinguishes an explicitly returned string (including "") from a
+// missing or null provider field, which must never be treated as empty text.
+type ExternalContactDescriptionTarget struct {
+	Description string
+	Projected   bool
+}
+
+// ExternalContactDescriptionTargetReader reads only the requested employee's
+// description. Implementations must validate the returned external contact and
+// require exactly one matching follow relationship, while ignoring unrelated
+// relationship metadata such as tags.
+type ExternalContactDescriptionTargetReader interface {
+	ReadExternalContactDescriptionTarget(context.Context, string, string) (ExternalContactDescriptionTarget, error)
+}
