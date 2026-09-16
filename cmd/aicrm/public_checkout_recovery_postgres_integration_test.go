@@ -15,6 +15,7 @@ import (
 	"github.com/riverqueue/river"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	effects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
@@ -106,7 +107,7 @@ func TestPostgreSQLPublicCheckoutResponseLossRejectsRenewedSessionReplay(t *test
 	if err = pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatal(err)
 	}
-	sessions, err := paymentsession.NewService(uow, checkoutRecoveryProvisioner{identityID: 71, customerID: customerdomain.CustomerID(customerID)}, paymentsession.NewPostgreSQL(), 10*time.Minute)
+	sessions, err := paymentsession.NewService(uow, checkoutRecoveryProvisioner{identityID: 71, customerID: customerdomain.CustomerID(customerID)}, customerstore.NewPostgreSQL(), paymentsession.NewPostgreSQL(), 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func TestPostgreSQLPublicCheckoutResponseLossRejectsRenewedSessionReplay(t *test
 	if err = pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&otherCustomerID); err != nil {
 		t.Fatal(err)
 	}
-	otherSessions, err := paymentsession.NewService(uow, checkoutRecoveryProvisioner{identityID: 72, customerID: customerdomain.CustomerID(otherCustomerID)}, paymentsession.NewPostgreSQL(), 10*time.Minute)
+	otherSessions, err := paymentsession.NewService(uow, checkoutRecoveryProvisioner{identityID: 72, customerID: customerdomain.CustomerID(otherCustomerID)}, customerstore.NewPostgreSQL(), paymentsession.NewPostgreSQL(), 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

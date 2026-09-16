@@ -77,3 +77,19 @@ type ProjectionWriter interface {
 type CallbackProjectionWriter interface {
 	ActivateDirectoryCustomer(context.Context, customerdomain.CustomerID, string, time.Time) error
 }
+
+// ProviderProfileObservation contains presentation-only facts returned by a
+// trusted Provider read. These values never participate in OneID resolution,
+// provisioning, linking, or merging.
+type ProviderProfileObservation struct {
+	DisplayName string
+	AvatarURL   string
+	Source      string
+	ObservedAt  time.Time
+}
+
+// ProviderProfileWriter applies trusted presentation facts to Customer's own
+// directory projection inside the caller's existing PostgreSQL UoW.
+type ProviderProfileWriter interface {
+	ObserveProviderProfile(context.Context, customerdomain.CustomerID, ProviderProfileObservation) error
+}

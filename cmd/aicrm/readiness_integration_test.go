@@ -36,12 +36,13 @@ func TestCurrentReleaseReadinessRequiresAppliedMigrationsPostgreSQL(t *testing.T
 	if _, err := pool.Exec(ctx, `CREATE TABLE order_checkout_snapshots (post_purchase_action jsonb)`); err != nil {
 		t.Fatal(err)
 	}
+	createMinimumCustomerReadinessTables(t, ctx, pool)
 	required := requiredCurrentReleaseMigrations(config)
 	for _, version := range required {
 		insertReadinessMigration(t, ctx, pool, version)
 	}
 	handler := currentReleaseReadinessHandler(t, pool, config)
-	for _, missing := range []string{"0124", "0149", "0150", "0151", "0152", "0153", "0155", "0156", "0157", "0158", "0159", "0160", "0161", "0164", "0170", "0171", "0172", "0173", "0174"} {
+	for _, missing := range []string{"0124", "0149", "0150", "0151", "0152", "0153", "0155", "0156", "0157", "0158", "0159", "0160", "0161", "0164", "0170", "0171", "0172", "0173", "0174", "0175"} {
 
 		if !containsMigration(required, missing) {
 			t.Fatalf("runtime-required migration list omitted %s", missing)
@@ -88,6 +89,7 @@ func TestCurrentReleaseReadinessAllowsDisabledOptionalProjectionsPostgreSQL(t *t
 	if _, err := pool.Exec(ctx, `CREATE TABLE order_checkout_snapshots (post_purchase_action jsonb)`); err != nil {
 		t.Fatal(err)
 	}
+	createMinimumCustomerReadinessTables(t, ctx, pool)
 	for _, version := range requiredCurrentReleaseMigrations(config) {
 		insertReadinessMigration(t, ctx, pool, version)
 	}
@@ -125,6 +127,18 @@ func TestCurrentReleaseReadinessChecksCurrentModuleStructuresPostgreSQL(t *testi
 		t.Fatalf("Product payment-action readiness: %v", err)
 	}
 	handler := currentReleaseAndCurrentModuleReadinessHandler(t, pool, config)
+	assertReadinessStatus(t, handler, http.StatusOK)
+	var customerID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	assertReadinessStatus(t, handler, http.StatusServiceUnavailable)
+	if err := checkCurrentReleaseSchema(ctx, pool, config); err == nil || !strings.Contains(err.Error(), "minimum directory projection") {
+		t.Fatalf("missing minimum customer projection readiness error=%v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source) VALUES($1::bigint,'active','微信用户','CID-'||($1::bigint)::text,'active','readiness_test')`, customerID); err != nil {
+		t.Fatal(err)
+	}
 	assertReadinessStatus(t, handler, http.StatusOK)
 
 	if _, err := pool.Exec(ctx, `ALTER TABLE product_external_push_tests DROP COLUMN delivery_id`); err != nil {
@@ -279,6 +293,16 @@ func createReadinessMigrationLedger(t *testing.T, ctx context.Context, pool *pgx
 		checksum bytea NOT NULL,
 		applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
 	)`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createMinimumCustomerReadinessTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE customers (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,status TEXT NOT NULL);
+		CREATE TABLE customer_directory_projection (customer_id BIGINT PRIMARY KEY)
+	`); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
@@ -79,6 +80,8 @@ func (p *H5OAuthIdentity) Exchange(ctx context.Context, code string) (paymentpor
 	var info struct {
 		OpenID    string `json:"openid"`
 		UnionID   string `json:"unionid"`
+		Nickname  string `json:"nickname"`
+		AvatarURL string `json:"headimgurl"`
 		ErrorCode int    `json:"errcode"`
 		Snapshot  int    `json:"is_snapshotuser"`
 	}
@@ -93,7 +96,26 @@ func (p *H5OAuthIdentity) Exchange(ctx context.Context, code string) (paymentpor
 	if err != nil {
 		return paymentport.H5OAuthFacts{}, ErrH5OAuthIdentity
 	}
-	return paymentport.H5OAuthFacts{OpenID: fact, UnionID: union}, nil
+	return paymentport.H5OAuthFacts{OpenID: fact, UnionID: union, DisplayName: safeH5ProfileText(info.Nickname), AvatarURL: safeH5AvatarURL(info.AvatarURL)}, nil
+}
+
+func safeH5ProfileText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > 128 || strings.ContainsAny(value, "\r\n\x00") {
+		return ""
+	}
+	return value
+}
+
+func safeH5AvatarURL(value string) string {
+	if value == "" || len(value) > 2048 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil {
+		return ""
+	}
+	return parsed.String()
 }
 func h5ScopeContains(raw, want string) bool {
 	for _, scope := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' }) {

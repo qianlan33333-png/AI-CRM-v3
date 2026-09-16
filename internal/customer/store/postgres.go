@@ -23,6 +23,7 @@ func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
 var _ customerapp.Store = PostgreSQL{}
 var _ customerport.ProjectionWriter = PostgreSQL{}
 var _ customerport.CallbackProjectionWriter = PostgreSQL{}
+var _ customerport.ProviderProfileWriter = PostgreSQL{}
 var _ customerport.AudienceReader = PostgreSQL{}
 var _ customerport.AudienceRegistrationReader = PostgreSQL{}
 var _ customerport.DirectoryDisplayNameReader = PostgreSQL{}
@@ -417,11 +418,39 @@ func (PostgreSQL) ActivateDirectoryCustomer(ctx context.Context, customerID cust
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,oneid_label,activation_status,source,source_version,last_synced_at,updated_at)
-		VALUES($1,'active',$2,'active',$3,1,$4,$4)
+	_, err = tx.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,source_version,last_synced_at,updated_at)
+		VALUES($1,'active','微信用户',$2,'active',$3,1,$4,$4)
 		ON CONFLICT(customer_id) DO UPDATE SET customer_status='active',activation_status='active',source=EXCLUDED.source,
 		source_version=customer_directory_projection.source_version+1,last_synced_at=EXCLUDED.last_synced_at,updated_at=EXCLUDED.updated_at`,
 		customerID, "CID-"+strconv.FormatInt(int64(customerID), 10), source, at)
+	return err
+}
+
+func (PostgreSQL) ObserveProviderProfile(ctx context.Context, customerID customerdomain.CustomerID, observation customerport.ProviderProfileObservation) error {
+	observation.DisplayName = strings.TrimSpace(observation.DisplayName)
+	if customerID < 1 || observation.Source == "" || len(observation.Source) > 128 || strings.ContainsAny(observation.Source, " \t\r\n\x00") || observation.ObservedAt.IsZero() {
+		return customerapp.ErrInvalidQuery
+	}
+	if observation.DisplayName == "" {
+		observation.DisplayName = "微信用户"
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,avatar_url,oneid_label,activation_status,source,source_version,last_synced_at,updated_at)
+		VALUES($1,'active',$2,$3,$4,'active',$5,1,$6,$6)
+		ON CONFLICT(customer_id) DO UPDATE SET
+			customer_status='active',
+			display_name=CASE WHEN customer_directory_projection.display_name='' OR customer_directory_projection.source IN ('identity_provision','identity_provision_backfill','wechat.payment.h5_oauth.userinfo') THEN EXCLUDED.display_name ELSE customer_directory_projection.display_name END,
+			avatar_url=CASE WHEN EXCLUDED.avatar_url<>'' AND (customer_directory_projection.avatar_url='' OR customer_directory_projection.source IN ('identity_provision','identity_provision_backfill','wechat.payment.h5_oauth.userinfo')) THEN EXCLUDED.avatar_url ELSE customer_directory_projection.avatar_url END,
+			oneid_label=EXCLUDED.oneid_label,
+			activation_status='active',
+			source=CASE WHEN customer_directory_projection.display_name='' OR customer_directory_projection.source IN ('identity_provision','identity_provision_backfill','wechat.payment.h5_oauth.userinfo') THEN EXCLUDED.source ELSE customer_directory_projection.source END,
+			source_version=customer_directory_projection.source_version+1,
+			last_synced_at=EXCLUDED.last_synced_at,
+			updated_at=EXCLUDED.updated_at`,
+		customerID, observation.DisplayName, observation.AvatarURL, customerdomain.CanonicalOneIDLabel(customerID), observation.Source, observation.ObservedAt.UTC())
 	return err
 }
 

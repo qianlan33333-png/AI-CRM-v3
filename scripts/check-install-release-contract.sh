@@ -119,6 +119,7 @@ for migration_contract in \
   '0172_order_checkout_post_purchase_action.sql:Order checkout post-purchase action snapshot' \
   '0173_product_paid_purchase_action_target_snapshot.sql:Product paid purchase action target snapshot' \
   '0174_product_external_push_test_delivery_id.sql:Product external push test delivery ID' \
+  '0175_customer_minimum_directory_projection.sql:Customer minimum directory projection' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

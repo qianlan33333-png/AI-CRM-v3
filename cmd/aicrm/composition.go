@@ -287,7 +287,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		identityRepository = identitystore.NewPostgresStoreWithObservation(phoneVault, observationVault)
 	}
-	oneID := identityapp.OneIDService{Store: identityRepository}
+	customerStore := customerstore.NewPostgreSQL()
+	oneID := identityapp.OneIDService{Store: identityRepository, ProvisionedCustomer: customerProvisionedDirectoryAdapter{writer: customerStore}}
 	queries := identityquery.NewPostgreSQL(phoneVault)
 	hxcIdentity := identityapp.HXCSourceService{Inspector: queries, Store: identityRepository, OneID: oneID, VerifiedIdentity: identityadapter.HXCVerifiedUnionIDFactory{Enabled: cfg.HXCDashboard.UnionIDVerified}}
 	paymentRepository := paymentstore.NewPostgreSQL()
@@ -312,7 +313,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	distributionPolicyService := distributionapp.NewPolicyService(distributionRepository)
-	customerStore := customerstore.NewPostgreSQL()
 	sidebarProfiles, err := customerapp.NewSidebarProfileApplication(uow, customerStore, oneID, customerStore, auditService, platformoutbox.NewPostgreSQL())
 	if err != nil {
 		return fail(err)
@@ -1213,7 +1213,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	paymentSession, err := paymentsession.NewService(uow, oneID, paymentsession.NewPostgreSQL(), 10*time.Minute)
+	paymentSession, err := paymentsession.NewService(uow, oneID, customerStore, paymentsession.NewPostgreSQL(), 10*time.Minute)
 	if err != nil {
 		return fail(err)
 	}

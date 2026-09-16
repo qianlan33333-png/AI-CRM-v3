@@ -31,7 +31,7 @@ func requiredCurrentReleaseMigrations(cfg platformconfig.Runtime) []string {
 		"0120", "0121", "0122", "0123", "0124", "0125", "0126", "0127", "0128", "0129",
 		"0130", "0131", "0132", "0133", "0134", "0135", "0140", "0141", "0142", "0143",
 		"0144", "0145", "0146", "0147", "0148", "0149", "0150", "0151", "0152", "0153", "0155",
-		"0156", "0157", "0158", "0159", "0160", "0161", "0164", "0170", "0171", "0172", "0173", "0174",
+		"0156", "0157", "0158", "0159", "0160", "0161", "0164", "0170", "0171", "0172", "0173", "0174", "0175",
 	}
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		required = append(required, "0136", "0137", "0139")
@@ -80,6 +80,17 @@ func checkCurrentReleaseSchema(ctx context.Context, pool *pgxpool.Pool, cfg plat
 	}
 	if !hasPostPurchaseActionColumn {
 		return errors.New("database schema is not ready: order_checkout_snapshots.post_purchase_action is missing")
+	}
+	var missingMinimumCustomer bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM customers customer
+		LEFT JOIN customer_directory_projection directory ON directory.customer_id=customer.id
+		WHERE customer.status='active' AND directory.customer_id IS NULL
+	)`).Scan(&missingMinimumCustomer); err != nil {
+		return fmt.Errorf("database schema is not ready: inspect minimum customer directory: %w", err)
+	}
+	if missingMinimumCustomer {
+		return errors.New("database schema is not ready: active customer is missing minimum directory projection")
 	}
 	return nil
 }

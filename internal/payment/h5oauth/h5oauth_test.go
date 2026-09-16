@@ -38,10 +38,10 @@ func (s *stateStoreStub) Consume(_ context.Context, digest [32]byte, _ time.Time
 	return state, nil
 }
 
-type issuerStub struct{ fact identitydomain.VerifiedFact }
+type issuerStub struct{ command paymentsession.IssueCommand }
 
 func (i *issuerStub) IssueTrusted(_ context.Context, command paymentsession.IssueCommand) (paymentsession.Issued, error) {
-	i.fact = command.Fact
+	i.command = command
 	return paymentsession.Issued{Token: "pays_h5_session_token_00000001", ExpiresAt: time.Now().Add(time.Minute), Channel: paymentdomain.ChannelH5Official}, nil
 }
 
@@ -53,7 +53,7 @@ func (providerStub) AuthorizationURL(state string) string {
 }
 func (stub providerStub) Exchange(context.Context, string) (paymentport.H5OAuthFacts, error) {
 	union, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:test", Value: "union-test", Source: "test.provider"})
-	return paymentport.H5OAuthFacts{OpenID: stub.fact, UnionID: union}, nil
+	return paymentport.H5OAuthFacts{OpenID: stub.fact, UnionID: union, DisplayName: "微信昵称", AvatarURL: "https://thirdwx.qlogo.cn/avatar"}, nil
 }
 
 func TestH5OAuthStateIsBoundExpiresAndCannotReplay(t *testing.T) {
@@ -77,8 +77,8 @@ func TestH5OAuthStateIsBoundExpiresAndCannotReplay(t *testing.T) {
 	parsed, _ := url.Parse(authorization)
 	state := parsed.Query().Get("state")
 	issued, redirect, err := service.Complete(context.Background(), state, "trusted-code")
-	if err != nil || redirect != "/pay/course-7" || issued.Channel != paymentdomain.ChannelH5Official || issuer.fact.Reference().Kind != identitydomain.KindOAOpenID || issuer.fact.Reference().Scope != "wechat-app:wx-oa" {
-		t.Fatalf("issued=%+v redirect=%q fact=%+v err=%v", issued, redirect, issuer.fact.Reference(), err)
+	if err != nil || redirect != "/pay/course-7" || issued.Channel != paymentdomain.ChannelH5Official || issuer.command.Fact.Reference().Kind != identitydomain.KindOAOpenID || issuer.command.Fact.Reference().Scope != "wechat-app:wx-oa" || issuer.command.DisplayName != "微信昵称" || issuer.command.AvatarURL != "https://thirdwx.qlogo.cn/avatar" {
+		t.Fatalf("issued=%+v redirect=%q command=%+v err=%v", issued, redirect, issuer.command, err)
 	}
 	if _, _, err = service.Complete(context.Background(), state, "trusted-code"); err == nil {
 		t.Fatal("OAuth state replay succeeded")

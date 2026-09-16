@@ -14,7 +14,7 @@ func TestH5OAuthIdentityRequiresUserinfoUnionID(t *testing.T) {
 		name, token, info string
 		ok                bool
 	}{
-		{"trusted", `{"access_token":"token","openid":"oa-openid","scope":"snsapi_userinfo"}`, `{"openid":"oa-openid","unionid":"union-subject"}`, true},
+		{"trusted", `{"access_token":"token","openid":"oa-openid","scope":"snsapi_userinfo"}`, `{"openid":"oa-openid","unionid":"union-subject","nickname":"微信昵称","headimgurl":"https://thirdwx.qlogo.cn/avatar"}`, true},
 		{"silent", `{"access_token":"token","openid":"oa-openid","scope":"snsapi_base"}`, `{"openid":"oa-openid","unionid":"union-subject"}`, false},
 		{"missing_union", `{"access_token":"token","openid":"oa-openid","scope":"snsapi_userinfo"}`, `{"openid":"oa-openid"}`, false},
 		{"wrong_openid", `{"access_token":"token","openid":"oa-openid","scope":"snsapi_userinfo"}`, `{"openid":"other","unionid":"union-subject"}`, false},
@@ -47,7 +47,7 @@ func TestH5OAuthIdentityRequiresUserinfoUnionID(t *testing.T) {
 			if (err == nil) != tc.ok {
 				t.Fatalf("success=%v expected=%v", err == nil, tc.ok)
 			}
-			if tc.ok && (facts.OpenID.Reference().Kind != identitydomain.KindOAOpenID || facts.UnionID.Reference().Scope != "wechat-open-platform:platform-1" || calls != 2) {
+			if tc.ok && (facts.OpenID.Reference().Kind != identitydomain.KindOAOpenID || facts.UnionID.Reference().Scope != "wechat-open-platform:platform-1" || facts.DisplayName != "微信昵称" || facts.AvatarURL != "https://thirdwx.qlogo.cn/avatar" || calls != 2) {
 				t.Fatal("missing trusted subject pair")
 			}
 			if !strings.Contains(p.AuthorizationURL("state"), "scope=snsapi_userinfo") {

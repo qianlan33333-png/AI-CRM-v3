@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 )
@@ -28,6 +30,17 @@ func (stub *provisionerStub) ProvisionVerifiedIdentity(_ context.Context, comman
 }
 
 type memoryStore struct{ records map[[32]byte]Record }
+
+type profileWriterStub struct {
+	customerID  customerdomain.CustomerID
+	observation customerport.ProviderProfileObservation
+	err         error
+}
+
+func (stub *profileWriterStub) ObserveProviderProfile(_ context.Context, customerID customerdomain.CustomerID, observation customerport.ProviderProfileObservation) error {
+	stub.customerID, stub.observation = customerID, observation
+	return stub.err
+}
 
 func (store *memoryStore) Insert(_ context.Context, record Record) (Record, error) {
 	if store.records == nil {
@@ -88,7 +101,8 @@ func verifiedFact(t *testing.T) identitydomain.VerifiedFact {
 func TestTrustedSessionUsesOneIDAndIsSingleUse(t *testing.T) {
 	provisioner := &provisionerStub{result: identityport.ProvisionResult{IdentityID: 8, CustomerID: 21}}
 	store := &memoryStore{}
-	service, err := NewService(testUOW{}, provisioner, store, 5*time.Minute)
+	profiles := &profileWriterStub{}
+	service, err := NewService(testUOW{}, provisioner, profiles, store, 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +111,9 @@ func TestTrustedSessionUsesOneIDAndIsSingleUse(t *testing.T) {
 	issued, err := service.IssueTrusted(context.Background(), IssueCommand{Fact: verifiedFact(t), IdempotencyKey: "oauth-callback-0001"})
 	if err != nil || issued.Token == "" || issued.PayerIdentityID != 8 || issued.PayerCustomerID != 21 || issued.BeneficiaryCustomerID != 0 || issued.BeneficiarySelection != "unresolved" || provisioner.calls != 1 {
 		t.Fatalf("issued=%+v calls=%d err=%v", issued, provisioner.calls, err)
+	}
+	if profiles.customerID != 21 || profiles.observation.DisplayName != "" || profiles.observation.Source != "wechat-oauth" || !profiles.observation.ObservedAt.Equal(now) {
+		t.Fatalf("profile=%+v customer=%d", profiles.observation, profiles.customerID)
 	}
 	actor, err := service.SelectPayerSelfWithin(context.Background(), issued.Token, now)
 	if err != nil || actor.PayerCustomerID != 21 || actor.BeneficiaryCustomerID != 21 || actor.BeneficiarySelection != "payer_self" {
@@ -117,7 +134,7 @@ func TestTrustedSessionUsesOneIDAndIsSingleUse(t *testing.T) {
 
 func TestTrustedSessionRejectsUnverifiedOrUnauthorizedBeneficiary(t *testing.T) {
 	provisioner := &provisionerStub{result: identityport.ProvisionResult{IdentityID: 8, CustomerID: 21}}
-	service, _ := NewService(testUOW{}, provisioner, &memoryStore{}, 5*time.Minute)
+	service, _ := NewService(testUOW{}, provisioner, &profileWriterStub{}, &memoryStore{}, 5*time.Minute)
 	if _, err := service.IssueTrusted(context.Background(), IssueCommand{BeneficiaryCustomerID: 42, Fact: verifiedFact(t), IdempotencyKey: "oauth-callback-0002"}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("beneficiary err=%v", err)
 	}
@@ -131,7 +148,7 @@ func TestTrustedSessionRejectsUnverifiedOrUnauthorizedBeneficiary(t *testing.T) 
 
 func TestTrustedSessionKeepsAdminAssistedBeneficiaryServerPrebound(t *testing.T) {
 	provisioner := &provisionerStub{result: identityport.ProvisionResult{IdentityID: 8, CustomerID: 21}}
-	service, _ := NewService(testUOW{}, provisioner, &memoryStore{}, 5*time.Minute)
+	service, _ := NewService(testUOW{}, provisioner, &profileWriterStub{}, &memoryStore{}, 5*time.Minute)
 	issued, err := service.IssueTrusted(context.Background(), IssueCommand{BeneficiaryCustomerID: 42, AdminAssisted: true, Fact: verifiedFact(t), IdempotencyKey: "oauth-callback-0006"})
 	if err != nil || issued.BeneficiaryCustomerID != 42 || issued.BeneficiarySelection != "admin_assisted" {
 		t.Fatalf("issued=%+v err=%v", issued, err)
@@ -142,7 +159,7 @@ func TestTrustedSessionKeepsAdminAssistedBeneficiaryServerPrebound(t *testing.T)
 }
 
 func TestSessionExpires(t *testing.T) {
-	service, _ := NewService(testUOW{}, &provisionerStub{result: identityport.ProvisionResult{IdentityID: 8, CustomerID: 21}}, &memoryStore{}, time.Minute)
+	service, _ := NewService(testUOW{}, &provisionerStub{result: identityport.ProvisionResult{IdentityID: 8, CustomerID: 21}}, &profileWriterStub{}, &memoryStore{}, time.Minute)
 	now := time.Date(2026, 9, 3, 2, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return now }
 	issued, err := service.IssueTrusted(context.Background(), IssueCommand{Fact: verifiedFact(t), IdempotencyKey: "oauth-callback-0005"})
@@ -166,18 +183,22 @@ func TestH5SessionsRequireFreshUnionIDProof(t *testing.T) {
 	ctx := context.Background()
 	p := &provisionerStub{result: identityport.ProvisionResult{CustomerID: 11, IdentityID: 4}}
 	store := &memoryStore{}
-	service, _ := NewService(testUOW{}, p, store, 10*time.Minute)
+	profiles := &profileWriterStub{}
+	service, _ := NewService(testUOW{}, p, profiles, store, 10*time.Minute)
 	oa, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindOAOpenID, Scope: "wechat-app:oa", Value: "oa-id", Source: "provider.userinfo"})
 	union, _ := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:platform", Value: "union-id", Source: "provider.userinfo"})
 	if _, err := service.IssueTrusted(ctx, IssueCommand{Fact: oa, IdempotencyKey: "oauth-missing-union-001"}); err == nil || p.calls != 0 {
 		t.Fatal("issued OpenID-only session")
 	}
-	issued, err := service.IssueTrusted(ctx, IssueCommand{Fact: oa, UnionID: union, IdempotencyKey: "oauth-verified-union-01"})
+	issued, err := service.IssueTrusted(ctx, IssueCommand{Fact: oa, UnionID: union, DisplayName: "微信昵称", AvatarURL: "https://thirdwx.qlogo.cn/avatar", IdempotencyKey: "oauth-verified-union-01"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = service.LookupWithin(ctx, issued.Token, time.Now()); err != nil {
 		t.Fatal(err)
+	}
+	if profiles.customerID != 11 || profiles.observation.DisplayName != "微信昵称" || profiles.observation.AvatarURL != "https://thirdwx.qlogo.cn/avatar" || profiles.observation.Source != "provider.userinfo" {
+		t.Fatalf("profile customer=%d observation=%+v", profiles.customerID, profiles.observation)
 	}
 	for digest, record := range store.records {
 		record.UnionIDVerified = false
@@ -185,5 +206,20 @@ func TestH5SessionsRequireFreshUnionIDProof(t *testing.T) {
 	}
 	if _, err = service.LookupWithin(ctx, issued.Token, time.Now()); err == nil {
 		t.Fatal("old OpenID session bypassed proof")
+	}
+}
+
+func TestTrustedSessionDoesNotPersistWhenCustomerProfileFails(t *testing.T) {
+	store := &memoryStore{}
+	profiles := &profileWriterStub{err: errors.New("profile unavailable")}
+	service, err := NewService(testUOW{}, &provisionerStub{result: identityport.ProvisionResult{IdentityID: 8, CustomerID: 21}}, profiles, store, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.IssueTrusted(context.Background(), IssueCommand{Fact: verifiedFact(t), IdempotencyKey: "oauth-profile-failure-01"}); err == nil {
+		t.Fatal("profile failure issued a payment session")
+	}
+	if len(store.records) != 0 {
+		t.Fatalf("stored sessions=%d", len(store.records))
 	}
 }
