@@ -1,6 +1,6 @@
 # 周期商品会员表双端未知总数呈现 PRD
 
-日期：2026-09-16  
+日期：2026-09-16
 状态：已授权实施；修复管理员和公开只读会员表的错误行数文案。
 
 管理员 `/admin/spProductData.html?id=…` 与公开 `/shared/service-period-member-grid` 的既有 Product HTTP query 都有行和游标，却刻意不承诺全量 `total`。冻结 dd8 renderer 把其内部 `null` 转为 `Number(null) === 0`，因此真实一行会显示“共 0 行”。这不是截图等待问题。
