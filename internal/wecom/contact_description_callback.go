@@ -70,7 +70,7 @@ type ContactDescriptionCallbackService struct {
 	Enabled       bool
 	CorpID        string
 	Inbox         *webhook.Service
-	Provider      wecomport.ExternalContactReader
+	Provider      wecomport.ExternalContactDescriptionTargetReader
 	Identity      identityport.Resolver
 	Relationships FollowRelationshipStore
 	Intents       outboundport.ContactDescriptionIntentWriter
@@ -94,22 +94,16 @@ func (s ContactDescriptionCallbackService) Process(ctx context.Context, inboxID 
 	if err != nil || skip {
 		return err
 	}
-	contact, err := s.Provider.ReadExternalContact(ctx, target.event.ExternalUserID)
+	descriptionTarget, err := s.Provider.ReadExternalContactDescriptionTarget(ctx, target.event.ExternalUserID, target.event.UserID)
 	if err != nil {
 		return err
 	}
-	if contact.ExternalUserID != target.event.ExternalUserID {
-		// The callback event selected the trusted identity. A mismatched detail
-		// response is unsafe evidence, so retry the read without accepting any
-		// outbound intent for this relationship.
-		return errors.New("callback contact description target changed")
-	}
-	description, projected, relationship := callbackDescriptionForEmployee(contact, target.event.UserID)
-	if !relationship || !projected {
+	if !descriptionTarget.Projected {
 		// A missing relationship or unprojected field is not evidence that the
 		// description is empty. The job ends safely and never writes.
 		return nil
 	}
+	description := descriptionTarget.Description
 	externalDigest := effectport.Hash(target.event.ExternalUserID)
 	observed := outboundport.ContactDescriptionObservedDigest(description)
 	command := outboundport.ContactDescriptionIntentCommand{
@@ -201,18 +195,6 @@ func decodeDescriptionCallbackEvent(payload json.RawMessage) (CallbackEvent, err
 		return CallbackEvent{}, errors.New("invalid callback payload")
 	}
 	return event, nil
-}
-
-func callbackDescriptionForEmployee(contact wecomport.ExternalContact, employeeID string) (description string, projected, relationship bool) {
-	for _, follow := range contact.FollowInfo {
-		if follow.EmployeeID == employeeID {
-			if !follow.DescriptionProjected || follow.Description == nil {
-				return "", false, true
-			}
-			return *follow.Description, true, true
-		}
-	}
-	return "", false, false
 }
 
 type ContactDescriptionCallbackWorker struct {

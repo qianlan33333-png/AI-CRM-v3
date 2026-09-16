@@ -449,6 +449,95 @@ func (client *Client) ReadExternalContact(ctx context.Context, externalUserID st
 	return wecomport.ExternalContact{ExternalUserID: contact.ExternalUserID, Name: strings.TrimSpace(contact.Name), AvatarURL: strings.TrimSpace(contact.Avatar), Gender: contact.Gender, Type: contact.Type, CorpName: strings.TrimSpace(contact.CorpName), UnionID: strings.TrimSpace(contact.UnionID), FollowInfo: followInfo}, nil
 }
 
+// ReadExternalContactDescriptionTarget intentionally projects only the detail
+// needed by the description effect. The general contact reader remains strict
+// for consumers which rely on all follow relationships and tags; a malformed
+// unrelated tag must not invalidate a target description read.
+func (client *Client) ReadExternalContactDescriptionTarget(ctx context.Context, externalUserID, employeeUserID string) (wecomport.ExternalContactDescriptionTarget, error) {
+	if !client.DirectoryReady() || invalid(externalUserID) || invalid(employeeUserID) {
+		return wecomport.ExternalContactDescriptionTarget{}, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryReadError(err)
+	}
+	payload, err := client.requestExternalContactDescriptionTarget(ctx, externalUserID, token)
+	if directoryTokenExpired(err) {
+		token, err = client.refreshDirectoryToken(ctx)
+		if err == nil {
+			payload, err = client.requestExternalContactDescriptionTarget(ctx, externalUserID, token)
+		}
+		if err != nil {
+			return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryRefreshError(err)
+		}
+	}
+	if err != nil {
+		return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryReadError(err)
+	}
+	if payload.ExternalContact.ExternalUserID != externalUserID {
+		return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryReadError(ErrResponse)
+	}
+	var follows []json.RawMessage
+	if len(payload.FollowUser) == 0 || json.Unmarshal(payload.FollowUser, &follows) != nil || follows == nil {
+		return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryReadError(ErrResponse)
+	}
+
+	var result wecomport.ExternalContactDescriptionTarget
+	matched := 0
+	for _, rawFollow := range follows {
+		var follow struct {
+			UserID      json.RawMessage `json:"userid"`
+			Description json.RawMessage `json:"description"`
+		}
+		if json.Unmarshal(rawFollow, &follow) != nil {
+			continue
+		}
+		var userID string
+		if len(follow.UserID) == 0 || json.Unmarshal(follow.UserID, &userID) != nil || userID != employeeUserID {
+			continue
+		}
+		matched++
+		if matched > 1 {
+			return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryReadError(ErrResponse)
+		}
+		description, projected, descriptionErr := externalContactDescription(follow.Description)
+		if descriptionErr != nil {
+			return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryReadError(ErrResponse)
+		}
+		if projected {
+			result.Description = *description
+			result.Projected = true
+		}
+	}
+	if matched != 1 {
+		return wecomport.ExternalContactDescriptionTarget{}, classifyDirectoryReadError(ErrResponse)
+	}
+	return result, nil
+}
+
+type externalContactDescriptionTargetResponse struct {
+	ErrCode         json.RawMessage `json:"errcode"`
+	ExternalContact struct {
+		ExternalUserID string `json:"external_userid"`
+	} `json:"external_contact"`
+	FollowUser json.RawMessage `json:"follow_user"`
+}
+
+func (client *Client) requestExternalContactDescriptionTarget(ctx context.Context, externalUserID, token string) (externalContactDescriptionTargetResponse, error) {
+	raw, err := client.requestRawJSON(ctx, http.MethodGet, "/cgi-bin/externalcontact/get", url.Values{"access_token": {token}, "external_userid": {externalUserID}}, nil)
+	if err != nil {
+		return externalContactDescriptionTargetResponse{}, err
+	}
+	var payload externalContactDescriptionTargetResponse
+	if json.Unmarshal(raw.body, &payload) != nil {
+		return externalContactDescriptionTargetResponse{}, &providerResponseError{statusCode: raw.statusCode}
+	}
+	if !successErrCode(payload.ErrCode) {
+		return externalContactDescriptionTargetResponse{}, &providerResponseError{statusCode: raw.statusCode, errCode: providerErrCode(payload.ErrCode)}
+	}
+	return payload, nil
+}
+
 func (client *Client) listContactStaff(ctx context.Context, token string) (response, error) {
 	return client.request(ctx, "/cgi-bin/externalcontact/get_follow_user_list", url.Values{"access_token": {token}})
 }
@@ -1823,6 +1912,33 @@ func (client *Client) request(ctx context.Context, path string, query url.Values
 }
 
 func (client *Client) requestJSON(ctx context.Context, method, path string, query url.Values, body []byte) (response, error) {
+	raw, err := client.requestRawJSON(ctx, method, path, query, body)
+	if err != nil {
+		return response{}, err
+	}
+	var payload response
+	if json.Unmarshal(raw.body, &payload) != nil {
+		return response{}, &providerResponseError{statusCode: raw.statusCode}
+	}
+	if !successErrCode(payload.ErrCode) {
+		return response{}, &providerResponseError{statusCode: raw.statusCode, errCode: providerErrCode(payload.ErrCode)}
+	}
+	payload.AccessToken = strings.TrimSpace(payload.AccessToken)
+	payload.UserID = strings.TrimSpace(payload.UserID)
+	payload.UserIDLower = strings.TrimSpace(payload.UserIDLower)
+	payload.Ticket = strings.TrimSpace(payload.Ticket)
+	return payload, nil
+}
+
+// requestRawJSON owns the common transport contract: timeout, bounded reads,
+// HTTP status handling, and provider error classification. Narrow reader
+// projections decode its successful payload without bypassing that contract.
+type rawJSONResponse struct {
+	statusCode int
+	body       []byte
+}
+
+func (client *Client) requestRawJSON(ctx context.Context, method, path string, query url.Values, body []byte) (rawJSONResponse, error) {
 	endpoint := *client.apiBase
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
 	endpoint.RawQuery = query.Encode()
@@ -1834,7 +1950,7 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, quer
 	}
 	req, err := http.NewRequestWithContext(requestCtx, method, endpoint.String(), input)
 	if err != nil {
-		return response{}, ErrUnavailable
+		return rawJSONResponse{}, ErrUnavailable
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -1844,32 +1960,21 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, quer
 		if path == "/cgi-bin/externalcontact/groupchat/list" || path == "/cgi-bin/externalcontact/groupchat/get" {
 			var timeout interface{ Timeout() bool }
 			if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
-				return response{}, &directoryReadError{cause: ErrUnavailable, code: "provider_timeout", retryable: true}
+				return rawJSONResponse{}, &directoryReadError{cause: ErrUnavailable, code: "provider_timeout", retryable: true}
 			}
 		}
-		return response{}, ErrUnavailable
+		return rawJSONResponse{}, ErrUnavailable
 	}
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, maxResponseBody+1)
 	responseBody, err := io.ReadAll(limited)
 	if err != nil || len(responseBody) > maxResponseBody {
-		return response{}, &providerResponseError{statusCode: resp.StatusCode, retryable: true}
+		return rawJSONResponse{}, &providerResponseError{statusCode: resp.StatusCode, retryable: true}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return response{}, providerError(resp.StatusCode, responseBody)
+		return rawJSONResponse{}, providerError(resp.StatusCode, responseBody)
 	}
-	var payload response
-	if json.Unmarshal(responseBody, &payload) != nil {
-		return response{}, &providerResponseError{statusCode: resp.StatusCode}
-	}
-	if !successErrCode(payload.ErrCode) {
-		return response{}, &providerResponseError{statusCode: resp.StatusCode, errCode: providerErrCode(payload.ErrCode)}
-	}
-	payload.AccessToken = strings.TrimSpace(payload.AccessToken)
-	payload.UserID = strings.TrimSpace(payload.UserID)
-	payload.UserIDLower = strings.TrimSpace(payload.UserIDLower)
-	payload.Ticket = strings.TrimSpace(payload.Ticket)
-	return payload, nil
+	return rawJSONResponse{statusCode: resp.StatusCode, body: responseBody}, nil
 }
 
 // confirmedMarkTagSuccess is intentionally stricter than the historical
@@ -2034,7 +2139,8 @@ func externalContactRemark(value *string) (*string, error) {
 // rune write limit; retain it for the compare-before-write decision so the
 // caller can report too_long rather than failing an entire directory page.
 func externalContactDescription(raw json.RawMessage) (*string, bool, error) {
-	if len(raw) == 0 {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		return nil, false, nil
 	}
 	var value string
@@ -2105,6 +2211,7 @@ var _ wecom.JSSDKSigner = (*Client)(nil)
 var _ wecomport.DirectoryProvider = (*Client)(nil)
 var _ wecomport.ContactStaffProfileReader = (*Client)(nil)
 var _ wecomport.ExternalContactReader = (*Client)(nil)
+var _ wecomport.ExternalContactDescriptionTargetReader = (*Client)(nil)
 var _ wecomport.AcquisitionAssetWriter = (*Client)(nil)
 var _ wecomport.TagCatalogMutationWriter = (*Client)(nil)
 
