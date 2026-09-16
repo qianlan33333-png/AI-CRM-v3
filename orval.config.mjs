@@ -29,7 +29,7 @@ export default defineConfig({
         // Orval retains global response aliases while filtering operations.
         // Include their direct dependencies so the generated standalone client
         // never points at omitted types.
-        schemas: [/^SurveyPublic/, /^CompletionAction$/, /^PositiveID$/, /^ErrorResponse$/, /^GroupOpsWebhookError$/, /^OpenPlatformOAuthError$/, /^OpenPlatformV1Error$/, /^OpenPlatformV1Failure$/],
+        schemas: [/^SurveyPublic/, /^SurveySafeRedirectURL$/, /^CompletionAction$/, /^PositiveID$/, /^ErrorResponse$/, /^GroupOpsWebhookError$/, /^OpenPlatformOAuthError$/, /^OpenPlatformV1Error$/, /^OpenPlatformV1Failure$/],
       },
     },
     output: {

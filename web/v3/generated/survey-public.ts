@@ -35,6 +35,12 @@ export interface ErrorResponse {
 }
 
 /**
+ * A same-origin absolute path without a network-path prefix, or a public HTTPS URL without userinfo or a fragment. Runtime validation remains authoritative.
+ * @maxLength 2048
+ */
+export type SurveySafeRedirectURL = string;
+
+/**
  * Public HTTPS URL without userinfo or a fragment.
  * @maxLength 4096
  * @pattern ^https://[^/@\s#]+(?:/[^\s#]*)?(?:\?[^\s#]*)?$
