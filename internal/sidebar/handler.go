@@ -204,7 +204,7 @@ func (h *Handler) workbenchProjection(ctx context.Context, customerID customerdo
 		return nil, err
 	}
 	return map[string]any{
-		"profile":              sidebarWorkbenchProfile(profile, name),
+		"profile":              sidebarWorkbenchProfile(profile, name, customerID),
 		"questionnaire_count":  surveys.Total,
 		"order_count":          orders.Total,
 		"periodic_order_count": entitlements.Total,
@@ -218,9 +218,13 @@ func (h *Handler) workbenchProjection(ctx context.Context, customerID customerdo
 // while preserving the Port's boundary: no raw phone or external identifier is
 // present. A declared phone therefore remains distinguishable from a provider
 // verified phone through PhoneAssurance.
-func sidebarWorkbenchProfile(profile customerport.SidebarProfile, name string) map[string]any {
+func sidebarWorkbenchProfile(profile customerport.SidebarProfile, name string, customerID customerdomain.CustomerID) map[string]any {
 	return map[string]any{
-		"customer_id":             int64(profile.CustomerID),
+		// The workbench is already scoped by BootstrapViewer's resolved canonical
+		// CustomerID. Keep its presentation label derived from that same trusted
+		// key instead of any provider identifier or a separate frontend format.
+		"customer_id":             int64(customerID),
+		"oneid":                   customerdomain.CanonicalOneIDLabel(customerID),
 		"name":                    name,
 		"display_name":            name,
 		"avatar_url":              profile.AvatarURL,

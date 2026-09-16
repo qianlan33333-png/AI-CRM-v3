@@ -114,6 +114,8 @@ for migration_contract in \
   '0165_payment_profit_sharing_receiver_failure_class.sql:Payment profit-sharing receiver failure class' \
   '0166_payment_profit_sharing_instruction_failure_class.sql:Payment profit-sharing instruction failure class' \
   '0167_distribution_settlement_not_paid_exception.sql:Distribution settlement not-paid exception' \
+  '0170_wecom_contact_description_effect.sql:WeCom contact description external effect' \
+  '0171_wecom_contact_description_source_coverage.sql:WeCom contact description source coverage' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

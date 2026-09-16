@@ -47,6 +47,7 @@ const (
 	KindOutboundMedia           Kind  = "outbound_media"
 	KindWeComTagCatalog         Kind  = "wecom_tag_catalog"
 	KindWeComTagCatalogMutation Kind  = "wecom_tag_catalog_mutation"
+	KindWeComContactDescription Kind  = "wecom_contact_description"
 	KindGroupMessage            Kind  = "group_message"
 	KindChannelAsset            Kind  = "channel_acquisition_asset"
 	KindChannelWelcome          Kind  = "channel_welcome_message"
@@ -93,7 +94,7 @@ type Envelope struct {
 }
 
 func (value Envelope) Valid() bool {
-	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
+	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindWeComContactDescription || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund || value.Kind == KindWeChatPayReceiverAdd || value.Kind == KindWeChatPayProfitSharing || value.Kind == KindWeChatPayProfitUnfreeze) ||
 		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)

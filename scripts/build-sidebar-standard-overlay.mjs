@@ -46,7 +46,10 @@ js = js.replace("    if (state.activeTab === \"other_staff_messages\") renderOth
 // request execution so legacy query/hash/session recovery cannot reappear.
 replaceRange("  function safeJsonParse(text) {", "  function queryUrl(baseUrl, params) {", `  function writeDebug(label, payload) {
     if (!debugEnabled) return;
-    const line = "[" + new Date().toISOString() + "] " + label + (payload === undefined ? "" : " " + JSON.stringify(payload));
+    const serialized = payload === undefined ? "" : " " + JSON.stringify(payload, function (key, value) {
+      return /(?:external[_-]?user[_-]?id|openid|unionid|context[_-]?token|authorization|phone|mobile)/i.test(key) ? "[redacted]" : value;
+    });
+    const line = "[" + new Date().toISOString() + "] " + label + serialized;
     const item = document.createElement("pre");
     item.textContent = line;
     debugWrap.appendChild(item);
@@ -126,6 +129,8 @@ js = js.replace(sidebarContextInvalidationAnchor, `  // The trusted Host owns th
     state.v3MobileModalIdentity = "";
     state.v3TrustedContextIdentity = "";
     root.dataset.v3SidebarContext = "invalid";
+    const customerOneID = document.getElementById("customer-oneid");
+    if (customerOneID) customerOneID.textContent = "";
     // Context invalidation is destructive for all customer-facing controls.
     // The explicit retry path re-enables these only after it has loaded a new
     // signed context and its new workbench.
@@ -144,6 +149,14 @@ js = js.replace(sidebarContextInvalidationAnchor, `  // The trusted Host owns th
     destroyMaterialResources();
   }
   window.addEventListener("aicrm-sidebar-context-invalidated", clearV3SensitiveSidebarState);
+  window.addEventListener("aicrm-sidebar-context-ready", function () {
+    // A focus or visibility revalidation may have replaced the contact without
+    // a user clicking retry. Only a surface already cleared by invalidation is
+    // eligible to boot from this completion signal, which prevents an initial
+    // bootstrap from creating a concurrent overlay load.
+    if (root.dataset.v3SidebarContext !== "invalid") return;
+    void boot();
+  });
   window.addEventListener("aicrm-sidebar-context-retry-requested", function () {
     if (root.dataset.v3SidebarContext !== "invalid") return;
     void boot({ forceSidebarOAuth: true });
@@ -413,10 +426,12 @@ replaceRange("  function renderTop() {", "  function updateProfileField(key, val
     const customer = workbench.customer || {};
     const workflow = workbench.workflow || {};
     const name = String(customer.display_name || "当前客户").trim();
+    const oneID = /^CID-[1-9][0-9]*$/.test(String(customer.oneid || "").trim()) ? String(customer.oneid).trim() : "";
     const mobile = String(customer.mobile || "").trim();
     const assurance = String(customer.phone_assurance || "").toLowerCase();
     const isVerified = assurance === "verified";
     document.getElementById("customer-name").textContent = name;
+    document.getElementById("customer-oneid").textContent = oneID ? "OneID " + oneID : "";
     document.getElementById("customer-mobile").textContent = mobile ? "手机号 " + mobile : "";
     document.getElementById("workflow-title").textContent = String(workflow.title || "").trim();
     const bindingState = document.getElementById("binding-state");

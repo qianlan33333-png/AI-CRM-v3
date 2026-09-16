@@ -331,6 +331,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = river.AddWorkerSafely[wecom.CustomerSyncJobArgs](effectWorkers, customerSyncWorker); err != nil {
 		return fail(err)
 	}
+	contactDescriptionCallbackWorker := wecom.NewContactDescriptionCallbackWorker()
+	if err = river.AddWorkerSafely[wecom.ContactDescriptionCallbackJobArgs](effectWorkers, contactDescriptionCallbackWorker); err != nil {
+		return fail(err)
+	}
 	staffDirectoryWorker := wecom.NewStaffDirectoryRefreshWorker()
 	if err = river.AddWorkerSafely[wecom.StaffDirectoryRefreshJobArgs](effectWorkers, staffDirectoryWorker); err != nil {
 		return fail(err)
@@ -409,6 +413,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	customerSyncEnqueuer, err := wecom.NewRiverCustomerSyncEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	contactDescriptionCallbackEnqueuer, err := wecom.NewRiverContactDescriptionCallbackEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -1600,6 +1608,19 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	contactDescriptionIntents, err := outbound.NewContactDescriptionIntentStore(pool.Native(), effectRepository)
+	if err != nil {
+		return fail(err)
+	}
+	contactDescriptionProvider, err := outbound.NewContactDescriptionProvider(cfg.WeCom.ContactDescriptionProviderEnabled, contactDescriptionIntents, contactDescriptionTargetAdapter{uow: uow, corpID: cfg.WeCom.CorpID, identities: queries}, providerClient, providerClient)
+	if err != nil {
+		return fail(err)
+	}
+	contactDescriptionCompletionSink, err := outbound.NewContactDescriptionCompletionSink(contactDescriptionIntents)
+	if err != nil {
+		return fail(err)
+	}
+	outboundCompletionSink.WithContactDescription(contactDescriptionCompletionSink)
 	if excelClient != nil {
 		excelClient.MediaCovers = mediaRepository
 	}
@@ -1672,12 +1693,19 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 	}
 	materialProviderMux := outbound.MaterialEffectMux{GenericProvider: materialProvider, LegacyProvider: sidebarMediaProvider}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(materialProviderMux).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithContactDescription(contactDescriptionProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(materialProviderMux).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider}); err != nil {
 		return fail(err)
 	}
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
 	oauthStates := wecom.NewPostgreSQLOAuthStateStore()
+	callbackDescriptionService := wecom.ContactDescriptionCallbackService{Enabled: cfg.WeCom.ContactDescriptionProviderEnabled && cfg.WeCom.CallbackEnabled,
+		CorpID: cfg.WeCom.CorpID, Inbox: inboxService, Provider: providerClient, Identity: oneID, Relationships: relationships, Intents: contactDescriptionIntents, UOW: uow}
+	if cfg.WeCom.ContactDescriptionProviderEnabled && cfg.WeCom.CallbackEnabled {
+		if err = contactDescriptionCallbackWorker.BindService(callbackDescriptionService); err != nil {
+			return fail(err)
+		}
+	}
 	weComProcessor := wecom.InboxProcessor{
 		Enabled: cfg.WeCom.CallbackEnabled, CorpID: cfg.WeCom.CorpID, Inbox: inboxService, UOW: uow,
 		Lifecycle: wecom.ExternalContactLifecycle{
@@ -1686,10 +1714,16 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		},
 		Receipts: callbackReceipts, Audit: auditService,
 	}
+	if cfg.WeCom.ContactDescriptionProviderEnabled && cfg.WeCom.CallbackEnabled {
+		weComProcessor.DescriptionJobs = contactDescriptionCallbackEnqueuer
+	}
 	weComArchiveProcessor := wecom.ArchiveInboxProcessor{Enabled: cfg.WeCom.MessageArchiveEnabled, Inbox: inboxService, UOW: uow, Archive: archiveService}
 	customerSync := wecom.CustomerSyncService{Enabled: cfg.WeCom.CustomerSyncEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient,
 		Identity: oneID, Projection: customerStore, Timeline: customerStore, Store: customerProfileStore, Outbox: platformoutbox.NewPostgreSQL(),
-		Enqueuer: customerSyncEnqueuer, Audit: auditService, UOW: uow}
+		Enqueuer: customerSyncEnqueuer, DescriptionSourceCoverage: customerProfileStore, Audit: auditService, UOW: uow}
+	if cfg.WeCom.ContactDescriptionProviderEnabled {
+		customerSync.DescriptionIntents = contactDescriptionIntents
+	}
 	if err = customerSyncWorker.BindService(customerSync); err != nil && cfg.WeCom.CustomerSyncEnabled {
 		return fail(err)
 	}
@@ -1711,7 +1745,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, RegistrationCoverage: queries, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
-	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
+	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity,
+		DescriptionEnabled: cfg.WeCom.ContactDescriptionProviderEnabled, DescriptionStatus: contactDescriptionIntents, DescriptionReadbacks: contactDescriptionIntents, UOW: uow}
 	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: cfg.WeCom.ContextTokenTTL}
 	callbackDispatcher := wecom.CallbackEventDispatcher{ExternalContact: wecom.ExternalContactCallbackDispatcher{StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition}}
 	if cfg.WeCom.MessageArchiveEnabled {
@@ -1770,6 +1805,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs := http.NewServeMux()
 	adminAPIs.Handle("/api/admin/oneid/", oneIDHandler.Routes())
 	adminAPIs.Handle("/api/admin/wecom/", callbackAdminHandler.Routes())
+	adminAPIs.Handle("/api/admin/wecom/contact-description-backfills", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/wecom/contact-description-backfills/", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/channel-acquisition-entrant-receipts/", entrantAdminHandler.Routes())
 	adminAPIs.Handle("/api/admin/customers", customerHandler.Routes())
 	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())

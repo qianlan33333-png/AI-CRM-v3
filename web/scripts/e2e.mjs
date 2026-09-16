@@ -1324,7 +1324,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (scenario === 'viewer_session_required') return json({ state: 'viewer_session_required', safety }, 401);
           const bootstrapInput = window.__sidebarTest.bootstrapBodies.at(-1);
           const scopedCustomerID = bootstrapInput?.external_userid === 'ext-8' ? 8 : 7;
-          return json({ state: 'ready', context_token: 'sidebar-context-token-' + scopedCustomerID + '-' + 'x'.repeat(50), customer_id: scopedCustomerID, workbench: { profile: { ...profile, customer_id: scopedCustomerID }, questionnaire_count: scenario === 'empty' ? 0 : 2, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
+          return json({ state: 'ready', context_token: 'sidebar-context-token-' + scopedCustomerID + '-' + 'x'.repeat(50), customer_id: scopedCustomerID, workbench: { profile: { ...profile, customer_id: scopedCustomerID, oneid: 'CID-' + scopedCustomerID }, questionnaire_count: scenario === 'empty' ? 0 : 2, order_count: scenario === 'success' ? 1 : 0, periodic_order_count: scenario === 'success' ? 1 : 0, material_count: scenario === 'success' ? 2 : 0, safety }, safety });
         }
         if (url.includes('/phone-binding')) {
           window.__sidebarTest.phoneBody = JSON.parse(init.body || '{}');
@@ -3212,11 +3212,12 @@ console.log('sidebar/index.html（dd8 标准 Overlay 与可信 Host）');
     sidebarManifest.files[sidebarImageResourceLoader]?.entry_point === 'web/donor-sources/production-dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f/static/image_resource_loader.js' &&
     JSON.stringify(scripts) === JSON.stringify(['https://res.wx.qq.com/wwopen/js/jsapi/jweixin-1.0.0.js', `../${sidebarImageResourceLoader}`, `../${sidebarHost}`]) &&
     sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`) &&
+    sidebarHTML.includes('id="customer-oneid"') && !sidebarHTML.includes('customer-external-userid') &&
     !sidebarHTML.includes('jweixin-1.6.0.js') && !sidebarHTML.includes('sidebar_workbench.js'));
   ok('标准 Overlay 保留六个业务菜单、统一壳和画像首屏，且不含聊天菜单',
     d.querySelector('#sidebar-workbench-root.wrap') && d.querySelector('.profile-card') &&
     [...d.querySelectorAll('#tabs [data-tab]')].map((node) => node.dataset.tab).join('|') === 'profile|questionnaires|products|orders|coupons|materials' &&
-    d.body.textContent.includes('侧边栏测试客户') &&
+    d.body.textContent.includes('侧边栏测试客户') && d.querySelector('#customer-oneid')?.textContent === 'OneID CID-7' &&
     !d.body.textContent.includes('其他客服聊天') && !d.body.textContent.includes('chat_activity'));
   const stages = dom.window.__sidebarTest.wxStages.map((entry) => entry.stage);
   ok('Host 依次取得 regular config、agentConfig 和当前客户后只 bootstrap 一次',
@@ -3344,6 +3345,7 @@ for (const [scenario, expectedSignatureReads] of [['sdk_cache', 0], ['sdk_cache_
 }
 {
   const dom = await loadPage('sidebar/index.html', { q: 'sidebar_case=contact_switch' });
+  const d = dom.window.document;
   const state = dom.window.__sidebarTest;
   state.contactSwitched = true;
   dom.window.dispatchEvent(new dom.window.Event('focus'));
@@ -3351,7 +3353,8 @@ for (const [scenario, expectedSignatureReads] of [['sdk_cache', 0], ['sdk_cache_
   ok('窗口重新可见时重验联系人；旧 context token 不可用于新客户',
     state.bootstrapBodies.map((body) => body.external_userid).join('|') === 'ext-7|ext-8' &&
     state.wxInvokes.filter((method) => method === 'getCurExternalContact').length === 3 &&
-    dom.window.__AICRMSidebarBridge.contextToken().startsWith('sidebar-context-token-'));
+    dom.window.__AICRMSidebarBridge.contextToken().startsWith('sidebar-context-token-') &&
+    d.querySelector('#customer-oneid')?.textContent === 'OneID CID-8');
   dom.window.close();
 }
 {
@@ -3831,6 +3834,7 @@ await import('./outbound-task-history-e2e.mjs');
 await import('./invalid-source-history-adapter-contract.mjs');
 await import('./invalid-source-history-e2e.mjs');
 await import('./product-edit-e2e.mjs');
+execFileSync(process.execPath, [path.join(ROOT, 'v3', 'sidebarOneIDPresentation.test.mjs')], { stdio: 'inherit' });
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

@@ -41,7 +41,18 @@ type ExternalContactFollowInfo struct {
 	// Remark is nil when the Provider response did not project this field. An
 	// explicit empty string remains distinct from not-yet-projected history.
 	Remark *string
-	Tags   []ExternalContactTag
+	// Description is the follow-employee-level external-contact description.
+	// It is deliberately separate from Remark: the legacy ID projection wrote
+	// this provider field, while Remark remains a read-only display projection.
+	// Nil means the provider did not include description; an explicit empty
+	// string must remain distinguishable for a safe compare-before-write flow.
+	Description *string
+	// DescriptionProjected is true only when the Provider explicitly returned
+	// the description field (including an explicit empty string). A missing
+	// field is not evidence that the description is empty and must not enable a
+	// destructive replacement write.
+	DescriptionProjected bool
+	Tags                 []ExternalContactTag
 }
 
 type ExternalContactTag struct {
@@ -94,4 +105,21 @@ type ContactStaffProfileReader interface {
 // boundary only; it cannot mark, unmark, or otherwise mutate WeCom state.
 type ExternalContactReader interface {
 	ReadExternalContact(context.Context, string) (ExternalContact, error)
+}
+
+// ExternalContactDescriptionTarget is the minimum trusted projection needed
+// to compare and update one employee's description for one external contact.
+// Projected distinguishes an explicitly returned string (including "") from a
+// missing or null provider field, which must never be treated as empty text.
+type ExternalContactDescriptionTarget struct {
+	Description string
+	Projected   bool
+}
+
+// ExternalContactDescriptionTargetReader reads only the requested employee's
+// description. Implementations must validate the returned external contact and
+// require exactly one matching follow relationship, while ignoring unrelated
+// relationship metadata such as tags.
+type ExternalContactDescriptionTargetReader interface {
+	ReadExternalContactDescriptionTarget(context.Context, string, string) (ExternalContactDescriptionTarget, error)
 }

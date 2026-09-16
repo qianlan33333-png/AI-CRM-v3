@@ -155,6 +155,7 @@ type ProviderRouter struct {
 	sidebarMedia       effect.ProviderAdapter
 	tagCatalog         effect.ProviderAdapter
 	tagCatalogMutation effect.ProviderAdapter
+	contactDescription effect.ProviderAdapter
 	groupMessage       effect.ProviderAdapter
 	channelAsset       effect.ProviderAdapter
 	channelEntrant     effect.ProviderAdapter
@@ -230,6 +231,13 @@ func (r *ProviderRouter) WithTagCatalogMutation(provider effect.ProviderAdapter)
 	return r
 }
 
+func (r *ProviderRouter) WithContactDescription(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.contactDescription = provider
+	}
+	return r
+}
+
 // WithSurveyCompletion installs the only outbound route for the opaque Survey
 // completion effect. It may be a disabled provider; the router never falls
 // back to a different outbound kind.
@@ -300,6 +308,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindWeComTagCatalogMutation:
 			if r.tagCatalogMutation != nil {
 				return r.tagCatalogMutation.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindWeComContactDescription:
+			if r.contactDescription != nil {
+				return r.contactDescription.Execute(ctx, envelope, attempt)
 			}
 		case effect.KindGroupMessage:
 			if r.groupMessage != nil {

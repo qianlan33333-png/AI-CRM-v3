@@ -92,9 +92,13 @@ type InboxProcessor struct {
 	Inbox     *webhook.Service
 	UOW       platformport.UnitOfWork
 	Lifecycle ExternalContactLifecycle
-	Receipts  callbackProcessingReceiptStore
-	Audit     *audit.Service
-	Now       func() time.Time
+	// DescriptionJobs is optional while the contract is disabled. When enabled,
+	// a processed full-contact callback atomically enqueues a bounded detail
+	// observation job; the HTTP callback handler still only inboxes and ACKs.
+	DescriptionJobs ContactDescriptionCallbackJobEnqueuer
+	Receipts        callbackProcessingReceiptStore
+	Audit           *audit.Service
+	Now             func() time.Time
 }
 
 func (processor InboxProcessor) ProcessOnce(ctx context.Context, owner string, limit int) (int, error) {
@@ -147,6 +151,11 @@ func (processor InboxProcessor) processDelivery(ctx context.Context, delivery we
 		result, err := processor.Lifecycle.ProcessWithin(txContext, fact)
 		if err != nil {
 			return callbackDeliveryError{code: "callback_lifecycle", cause: err}
+		}
+		if processor.DescriptionJobs != nil && event.ChangeType == ChangeAddExternalContact && result.CustomerID > 0 {
+			if err = processor.DescriptionJobs.EnqueueContactDescriptionObservation(txContext, delivery.ID); err != nil {
+				return callbackDeliveryError{code: "callback_description_enqueue", cause: err}
+			}
 		}
 		codes, err := callbackResultCodes(result.Outcomes)
 		if err != nil {

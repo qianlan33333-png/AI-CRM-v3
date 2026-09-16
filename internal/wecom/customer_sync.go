@@ -10,7 +10,9 @@ import (
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
@@ -103,6 +105,21 @@ type SyncItem struct {
 	ErrorCode            string
 }
 
+// ContactDescriptionSourceCoverage is a digest-safe count of the distinct
+// customer-follow pairs observed by one directory run. It deliberately records
+// a missing description field separately from an explicit empty description.
+// Neither omission nor an unsubmitted projected pair can satisfy backfill
+// completion.
+type ContactDescriptionSourceCoverage struct {
+	Observed  int64 `json:"observed"`
+	Projected int64 `json:"projected"`
+	Omitted   int64 `json:"omitted"`
+}
+
+type ContactDescriptionSourceCoverageReader interface {
+	ContactDescriptionSourceCoverage(context.Context, int64) (ContactDescriptionSourceCoverage, error)
+}
+
 type CustomerSyncStore interface {
 	Create(context.Context, CreateCustomerSyncRun) (CustomerSyncRun, bool, error)
 	Active(context.Context) (CustomerSyncRun, bool, error)
@@ -132,11 +149,38 @@ type CustomerSyncService struct {
 	Store      CustomerSyncStore
 	Outbox     platformoutbox.Service
 	Enqueuer   CustomerSyncJobEnqueuer
-	Audit      interface {
+	// DescriptionIntents is optional until the composition root supplies the
+	// Outbound-owned immutable dispatch store. Its nil default preserves the
+	// current read-only directory sync behavior.
+	DescriptionIntents outboundport.ContactDescriptionIntentWriter
+	// DescriptionSourceCoverage remains owned by WeCom. It supplies the
+	// directory-response field-presence denominator to the admin read model;
+	// Outbound retains ownership of queued and completed effect outcomes.
+	DescriptionSourceCoverage ContactDescriptionSourceCoverageReader
+	Audit                     interface {
 		Append(context.Context, platformaudit.Event) (platformaudit.Event, error)
 	}
 	UOW platformport.UnitOfWork
 	Now func() time.Time
+}
+
+func (service CustomerSyncService) ContactDescriptionSourceStats(ctx context.Context, runID int64) (ContactDescriptionSourceCoverage, error) {
+	if runID < 1 || service.DescriptionSourceCoverage == nil || service.UOW == nil {
+		return ContactDescriptionSourceCoverage{}, ErrSyncNotReady
+	}
+	var coverage ContactDescriptionSourceCoverage
+	err := service.UOW.Within(ctx, func(txContext context.Context) error {
+		var readErr error
+		coverage, readErr = service.DescriptionSourceCoverage.ContactDescriptionSourceCoverage(txContext, runID)
+		return readErr
+	})
+	if err != nil {
+		return ContactDescriptionSourceCoverage{}, err
+	}
+	if coverage.Observed < 0 || coverage.Projected < 0 || coverage.Omitted < 0 || coverage.Observed != coverage.Projected+coverage.Omitted {
+		return ContactDescriptionSourceCoverage{}, ErrSyncCAS
+	}
+	return coverage, nil
 }
 
 func (service CustomerSyncService) Ready() bool {
@@ -333,6 +377,30 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 			if err := service.Store.UpsertProfileObservations(txContext, run.ID, run.CorpScope, provision.CustomerID, contact.FollowInfo, observedAt); err != nil {
 				return err
 			}
+			if service.DescriptionIntents != nil {
+				for _, follow := range contact.FollowInfo {
+					if !follow.DescriptionProjected || follow.Description == nil || follow.EmployeeID == "" {
+						continue
+					}
+					externalDigest := effectDigest(contact.ExternalUserID)
+					observedDigest := outboundport.ContactDescriptionObservedDigest(*follow.Description)
+					target := outboundport.ContactDescriptionTargetDigest(follow.EmployeeID, contact.ExternalUserID)
+					payload := outboundport.ContactDescriptionPayloadDigest(observedDigest)
+					_, enqueueErr := service.DescriptionIntents.WriteContactDescriptionIntentWithin(txContext, outboundport.ContactDescriptionIntentCommand{
+						CustomerID: provision.CustomerID, EmployeeUserID: follow.EmployeeID,
+						SourceDigest: effectDigest("wecom.contact.description.source.v1", "run", strconv.FormatInt(run.ID, 10), run.CorpScope, follow.EmployeeID, string(externalDigest), string(observedDigest)),
+						TargetDigest: target, ObservedDescriptionDigest: observedDigest, PayloadDigest: payload,
+						ReceiptKey: outboundport.ContactDescriptionRelationshipKey(run.CorpScope, follow.EmployeeID, externalDigest), SourceRunID: run.ID,
+						// A manual run is an explicit administrator backfill/replan. It
+						// may make a new immutable plan only after the former plan is
+						// terminal and non-unknown; routine/callback maintenance cannot.
+						Replan: run.Trigger == "manual", Operation: outboundport.ContactDescriptionOperationWrite,
+					})
+					if enqueueErr != nil {
+						return enqueueErr
+					}
+				}
+			}
 			if !inserted {
 				continue
 			}
@@ -380,6 +448,8 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 		return err
 	})
 }
+
+func effectDigest(parts ...string) effectport.Digest { return effectport.Hash(parts...) }
 
 func (service CustomerSyncService) reconcile(ctx context.Context, run CustomerSyncRun) error {
 	now := service.now()

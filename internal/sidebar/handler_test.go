@@ -585,6 +585,7 @@ func TestWorkbenchProjectionExposesFullSafeCustomerProfile(t *testing.T) {
 	var body struct {
 		Profile struct {
 			DisplayName           string `json:"display_name"`
+			OneID                 string `json:"oneid"`
 			PhoneAssurance        string `json:"phone_assurance"`
 			ActivationStatus      string `json:"activation_status"`
 			ContactType           int16  `json:"contact_type"`
@@ -599,7 +600,7 @@ func TestWorkbenchProjectionExposesFullSafeCustomerProfile(t *testing.T) {
 	if err = json.Unmarshal(encoded, &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Profile.DisplayName != "客户甲" || body.Profile.PhoneAssurance != "declared" || body.Profile.ActivationStatus != "active" || body.Profile.ContactType != 1 || body.Profile.ProfileSource != "活动报名" || body.Profile.ProfileVersion != 3 || body.Profile.Industry != "教育" || body.Profile.IndustryDescription != "成人教育" || body.Profile.NeedsBlockersFollowup != "回访" || body.Profile.LastSyncedAt == "" {
+	if body.Profile.DisplayName != "客户甲" || body.Profile.OneID != "CID-42" || body.Profile.PhoneAssurance != "declared" || body.Profile.ActivationStatus != "active" || body.Profile.ContactType != 1 || body.Profile.ProfileSource != "活动报名" || body.Profile.ProfileVersion != 3 || body.Profile.Industry != "教育" || body.Profile.IndustryDescription != "成人教育" || body.Profile.NeedsBlockersFollowup != "回访" || body.Profile.LastSyncedAt == "" {
 		t.Fatalf("workbench profile contract=%s", encoded)
 	}
 	for _, forbidden := range []string{"external_userid", "openid", "unionid", `"phone":"`} {

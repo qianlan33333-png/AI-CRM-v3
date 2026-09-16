@@ -350,6 +350,51 @@ func TestPostgreSQLTagCompletionSinkIsAtomic(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLContactDescriptionNoopCompletionIsTerminal(t *testing.T) {
+	pool, cleanup := effectIntegrationPool(t)
+	defer cleanup()
+	workers := river.NewWorkers()
+	if err := river.AddWorkerSafely[EffectJobArgs](workers, NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := envelopeForTest()
+	envelope.Kind = KindWeComContactDescription
+	projection, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("contact-description-noop"), Envelope: envelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := parseEffectID(projection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jobID int64
+	if err = pool.QueryRow(context.Background(), `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, id).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"status":"already_present","readback":"not_requested"}`)
+	artifact := ResultArtifact{Kind: "wecom.contact.description.result.v1", Payload: payload, Digest: Hash("external-effect.artifact.v1", "wecom.contact.description.result.v1", string(payload))}
+	adapter := &integrationAdapter{result: AdapterResult{Completion: StateExecuted, ReceiptDigest: digestForTest("contact-description-noop-result"), CallAttempted: true, RealExternalCallExecuted: false, Artifact: artifact}}
+	if err = repository.RunAttempt(context.Background(), id, 1, jobID, adapter); err != nil {
+		t.Fatal(err)
+	}
+	current, err := repository.Get(context.Background(), projection.ID)
+	if err != nil || current.State != StateExecuted {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+	var callAttempted, realWrite bool
+	if err = pool.QueryRow(context.Background(), `SELECT call_attempted,real_external_call_executed FROM external_effect_attempts WHERE effect_id=$1 AND number=1`, id).Scan(&callAttempted, &realWrite); err != nil || !callAttempted || realWrite {
+		t.Fatalf("attempted=%t real_write=%t err=%v", callAttempted, realWrite, err)
+	}
+}
+
 func TestPostgreSQLAttemptedLeaseRecoveryDoesNotRepeatProviderCall(t *testing.T) {
 	pool, cleanup := effectIntegrationPool(t)
 	defer cleanup()
@@ -720,7 +765,7 @@ func effectIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	for _, name := range []string{"0001_platform.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0156_distribution_profit_sharing_payment.sql", "0161_payment_paid_confirmation_time.sql", "0160_external_effect_system_control_actor.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0156_distribution_profit_sharing_payment.sql", "0161_payment_paid_confirmation_time.sql", "0160_external_effect_system_control_actor.sql", "0170_wecom_contact_description_effect.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

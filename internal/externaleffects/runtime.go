@@ -37,6 +37,7 @@ const (
 	KindOutboundMedia           = port.KindOutboundMedia
 	KindWeComTagCatalog         = port.KindWeComTagCatalog
 	KindWeComTagCatalogMutation = port.KindWeComTagCatalogMutation
+	KindWeComContactDescription = port.KindWeComContactDescription
 	KindGroupMessage            = port.KindGroupMessage
 	KindChannelAsset            = port.KindChannelAsset
 	KindChannelWelcome          = port.KindChannelWelcome

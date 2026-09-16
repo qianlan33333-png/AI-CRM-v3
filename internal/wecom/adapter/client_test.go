@@ -331,7 +331,7 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 			// Production pages with 100 contacts can legitimately exceed the old
 			// 64 KiB OAuth-oriented limit. Unknown Provider fields must remain
 			// safely ignored without making the response unbounded.
-			payload := `{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"},"follow_info":{"userid":"staff-1","tags":[{"tag_id":"tag-1","tag_name":"重点客户","type":1}]}}],"provider_padding":"` + strings.Repeat("x", 70<<10) + `"}`
+			payload := `{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"},"follow_info":{"userid":"staff-1","description":"manual note","tags":[{"tag_id":"tag-1","tag_name":"重点客户","type":1}]}}],"provider_padding":"` + strings.Repeat("x", 70<<10) + `"}`
 			_, _ = writer.Write([]byte(payload))
 		default:
 			t.Fatalf("unexpected path=%s", request.URL.Path)
@@ -348,8 +348,34 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	if err != nil || page.NextCursor != "next-1" || len(page.Contacts) != 1 || page.Contacts[0].ExternalUserID != "ext-1" {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
-	if len(page.Contacts[0].FollowInfo) != 1 || page.Contacts[0].FollowInfo[0].EmployeeID != "staff-1" || len(page.Contacts[0].FollowInfo[0].Tags) != 1 || page.Contacts[0].FollowInfo[0].Tags[0].ProviderTagID != "tag-1" {
+	if len(page.Contacts[0].FollowInfo) != 1 || page.Contacts[0].FollowInfo[0].EmployeeID != "staff-1" || page.Contacts[0].FollowInfo[0].Description == nil || *page.Contacts[0].FollowInfo[0].Description != "manual note" || len(page.Contacts[0].FollowInfo[0].Tags) != 1 || page.Contacts[0].FollowInfo[0].Tags[0].ProviderTagID != "tag-1" {
 		t.Fatalf("follow info=%+v", page.Contacts[0].FollowInfo)
+	}
+}
+
+func TestBatchExternalContactsKeepsNullDescriptionUnprojected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+		case "/cgi-bin/externalcontact/batch/get_by_user":
+			_, _ = writer.Write([]byte(`{"errcode":0,"external_contact_list":[{"external_contact":{"external_userid":"external-1"},"follow_info":{"userid":"staff-1","description":null,"tags":[]}}]}`))
+		default:
+			t.Fatalf("unexpected path=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.BatchExternalContacts(context.Background(), "staff-1", "", 1)
+	if err != nil || len(page.Contacts) != 1 || len(page.Contacts[0].FollowInfo) != 1 {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	follow := page.Contacts[0].FollowInfo[0]
+	if follow.DescriptionProjected || follow.Description != nil {
+		t.Fatalf("null description was projected: %+v", follow)
 	}
 }
 
@@ -1103,7 +1129,7 @@ func TestClientReadExternalContactUsesDirectoryReadCredentialAndReturnsFollowTag
 			if r.URL.Query().Get("access_token") != "contact-token" || r.URL.Query().Get("external_userid") != "external-1" {
 				t.Fatalf("read query=%s", r.URL.RawQuery)
 			}
-			_, _ = w.Write([]byte(`{"errcode":0,"external_contact":{"external_userid":"external-1","name":"Contact","avatar":"https://avatar.example/1","type":1,"gender":2,"corp_name":"Example"},"follow_user":[{"userid":"staff-1","tags":[{"tag_id":"tag-1","name":"Tag one","type":1}]}]}`))
+			_, _ = w.Write([]byte(`{"errcode":0,"external_contact":{"external_userid":"external-1","name":"Contact","avatar":"https://avatar.example/1","type":1,"gender":2,"corp_name":"Example"},"follow_user":[{"userid":"staff-1","description":"operator note","tags":[{"tag_id":"tag-1","name":"Tag one","type":1}]}]}`))
 		default:
 			t.Fatalf("unexpected endpoint=%s", r.URL.Path)
 		}
@@ -1114,8 +1140,245 @@ func TestClientReadExternalContactUsesDirectoryReadCredentialAndReturnsFollowTag
 		t.Fatal(err)
 	}
 	contact, err := client.ReadExternalContact(context.Background(), "external-1")
-	if err != nil || contact.ExternalUserID != "external-1" || len(contact.FollowInfo) != 1 || contact.FollowInfo[0].EmployeeID != "staff-1" || len(contact.FollowInfo[0].Tags) != 1 || contact.FollowInfo[0].Tags[0].ProviderTagID != "tag-1" {
+	if err != nil || contact.ExternalUserID != "external-1" || len(contact.FollowInfo) != 1 || contact.FollowInfo[0].EmployeeID != "staff-1" || contact.FollowInfo[0].Description == nil || *contact.FollowInfo[0].Description != "operator note" || len(contact.FollowInfo[0].Tags) != 1 || contact.FollowInfo[0].Tags[0].ProviderTagID != "tag-1" {
 		t.Fatalf("contact=%+v err=%v", contact, err)
+	}
+}
+
+func TestClientReadExternalContactDescriptionTargetProjectsOnlyRequestedRelationship(t *testing.T) {
+	tests := []struct {
+		name        string
+		response    string
+		want        wecomport.ExternalContactDescriptionTarget
+		wantFailure bool
+	}{
+		{
+			name:     "ignores unrelated and target malformed tags",
+			response: `{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"other","tags":[{"tag_id":7,"type":0}],"description":{}},{"userid":"staff-1","description":"manual\nnote","tags":[{"tag_id":"","type":0}]}]}`,
+			want:     wecomport.ExternalContactDescriptionTarget{Description: "manual\nnote", Projected: true},
+		},
+		{
+			name:     "explicit empty description is projected",
+			response: `{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"staff-1","description":""}]}`,
+			want:     wecomport.ExternalContactDescriptionTarget{Description: "", Projected: true},
+		},
+		{
+			name:     "missing description is not projected",
+			response: `{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"staff-1"}]}`,
+		},
+		{
+			name:     "null description is not projected",
+			response: `{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"staff-1","description":null}]}`,
+		},
+		{
+			name:        "wrong external contact",
+			response:    `{"errcode":0,"external_contact":{"external_userid":"external-other"},"follow_user":[{"userid":"staff-1","description":"manual"}]}`,
+			wantFailure: true,
+		},
+		{
+			name:        "target relationship absent",
+			response:    `{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"other","description":"manual"}]}`,
+			wantFailure: true,
+		},
+		{
+			name:        "target relationship duplicated",
+			response:    `{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"staff-1","description":"one"},{"userid":"staff-1","description":"two"}]}`,
+			wantFailure: true,
+		},
+		{
+			name:        "target description non string",
+			response:    `{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"staff-1","description":{}}]}`,
+			wantFailure: true,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+				case "/cgi-bin/externalcontact/get":
+					if r.URL.Query().Get("access_token") != "contact-token" || r.URL.Query().Get("external_userid") != "external-1" {
+						t.Fatalf("read query=%s", r.URL.RawQuery)
+					}
+					_, _ = w.Write([]byte(testCase.response))
+				default:
+					t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := client.ReadExternalContactDescriptionTarget(context.Background(), "external-1", "staff-1")
+			if testCase.wantFailure {
+				var failure wecomport.DirectoryFailure
+				if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != "provider_response_invalid" || failure.DirectoryFailureRetryable() {
+					t.Fatalf("target=%+v err=%v", got, err)
+				}
+				return
+			}
+			if err != nil || got != testCase.want {
+				t.Fatalf("target=%+v want=%+v err=%v", got, testCase.want, err)
+			}
+		})
+	}
+}
+
+func TestClientReadExternalContactDescriptionTargetRefreshesOnceAndKeepsErrorClassification(t *testing.T) {
+	t.Run("refreshes expired token once", func(t *testing.T) {
+		tokenCalls, readCalls := 0, 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/cgi-bin/gettoken":
+				tokenCalls++
+				_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+			case "/cgi-bin/externalcontact/get":
+				readCalls++
+				if readCalls == 1 {
+					_, _ = w.Write([]byte(`{"errcode":40014}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"staff-1","description":"manual"}]}`))
+			default:
+				t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+			}
+		}))
+		defer server.Close()
+		client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := client.ReadExternalContactDescriptionTarget(context.Background(), "external-1", "staff-1")
+		if err != nil || got.Description != "manual" || !got.Projected || tokenCalls != 2 || readCalls != 2 {
+			t.Fatalf("target=%+v err=%v tokens=%d reads=%d", got, err, tokenCalls, readCalls)
+		}
+	})
+
+	for _, testCase := range []struct {
+		name          string
+		response      string
+		wantCode      string
+		wantRetryable bool
+	}{
+		{name: "permission error", response: `{"errcode":48002}`, wantCode: "provider_permission_denied"},
+		{name: "rate limited", response: `{"errcode":45009}`, wantCode: "provider_rate_limited", wantRetryable: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+				case "/cgi-bin/externalcontact/get":
+					_, _ = w.Write([]byte(testCase.response))
+				default:
+					t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.ReadExternalContactDescriptionTarget(context.Background(), "external-1", "staff-1")
+			var failure wecomport.DirectoryFailure
+			if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != testCase.wantCode || failure.DirectoryFailureRetryable() != testCase.wantRetryable {
+				t.Fatalf("err=%v failure=%v", err, failure)
+			}
+		})
+	}
+}
+
+func TestClientReadExternalContactKeepsStrictTagValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+		case "/cgi-bin/externalcontact/get":
+			_, _ = w.Write([]byte(`{"errcode":0,"external_contact":{"external_userid":"external-1"},"follow_user":[{"userid":"staff-1","description":"manual","tags":[{"tag_id":7,"type":0}]}]}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ReadExternalContact(context.Background(), "external-1")
+	var failure wecomport.DirectoryFailure
+	if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != "provider_response_invalid" {
+		t.Fatalf("err=%v failure=%v", err, failure)
+	}
+}
+
+func TestClientUpdatesExternalContactDescriptionThroughRemarkEndpoint(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			if r.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("contact secret query=%q", r.URL.Query().Get("corpsecret"))
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+		case "/cgi-bin/externalcontact/remark":
+			calls++
+			if r.Method != http.MethodPost || r.URL.Query().Get("access_token") != "contact-token" {
+				t.Fatalf("request=%s %s", r.Method, r.URL.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["userid"] != "staff-1" || body["external_userid"] != "external-1" || body["description"] != "manual note\nexternal-1" {
+				t.Fatalf("body=%v", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = client.UpdateExternalContactDescription(context.Background(), wecomport.ExternalContactDescriptionUpdate{EmployeeID: "staff-1", ExternalUserID: "external-1", Description: "manual note\nexternal-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+
+func TestExternalContactDescriptionRetainsHistoricalValueOverWriteLimit(t *testing.T) {
+	value := strings.Repeat("企", 151)
+	raw, _ := json.Marshal(value)
+	if got, projected, err := externalContactDescription(raw); err != nil || !projected || got == nil || *got != value {
+		t.Fatalf("description=%v projected=%t err=%v", got, projected, err)
+	}
+	if validExternalContactDescription(value) {
+		t.Fatal("151-rune description accepted")
+	}
+	if !validExternalContactDescription(strings.Repeat("企", 150)) {
+		t.Fatal("150-rune description rejected")
+	}
+}
+
+func TestExternalContactDescriptionDistinguishesExplicitEmptyFromOmitted(t *testing.T) {
+	empty := json.RawMessage(`""`)
+	value, projected, err := externalContactDescription(empty)
+	if err != nil || !projected || value == nil || *value != "" {
+		t.Fatalf("value=%v projected=%t err=%v", value, projected, err)
+	}
+	value, projected, err = externalContactDescription(nil)
+	if err != nil || projected || value != nil {
+		t.Fatalf("value=%v projected=%t err=%v", value, projected, err)
+	}
+	value, projected, err = externalContactDescription(json.RawMessage(`null`))
+	if err != nil || projected || value != nil {
+		t.Fatalf("null value=%v projected=%t err=%v", value, projected, err)
 	}
 }
 func TestClientCustomerTransferUsesExactFrozenIDsAndRejectsOmittedRows(t *testing.T) {

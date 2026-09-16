@@ -63,7 +63,7 @@ function backend(customerID) {
         state: "ready",
         customer_id: customerID,
         context_token: `context-${customerID}`,
-        workbench: {},
+        workbench: { profile: { customer_id: customerID, oneid: `CID-${customerID}` } },
       });
     }
     if (url.pathname === "/api/sidebar/v2/send-intents" && method === "POST") {

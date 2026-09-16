@@ -867,5 +867,6 @@ func wecomMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0086_wecom_profile_primary_owner.sql"),
 		filepath.Join(root, "migrations", "0093_customer_tag_commands.sql"),
 		filepath.Join(root, "migrations", "0153_wecom_customer_detail_projection.sql"),
+		filepath.Join(root, "migrations", "0171_wecom_contact_description_source_coverage.sql"),
 	}
 }

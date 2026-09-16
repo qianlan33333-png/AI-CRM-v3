@@ -75,33 +75,34 @@ type Bootstrap struct {
 }
 
 type WeCom struct {
-	Enabled                         bool
-	CallbackEnabled                 bool
-	CustomerSyncEnabled             bool
-	CorpID                          string
-	AgentID                         string
-	Secret                          string
-	ContactSecret                   string
-	CallbackToken                   string
-	CallbackAESKey                  string
-	ContextSigningKey               string
-	ChannelStateHMACKey             string
-	ContextTokenTTL                 time.Duration
-	MaterialUploadTimeout           time.Duration
-	ChannelProviderReadEnabled      bool
-	ChannelQRProviderEnabled        bool
-	ChannelMediaPrepProviderEnabled bool
-	ChannelWelcomeProviderEnabled   bool
-	ChannelTagProviderEnabled       bool
-	CustomerTagProviderEnabled      bool
-	StaffDirectoryRefreshInterval   time.Duration
-	MessageArchiveEnabled           bool
-	MessageArchiveSecret            string
-	MessageArchiveRunnerPath        string
-	MessageArchiveLibraryPath       string
-	MessageArchivePrivateKeyPaths   map[uint32]string
-	MessageArchivePageLimit         uint32
-	MessageArchivePageBudget        int
+	Enabled                           bool
+	CallbackEnabled                   bool
+	CustomerSyncEnabled               bool
+	ContactDescriptionProviderEnabled bool
+	CorpID                            string
+	AgentID                           string
+	Secret                            string
+	ContactSecret                     string
+	CallbackToken                     string
+	CallbackAESKey                    string
+	ContextSigningKey                 string
+	ChannelStateHMACKey               string
+	ContextTokenTTL                   time.Duration
+	MaterialUploadTimeout             time.Duration
+	ChannelProviderReadEnabled        bool
+	ChannelQRProviderEnabled          bool
+	ChannelMediaPrepProviderEnabled   bool
+	ChannelWelcomeProviderEnabled     bool
+	ChannelTagProviderEnabled         bool
+	CustomerTagProviderEnabled        bool
+	StaffDirectoryRefreshInterval     time.Duration
+	MessageArchiveEnabled             bool
+	MessageArchiveSecret              string
+	MessageArchiveRunnerPath          string
+	MessageArchiveLibraryPath         string
+	MessageArchivePrivateKeyPaths     map[uint32]string
+	MessageArchivePageLimit           uint32
+	MessageArchivePageBudget          int
 	// APIBase and HTTPClient are composition-test injection only. Load never
 	// populates them, so a deployed runtime continues to use the fixed provider
 	// origin and default HTTP client.
@@ -478,6 +479,9 @@ func Load() (Runtime, error) {
 	if cfg.WeCom.CustomerSyncEnabled, err = strictBool("AICRM_WECOM_CUSTOMER_SYNC_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.WeCom.ContactDescriptionProviderEnabled, err = strictBool("AICRM_WECOM_CONTACT_DESCRIPTION_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	if cfg.WeCom.MessageArchiveEnabled, err = strictBool("AICRM_WECOM_MESSAGE_ARCHIVE_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
@@ -664,6 +668,9 @@ func Load() (Runtime, error) {
 	}
 	if cfg.WeCom.CustomerSyncEnabled && (!cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled WeCom customer sync configuration is incomplete")
+	}
+	if cfg.WeCom.ContactDescriptionProviderEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
+		return Runtime{}, errors.New("enabled WeCom contact description provider requires External Effects, WeCom, and contact credentials")
 	}
 	if cfg.WeCom.MessageArchiveEnabled {
 		values := []string{cfg.WeCom.CorpID, cfg.WeCom.MessageArchiveSecret, cfg.WeCom.MessageArchiveRunnerPath, cfg.WeCom.MessageArchiveLibraryPath}

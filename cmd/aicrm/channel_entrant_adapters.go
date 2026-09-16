@@ -12,6 +12,7 @@ import (
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	tagport "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
@@ -126,6 +127,32 @@ var _ channelport.PublishedEntrantActionReader = channelEntrantActionReaderAdapt
 var _ channelport.WelcomeMessageFreezer = channelEntrantActionReaderAdapter{}
 var _ channelport.WelcomeMaterialSnapshotResolver = channelWelcomeMaterialAdapter{}
 var _ wecomport.CurrentExternalContactReader = channelCurrentContactAdapter{}
+
+// contactDescriptionTargetAdapter resolves the verified, corp-scoped external
+// identity for a directory-observed follow employee. The directory observation
+// is the source of the run's relationship eligibility; callback relationship
+// rows are a separate lifecycle projection and are intentionally not required
+// for a historical full sync.
+type contactDescriptionTargetAdapter struct {
+	uow        platformport.UnitOfWork
+	corpID     string
+	identities identityport.ExternalIdentityValueReader
+}
+
+func (a contactDescriptionTargetAdapter) ResolveContactDescriptionTarget(ctx context.Context, customerID customerdomain.CustomerID, employeeID string) (wecomport.CurrentExternalContact, error) {
+	var result wecomport.CurrentExternalContact
+	err := a.uow.Within(ctx, func(tx context.Context) error {
+		value, found, err := a.identities.VerifiedExternalIdentityValue(tx, customerID, identitydomain.KindWeComExternalUserID, "wecom-corp:"+a.corpID)
+		if err != nil || !found {
+			return errors.New("current WeCom identity unavailable")
+		}
+		result = wecomport.CurrentExternalContact{EmployeeUserID: employeeID, ExternalUserID: value}
+		return nil
+	})
+	return result, err
+}
+
+var _ outbound.ContactDescriptionTargetResolver = contactDescriptionTargetAdapter{}
 var _ tagport.ProviderTagBindingReader = channelProviderTagAdapter{}
 var _ wecom.WelcomeGrantRedeemer = (*wecom.PostgreSQLWelcomeGrantStore)(nil)
 var _ wecomport.WelcomeGrantRedeemer = (*wecom.PostgreSQLWelcomeGrantStore)(nil)
