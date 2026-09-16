@@ -32,13 +32,13 @@ func TestPostgreSQLPaymentConfirmationReconciliationRestoresOnlyVerifiedOrderFac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.PaidConfirmedAt == nil || !result.PaidConfirmedAt.UTC().Equal(fixture.paidAt) {
-		t.Fatalf("paid confirmation=%v; want %s", result.PaidConfirmedAt, fixture.paidAt)
+	if result.PaidConfirmedAt == nil || !result.PaidConfirmedAt.UTC().Equal(fixture.persistedPaidAt()) {
+		t.Fatalf("paid confirmation=%v; want %s", result.PaidConfirmedAt, fixture.persistedPaidAt())
 	}
 	if result.ProviderTransactionReference != query.TransactionReference || result.ProviderTransactionDigest != string(query.TransactionDigest) {
 		t.Fatalf("verified transaction facts=%q/%q; want %q/%q", result.ProviderTransactionReference, result.ProviderTransactionDigest, query.TransactionReference, query.TransactionDigest)
 	}
-	fixture.assertPayment(t, fixture.paidAt, query.TransactionReference, query.TransactionDigest)
+	fixture.assertPayment(t, fixture.persistedPaidAt(), query.TransactionReference, query.TransactionDigest)
 	fixture.assertRecoveryFacts(t, 1, 1, 1)
 	state, err := fixture.payments.DistributionPaymentState(context.Background(), fixture.orderID)
 	if err != nil || !state.ConfirmedPaid || state.SplitCapable || state.OriginalPaymentRef == "" {
@@ -56,7 +56,7 @@ func TestPostgreSQLPaymentConfirmationReconciliationRestoresOnlyVerifiedOrderFac
 	}); err != nil {
 		t.Fatalf("late original callback after reconciliation: %v", err)
 	}
-	fixture.assertPayment(t, fixture.paidAt, query.TransactionReference, query.TransactionDigest)
+	fixture.assertPayment(t, fixture.persistedPaidAt(), query.TransactionReference, query.TransactionDigest)
 	fixture.assertLateCallback(t, 1, 1)
 
 	// Replaying the identical verified Provider fact must retain the original
@@ -65,10 +65,10 @@ func TestPostgreSQLPaymentConfirmationReconciliationRestoresOnlyVerifiedOrderFac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.PaidConfirmedAt == nil || !result.PaidConfirmedAt.UTC().Equal(fixture.paidAt) {
-		t.Fatalf("replayed paid confirmation=%v; want %s", result.PaidConfirmedAt, fixture.paidAt)
+	if result.PaidConfirmedAt == nil || !result.PaidConfirmedAt.UTC().Equal(fixture.persistedPaidAt()) {
+		t.Fatalf("replayed paid confirmation=%v; want %s", result.PaidConfirmedAt, fixture.persistedPaidAt())
 	}
-	fixture.assertPayment(t, fixture.paidAt, query.TransactionReference, query.TransactionDigest)
+	fixture.assertPayment(t, fixture.persistedPaidAt(), query.TransactionReference, query.TransactionDigest)
 	fixture.assertRecoveryFacts(t, 1, 1, 1)
 }
 
@@ -247,7 +247,11 @@ func newPaymentConfirmationFixture(t *testing.T, existingConfirmation time.Time)
 	t.Helper()
 	pool, closePool := refundWorkerPool(t)
 	ctx := context.Background()
-	paidAt := time.Date(2026, 9, 13, 10, 30, 0, 0, time.UTC)
+	// The Provider fact deliberately has sub-microsecond precision. PostgreSQL
+	// persists timestamptz values at microsecond precision, which exercises the
+	// reconciliation-first then late-callback comparison without hiding it by
+	// truncating the Provider value.
+	paidAt := time.Date(2026, 9, 13, 10, 30, 0, 123456789, time.UTC)
 
 	wrapped, err := platformpostgres.Wrap(pool, 3*time.Second)
 	if err != nil {
@@ -331,6 +335,10 @@ func (fixture *paymentConfirmationFixture) query() paymentport.WeChatPayPaymentQ
 		OccurredAt:           fixture.paidAt,
 		EvidenceDigest:       effectport.Hash("payment-confirmation.provider-query", fixture.merchant),
 	}
+}
+
+func (fixture *paymentConfirmationFixture) persistedPaidAt() time.Time {
+	return fixture.paidAt.Truncate(time.Microsecond)
 }
 
 func (fixture *paymentConfirmationFixture) assertPayment(t *testing.T, wantConfirmed time.Time, wantReference string, wantDigest effectport.Digest) {
