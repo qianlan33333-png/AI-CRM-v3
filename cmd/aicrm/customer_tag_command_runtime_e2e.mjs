@@ -69,10 +69,10 @@ try {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     const ready = dom.window.document.querySelector('#customer-tag-batch [name="add_tag_ids"] option')?.textContent === '运行时分组 / 运行时标签';
-    if (ready && dom.window.document.querySelector('input[aria-label="选择客户 1"]')) break;
+    if (ready && dom.window.document.querySelector('input[aria-label="选择用户 1"]')) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  const checkbox = dom.window.document.querySelector('input[aria-label="选择客户 1"]');
+  const checkbox = dom.window.document.querySelector('input[aria-label="选择用户 1"]');
   if (!checkbox) throw new Error('actual Host list did not render selection');
   checkbox.checked = true;
   checkbox.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
@@ -105,10 +105,10 @@ try {
   for (let remaining = 40; remaining > 0; remaining--) {
     await new Promise((resolve) => setTimeout(resolve, 10));
     result = dom.window.document.querySelector('#customer-tag-batch-result')?.textContent || '';
-    if (calls.length === 2 && result.includes('已刷新执行结果：客户 #1：排队中；观察标签：已观察标签（已生效）')) break;
+    if (calls.length === 2 && result.includes('已刷新执行结果：用户 #1：排队中；观察标签：已观察标签（已生效）')) break;
   }
   if (calls.join(',') !== '/api/v1/customer-tag-commands/preview,/api/v1/customer-tag-commands' ||
-      !result.includes('已刷新执行结果：客户 #1：排队中；观察标签：已观察标签（已生效）') ||
+      !result.includes('已刷新执行结果：用户 #1：排队中；观察标签：已观察标签（已生效）') ||
       result.includes('：queued') || result.includes('（active）')) {
     throw new Error(`Host tag interaction calls=${calls.join(',')} result=${result}`);
   }

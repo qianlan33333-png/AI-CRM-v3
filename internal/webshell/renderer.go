@@ -852,7 +852,7 @@ func normalizeAdminPage(data *AdminPageData) {
 		data.PageSummary = "v3 管理后台壳已就绪，业务能力按模块逐项接入。"
 	}
 	if data.Breadcrumbs == nil {
-		data.Breadcrumbs = []Breadcrumb{{Label: "客户管理后台", Href: AdminRootPath}}
+		data.Breadcrumbs = []Breadcrumb{{Label: "用户管理后台", Href: AdminRootPath}}
 	}
 	if data.NavItems == nil {
 		data.NavItems = NavItems(data.ActiveEndpoint)
@@ -870,7 +870,7 @@ func normalizeLoginPage(data *LoginPageData) {
 		data.PageTitle = "后台登录"
 	}
 	if data.PageSummary == "" {
-		data.PageSummary = "企业微信负责“你是谁”，客户管理后台负责“你能做什么”。"
+		data.PageSummary = "企业微信负责“你是谁”，用户管理后台负责“你能做什么”。"
 	}
 	data.NextPath = SafeNextPath(data.NextPath)
 	if data.FormAction == "" {

@@ -20,11 +20,11 @@
     },
     {
       "key": "customers",
-      "label": "客户",
+      "label": "用户",
       "items": [
         {
           "key": "customers",
-          "label": "客户激活 / 客户列表",
+          "label": "用户激活 / 用户列表",
           "endpoint": "api.admin_console_customers",
           "href": "/admin/customers",
           "active_prefixes": [

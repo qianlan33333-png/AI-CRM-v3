@@ -1899,7 +1899,7 @@ console.log('admin/customerDetail.html（安全 Customer360）');
 {
   const dom = await loadPage('admin/customerDetail.html', { id: 1 });
   const d = dom.window.document;
-  ok('Customer360 渲染原壳客户档案', d.body.textContent.includes('李思远') && d.body.textContent.includes('客户档案') && d.body.textContent.includes('渠道 ID'));
+  ok('Customer360 渲染原壳用户档案', d.body.textContent.includes('李思远') && d.body.textContent.includes('用户档案') && d.body.textContent.includes('渠道 ID'));
   ok('Customer360 渲染标签与时间线摘要', d.querySelectorAll('[data-customer-not-found]').length === 0 && d.querySelectorAll('tbody tr').length === 2 && d.body.textContent.includes('owner.assigned'));
   ok('Customer360 聊天只展示零正文摘要', d.querySelectorAll('[data-customer-not-found]').length === 0 && d.body.textContent.includes('消息类型：text') && d.body.textContent.includes('消息类型：image') && d.body.textContent.includes('仅展示类型和时间，不展示正文'));
   const rendered = d.querySelector('#stage')?.textContent || '';
@@ -1933,8 +1933,8 @@ console.log('admin/customerDetail.html?id=999（404 占位态）');
   const dom = await loadPage('admin/customerDetail.html', { id: 999 });
   const d = dom.window.document;
   const back = d.querySelector('[data-customer-not-found] button');
-  ok('客户不存在显示明确占位', d.querySelector('[data-customer-not-found]')?.textContent.includes('客户档案不存在'));
-  ok('客户不存在提供返回客户列表', back?.textContent.trim() === '返回客户列表' && back?.__dcBound === true && !d.querySelector('#fCustomerName'));
+  ok('用户不存在显示明确占位', d.querySelector('[data-customer-not-found]')?.textContent.includes('用户档案不存在'));
+  ok('用户不存在提供返回用户列表', back?.textContent.trim() === '返回用户列表' && back?.__dcBound === true && !d.querySelector('#fCustomerName'));
   dom.window.close();
 }
 
@@ -2887,7 +2887,7 @@ console.log('admin/channelForm.html?id=49（V1 归档历史只读分页）');
   ok('V1 历史仅手动加载，不在渠道详情初始化时请求', !!d.querySelector('#channelHistoryLoad') && calls.every((call) => call.path !== '/api/admin/channels/49/history'));
   click(dom, d.querySelector('#channelHistoryLoad'));
   await sleep(50);
-  ok('V1 历史使用真实生成 GET，展示归档联系人、未核验客户与客服快照', d.body.textContent.includes('801') && d.body.textContent.includes('21') && d.body.textContent.includes('legacy-owner-7') && d.body.textContent.includes('历史客服') && d.body.textContent.includes('不代表当前客户归属、员工权限') && calls.some((call) => call.path === '/api/admin/channels/49/history' && call.query.includes('limit=50') && call.query.includes('offset=0') && call.method === 'GET'));
+  ok('V1 历史使用真实生成 GET，展示归档联系人、未核验用户与客服快照', d.body.textContent.includes('801') && d.body.textContent.includes('21') && d.body.textContent.includes('legacy-owner-7') && d.body.textContent.includes('历史客服') && d.body.textContent.includes('不代表当前用户归属、员工权限') && calls.some((call) => call.path === '/api/admin/channels/49/history' && call.query.includes('limit=50') && call.query.includes('offset=0') && call.method === 'GET'));
   ok('V1 历史总数和下一页按 offset 准确呈现', d.querySelector('#channelHistoryRange')?.textContent.includes('共 51 条') && !!d.querySelector('#channelHistoryNext'));
   click(dom, d.querySelector('#channelHistoryNext'));
   await sleep(50);

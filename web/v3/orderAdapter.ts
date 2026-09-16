@@ -897,7 +897,7 @@ function appendRefundForm(parent: HTMLElement, order: DetailRecord): void {
   const reason = document.createElement('select');
   reason.className = 'select';
   reason.dataset.orderRefundReason = '';
-  for (const label of ['客户主动申请退款', '商品或服务异常']) { const option = document.createElement('option'); option.value = label; option.textContent = label; reason.appendChild(option); }
+  for (const label of ['用户主动申请退款', '商品或服务异常']) { const option = document.createElement('option'); option.value = label; option.textContent = label; reason.appendChild(option); }
   reasonLabel.appendChild(reason);
   const checkedLabel = element('label');
   checkedLabel.className = 'field';
@@ -1364,7 +1364,7 @@ function applyOrderDetailPresentation(): void {
   ]);
   appendDetailSection(card, '买家信息', [
     ['买家', text(order.payer_name, '未提供')],
-    ['客户编号', customerReference(order.payer_id)],
+    ['用户编号', customerReference(order.payer_id)],
     ['手机号', text(order.payer_phone_masked, '未提供')],
   ]);
   const items = detailContext.items || [];

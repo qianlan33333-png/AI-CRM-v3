@@ -122,7 +122,7 @@
 
   function tagCommandReason(value) {
     return ({
-      target_unavailable: "当前客户暂不可执行标签变更。",
+      target_unavailable: "当前用户暂不可执行标签变更。",
       provider_rejected: "企微服务未接受本次标签变更。",
     })[String(value || "").trim()] || "执行原因待确认。";
   }
@@ -138,7 +138,7 @@
   }
 
   function customerStatusLabel(value) {
-    return ({ active: "正常", merged: "已合并", closed: "已关闭" })[String(value || "")] || "客户状态待确认";
+    return ({ active: "正常", merged: "已合并", closed: "已关闭" })[String(value || "")] || "用户状态待确认";
   }
 
   function contactTypeLabel(value) {
@@ -148,7 +148,7 @@
 
   function touchpointSourceLabel(value) {
     const source = typeof value === "string" ? value.trim() : "";
-    const known = { wecom: "企业微信", order: "交易", survey: "问卷", customer: "客户档案" };
+    const known = { wecom: "企业微信", order: "交易", survey: "问卷", customer: "用户档案" };
     if (known[source]) return known[source];
     return source ? `其他（${source}）` : "待确认";
   }
@@ -207,7 +207,7 @@
         syncMetric("已投影", run.projected),
       );
     } catch (error) {
-      el.syncSummary.textContent = error.status === 503 ? "企微客户同步当前未启用。" : "同步状态暂时不可用。";
+      el.syncSummary.textContent = error.status === 503 ? "企微用户同步当前未启用。" : "同步状态暂时不可用。";
     }
   }
 
@@ -385,7 +385,7 @@
     const lines = preview.lines || [];
     const eligible = lines.filter((line) => line.state === "eligible").length;
     const rejected = lines.filter((line) => line.state === "rejected").length;
-    return "可执行 " + eligible + " 位客户，拒绝 " + rejected + " 位。确认后会再次核验当前跟进人与标签映射。";
+    return "可执行 " + eligible + " 位用户，拒绝 " + rejected + " 位。确认后会再次核验当前跟进人与标签映射。";
   }
 
   function observedTagSummary(items) {
@@ -403,9 +403,9 @@
       const line = entry && entry.line ? entry.line : entry || {};
       const reason = line.result_reason || line.reject_reason;
       const observed = entry && entry.observed ? "；观察标签：" + observedTagSummary(entry.observed) : "";
-      return "客户 #" + String(line.customer_id || "—") + "：" + tagCommandStateLabel(line.state) + (reason ? "（" + tagCommandReason(reason) + "）" : "") + observed;
+      return "用户 #" + String(line.customer_id || "—") + "：" + tagCommandStateLabel(line.state) + (reason ? "（" + tagCommandReason(reason) + "）" : "") + observed;
     });
-    return prefix + (detail.length ? detail.join("；") : "暂无可回读的客户结果。");
+    return prefix + (detail.length ? detail.join("；") : "暂无可回读的用户结果。");
   }
 
   async function refreshTagCommand(command, resultNode) {
@@ -448,7 +448,7 @@
     const add = tagIDs(data.getAll("add_tag_ids"));
     const remove = tagIDs(data.getAll("remove_tag_ids"));
     if (!customerIDs.length || add === null || remove === null || add.length + remove.length > 100 || (!add.length && !remove.length) || add.some((id) => remove.includes(id))) {
-      if (resultNode) resultNode.textContent = "请选择客户，并从目录选择不重复的标签。";
+      if (resultNode) resultNode.textContent = "请选择用户，并从目录选择不重复的标签。";
       return;
     }
     const key = commandKey();
@@ -482,7 +482,7 @@
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = selectedCustomers.has(String(item.customer_id));
-    checkbox.setAttribute("aria-label", "选择客户 " + item.customer_id);
+    checkbox.setAttribute("aria-label", "选择用户 " + item.customer_id);
     checkbox.addEventListener("change", () => { if (checkbox.checked) selectedCustomers.add(String(item.customer_id)); else selectedCustomers.delete(String(item.customer_id)); });
     select.append(checkbox);
     row.append(select);
@@ -491,7 +491,7 @@
     cell.className = "admin-customer-cell";
     const name = document.createElement("div");
     name.className = "admin-customer-name";
-    name.textContent = item.display_name || "未命名客户";
+    name.textContent = item.display_name || "未命名用户";
     const subtext = document.createElement("div");
     subtext.className = "admin-customer-subtext";
     subtext.textContent = "Customer #" + item.customer_id;
@@ -542,7 +542,7 @@
     const controller = new AbortController();
     listAbortController = controller;
     setListBusy(true);
-    listState("正在加载客户", "按当前筛选读取客户目录。", false);
+    listState("正在加载用户", "按当前筛选读取用户目录。", false);
     try {
       const data = await request(api.customers + "?" + params.toString(), { signal: controller.signal });
       if (requestID !== listRequestID) return;
@@ -559,11 +559,11 @@
       }
       el.body.replaceChildren();
       for (const item of data.items || []) el.body.append(listRow(item));
-      el.summary.textContent = (data.total_is_estimate ? "至少 " : "共 ") + String(data.total || 0) + " 位客户";
+      el.summary.textContent = (data.total_is_estimate ? "至少 " : "共 ") + String(data.total || 0) + " 位用户";
       const hasItems = (data.items || []).length > 0;
       el.state.hidden = hasItems;
       el.wrap.hidden = !hasItems;
-      if (!hasItems) listState("当前没有匹配客户", "请调整关键词、手机号或客户状态后重试。", false);
+      if (!hasItems) listState("当前没有匹配用户", "请调整关键词、手机号或用户状态后重试。", false);
       nextCursor = data.next_cursor || "";
       el.previous.hidden = pageIndex === 0;
       el.next.hidden = !nextCursor;
@@ -573,7 +573,7 @@
       if (requestID !== listRequestID || controller.signal.aborted) return;
       if (error.status === 401) listState("登录已失效", "请重新登录后查询。", true);
       else if (error.status === 400 && error.message === "invalid_request") listState("手机号格式不正确", "请输入11位中国大陆手机号。", true);
-      else listState("客户列表暂时不可用", "请稍后重试。", true);
+      else listState("用户列表暂时不可用", "请稍后重试。", true);
     } finally {
       if (requestID !== listRequestID) return;
       listAbortController = null;
@@ -650,10 +650,10 @@
 
   function sectionMessage(section) {
     const candidate = object(section);
-    if (!candidate) return "该分区数据待确认，其他客户信息不受影响。";
-    if (candidate.status === "not_ready") return "该分区尚未准备好，其他客户信息不受影响。";
-    if (candidate.status === "degraded") return "该分区暂时不可用，其他客户信息不受影响。";
-    return "该分区数据待确认，其他客户信息不受影响。";
+    if (!candidate) return "该分区数据待确认，其他用户信息不受影响。";
+    if (candidate.status === "not_ready") return "该分区尚未准备好，其他用户信息不受影响。";
+    if (candidate.status === "degraded") return "该分区暂时不可用，其他用户信息不受影响。";
+    return "该分区数据待确认，其他用户信息不受影响。";
   }
 
   function sectionCard(title, section, render, renderDegraded) {
@@ -833,7 +833,7 @@
       const firstPhone = phones.length ? object(phones[0]) : null;
       const maskedPhone = firstPhone ? displayValue(firstPhone.masked, "") : "";
       const profileReady = Boolean(item);
-      el.profileName.textContent = profileReady ? displayValue(item.display_name, "客户名称待确认") : "客户根资料待确认";
+      el.profileName.textContent = profileReady ? displayValue(item.display_name, "用户名称待确认") : "用户根资料待确认";
       el.detailFields.replaceChildren(
         profileField("姓名", profileReady ? item.display_name : "待确认"),
         profileField("手机号", phoneField(maskedPhone ? localPhone(maskedPhone) : "", Boolean(identity))),
@@ -841,9 +841,9 @@
         profileField("OneID", profileReady ? [displayValue(item.oneid, ""), ...identities].filter(Boolean).join(" · ") || "待确认" : "待确认"),
       );
       el.profileMeta.replaceChildren(
-        metaItem("客户状态", profileReady ? customerStatusLabel(item.status) : "待确认"),
+        metaItem("用户状态", profileReady ? customerStatusLabel(item.status) : "待确认"),
         metaItem("企业", profileReady ? item.corp_name : "待确认"),
-        metaItem("客户类型", profileReady ? contactTypeLabel(item.contact_type) : "待确认"),
+        metaItem("用户类型", profileReady ? contactTypeLabel(item.contact_type) : "待确认"),
         metaItem("数据来源", profileReady ? item.source : "待确认"),
         metaItem("最后同步", profileReady ? timeValue(item.last_synced_at) : "待确认"),
       );
@@ -854,8 +854,8 @@
         el.detailState.replaceChildren();
         const strong = document.createElement("strong");
         const span = document.createElement("span");
-        strong.textContent = "客户根资料暂时不可用";
-        span.textContent = "其他已读取的客户记录仍可单独查看。";
+        strong.textContent = "用户根资料暂时不可用";
+        span.textContent = "其他已读取的用户记录仍可单独查看。";
         el.detailState.append(strong, span);
         el.detailState.hidden = false;
       }
@@ -874,8 +874,8 @@
       el.detailState.replaceChildren();
       const strong = document.createElement("strong");
       const span = document.createElement("span");
-      strong.textContent = error.status === 404 ? "客户不存在" : "当前无法加载";
-      span.textContent = error.status === 404 ? "请返回客户列表重新选择。" : "客户基础档案暂时不可用。";
+      strong.textContent = error.status === 404 ? "用户不存在" : "当前无法加载";
+      span.textContent = error.status === 404 ? "请返回用户列表重新选择。" : "用户基础档案暂时不可用。";
       el.detailState.append(strong, span);
     }
   }
@@ -884,10 +884,10 @@
     el.syncStart.disabled = true;
     try {
       await request(api.sync, { method: "POST", headers: { "X-CSRF-Token": csrf(), "Idempotency-Key": "manual-ui-" + crypto.randomUUID() } });
-      showAlert("已创建企微客户同步轮次。", true);
+      showAlert("已创建企微用户同步轮次。", true);
       await loadSync();
     } catch (error) {
-      showAlert(error.status === 403 ? "仅 SuperAdmin 可重拉企微客户。" : error.status === 503 ? "企微客户同步未启用或凭据未就绪。" : "无法创建同步轮次。", false);
+      showAlert(error.status === 403 ? "仅 SuperAdmin 可重拉企微用户。" : error.status === 503 ? "企微用户同步未启用或凭据未就绪。" : "无法创建同步轮次。", false);
     } finally {
       el.syncStart.disabled = false;
     }

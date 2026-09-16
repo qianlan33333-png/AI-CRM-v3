@@ -79,7 +79,7 @@ func TestPostgreSQLAdminOverviewChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1")
 	}
-	fixture := newAdminOverviewFixture(t, withAdminOverviewTrendFacts(), withAdminOverviewOrderReadFacts())
+	fixture := newAdminOverviewFixture(t, withAdminOverviewTrendFacts(), withAdminOverviewLongTrendAmount(), withAdminOverviewOrderReadFacts())
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate overview Chromium journey")
@@ -232,8 +232,9 @@ type adminOverviewFixture struct {
 }
 
 type adminOverviewFixtureOptions struct {
-	includeTrendFacts     bool
-	includeOrderReadFacts bool
+	includeTrendFacts      bool
+	includeLongTrendAmount bool
+	includeOrderReadFacts  bool
 }
 type adminOverviewFixtureOption func(*adminOverviewFixtureOptions)
 
@@ -242,6 +243,13 @@ type adminOverviewFixtureOption func(*adminOverviewFixtureOptions)
 // minimal one-payment baseline so their exact denominator is self-contained.
 func withAdminOverviewTrendFacts() adminOverviewFixtureOption {
 	return func(options *adminOverviewFixtureOptions) { options.includeTrendFacts = true }
+}
+
+// withAdminOverviewLongTrendAmount keeps the long-money visual proof scoped to
+// Chromium. Production aggregation semantics and the narrower composition
+// fixtures retain their concise, independently asserted amounts.
+func withAdminOverviewLongTrendAmount() adminOverviewFixtureOption {
+	return func(options *adminOverviewFixtureOptions) { options.includeLongTrendAmount = true }
 }
 
 // withAdminOverviewOrderReadFacts enables the synthetic payment configuration
@@ -304,14 +312,14 @@ func newAdminOverviewFixture(t *testing.T, configure ...adminOverviewFixtureOpti
 	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "overview-browser-admin", Password: "overview-browser-admin-password", DisplayName: "Overview Browser Admin"}); err != nil {
 		t.Fatal(err)
 	}
-	seedAdminOverviewFacts(t, ctx, application, options.includeTrendFacts, options.includeOrderReadFacts)
+	seedAdminOverviewFacts(t, ctx, application, options.includeTrendFacts, options.includeLongTrendAmount, options.includeOrderReadFacts)
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	session, _ := adminAccessLogin(t, application.handler, "overview-browser-admin", "overview-browser-admin-password")
 	return &adminOverviewFixture{ctx: ctx, application: application, server: server, session: session}
 }
 
-func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *composedApplication, includeTrendFacts, includeOrderReadFacts bool) {
+func seedAdminOverviewFacts(t *testing.T, ctx context.Context, application *composedApplication, includeTrendFacts, includeLongTrendAmount, includeOrderReadFacts bool) {
 	t.Helper()
 	pool := application.pool.Native()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -352,13 +360,17 @@ reserved_at,created_at
 		// Seed three trustworthy confirmation dates only for the visual fixture.
 		// The deliberately absent dates exercise ready-only client-side zero-day
 		// completion without fabricating data when the Owner reports data_missing.
+		longTrendAmount := int64(800)
+		if includeLongTrendAmount {
+			longTrendAmount = 1234567890
+		}
 		for _, extra := range []struct {
 			sourceKey, merchantOrder string
 			amount                   int64
 			confirmedAt              time.Time
 		}{
 			{sourceKey: "overview-browser-order-six-days", merchantOrder: "M-OVERVIEW-BROWSER-6", amount: 400, confirmedAt: now.AddDate(0, 0, -6)},
-			{sourceKey: "overview-browser-order-three-days", merchantOrder: "M-OVERVIEW-BROWSER-3", amount: 800, confirmedAt: now.AddDate(0, 0, -3)},
+			{sourceKey: "overview-browser-order-three-days", merchantOrder: "M-OVERVIEW-BROWSER-3", amount: longTrendAmount, confirmedAt: now.AddDate(0, 0, -3)},
 		} {
 			var extraOrderID int64
 			if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','overview-browser',$1,$2,$3,$3,$4,'CNY','paid','native',true,1,$5,$5) RETURNING id`, extra.sourceKey, extra.merchantOrder, customerID, extra.amount, extra.confirmedAt).Scan(&extraOrderID); err != nil {

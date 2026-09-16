@@ -91,6 +91,37 @@ function scrubFrozenServerPlaceholders(page: HTMLElement): void {
   for (let node = walker.nextNode(); node; node = walker.nextNode()) node.nodeValue = (node.nodeValue || "").replace(replacement, "");
 }
 
+function adaptFrozenDonorCopy(page: HTMLElement): void {
+  // The donor remains byte-frozen. Adapt only its known static labels after
+  // mounting; imported values, legacy file headers and protocol tokens stay
+  // untouched.
+  const exact: Array<[string, string, string]> = [
+    ["h1", "客户负责人迁移 / 在职继承", "用户负责人迁移 / 在职继承"],
+    [".owner-migration-subtitle", "先完成企微客户转接，再同步 CRM 本地归属；执行前必须预览。", "先完成企微用户转接，再同步 CRM 本地归属；执行前必须预览。"],
+    [".owner-migration-switch-line span", "先调用企微官方转接接口；企微成功的客户才同步 CRM。", "先调用企微官方转接接口；企微成功的用户才同步 CRM。"],
+    ["[data-confirm-phrase-input]", "确认将 0 个客户从 source 迁移到 target", "确认将 0 个用户从 source 迁移到 target"],
+  ];
+  exact.forEach(([selector, source, target]) => {
+    page.querySelectorAll<HTMLElement>(selector).forEach((node) => {
+      if (node.textContent?.trim() === source) node.textContent = target;
+      if (node instanceof HTMLInputElement && node.placeholder === source) node.placeholder = target;
+    });
+  });
+  const replacements = new Map<string, string>([
+    ["迁移原负责人当前全部候选客户。保留现有能力。", "迁移原负责人当前全部候选用户。保留现有能力。"],
+    ["只迁移 Excel 中标记为“是”的客户。", "只迁移 Excel 中标记为“是”的用户。"],
+    ["去重后客户数", "去重后用户数"],
+    ["可迁移客户", "可迁移用户"],
+    ["不可迁移客户", "不可迁移用户"],
+    ["请求客户数", "请求用户数"],
+  ]);
+  page.querySelectorAll<HTMLElement>(".owner-migration-hint, .owner-migration-stat-label").forEach((node) => {
+    const source = node.textContent?.trim() || "";
+    const target = replacements.get(source);
+    if (target) node.textContent = target;
+  });
+}
+
 async function mountFrozenDonor(stage: HTMLElement): Promise<HTMLElement> {
   const response = await fetch(donorURL, { credentials: "same-origin" });
   if (!response.ok) throw requestFailure("负责人迁移页面暂不可用，请刷新后重试。", response.status);
@@ -102,6 +133,7 @@ async function mountFrozenDonor(stage: HTMLElement): Promise<HTMLElement> {
   // mounts it, removes unrendered Jinja tokens, and connects stable V3 ports.
   const cloned = page.cloneNode(true) as HTMLElement;
   scrubFrozenServerPlaceholders(cloned);
+  adaptFrozenDonorCopy(cloned);
   stage.replaceChildren(style.cloneNode(true), cloned);
   const mounted = stage.querySelector<HTMLElement>("[data-owner-migration-page]");
   if (!mounted) throw new Error("冻结迁移页面未挂载");
@@ -222,14 +254,14 @@ function ownerUserID(root: ParentNode, kind: "source" | "target", directory: Own
 
 function selectedScope(root: ParentNode): string { return query<HTMLInputElement>(root, 'input[name="scope_type"]:checked').value; }
 function transferStatusLabel(status: number): string {
-  return ({ 0: "本地迁移", 1: "企微转接已完成", 2: "企微转接处理中", 3: "客户拒绝接替", 4: "目标成员客户上限", 5: "未找到企微转接记录" } as Record<number, string>)[status] || "企微转接状态待确认";
+  return ({ 0: "本地迁移", 1: "企微转接已完成", 2: "企微转接处理中", 3: "用户拒绝接替", 4: "目标成员用户上限", 5: "未找到企微转接记录" } as Record<number, string>)[status] || "企微转接状态待确认";
 }
 
 function ownerMigrationStateLabel(state: string): string {
   return ({
     ready: "可迁移", skipped_by_file: "已按文件跳过", not_under_source_owner: "负责人不一致",
-    not_found: "未找到客户", conflict: "迁移冲突", unresolved: "待核实",
-    missing_external_userid: "缺少客户标识", invalid_move_flag: "迁移标记无效", duplicate: "文件重复",
+    not_found: "未找到用户", conflict: "迁移冲突", unresolved: "待核实",
+    missing_external_userid: "缺少用户标识", invalid_move_flag: "迁移标记无效", duplicate: "文件重复",
     accepted: "已受理", queued: "排队中", attempted: "正在执行", executed: "已执行",
     provider_accepted: "企微已受理", final_failed: "执行失败", outcome_unknown: "结果待核实",
     retryable_failed: "可重试失败", cancelled: "已取消", reconciled: "已核对", cas_conflict: "状态冲突",
@@ -239,8 +271,8 @@ function ownerMigrationStateLabel(state: string): string {
 
 function ownerMigrationReason(reason: string): string {
   return ({
-    "external_userid is required": "缺少客户标识。",
-    "duplicate external_userid; first row is kept": "文件中存在重复客户标识，已保留首次出现的记录。",
+    "external_userid is required": "缺少用户标识。",
+    "duplicate external_userid; first row is kept": "文件中存在重复用户标识，已保留首次出现的记录。",
     "Excel marked skip": "已按文件标记跳过。",
     "no executable rows": "没有可执行迁移行。",
     "是否迁移字段非法": "迁移标记无效。",
@@ -333,10 +365,10 @@ function renderRows(root: HTMLElement, rows: DisplayRow[], scope: string, source
   const ready = rows.filter(row => row.State === "ready").length;
   const skipped = rows.filter(row => row.State === "skipped_by_file").length;
   const blocked = rows.length - ready - skipped;
-  query<HTMLElement>(root, "[data-preview-basic]").textContent = `${scope === "excel_include" ? "Excel 指定名单" : "全部客户"} · 原负责人 #${source} → 目标负责人 #${target} · ${ready} 个可迁移客户；${blocked} 个不可迁移。`;
+  query<HTMLElement>(root, "[data-preview-basic]").textContent = `${scope === "excel_include" ? "Excel 指定名单" : "全部用户"} · 原负责人 #${source} → 目标负责人 #${target} · ${ready} 个可迁移用户；${blocked} 个不可迁移。`;
   const values: Record<string, number> = { total_rows: rows.length, unique_external_userids: new Set(rows.map(row => row.ExternalUserID).filter(Boolean)).size, ready, skipped_by_file: skipped, blocked, crm_updates: ready };
   Object.entries(values).forEach(([name, value]) => { const node = root.querySelector<HTMLElement>(`[data-preview-stat="${name}"]`); if (node) node.textContent = String(value); });
-  query<HTMLElement>(root, "[data-preview-rows]").innerHTML = rows.map(row => `<tr><td>${row.Line}</td><td><code>${esc(row.ExternalUserID)}</code></td><td>${esc(row.CustomerDisplayName)}</td><td>${esc(row.MoveFlag)}</td><td>${esc(row.CurrentOwnerUserID)}</td><td><span class="owner-migration-status owner-migration-status--${row.State === "ready" ? "ready" : row.State === "skipped_by_file" ? "skip" : "block"}">${esc(ownerMigrationStateLabel(row.State))}</span></td><td>${esc(ownerMigrationReason(row.Reason))}</td></tr>`).join("") || '<tr><td colspan="7" class="owner-migration-empty">当前范围没有候选客户。</td></tr>';
+  query<HTMLElement>(root, "[data-preview-rows]").innerHTML = rows.map(row => `<tr><td>${row.Line}</td><td><code>${esc(row.ExternalUserID)}</code></td><td>${esc(row.CustomerDisplayName)}</td><td>${esc(row.MoveFlag)}</td><td>${esc(row.CurrentOwnerUserID)}</td><td><span class="owner-migration-status owner-migration-status--${row.State === "ready" ? "ready" : row.State === "skipped_by_file" ? "skip" : "block"}">${esc(ownerMigrationStateLabel(row.State))}</span></td><td>${esc(ownerMigrationReason(row.Reason))}</td></tr>`).join("") || '<tr><td colspan="7" class="owner-migration-empty">当前范围没有候选用户。</td></tr>';
   query<HTMLButtonElement>(root, "[data-download-errors]").disabled = blocked === 0;
   query<HTMLButtonElement>(root, "[data-execute]").disabled = ready === 0;
 }
@@ -358,7 +390,7 @@ function renderBatch(root: HTMLElement, batch: Batch): void {
     `迁移批次：${batch.ID}`,
     `迁移方式：${ownerMigrationModeLabel(batch.Mode)}`,
     `批次状态：${ownerMigrationStateLabel(batch.State)}`,
-    ...(batch.Lines || []).map(line => `第 ${line.Line} 行，客户 #${line.CustomerID}：${ownerMigrationStateLabel(line.State)}；企微转接：${transferStatusLabel(line.TransferStatus)}`),
+    ...(batch.Lines || []).map(line => `第 ${line.Line} 行，用户 #${line.CustomerID}：${ownerMigrationStateLabel(line.State)}；企微转接：${transferStatusLabel(line.TransferStatus)}`),
   ].join("\n");
 }
 
@@ -465,7 +497,7 @@ async function boot(): Promise<void> {
           setNotice("文件没有可执行迁移行，已保留逐行校验结果，不能确认执行。", "ok");
           return;
         }
-        preview = await api<Preview>("/api/admin/customers/owner-handoffs/previews", { method: "POST", body: JSON.stringify({ mode: currentMode(root), scope, source_staff_id: source, target_staff_id: target, customer_ids: [], external_userids: scope === "excel_include" ? fileExternalIDs : [], welcome_message: query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").value, confirmation_phrase: `确认将当前候选客户迁移到 ${target}`, idempotency_key: key() }) });
+        preview = await api<Preview>("/api/admin/customers/owner-handoffs/previews", { method: "POST", body: JSON.stringify({ mode: currentMode(root), scope, source_staff_id: source, target_staff_id: target, customer_ids: [], external_userids: scope === "excel_include" ? fileExternalIDs : [], welcome_message: query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").value, confirmation_phrase: `确认将当前候选用户迁移到 ${target}`, idempotency_key: key() }) });
         displayedRows = renderPreview(root, preview, scope, importedRows, sourceUserID);
         setNotice("预览已生成，请逐字输入确认短语。", "ok");
       } catch (error) { setNotice(ownerHandoffErrorMessage(error, "预览失败，请检查填写内容后重试。"), "error"); }

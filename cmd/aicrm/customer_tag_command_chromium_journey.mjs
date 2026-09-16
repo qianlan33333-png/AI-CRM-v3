@@ -95,8 +95,8 @@ try {
     await delay(250);
     const rendered = await evaluate(cdp, "document.querySelector('#customer-tag-batch-result')?.textContent || ''");
     if (
-      rendered.includes('客户 #1：已执行；观察标签：fixture group / fixture add（已生效）') &&
-      rendered.includes('客户 #2：结果待核实；观察标签：暂无已观察标签') &&
+      rendered.includes('用户 #1：已执行；观察标签：fixture group / fixture add（已生效）') &&
+      rendered.includes('用户 #2：结果待核实；观察标签：暂无已观察标签') &&
       !rendered.includes('：executed') &&
       !rendered.includes('：outcome_unknown') &&
       !rendered.includes('（active）')

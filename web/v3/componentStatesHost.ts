@@ -56,7 +56,7 @@ const composerVariables: ContentVariablePolicy = {
   // rather than this parser, decides whether a particular token is allowed.
   scan(value) { return [...String(value).matchAll(/\{\{([^{}]+)\}\}/g)].map((match) => `{{${match[1].trim()}}}`); },
   variables: [
-    { token: '{{customer_name}}', label: '客户称呼' },
+    { token: '{{customer_name}}', label: '用户称呼' },
     { token: '{{plan_name}}', label: '计划名称' },
   ],
   unknownTokenReason: '示例变量不在当前本地目录中。',

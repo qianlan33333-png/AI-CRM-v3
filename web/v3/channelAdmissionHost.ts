@@ -442,7 +442,7 @@ function installWelcomeTemplateHelp(root: HTMLElement): void {
   const hint = document.createElement('div');
   hint.id = 'channel-welcome-template-help';
   hint.className = 'form-text';
-  hint.textContent = '可使用 {{客户名}} 自动带入客户姓名；姓名暂缺时显示“朋友”。';
+  hint.textContent = '可使用 {{客户名}} 自动带入用户姓名；姓名暂缺时显示“朋友”。';
   input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), hint.id].filter(Boolean).join(' '));
   input.insertAdjacentElement('afterend', hint);
 }
