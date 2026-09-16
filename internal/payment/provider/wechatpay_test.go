@@ -237,7 +237,10 @@ func TestCallbackVerifiesSignatureAndDecrypts(t *testing.T) {
 	platform, _ := rsa.GenerateKey(rand.Reader, 2048)
 	apiKey := []byte("0123456789abcdef0123456789abcdef")
 	now := time.Date(2026, 9, 3, 3, 0, 0, 0, time.UTC)
-	plain := []byte(`{"appid":"app","mchid":"mch","out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","success_time":"2026-09-03T02:59:00Z","amount":{"total":99,"currency":"CNY"}}`)
+	// A production transaction notification can report payer_total separately
+	// when a WeChat coupon is used.  Settlement must continue to compare the
+	// merchant's original amount.total while accepting the additive fields.
+	plain := []byte(`{"appid":"app","mchid":"mch","out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","success_time":"2026-09-03T02:59:00Z","trade_type":"JSAPI","payer":{"openid":"opaque"},"amount":{"total":99,"payer_total":1,"currency":"CNY","payer_currency":"CNY"}}`)
 	block, _ := aes.NewCipher(apiKey)
 	gcm, _ := cipher.NewGCM(block)
 	nonce, associated := "123456789012", "transaction"
@@ -258,6 +261,13 @@ func TestCallbackVerifiesSignatureAndDecrypts(t *testing.T) {
 	if _, err = verifier.Verify(context.Background(), body, headers); !errors.Is(err, ErrInvalidCallback) {
 		t.Fatalf("signature err=%v", err)
 	}
+	withoutSuccessTime := []byte(`{"appid":"app","mchid":"mch","out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","amount":{"total":99,"currency":"CNY"}}`)
+	ciphertext = base64.StdEncoding.EncodeToString(gcm.Seal(nil, []byte(nonce), withoutSuccessTime, []byte(associated)))
+	body, _ = json.Marshal(map[string]any{"id": "event-without-success-time", "event_type": "TRANSACTION.SUCCESS", "resource": map[string]string{"algorithm": "AEAD_AES_256_GCM", "ciphertext": ciphertext, "nonce": nonce, "associated_data": associated}})
+	headers.Set("Wechatpay-Signature", signTest(t, platform, timestamp+"\ncb-nonce\n"+string(body)+"\n"))
+	if _, err = verifier.Verify(context.Background(), body, headers); !errors.Is(err, ErrInvalidCallback) || CallbackFailureStage(err) != "occurred_at" {
+		t.Fatalf("missing success_time err=%v stage=%q", err, CallbackFailureStage(err))
+	}
 }
 
 func TestSignedExactPaymentAndRefundReconciliationQueries(t *testing.T) {
@@ -265,8 +275,9 @@ func TestSignedExactPaymentAndRefundReconciliationQueries(t *testing.T) {
 	platform, _ := rsa.GenerateKey(rand.Reader, 2048)
 	now := time.Date(2026, 9, 3, 5, 0, 0, 0, time.UTC)
 	responses := []string{
-		`{"appid":"app","payer":{"openid":"synthetic-openid"},"out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","success_time":"2026-09-03T04:59:00Z","amount":{"total":99,"currency":"CNY"}}`,
+		`{"appid":"app","mchid":"mch","payer":{"openid":"synthetic-openid"},"out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","success_time":"2026-09-03T04:59:00Z","amount":{"total":99,"currency":"CNY"}}`,
 		`{"refund_id":"provider-refund-1","out_refund_no":"refund-1","status":"SUCCESS","success_time":"2026-09-03T04:59:30Z","amount":{"refund":20,"total":99,"currency":"CNY"}}`,
+		`{"appid":"app","mchid":"other-merchant","out_trade_no":"order-1","transaction_id":"tx-1","trade_state":"SUCCESS","success_time":"2026-09-03T04:59:00Z","amount":{"total":99,"currency":"CNY"}}`,
 	}
 	calls := 0
 	client := doerFunc(func(request *http.Request) (*http.Response, error) {
@@ -291,6 +302,9 @@ func TestSignedExactPaymentAndRefundReconciliationQueries(t *testing.T) {
 	refund, err := provider.QueryRefund(context.Background(), "refund-1")
 	if err != nil || refund.Status != "SUCCESS" || refund.AmountMinor != 20 || refund.TotalMinor != 99 || !effectport.ValidDigest(refund.RefundDigest) || calls != 2 {
 		t.Fatalf("refund=%+v calls=%d err=%v", refund, calls, err)
+	}
+	if _, err = provider.QueryPayment(context.Background(), "order-1"); !errors.Is(err, ErrInvalidResponse) || calls != 3 {
+		t.Fatalf("different merchant response err=%v calls=%d", err, calls)
 	}
 }
 

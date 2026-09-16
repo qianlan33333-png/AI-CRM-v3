@@ -677,7 +677,7 @@ func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDi
 	if err != nil {
 		return false, err
 	}
-	if outcome != "settled" && outcome != "query_required" {
+	if outcome != "settled" && outcome != "replayed" && outcome != "query_required" {
 		return false, paymentport.ErrConflict
 	}
 	var existingBody []byte

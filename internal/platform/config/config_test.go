@@ -212,6 +212,25 @@ func TestLoadAcceptsEffectsWorkerRole(t *testing.T) {
 	}
 }
 
+func TestLoadPaymentReconcileRoleRequiresAnExplicitPositivePaymentID(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_ROLE", string(RolePaymentReconcile))
+	if _, err := Load(); err == nil {
+		t.Fatal("payment reconciliation role accepted without an explicit payment ID")
+	}
+	for _, invalid := range []string{"0", "-1", " 930", "930 ", "not-a-number"} {
+		t.Setenv("AICRM_PAYMENT_RECONCILE_ID", invalid)
+		if _, err := Load(); err == nil {
+			t.Fatalf("payment reconciliation role accepted invalid ID %q", invalid)
+		}
+	}
+	t.Setenv("AICRM_PAYMENT_RECONCILE_ID", "930")
+	cfg, err := Load()
+	if err != nil || cfg.Role != RolePaymentReconcile || cfg.PaymentReconcileID != 930 {
+		t.Fatalf("payment reconciliation config=%+v err=%v", cfg, err)
+	}
+}
+
 func TestChannelProviderCapabilitiesAreIndependentAndFailClosed(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_CHANNEL_PROVIDER_READ_ENABLED", "true")

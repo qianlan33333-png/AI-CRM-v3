@@ -998,7 +998,7 @@ func (s *Service) queriedWeChatPayPayment(ctx context.Context, paymentID int64) 
 	if err != nil {
 		return domain.Payment{}, paymentport.WeChatPayPaymentQuery{}, "", paymentport.ErrUnavailable
 	}
-	if query.MerchantOrderNo != current.MerchantOrderNo || query.AmountMinor != current.AmountMinor || query.Currency != current.Currency || !effectport.ValidDigest(query.EvidenceDigest) || query.OccurredAt.IsZero() {
+	if query.MerchantOrderNo != current.MerchantOrderNo || query.AmountMinor != current.AmountMinor || query.Currency != current.Currency || !s.callbackAppIDMatches(current, query.AppID) || !effectport.ValidDigest(query.EvidenceDigest) || query.OccurredAt.IsZero() {
 		return domain.Payment{}, paymentport.WeChatPayPaymentQuery{}, "", paymentport.ErrConflict
 	}
 	outcome := "pending"
@@ -1107,6 +1107,17 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 			}
 			if payment.AmountMinor != callback.AmountMinor || payment.Currency != callback.Currency || !s.callbackAppIDMatches(payment, callback.AppID) {
 				return paymentport.ErrConflict
+			}
+			// Reconciliation may have already settled this exact Provider fact
+			// before the original notification arrives.  The callback still gets
+			// an immutable receipt, but it must not settle the Order a second time
+			// or rerun its paid-event consumers.
+			if payment.Status == domain.StatusPaid {
+				if payment.ProviderTransactionReference != callback.ProviderTransactionReference || payment.ProviderTransactionDigest != callback.ProviderTransactionDigest || payment.PaidConfirmedAt == nil || !payment.PaidConfirmedAt.UTC().Equal(callback.OccurredAt.UTC()) {
+					return paymentport.ErrConflict
+				}
+				_, err = s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "payment", "replayed", payment.ID)
+				return err
 			}
 			replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "payment", "settled", payment.ID)
 			if err != nil || replay {

@@ -303,8 +303,9 @@ func (provider *WeChatPay) QueryPayment(ctx context.Context, merchantOrderNo str
 		return paymentport.WeChatPayPaymentQuery{}, ErrInvalidResponse
 	}
 	var decoded struct {
-		AppID string `json:"appid"`
-		Payer struct {
+		AppID      string `json:"appid"`
+		MerchantID string `json:"mchid"`
+		Payer      struct {
 			OpenID string `json:"openid"`
 		} `json:"payer"`
 		MerchantOrderNo string `json:"out_trade_no"`
@@ -316,7 +317,7 @@ func (provider *WeChatPay) QueryPayment(ctx context.Context, merchantOrderNo str
 			Currency string `json:"currency"`
 		} `json:"amount"`
 	}
-	if json.Unmarshal(response.Body, &decoded) != nil || decoded.MerchantOrderNo != merchantOrderNo || decoded.Amount.Total < 1 || decoded.Amount.Currency != "CNY" || !validPayQueryStatus(decoded.TradeState) {
+	if json.Unmarshal(response.Body, &decoded) != nil || decoded.MerchantID != provider.config.Credential.MerchantID || decoded.MerchantOrderNo != merchantOrderNo || decoded.Amount.Total < 1 || decoded.Amount.Currency != "CNY" || !validPayQueryStatus(decoded.TradeState) {
 		return paymentport.WeChatPayPaymentQuery{}, ErrInvalidResponse
 	}
 	occurred := provider.now().UTC()

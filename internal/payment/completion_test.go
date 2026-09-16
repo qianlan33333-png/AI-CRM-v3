@@ -49,7 +49,7 @@ func (stub *completionOrderStub) SettlePaymentWithin(_ context.Context, command 
 	return orderdomain.Snapshot{}, nil
 }
 
-func TestCompletionSinkDurablyQueuesUncertainPayAndAcceptedShopOutcomes(t *testing.T) {
+func TestCompletionSinkDurablyQueuesPrepayAndAcceptedShopOutcomes(t *testing.T) {
 	tests := []struct {
 		name       string
 		kind       effectport.Kind
@@ -63,7 +63,7 @@ func TestCompletionSinkDurablyQueuesUncertainPayAndAcceptedShopOutcomes(t *testi
 		{name: "pay refund accepted", kind: effectport.KindWeChatPayRefund, completion: effectport.StateExecuted, target: paymentport.ReconciliationTarget{Provider: paymentdomain.ProviderWeChatPay, RefundID: 2}, wantQueue: true},
 		{name: "pay refund unknown", kind: effectport.KindWeChatPayRefund, completion: effectport.StateUnknown, target: paymentport.ReconciliationTarget{Provider: paymentdomain.ProviderWeChatPay, RefundID: 2}, wantQueue: true},
 		{name: "shop refund accepted", kind: effectport.KindWeChatShopRefund, completion: effectport.StateExecuted, target: paymentport.ReconciliationTarget{Provider: paymentdomain.ProviderWeChatShop, RefundID: 3}, wantQueue: true},
-		{name: "pay prepay handoff", kind: effectport.KindWeChatPayPrepay, completion: effectport.StateExecuted, target: paymentport.ReconciliationTarget{Provider: paymentdomain.ProviderWeChatPay, PaymentID: 1}},
+		{name: "pay prepay handoff", kind: effectport.KindWeChatPayPrepay, completion: effectport.StateExecuted, target: paymentport.ReconciliationTarget{Provider: paymentdomain.ProviderWeChatPay, PaymentID: 1}, wantQueue: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

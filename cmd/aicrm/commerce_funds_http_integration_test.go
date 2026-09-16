@@ -82,6 +82,30 @@ func (f commerceFundsFailingEntitlement) ApplyServicePeriodRefundWithin(context.
 	return orderport.Entitlement{}, f.err
 }
 
+// commerceFundsPaymentReconciler is the verified Provider-read leaf for the
+// callback/reconciliation race below. Its gate holds only the test Provider
+// read (never a database transaction), so the race still uses the real
+// PostgreSQL Payment, Order, coupon, entitlement, paid-event and Outbox path.
+type commerceFundsPaymentReconciler struct {
+	query   paymentport.WeChatPayPaymentQuery
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (r commerceFundsPaymentReconciler) QueryPayment(context.Context, string) (paymentport.WeChatPayPaymentQuery, error) {
+	if r.started != nil {
+		r.started <- struct{}{}
+	}
+	if r.release != nil {
+		<-r.release
+	}
+	return r.query, nil
+}
+
+func (commerceFundsPaymentReconciler) QueryRefund(context.Context, string) (paymentport.WeChatPayRefundQuery, error) {
+	return paymentport.WeChatPayRefundQuery{}, errors.New("unused Provider query")
+}
+
 // commerceFundsPushConfiguration and its sibling adapters deliberately expose
 // only the three stable Ports that the paid-event consumer may read. The test
 // keeps Product credentials, OneID values, and the Provider transport outside
@@ -862,7 +886,8 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	}
 
 	const verifiedTransactionID = "tx-commerce-funds"
-	paymentBody, paymentHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-payment", "TRANSACTION.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_trade_no": merchant, "transaction_id": verifiedTransactionID, "trade_state": "SUCCESS", "success_time": now.Add(time.Second).Format(time.RFC3339Nano), "amount": map[string]any{"total": 1000, "currency": "CNY"}})
+	paidAt := now.Add(time.Second)
+	paymentBody, paymentHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-payment", "TRANSACTION.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_trade_no": merchant, "transaction_id": verifiedTransactionID, "trade_state": "SUCCESS", "success_time": paidAt.Format(time.RFC3339Nano), "amount": map[string]any{"total": 1000, "currency": "CNY"}})
 	badHeaders := paymentHeaders.Clone()
 	badHeaders.Set("Wechatpay-Signature", "bad")
 	bad := httptest.NewRecorder()
@@ -890,25 +915,75 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	if err = orderService.SetServicePeriodEntitlementCoordinator(fulfillment); err != nil {
 		t.Fatal(err)
 	}
-	callbacks := make(chan int, 2)
-	var callbackWait sync.WaitGroup
+	providerStarted := make(chan struct{}, 1)
+	providerRelease := make(chan struct{})
+	if err = paymentService.SetWeChatPayReconciler(commerceFundsPaymentReconciler{
+		query: paymentport.WeChatPayPaymentQuery{
+			AppID: "app", MerchantOrderNo: merchant, Currency: "CNY", Status: "SUCCESS", TransactionReference: verifiedTransactionID,
+			AmountMinor: 1000, OccurredAt: paidAt, EvidenceDigest: effectport.Hash("commerce-funds-payment-query", merchant), TransactionDigest: effectport.Hash("wechatpay.transaction", verifiedTransactionID),
+		},
+		started: providerStarted, release: providerRelease,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start the Provider read, then race the original verified callback against
+	// the reconciliation settlement. The reconciler has no transaction while it
+	// waits, so either path may acquire the actual PostgreSQL row lock first.
+	reconcileErr := make(chan error, 1)
+	go func() {
+		_, reconcileErrValue := paymentService.ReconcileWeChatPayPayment(ctx, paymentID)
+		reconcileErr <- reconcileErrValue
+	}()
+	select {
+	case <-providerStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	callbackCode := make(chan int, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, commerceFundsCallbackRequest("/api/public/wechat-pay/callbacks/payment", paymentBody, paymentHeaders))
+		callbackCode <- response.Code
+	}()
+	close(providerRelease)
+	if reconcileErrValue := <-reconcileErr; reconcileErrValue != nil {
+		t.Fatalf("concurrent payment reconciliation: %v", reconcileErrValue)
+	}
+	if code := <-callbackCode; code != http.StatusOK {
+		t.Fatalf("concurrent payment callback status=%d", code)
+	}
+	// Retain the original duplicate-notification coverage independently of the
+	// cross-path race: two simultaneous deliveries of the same event must both
+	// acknowledge successfully while retaining one receipt and one paid fanout.
+	duplicateCallbackCodes := make(chan int, 2)
+	var duplicateCallbackWait sync.WaitGroup
 	for range 2 {
-		callbackWait.Add(1)
+		duplicateCallbackWait.Add(1)
 		go func() {
-			defer callbackWait.Done()
+			defer duplicateCallbackWait.Done()
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, commerceFundsCallbackRequest("/api/public/wechat-pay/callbacks/payment", paymentBody, paymentHeaders))
-			callbacks <- response.Code
+			duplicateCallbackCodes <- response.Code
 		}()
 	}
-	callbackWait.Wait()
-	close(callbacks)
-	for code := range callbacks {
+	duplicateCallbackWait.Wait()
+	close(duplicateCallbackCodes)
+	for code := range duplicateCallbackCodes {
 		if code != http.StatusOK {
-			t.Fatalf("concurrent payment callback status=%d", code)
+			t.Fatalf("concurrent duplicate payment callback status=%d", code)
 		}
 	}
-	commerceFundsAssertPaid(t, ctx, pool, orderID, paymentID, merchant)
+
+	// A further independently delivered notification must receive 200 and retain
+	// only its immutable receipt—not repeat paid fanout.
+	lateBody, lateHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-payment-late", "TRANSACTION.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_trade_no": merchant, "transaction_id": verifiedTransactionID, "trade_state": "SUCCESS", "success_time": paidAt.Format(time.RFC3339Nano), "amount": map[string]any{"total": 1000, "currency": "CNY"}})
+	late := httptest.NewRecorder()
+	handler.ServeHTTP(late, commerceFundsCallbackRequest("/api/public/wechat-pay/callbacks/payment", lateBody, lateHeaders))
+	if late.Code != http.StatusOK {
+		t.Fatalf("late reconciled payment callback status=%d body=%s", late.Code, late.Body.String())
+	}
+	commerceFundsAssertPaid(t, ctx, pool, orderID, paymentID, merchant, 2)
 	effectID, generation, riverJobID := commerceFundsAssertPushQueued(t, ctx, pool, orderID)
 	deliveryLock.Lock()
 	queuedDeliveries := len(deliveries)
@@ -1410,13 +1485,13 @@ func commerceFundsAssertRollback(t *testing.T, ctx context.Context, pool *pgxpoo
 		t.Fatalf("rollback order=%q payment=%q redemption=%q claim=%q callbacks=%d entitlements=%d consumes=%d err=%v", orderStatus, paymentStatus, redemptionStatus, claimStatus, callbackCount, entitlementCount, consumeCount, err)
 	}
 }
-func commerceFundsAssertPaid(t *testing.T, ctx context.Context, pool *pgxpool.Pool, orderID, paymentID int64, merchant string) {
+func commerceFundsAssertPaid(t *testing.T, ctx context.Context, pool *pgxpool.Pool, orderID, paymentID int64, merchant string, paymentCallbacks int) {
 	t.Helper()
 	var orderStatus, paymentStatus, redemptionStatus, claimStatus, entitlementStatus string
-	var callbackCount, grantCount, consumeCount int
-	err := pool.QueryRow(ctx, "SELECT (SELECT status FROM orders WHERE id=$1),(SELECT status FROM payments WHERE id=$2),(SELECT status FROM coupon_order_redemptions WHERE order_reference=$3),(SELECT status FROM coupon_customer_claims WHERE id=(SELECT claim_id FROM coupon_order_redemptions WHERE order_reference=$3)),(SELECT status FROM order_service_entitlements WHERE last_order_id=$1),(SELECT count(*) FROM payment_callback_receipts),(SELECT count(*) FROM order_entitlement_fulfillment_receipts WHERE operation='grant' AND source_order_id=$1),(SELECT count(*) FROM coupon_redemption_operation_receipts receipt JOIN coupon_order_redemptions redemption ON redemption.id=receipt.redemption_id WHERE redemption.order_reference=$3 AND receipt.operation='consume')", orderID, paymentID, merchant).Scan(&orderStatus, &paymentStatus, &redemptionStatus, &claimStatus, &entitlementStatus, &callbackCount, &grantCount, &consumeCount)
-	if err != nil || orderStatus != "paid" || paymentStatus != "paid" || redemptionStatus != "consumed" || claimStatus != "redeemed" || entitlementStatus != "active" || callbackCount != 1 || grantCount != 1 || consumeCount != 1 {
-		t.Fatalf("paid order=%q payment=%q redemption=%q claim=%q entitlement=%q callbacks=%d grants=%d consumes=%d err=%v", orderStatus, paymentStatus, redemptionStatus, claimStatus, entitlementStatus, callbackCount, grantCount, consumeCount, err)
+	var callbackCount, grantCount, consumeCount, paidEvents, paidOutbox int
+	err := pool.QueryRow(ctx, "SELECT (SELECT status FROM orders WHERE id=$1),(SELECT status FROM payments WHERE id=$2),(SELECT status FROM coupon_order_redemptions WHERE order_reference=$3),(SELECT status FROM coupon_customer_claims WHERE id=(SELECT claim_id FROM coupon_order_redemptions WHERE order_reference=$3)),(SELECT status FROM order_service_entitlements WHERE last_order_id=$1),(SELECT count(*) FROM payment_callback_receipts),(SELECT count(*) FROM order_entitlement_fulfillment_receipts WHERE operation='grant' AND source_order_id=$1),(SELECT count(*) FROM coupon_redemption_operation_receipts receipt JOIN coupon_order_redemptions redemption ON redemption.id=receipt.redemption_id WHERE redemption.order_reference=$3 AND receipt.operation='consume'),(SELECT count(*) FROM order_paid_events WHERE order_id=$1),(SELECT count(*) FROM order_outbox WHERE aggregate_id=$1 AND event_type='order.paid.v1')", orderID, paymentID, merchant).Scan(&orderStatus, &paymentStatus, &redemptionStatus, &claimStatus, &entitlementStatus, &callbackCount, &grantCount, &consumeCount, &paidEvents, &paidOutbox)
+	if err != nil || orderStatus != "paid" || paymentStatus != "paid" || redemptionStatus != "consumed" || claimStatus != "redeemed" || entitlementStatus != "active" || callbackCount != paymentCallbacks || grantCount != 1 || consumeCount != 1 || paidEvents != 1 || paidOutbox != 1 {
+		t.Fatalf("paid order=%q payment=%q redemption=%q claim=%q entitlement=%q callbacks=%d grants=%d consumes=%d paid_events=%d paid_outbox=%d err=%v", orderStatus, paymentStatus, redemptionStatus, claimStatus, entitlementStatus, callbackCount, grantCount, consumeCount, paidEvents, paidOutbox, err)
 	}
 }
 func commerceFundsRefundedEntitlement(t *testing.T, ctx context.Context, pool *pgxpool.Pool, orderID, amount int64) (time.Time, time.Time) {
@@ -1436,7 +1511,7 @@ func commerceFundsAssertFinal(t *testing.T, ctx context.Context, pool *pgxpool.P
 	var completedRefunds, entitlementReceipts, callbackReceipts int
 	var endAt, updatedAt time.Time
 	err := pool.QueryRow(ctx, "SELECT (SELECT status FROM orders WHERE id=$1),(SELECT status FROM payments WHERE id=$2),(SELECT status FROM coupon_order_redemptions WHERE order_reference=$3),(SELECT status FROM order_service_entitlements WHERE last_order_id=$1),(SELECT count(*) FROM payment_refunds WHERE payment_id=$2 AND status='completed'),(SELECT count(*) FROM order_entitlement_fulfillment_receipts WHERE operation='refund' AND source_order_id=$1),(SELECT count(*) FROM payment_callback_receipts),(SELECT end_at FROM order_service_entitlements WHERE last_order_id=$1),(SELECT updated_at FROM order_service_entitlements WHERE last_order_id=$1)", orderID, paymentID, merchant).Scan(&orderStatus, &paymentStatus, &redemptionStatus, &entitlementStatus, &completedRefunds, &entitlementReceipts, &callbackReceipts, &endAt, &updatedAt)
-	if err != nil || orderStatus != "refunded" || paymentStatus != "paid" || redemptionStatus != "consumed" || entitlementStatus != "refunded" || completedRefunds != 2 || entitlementReceipts != 1 || callbackReceipts != 3 || !endAt.Equal(firstEnd) || !updatedAt.Equal(firstUpdated) {
+	if err != nil || orderStatus != "refunded" || paymentStatus != "paid" || redemptionStatus != "consumed" || entitlementStatus != "refunded" || completedRefunds != 2 || entitlementReceipts != 1 || callbackReceipts != 4 || !endAt.Equal(firstEnd) || !updatedAt.Equal(firstUpdated) {
 		t.Fatalf("final order=%q payment=%q redemption=%q entitlement=%q refunds=%d receipts=%d callbacks=%d end=%s updated=%s err=%v", orderStatus, paymentStatus, redemptionStatus, entitlementStatus, completedRefunds, entitlementReceipts, callbackReceipts, endAt, updatedAt, err)
 	}
 }
