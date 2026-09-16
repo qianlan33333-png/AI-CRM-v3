@@ -57,13 +57,13 @@ func TestReadinessRequiresSurveyCompletionEndpointStructurePostgreSQL(t *testing
 				t.Fatal(err)
 			}
 			if err := Readiness(ctx, native); err != nil {
-				t.Fatalf("0176 endpoint schema should be ready: %v", err)
+				t.Fatalf("0177 endpoint schema should be ready: %v", err)
 			}
 			if _, err := native.Exec(ctx, test.alter); err != nil {
 				t.Fatal(err)
 			}
 			if err := Readiness(ctx, native); err == nil {
-				t.Fatal("readiness accepted incomplete 0176 Survey completion endpoint structure")
+				t.Fatal("readiness accepted incomplete 0177 Survey completion endpoint structure")
 			}
 		})
 	}
