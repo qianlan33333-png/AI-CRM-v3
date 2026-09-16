@@ -411,12 +411,12 @@ func TestSubmittedPublicRoutesExposeOnlyCompletionAction(t *testing.T) {
 	}
 }
 
-func TestPublicSubmissionSuccessEmitsCompletionActionOnlyAtTopLevel(t *testing.T) {
+func TestPublicSubmissionSuccessEmitsCompletionActionAndLegacyResultTokenAtTopLevel(t *testing.T) {
 	customerID := customerdomain.CustomerID(42)
 	survey := &routeSurvey{
 		questionnaire: surveyport.Questionnaire{Slug: "growth", Status: surveyport.StatusPublished, AnswerDisplayMode: surveyport.DisplayAllInOne},
 		submitReceipt: surveyport.SubmissionReceipt{
-			QuestionnaireID: 7, QuestionnaireSlug: "growth", DefinitionVersion: 1, SubmissionID: 9, ResultToken: "opaque-result-token",
+			QuestionnaireID: 7, QuestionnaireSlug: "growth", DefinitionVersion: 1, SubmissionID: 9, ResultToken: strings.Repeat("r", 43),
 			CompletionAction: surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "https://go.example.test/complete"},
 		},
 	}
@@ -429,7 +429,7 @@ func TestPublicSubmissionSuccessEmitsCompletionActionOnlyAtTopLevel(t *testing.T
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	body := response.Body.String()
-	if response.Code != nethttp.StatusCreated || strings.Count(body, `"completion_action"`) != 1 || !strings.Contains(body, `"completion_action":{"type":"redirect","redirect_url":"https://go.example.test/complete"}`) || !strings.Contains(body, `"receipt":{"questionnaire_id":7,"questionnaire_slug":"growth","definition_version":1,"submission_id":9}`) || strings.Contains(body, `"submission_id":9,"result_token"`) {
+	if response.Code != nethttp.StatusCreated || strings.Count(body, `"completion_action"`) != 1 || !strings.Contains(body, `"completion_action":{"type":"redirect","redirect_url":"https://go.example.test/complete"}`) || !strings.Contains(body, `"receipt":{"questionnaire_id":7,"questionnaire_slug":"growth","definition_version":1,"submission_id":9}`) || !strings.Contains(body, `"result_token":"`+strings.Repeat("r", 43)+`"`) || strings.Contains(body, `"submission_id":9,"result_token"`) {
 		t.Fatalf("submit status=%d body=%s", response.Code, body)
 	}
 }

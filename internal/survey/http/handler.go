@@ -472,11 +472,13 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 			resultError(w, err)
 			return
 		}
-		// The result-query credential remains server-side. Completing a public
-		// questionnaire must not expose it in either a top-level or nested receipt.
+		// Preserve the legacy top-level result-query credential while keeping it
+		// out of the nested receipt. The completion H5 flow ignores this field and
+		// uses only completion_action, but existing result-query clients recover
+		// their receipt from the top-level compatibility projection.
 		publicReceipt := receipt
 		publicReceipt.ResultToken = ""
-		writeJSON(w, 201, map[string]any{"receipt": publicReceipt, "completion_action": receipt.CompletionAction})
+		writeJSON(w, 201, map[string]any{"receipt": publicReceipt, "result_token": receipt.ResultToken, "completion_action": receipt.CompletionAction})
 		return
 	}
 	method(w, "GET or POST")

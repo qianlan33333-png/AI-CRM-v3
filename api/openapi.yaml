@@ -7135,8 +7135,8 @@ components:
     SurveyPublicSubmissionResponse:
       type: object
       additionalProperties: false
-      required: [receipt, completion_action]
-      properties: {receipt: {$ref: "#/components/schemas/SurveyPublicSubmissionReceipt"}, completion_action: {$ref: "#/components/schemas/CompletionAction"}}
+      required: [receipt, result_token, completion_action]
+      properties: {receipt: {$ref: "#/components/schemas/SurveyPublicSubmissionReceipt"}, result_token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}, completion_action: {$ref: "#/components/schemas/CompletionAction"}}
     SurveyPublicResultQueryRequest:
       type: object
       additionalProperties: false

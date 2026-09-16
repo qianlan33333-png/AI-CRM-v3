@@ -42,9 +42,9 @@ function assertSurveyCompletionContracts(specification) {
 
   const response = schemas.SurveyPublicSubmissionResponse;
   const publicSuccess = publicSubmit.responses['201'].content['application/json'].schema;
-  assert.equal(publicSuccess, response, 'public submit 201 must use the minimal completion response schema');
-  assert.deepEqual(response.required, ['receipt', 'completion_action'], 'ordinary public submit must return only the minimal receipt and completion action');
-  assert.ok(!('result_token' in response.properties), 'ordinary public submit must not expose a result token');
+  assert.equal(publicSuccess, response, 'public submit 201 must use the compatible completion response schema');
+  assert.deepEqual(response.required, ['receipt', 'result_token', 'completion_action'], 'ordinary public submit must retain the top-level result token alongside its completion action');
+  assert.ok('result_token' in response.properties, 'ordinary public submit must retain its top-level result token');
   assert.ok(!('result_token' in schemas.SurveyPublicSubmissionReceipt.properties), 'public submit receipt must not nest a result token');
 
   const redirect = schemas.CompletionAction.oneOf.find((value) => value.properties?.type?.const === 'redirect');

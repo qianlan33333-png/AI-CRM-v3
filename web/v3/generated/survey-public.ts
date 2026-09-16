@@ -276,6 +276,8 @@ export interface SurveyPublicSubmissionReceipt {
 
 export interface SurveyPublicSubmissionResponse {
   receipt: SurveyPublicSubmissionReceipt;
+  /** @pattern ^[A-Za-z0-9_-]{43}$ */
+  result_token: string;
   completion_action: CompletionAction;
 }
 
