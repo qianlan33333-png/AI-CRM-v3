@@ -116,6 +116,7 @@ for migration_contract in \
   '0167_distribution_settlement_not_paid_exception.sql:Distribution settlement not-paid exception' \
   '0170_wecom_contact_description_effect.sql:WeCom contact description external effect' \
   '0171_wecom_contact_description_source_coverage.sql:WeCom contact description source coverage' \
+  '0172_survey_single_submission_claims.sql:Survey single submission claims' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
@@ -308,5 +309,5 @@ for new_shell_page in \
   orderDetail orders ownerMig productForm products questionnaireDetail questionnaireOps \
   questionnaires radar radarDetail radarForm spProductData spProductForm spProducts tags \
   wecom-tags; do
-  grep -qE "^[[:space:]]*${new_shell_page}( \\\\|; do)$" "$installer" || { echo "release must enumerate new shell document ${new_shell_page}" >&2; exit 1; }
+  grep -qE "^[[:space:]]*${new_shell_page}([[:space:]]+\\\\|; do)$" "$installer" || { echo "release must enumerate new shell document ${new_shell_page}" >&2; exit 1; }
 done
