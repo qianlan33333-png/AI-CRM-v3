@@ -731,7 +731,7 @@ func (h *Handler) open(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; frame-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; frame-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
 	kind := string(access.Link.Content.Type)
 	proof := eventProof(access.SessionToken, code)
 	_, _ = fmt.Fprintf(w, viewerHTML, template.HTMLEscapeString(access.Link.Title), template.HTMLEscapeString(access.Link.Title), template.URLQueryEscaper(string(code)), kind, proof)
