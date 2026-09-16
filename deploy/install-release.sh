@@ -198,6 +198,7 @@ test -f "$release_dir/migrations/0171_wecom_contact_description_source_coverage.
 test -f "$release_dir/migrations/0172_order_checkout_post_purchase_action.sql"
 test -f "$release_dir/migrations/0173_product_paid_purchase_action_target_snapshot.sql"
 test -f "$release_dir/migrations/0174_product_external_push_test_delivery_id.sql"
+test -f "$release_dir/migrations/0175_customer_minimum_directory_projection.sql"
 test -f "$release_dir/migrations/0067_survey_completion_snapshots.sql"
 test -f "$release_dir/migrations/0084_hxc_shared_facts.sql"
 test -f "$release_dir/migrations/0090_survey_oauth_state_redirect.sql"

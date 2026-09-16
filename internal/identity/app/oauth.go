@@ -27,6 +27,9 @@ func (s OneIDService) ProvisionVerifiedOAuthSubject(ctx context.Context, c ident
 	if err != nil {
 		return identityport.OAuthSubjectResult{}, err
 	}
+	if err = s.observeProvisionedCustomer(ctx, p, first.Reference().Source); err != nil {
+		return identityport.OAuthSubjectResult{}, err
+	}
 	digest := sha256.Sum256([]byte(c.EventID))
 	linked, err := s.Store.Link(ctx, LinkCommand{SourceCustomerID: p.CustomerID, Target: target, Evidence: identitydomain.LinkEvidence{Type: "provider_oauth_userinfo", Strength: identitydomain.EvidenceStrong, Source: "wechat.oauth.userinfo", EventID: c.EventID, Digest: "sha256:" + hex.EncodeToString(digest[:]), PolicyVersion: "oauth-userinfo-v1"}})
 	if err != nil {
@@ -35,5 +38,5 @@ func (s OneIDService) ProvisionVerifiedOAuthSubject(ctx context.Context, c ident
 	if target.Reference().Kind == identitydomain.KindOAOpenID {
 		p.IdentityID = linked.IdentityID
 	}
-	return identityport.OAuthSubjectResult{ProvisionResult: identityport.ProvisionResult{CustomerID: p.CustomerID, IdentityID: p.IdentityID}, Conflict: (linked.Status != LinkAttached && linked.Status != LinkAlreadyLinked) || linked.CustomerID != p.CustomerID}, nil
+	return identityport.OAuthSubjectResult{ProvisionResult: identityport.ProvisionResult{CustomerID: p.CustomerID, IdentityID: p.IdentityID, Created: p.Created}, Conflict: (linked.Status != LinkAttached && linked.Status != LinkAlreadyLinked) || linked.CustomerID != p.CustomerID}, nil
 }

@@ -12,6 +12,7 @@ import (
 
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -154,6 +155,56 @@ func TestSearchRadarVisitorCustomersEscapesWildcardCharactersPostgreSQL(t *testi
 	}
 }
 
+func TestProviderProfileCreatesMinimumAndPreservesHigherPriorityNamePostgreSQL(t *testing.T) {
+	url, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured")
+	}
+	ctx := context.Background()
+	native, cleanup := directoryFilterPool(t, ctx, url)
+	defer cleanup()
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := PostgreSQL{}
+	observedAt := time.Date(2026, 9, 17, 1, 2, 3, 0, time.UTC)
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		if activateErr := repository.ActivateDirectoryCustomer(tx, 7, "identity_provision", observedAt.Add(-time.Minute)); activateErr != nil {
+			return activateErr
+		}
+		return repository.ObserveProviderProfile(tx, 7, customerport.ProviderProfileObservation{DisplayName: "微信昵称", AvatarURL: "https://thirdwx.qlogo.cn/avatar", Source: "wechat.payment.h5_oauth.userinfo", ObservedAt: observedAt})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var name, avatar, oneID, source string
+	if err = native.QueryRow(ctx, `SELECT display_name,avatar_url,oneid_label,source FROM customer_directory_projection WHERE customer_id=7`).Scan(&name, &avatar, &oneID, &source); err != nil {
+		t.Fatal(err)
+	}
+	if name != "微信昵称" || avatar != "https://thirdwx.qlogo.cn/avatar" || oneID != "CID-7" || source != "wechat.payment.h5_oauth.userinfo" {
+		t.Fatalf("name=%q avatar=%q oneID=%q source=%q", name, avatar, oneID, source)
+	}
+	if _, err = native.Exec(ctx, `UPDATE customer_directory_projection SET display_name='企微姓名',source='wecom_directory_sync' WHERE customer_id=7`); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return repository.ObserveProviderProfile(tx, 7, customerport.ProviderProfileObservation{DisplayName: "更新微信昵称", Source: "wechat.payment.h5_oauth.userinfo", ObservedAt: observedAt.Add(time.Minute)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT display_name,source FROM customer_directory_projection WHERE customer_id=7`).Scan(&name, &source); err != nil {
+		t.Fatal(err)
+	}
+	if name != "企微姓名" || source != "wecom_directory_sync" {
+		t.Fatalf("higher-priority name=%q source=%q", name, source)
+	}
+}
+
 func directoryFilterPool(t *testing.T, ctx context.Context, url string) (*pgxpool.Pool, func()) {
 	t.Helper()
 	admin, err := pgxpool.New(ctx, url)
@@ -180,12 +231,13 @@ func directoryFilterPool(t *testing.T, ctx context.Context, url string) (*pgxpoo
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, `
-		CREATE TABLE customer_directory_projection (
-			customer_id BIGINT PRIMARY KEY, customer_status TEXT NOT NULL, display_name TEXT NOT NULL,
-			avatar_url TEXT NOT NULL, oneid_label TEXT NOT NULL, phone_masked TEXT NOT NULL,
-			phone_assurance TEXT NULL, activation_status TEXT NOT NULL, last_synced_at TIMESTAMPTZ NULL,
-			updated_at TIMESTAMPTZ NOT NULL
-		);
+			CREATE TABLE customer_directory_projection (
+				customer_id BIGINT PRIMARY KEY, customer_status TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '',
+				avatar_url TEXT NOT NULL DEFAULT '', oneid_label TEXT NOT NULL DEFAULT '', phone_masked TEXT NOT NULL DEFAULT '',
+				phone_assurance TEXT NULL, activation_status TEXT NOT NULL DEFAULT 'active', last_synced_at TIMESTAMPTZ NULL,
+				source TEXT NOT NULL DEFAULT 'wecom_directory_sync', source_version BIGINT NOT NULL DEFAULT 1,
+				updated_at TIMESTAMPTZ NOT NULL
+			);
 		CREATE TABLE customer_local_owners (customer_id BIGINT PRIMARY KEY, staff_id BIGINT NOT NULL);
 	`); err != nil {
 		native.Close()

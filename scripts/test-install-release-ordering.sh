@@ -53,6 +53,7 @@ sha_missing_0171=1818181818181818181818181818181818181818
 sha_missing_0172=1919191919191919191919191919191919191919
 sha_missing_0173=1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
 sha_missing_0174=1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+sha_missing_0175=1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -213,6 +214,7 @@ make_release() {
     0172_order_checkout_post_purchase_action.sql \
     0173_product_paid_purchase_action_target_snapshot.sql \
     0174_product_external_push_test_delivery_id.sql \
+    0175_customer_minimum_directory_projection.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -387,6 +389,7 @@ for missing_release in \
   "$sha_missing_0172:migrations/0172_order_checkout_post_purchase_action.sql" \
   "$sha_missing_0173:migrations/0173_product_paid_purchase_action_target_snapshot.sql" \
   "$sha_missing_0174:migrations/0174_product_external_push_test_delivery_id.sql" \
+  "$sha_missing_0175:migrations/0175_customer_minimum_directory_projection.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \

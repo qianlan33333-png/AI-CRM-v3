@@ -42,6 +42,9 @@ func (service OneIDService) ProvisionHistoricalSubject(ctx context.Context, comm
 	if err != nil {
 		return identityport.HistoricalSubjectResult{}, err
 	}
+	if err = service.observeProvisionedCustomer(ctx, provisioned, command.Facts[0].Reference().Source); err != nil {
+		return identityport.HistoricalSubjectResult{}, err
+	}
 	result := identityport.HistoricalSubjectResult{CustomerID: provisioned.CustomerID, IdentityIDs: []int64{provisioned.IdentityID}}
 	for index := 1; index < len(command.Facts); index++ {
 		linked, linkErr := service.Store.Link(ctx, LinkCommand{
@@ -240,7 +243,15 @@ func (service OneIDService) AttachDeclaredIdentity(ctx context.Context, command 
 // OneIDService owns identity resolution, verified provisioning and explicit
 // cross-root linking. It never creates a customer from Resolve.
 type OneIDService struct {
-	Store Store
+	Store               Store
+	ProvisionedCustomer identityport.ProvisionedCustomerObserver
+}
+
+func (service OneIDService) observeProvisionedCustomer(ctx context.Context, provisioned ProvisionedIdentity, source string) error {
+	if !provisioned.Created || service.ProvisionedCustomer == nil {
+		return nil
+	}
+	return service.ProvisionedCustomer.ObserveProvisionedCustomer(ctx, provisioned.CustomerID, source)
 }
 
 func (service OneIDService) Resolve(ctx context.Context, reference identitydomain.Reference) (identityport.ResolveResult, error) {
@@ -273,6 +284,9 @@ func (service OneIDService) ProvisionCustomerFromVerifiedIdentity(ctx context.Co
 	}
 	provisioned, err := service.Store.Provision(ctx, fact)
 	if err != nil {
+		return identityport.ProvisionResult{}, err
+	}
+	if err = service.observeProvisionedCustomer(ctx, provisioned, fact.Reference().Source); err != nil {
 		return identityport.ProvisionResult{}, err
 	}
 	return identityport.ProvisionResult{

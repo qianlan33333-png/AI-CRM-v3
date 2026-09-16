@@ -136,7 +136,7 @@ func (s *Service) Complete(ctx context.Context, stateToken, code string) (paymen
 	if err != nil || !fact.OpenID.Valid() || !fact.UnionID.Valid() {
 		return paymentsession.Issued{}, "", ErrUnavailable
 	}
-	issued, err := s.issuer.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact.OpenID, UnionID: fact.UnionID, IdempotencyKey: "payment-h5-oauth:" + base64.RawURLEncoding.EncodeToString(digest[:])})
+	issued, err := s.issuer.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: fact.OpenID, UnionID: fact.UnionID, DisplayName: fact.DisplayName, AvatarURL: fact.AvatarURL, IdempotencyKey: "payment-h5-oauth:" + base64.RawURLEncoding.EncodeToString(digest[:])})
 	if errors.Is(err, paymentsession.ErrIdentityConflict) {
 		return paymentsession.Issued{}, "", ErrIdentityConflict
 	}

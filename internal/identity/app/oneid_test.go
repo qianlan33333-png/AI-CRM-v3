@@ -12,6 +12,19 @@ import (
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 )
 
+type provisionedCustomerObserverStub struct {
+	customerID customerdomain.CustomerID
+	source     string
+	calls      int
+	err        error
+}
+
+func (stub *provisionedCustomerObserverStub) ObserveProvisionedCustomer(_ context.Context, customerID customerdomain.CustomerID, source string) error {
+	stub.customerID, stub.source = customerID, source
+	stub.calls++
+	return stub.err
+}
+
 func TestResolveDoesNotProvisionCustomer(t *testing.T) {
 	store := NewMemoryStore()
 	service := OneIDService{Store: store}
@@ -45,6 +58,31 @@ func TestProvisionRequiresOpaqueVerifiedFact(t *testing.T) {
 	}
 	if store.CustomerCount() != 0 {
 		t.Fatal("phone identity provisioned a Customer")
+	}
+}
+
+func TestProvisionObservesOnlyNewCanonicalCustomer(t *testing.T) {
+	store := NewMemoryStore()
+	observer := &provisionedCustomerObserverStub{}
+	service := OneIDService{Store: store, ProvisionedCustomer: observer}
+	fact := verifiedFact(t, identitydomain.KindOAOpenID, "wechat-app:main", "observed-openid")
+	first, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), fact)
+	if err != nil || !first.Created || observer.calls != 1 || observer.customerID != first.CustomerID || observer.source != fact.Reference().Source {
+		t.Fatalf("first=%+v observer=%+v err=%v", first, observer, err)
+	}
+	second, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), fact)
+	if err != nil || second.Created || second.CustomerID != first.CustomerID || observer.calls != 1 {
+		t.Fatalf("second=%+v observer=%+v err=%v", second, observer, err)
+	}
+}
+
+func TestProvisionFailsWhenMinimumCustomerProjectionFails(t *testing.T) {
+	store := NewMemoryStore()
+	observer := &provisionedCustomerObserverStub{err: errors.New("directory unavailable")}
+	service := OneIDService{Store: store, ProvisionedCustomer: observer}
+	_, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), verifiedFact(t, identitydomain.KindOAOpenID, "wechat-app:main", "failed-observer-openid"))
+	if err == nil || observer.calls != 1 {
+		t.Fatalf("observer=%+v err=%v", observer, err)
 	}
 }
 

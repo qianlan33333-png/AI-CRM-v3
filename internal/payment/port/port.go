@@ -338,8 +338,10 @@ type ProviderIntentReader interface {
 
 // H5OAuthFacts is minted after one userinfo read verifies both subject IDs.
 type H5OAuthFacts struct {
-	OpenID  identitydomain.VerifiedFact
-	UnionID identitydomain.VerifiedFact
+	OpenID      identitydomain.VerifiedFact
+	UnionID     identitydomain.VerifiedFact
+	DisplayName string
+	AvatarURL   string
 }
 
 // RefundExposureState is a Payment-owned refund-finality transition delivered

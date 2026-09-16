@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
@@ -45,6 +46,8 @@ type IssueCommand struct {
 	Fact                  identitydomain.VerifiedFact
 	BeneficiaryCustomerID customerdomain.CustomerID
 	AdminAssisted         bool
+	DisplayName           string
+	AvatarURL             string
 	IdempotencyKey        string
 }
 type Issued struct {
@@ -58,16 +61,17 @@ type Issued struct {
 type Service struct {
 	uow       platformport.UnitOfWork
 	provision identityport.VerifiedProvisioner
+	profiles  customerport.ProviderProfileWriter
 	store     Store
 	ttl       time.Duration
 	now       func() time.Time
 }
 
-func NewService(uow platformport.UnitOfWork, p identityport.VerifiedProvisioner, s Store, ttl time.Duration) (*Service, error) {
-	if uow == nil || p == nil || s == nil || ttl < time.Minute || ttl > 30*time.Minute {
+func NewService(uow platformport.UnitOfWork, p identityport.VerifiedProvisioner, profiles customerport.ProviderProfileWriter, s Store, ttl time.Duration) (*Service, error) {
+	if uow == nil || p == nil || profiles == nil || s == nil || ttl < time.Minute || ttl > 30*time.Minute {
 		return nil, ErrInvalid
 	}
-	return &Service{uow: uow, provision: p, store: s, ttl: ttl, now: time.Now}, nil
+	return &Service{uow: uow, provision: p, profiles: profiles, store: s, ttl: ttl, now: time.Now}, nil
 }
 func (s *Service) IssueTrusted(ctx context.Context, c IssueCommand) (Issued, error) {
 	if s == nil || !c.Fact.Valid() || len(c.IdempotencyKey) < 16 {
@@ -112,6 +116,9 @@ func (s *Service) IssueTrusted(ctx context.Context, c IssueCommand) (Issued, err
 			if e != nil {
 				return e
 			}
+		}
+		if e = s.profiles.ObserveProviderProfile(tx, p.CustomerID, customerport.ProviderProfileObservation{DisplayName: c.DisplayName, AvatarURL: c.AvatarURL, Source: ref.Source, ObservedAt: now}); e != nil {
+			return e
 		}
 
 		beneficiary := customerdomain.CustomerID(0)

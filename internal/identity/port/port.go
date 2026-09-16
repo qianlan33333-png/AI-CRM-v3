@@ -71,6 +71,14 @@ type VerifiedProvisioner interface {
 	ProvisionVerifiedIdentity(context.Context, ProvisionCommand) (ProvisionResult, error)
 }
 
+// ProvisionedCustomerObserver is a composition-owned bridge invoked only when
+// Identity creates a new canonical Customer root. Implementations may ensure
+// other domains' minimum local projections inside the caller's existing UoW;
+// they must not resolve, link, or merge identities.
+type ProvisionedCustomerObserver interface {
+	ObserveProvisionedCustomer(context.Context, customerdomain.CustomerID, string) error
+}
+
 // DeclaredAttachCommand deliberately contains an existing CustomerID and no
 // provisioning or merge instruction. SourceRowDigest is the non-PII replay
 // fingerprint retained by the one-time import ledger.
