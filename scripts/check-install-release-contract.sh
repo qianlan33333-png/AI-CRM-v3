@@ -116,6 +116,9 @@ for migration_contract in \
   '0167_distribution_settlement_not_paid_exception.sql:Distribution settlement not-paid exception' \
   '0170_wecom_contact_description_effect.sql:WeCom contact description external effect' \
   '0171_wecom_contact_description_source_coverage.sql:WeCom contact description source coverage' \
+  '0172_order_checkout_post_purchase_action.sql:Order checkout post-purchase action snapshot' \
+  '0173_product_paid_purchase_action_target_snapshot.sql:Product paid purchase action target snapshot' \
+  '0174_product_external_push_test_delivery_id.sql:Product external push test delivery ID' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

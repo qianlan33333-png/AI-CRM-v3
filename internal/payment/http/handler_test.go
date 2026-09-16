@@ -72,6 +72,20 @@ type paidPurchaseActionReaderStub struct {
 	err    error
 }
 
+type paidURLLinkActionReaderStub struct {
+	paidPurchaseActionReaderStub
+	destination string
+	calls       int
+}
+
+func (stub *paidURLLinkActionReaderStub) ResolvePaidPurchaseURLLink(_ context.Context, action productport.PaidPurchaseAction) (string, error) {
+	stub.calls++
+	if len(action.CompletionTarget) == 0 {
+		return "", errors.New("missing URL Link target")
+	}
+	return stub.destination, nil
+}
+
 func (stub *paidPurchaseActionReaderStub) ReadPaidPurchaseAction(_ context.Context, orderID int64) (productport.PaidPurchaseAction, error) {
 	stub.order = orderID
 	return stub.action, stub.err
@@ -677,6 +691,37 @@ func TestCheckoutStatusExposesFrozenPurchaseActionOnlyAfterAuthorizedPaidCheckou
 	handler.ServeHTTP(retry, request)
 	if retry.Code != http.StatusAccepted || !strings.Contains(retry.Body.String(), `"completion_action":{"mode":"redirect","redirect_url":"/after-paid","state":"available"}`) || len(retry.Result().Cookies()) != 0 {
 		t.Fatalf("reload code=%d body=%s cookies=%+v", retry.Code, retry.Body.String(), retry.Result().Cookies())
+	}
+}
+
+func TestCheckoutURLLinkResolvesOnlyThroughTheAuthorizedPaidOrder(t *testing.T) {
+	application := &appStub{handoff: paymentport.Handoff{PaymentID: 7, OrderID: 31, MerchantOrder: "M-url-link-7", Status: domain.StatusPaid}}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := &paidURLLinkActionReaderStub{paidPurchaseActionReaderStub: paidPurchaseActionReaderStub{action: productport.PaidPurchaseAction{OrderPaidEventID: 9, OrderID: 31, ProductID: 4, ProductVersion: 2, Enabled: true, Mode: productport.PaidPurchaseActionRedirect, CompletionTarget: []byte(`{"enabled":true,"type":"url_link","source_url":"https://source.example.test/secret","response_key":"url_link"}`), TagState: "not_configured", CreatedAt: time.Now()}}, destination: "https://destination.example.test/after-paid"}
+	if err = handler.SetPaidPurchaseActionReader(actions, paidPurchaseLeadQRStub{}); err != nil {
+		t.Fatal(err)
+	}
+	statusRequest := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/M-url-link-7", nil)
+	statusRequest.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
+	statusResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusAccepted || !strings.Contains(statusResponse.Body.String(), `"redirect_url":"/api/v1/wechat-pay/checkouts/M-url-link-7/completion-target"`) || strings.Contains(statusResponse.Body.String(), "source.example.test") {
+		t.Fatalf("status code=%d body=%s", statusResponse.Code, statusResponse.Body.String())
+	}
+	resolveRequest := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/M-url-link-7/completion-target", nil)
+	resolveRequest.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
+	resolveResponse := httptest.NewRecorder()
+	handler.ServeHTTP(resolveResponse, resolveRequest)
+	if resolveResponse.Code != http.StatusFound || resolveResponse.Header().Get("Location") != actions.destination || actions.calls != 1 {
+		t.Fatalf("resolve code=%d location=%q calls=%d", resolveResponse.Code, resolveResponse.Header().Get("Location"), actions.calls)
+	}
+	denied := httptest.NewRecorder()
+	handler.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/M-url-link-7/completion-target", nil))
+	if denied.Code != http.StatusUnauthorized || actions.calls != 1 {
+		t.Fatalf("unauthorized code=%d calls=%d", denied.Code, actions.calls)
 	}
 }
 

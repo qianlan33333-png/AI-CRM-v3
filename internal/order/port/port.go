@@ -3,6 +3,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -315,8 +316,12 @@ type PaymentOrderCommand struct {
 	ProductVersion, UnitAmountMinor int64
 	ProductType                     string
 	ServicePeriodDurationDays       int32
-	Currency                        string
-	MobileE164                      string
+	// PostPurchaseAction is an opaque, Product-validated buyer presentation
+	// snapshot. Order persists it atomically with the checkout and never
+	// interprets it.
+	PostPurchaseAction json.RawMessage
+	Currency           string
+	MobileE164         string
 	// PromotionContext is an opaque, server-carried promotion credential.  It
 	// has no customer, amount, policy or receiver semantics. Order freezes any
 	// accepted attribution through its injected coordinator in this same UoW.
@@ -373,7 +378,15 @@ type CheckoutSnapshot struct {
 	CouponClaimID, CouponID   int64
 	CouponRuleVersion         int64
 	ProfitSharingRequired     bool
+	PostPurchaseAction        json.RawMessage
 	ReservedAt                time.Time
+}
+
+// CheckoutSnapshotReader is the narrow Order read seam for a Product paid
+// consumer already inside Order's settlement transaction. Product receives an
+// immutable checkout fact and never accesses Order tables directly.
+type CheckoutSnapshotReader interface {
+	ReadCheckoutSnapshotWithin(context.Context, int64) (CheckoutSnapshot, error)
 }
 
 // PaymentCoordinator is the only cross-domain write seam from Payment to

@@ -50,6 +50,9 @@ sha_missing_0166=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9
 sha_missing_0167=cacacacacacacacacacacacacacacacacacacaca
 sha_missing_0170=1717171717171717171717171717171717171717
 sha_missing_0171=1818181818181818181818181818181818181818
+sha_missing_0172=1919191919191919191919191919191919191919
+sha_missing_0173=1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
+sha_missing_0174=1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -207,6 +210,9 @@ make_release() {
     0167_distribution_settlement_not_paid_exception.sql \
     0170_wecom_contact_description_effect.sql \
     0171_wecom_contact_description_source_coverage.sql \
+    0172_order_checkout_post_purchase_action.sql \
+    0173_product_paid_purchase_action_target_snapshot.sql \
+    0174_product_external_push_test_delivery_id.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -378,6 +384,9 @@ for missing_release in \
   "$sha_missing_0167:migrations/0167_distribution_settlement_not_paid_exception.sql" \
   "$sha_missing_0170:migrations/0170_wecom_contact_description_effect.sql" \
   "$sha_missing_0171:migrations/0171_wecom_contact_description_source_coverage.sql" \
+  "$sha_missing_0172:migrations/0172_order_checkout_post_purchase_action.sql" \
+  "$sha_missing_0173:migrations/0173_product_paid_purchase_action_target_snapshot.sql" \
+  "$sha_missing_0174:migrations/0174_product_external_push_test_delivery_id.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \

@@ -44,6 +44,9 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_external_push_configurations' AND column_name='custom_params')
 		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_external_push_configurations' AND column_name='expires_at_ts')
 		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_external_push_configurations' AND column_name='field_mapping')
+		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_paid_purchase_actions' AND column_name='completion_target')
+		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_paid_purchase_actions' AND column_name='checkout_snapshot')
+		AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='product_external_push_tests' AND column_name='delivery_id')
 		AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='product_external_push_configurations'::regclass AND conname='product_external_push_business_shape')`).Scan(&ready)
 	if err != nil {
 		return err

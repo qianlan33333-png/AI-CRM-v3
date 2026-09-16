@@ -73,7 +73,7 @@ const dom = new JSDOM(page, {
       }
       if (url.pathname === '/api/v1/products') return reply({ items: [product()], next_cursor: '' });
       if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') {
-        return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', updated_at: '2026-09-15T00:00:00Z' });
+        return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {}, custom_params_json: '{}', updated_at: '2026-09-15T00:00:00Z' });
       }
       if (url.pathname === '/api/admin/channels' || url.pathname === '/api/admin/image-library' || url.pathname === '/api/admin/attachment-library' || url.pathname === '/api/admin/mini-program-library' || url.pathname === '/api/admin/wecom/tag-groups' || url.pathname === '/api/admin/questionnaires' || url.pathname === '/api/admin/customers' || url.pathname === '/api/admin/orders' || url.pathname === '/api/admin/service-period-products' || url.pathname === '/api/admin/coupons') return reply({ items: [], total: 0, has_more: false });
       if (url.pathname === '/api/admin/wecom/tags') return reply({ groups: [], items: [] });

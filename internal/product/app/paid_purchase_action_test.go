@@ -24,6 +24,14 @@ func TestPaidPurchaseConfigurationFreezesOnlyEnabledSafeActions(t *testing.T) {
 	if err != nil || redirect.Mode != productport.PaidPurchaseActionRedirect || redirect.RedirectURL != "/welcome?from=paid" || redirect.TagState != "disabled" {
 		t.Fatalf("redirect=%+v err=%v", redirect, err)
 	}
+	h5Target, err := paidPurchaseConfigFromProjection(json.RawMessage(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect","completion_redirect_url":"","completion_target":{"enabled":true,"target_type":"h5","open_strategy":"h5_redirect","h5_url":"https://example.test/after-paid","fallback_url":"","url_link":{"enabled":false,"source_url":"","response_url_key":"url_link"}}}`))
+	if err != nil || h5Target.Mode != productport.PaidPurchaseActionRedirect || h5Target.RedirectURL != "https://example.test/after-paid" || len(h5Target.CompletionTarget) != 0 {
+		t.Fatalf("H5 target=%+v err=%v", h5Target, err)
+	}
+	urlLinkTarget, err := paidPurchaseConfigFromProjection(json.RawMessage(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect","completion_redirect_url":"","completion_target":{"enabled":true,"target_type":"url_link","open_strategy":"url_link","h5_url":"","fallback_url":"/after-paid","url_link":{"enabled":true,"source_url":"https://link.example.test/resolve","response_url_key":"result.destination"}}}`))
+	if err != nil || urlLinkTarget.Mode != productport.PaidPurchaseActionRedirect || urlLinkTarget.RedirectURL != "/after-paid" || len(urlLinkTarget.CompletionTarget) == 0 {
+		t.Fatalf("URL Link target=%+v err=%v", urlLinkTarget, err)
+	}
 	for _, raw := range []string{
 		`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"qr"}`,
 		`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect","completion_redirect_url":"javascript:alert(1)"}`,

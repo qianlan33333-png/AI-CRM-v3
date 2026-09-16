@@ -73,17 +73,22 @@ type QueueExternalPushTestCommand struct {
 // ExternalPushTest is a local EER acceptance projection. State=accepted or
 // queued is never evidence of Provider acceptance or delivery.
 type ExternalPushTest struct {
-	ProductID                ID                      `json:"product_id"`
-	ProductKind              ExternalPushProductKind `json:"product_kind"`
-	EffectID                 string                  `json:"effect_id"`
-	State                    string                  `json:"state"`
-	AttemptCount             int32                   `json:"attempt_count"`
-	ProviderAccepted         bool                    `json:"provider_accepted"`
-	DeliveryProven           bool                    `json:"delivery_proven"`
-	RealExternalCallExecuted bool                    `json:"real_external_call_executed"`
-	AutoRetryAllowed         bool                    `json:"auto_retry_allowed"`
-	CreatedAt                time.Time               `json:"created_at"`
-	UpdatedAt                time.Time               `json:"updated_at"`
+	ProductID   ID                      `json:"product_id"`
+	ProductKind ExternalPushProductKind `json:"product_kind"`
+	EffectID    string                  `json:"effect_id"`
+	// DeliveryID is the immutable legacy protocol delivery identifier assigned
+	// when this explicit test is accepted. It is an Outbound-produced value,
+	// not proof that a Provider received or delivered the request. Historical
+	// Product rows and receipt snapshots may omit it.
+	DeliveryID               string    `json:"delivery_id,omitempty"`
+	State                    string    `json:"state"`
+	AttemptCount             int32     `json:"attempt_count"`
+	ProviderAccepted         bool      `json:"provider_accepted"`
+	DeliveryProven           bool      `json:"delivery_proven"`
+	RealExternalCallExecuted bool      `json:"real_external_call_executed"`
+	AutoRetryAllowed         bool      `json:"auto_retry_allowed"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 // ExternalPushTestStatus is an Outbound-owned, digest-safe delivery

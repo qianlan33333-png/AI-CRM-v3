@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -174,7 +175,12 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	case path == "/api/v1/wechat-pay/checkouts":
 		handler.checkout(writer, request)
 	case strings.HasPrefix(path, "/api/v1/wechat-pay/checkouts/"):
-		handler.checkoutStatus(writer, request, strings.TrimPrefix(path, "/api/v1/wechat-pay/checkouts/"))
+		checkoutPath := strings.TrimPrefix(path, "/api/v1/wechat-pay/checkouts/")
+		if strings.HasSuffix(checkoutPath, "/completion-target") {
+			handler.resolveCompletionTarget(writer, request, strings.TrimSuffix(checkoutPath, "/completion-target"))
+			return
+		}
+		handler.checkoutStatus(writer, request, checkoutPath)
 	case strings.HasPrefix(path, "/api/admin/wechat-pay/payments/") && strings.HasSuffix(path, "/abandon-checkout"):
 		handler.abandonCheckout(writer, request, strings.TrimSuffix(strings.TrimPrefix(path, "/api/admin/wechat-pay/payments/"), "/abandon-checkout"))
 	case strings.HasPrefix(path, "/api/admin/wechat-pay/payments/") && strings.HasSuffix(path, "/allow-checkout-restart"):
@@ -819,24 +825,18 @@ func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http
 		// terminal paid state. A refresh can therefore re-read the same frozen
 		// completion action, while GetCheckout still binds it to this exact
 		// merchant order and cannot create a new payment or action.
-		result["completion_action"] = handler.paidPurchaseAction(request.Context(), handoff.OrderID)
+		result["completion_action"] = handler.paidPurchaseAction(request.Context(), handoff.OrderID, handoff.MerchantOrder)
 	} else if handoff.Status == domain.StatusFailed || handoff.Status == domain.StatusCancelled {
 		clearSessionCookie(writer)
 	}
 	writeJSON(writer, status, result)
 }
 
-func (handler *Handler) paidPurchaseAction(ctx context.Context, orderID int64) map[string]any {
+func (handler *Handler) paidPurchaseAction(ctx context.Context, orderID int64, merchantOrderNo string) map[string]any {
 	if handler == nil || handler.purchaseActions == nil || handler.leadQR == nil || orderID < 1 {
 		return map[string]any{"state": "unavailable"}
 	}
-	var action productport.PaidPurchaseAction
-	var err error
-	if guidance, ok := handler.purchaseActions.(productport.PaidPurchaseGuidanceReader); ok {
-		action, err = guidance.ReadPaidPurchaseGuidance(ctx, orderID)
-	} else {
-		action, err = handler.purchaseActions.ReadPaidPurchaseAction(ctx, orderID)
-	}
+	action, err := handler.readPaidPurchaseAction(ctx, orderID)
 	if err != nil || action.OrderID != orderID {
 		return map[string]any{"state": "unavailable"}
 	}
@@ -844,7 +844,16 @@ func (handler *Handler) paidPurchaseAction(ctx context.Context, orderID int64) m
 	case productport.PaidPurchaseActionNone:
 		return map[string]any{"state": "none"}
 	case productport.PaidPurchaseActionRedirect:
-		if !action.Enabled || action.RedirectURL == "" {
+		if !action.Enabled {
+			return map[string]any{"state": "unavailable"}
+		}
+		if len(action.CompletionTarget) > 0 {
+			if merchantOrderNo == "" {
+				return map[string]any{"state": "unavailable"}
+			}
+			return map[string]any{"state": "available", "mode": "redirect", "redirect_url": "/api/v1/wechat-pay/checkouts/" + url.PathEscape(merchantOrderNo) + "/completion-target"}
+		}
+		if action.RedirectURL == "" {
 			return map[string]any{"state": "unavailable"}
 		}
 		return map[string]any{"state": "available", "mode": "redirect", "redirect_url": action.RedirectURL}
@@ -860,6 +869,57 @@ func (handler *Handler) paidPurchaseAction(ctx context.Context, orderID int64) m
 	default:
 		return map[string]any{"state": "unavailable"}
 	}
+}
+
+func (handler *Handler) resolveCompletionTarget(writer http.ResponseWriter, request *http.Request, merchantOrderNo string) {
+	if !handler.writesEnabled {
+		writeError(writer, http.StatusServiceUnavailable, "payment_provider_disabled")
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	cookie, err := request.Cookie(SessionCookieName)
+	if err != nil || cookie.Value == "" || merchantOrderNo == "" || strings.Contains(merchantOrderNo, "/") {
+		writeError(writer, http.StatusUnauthorized, "payment_session_required")
+		return
+	}
+	handoff, err := handler.app.GetCheckout(request.Context(), merchantOrderNo, cookie.Value)
+	if err != nil {
+		resultError(writer, err)
+		return
+	}
+	if handoff.Status != domain.StatusPaid || handoff.OrderID < 1 {
+		writeError(writer, http.StatusConflict, "payment_not_paid")
+		return
+	}
+	action, err := handler.readPaidPurchaseAction(request.Context(), handoff.OrderID)
+	if err != nil || action.OrderID != handoff.OrderID || !action.Enabled || action.Mode != productport.PaidPurchaseActionRedirect || len(action.CompletionTarget) == 0 {
+		writeError(writer, http.StatusNotFound, "completion_target_unavailable")
+		return
+	}
+	resolver, ok := handler.purchaseActions.(productport.PaidPurchaseURLLinkResolver)
+	if !ok {
+		writeError(writer, http.StatusServiceUnavailable, "completion_target_unavailable")
+		return
+	}
+	destination, err := resolver.ResolvePaidPurchaseURLLink(request.Context(), action)
+	if err != nil || destination == "" {
+		writeError(writer, http.StatusBadGateway, "completion_target_unavailable")
+		return
+	}
+	http.Redirect(writer, request, destination, http.StatusFound)
+}
+
+func (handler *Handler) readPaidPurchaseAction(ctx context.Context, orderID int64) (productport.PaidPurchaseAction, error) {
+	if handler == nil || handler.purchaseActions == nil || orderID < 1 {
+		return productport.PaidPurchaseAction{}, paymentport.ErrUnavailable
+	}
+	if guidance, ok := handler.purchaseActions.(productport.PaidPurchaseGuidanceReader); ok {
+		return guidance.ReadPaidPurchaseGuidance(ctx, orderID)
+	}
+	return handler.purchaseActions.ReadPaidPurchaseAction(ctx, orderID)
 }
 
 func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request, rawPaymentID string) {
