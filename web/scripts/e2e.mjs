@@ -3184,7 +3184,7 @@ for (const page of ['error', 'signup', 'active', 'expired', 'pay', 'qr']) {
 {
   const dom = await loadPage('h5/done.html', { q: 'slug=uat-survey', h5Http: { sessionStatus: 200, session: { submitted: true, completion_action: { type: 'default' } } } });
   const d = dom.window.document;
-  ok('H5 默认完成页只显示收到问卷的确认，不显示技术回执或结果入口', d.querySelector('[data-h5-done]')?.textContent?.trim() === '✓\n    收到你的问卷' && !d.querySelector('[data-h5-lead-qr]') && !d.querySelector('[data-h5-blocked]') && !d.querySelector('[data-h5-local-exit]'));
+  ok('H5 默认完成页只显示收到问卷的确认，不显示技术回执或结果入口', d.querySelector('[data-h5-done] h1')?.textContent === '收到你的问卷' && !d.querySelector('[data-h5-lead-qr]') && !d.querySelector('[data-h5-blocked]') && !d.querySelector('[data-h5-local-exit]'));
   dom.window.close();
 }
 for (const [label, session] of [
