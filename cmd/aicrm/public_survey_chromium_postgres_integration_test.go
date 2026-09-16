@@ -80,19 +80,18 @@ func TestPostgreSQLPublicSurveyPresentationChromiumJourney(t *testing.T) {
 	if err = fixture.native.QueryRow(fixture.ctx, `SELECT count(*) FROM survey_submissions WHERE questionnaire_id=$1`, fixture.failure.ID).Scan(&failureWrites); err != nil || failureWrites != 1 {
 		t.Fatalf("controlled failure then recovery writes=%d err=%v", failureWrites, err)
 	}
-	for _, name := range []string{
-		"public-survey-answer-375.png",
-		"public-survey-result-390.png",
-		"public-survey-failure-430.png",
-	} {
-		info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
-		if statErr != nil || info.Size() < 512 {
-			t.Fatalf("public Survey screenshot=%s exists=%t size=%d", name, statErr == nil, func() int64 {
-				if info == nil {
-					return 0
-				}
-				return info.Size()
-			}())
+	for _, page := range []string{"auth", "oauth-error", "answer", "failure", "result"} {
+		for _, width := range []string{"375", "390", "430"} {
+			name := "public-survey-" + page + "-" + width + ".png"
+			info, statErr := os.Stat(filepath.Join(fixture.screenshots, name))
+			if statErr != nil || info.Size() < 512 {
+				t.Fatalf("public Survey screenshot=%s exists=%t size=%d", name, statErr == nil, func() int64 {
+					if info == nil {
+						return 0
+					}
+					return info.Size()
+				}())
+			}
 		}
 	}
 }

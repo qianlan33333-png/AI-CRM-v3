@@ -80,12 +80,35 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   const cdp = new CDP(socket);
   await cdp.call('Page.enable'); await cdp.call('Runtime.enable'); await cdp.call('Network.enable');
+
+  // Exercise the real /q -> OAuth Owner -> auth failure route. The start
+  // response sets its own short-lived return cookie; blocking the external
+  // authorization navigation prevents an outbound request while preserving
+  // the exact Owner failure path for Chromium.
+  await cdp.call('Network.setBlockedURLs', { urls: ['https://open.weixin.qq.com/*'] });
+  await cdp.call('Page.navigate', { url: `${base}/api/h5/surveys/oauth/start?slug=${successSlug}` });
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const cookies = await cdp.call('Network.getAllCookies');
+    if ((cookies.cookies || []).some((cookie) => cookie.name === 'survey_oauth_return' && cookie.value === successSlug)) break;
+    if (attempt === 39) throw new Error('Survey Owner OAuth start did not issue its return cookie');
+    await delay(50);
+  }
+  await cdp.call('Network.setBlockedURLs', { urls: [] });
+  await cdp.call('Page.navigate', { url: `${base}/api/h5/surveys/oauth/callback?state=${'x'.repeat(43)}&code=controlled-failure` });
+  await waitFor(cdp, `location.pathname === '/h5/auth.html' && document.body?.dataset.v3PublicSurvey === 'auth' && document.querySelector('#screen')?.textContent?.includes('微信授权未完成，请重试') && Boolean(document.querySelector('#screen button'))`, 'Owner OAuth failure did not render the public auth retry page');
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-auth-${width}.png`);
+
+  await cdp.call('Network.deleteCookies', { name: 'survey_oauth_return', url: `${base}/api/h5/surveys/oauth/callback` });
+  await cdp.call('Page.navigate', { url: `${base}/api/h5/surveys/oauth/callback?state=${'y'.repeat(43)}&code=controlled-failure` });
+  await waitFor(cdp, `location.pathname === '/h5/error.html' && document.querySelector('#screen [data-h5-blocked]') && document.querySelector('#screen')?.textContent?.includes('当前页面不可执行') && Boolean(document.querySelector('#screen button[disabled]'))`, 'Owner OAuth failure without a return target did not render the fail-closed error page');
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-oauth-error-${width}.png`);
+
   await cdp.call('Network.setCookie', { name: '__Host-aicrm_survey_identity', value: session, url: base, path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
 
   await cdp.call('Page.navigate', { url: `${base}/q/${successSlug}` });
   await waitFor(cdp, `location.pathname === '/h5/all.html' && document.body?.dataset.v3PublicSurvey === 'all'`, 'authorized public all-in-one route did not mount');
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-question-id] label[data-option-id]')) && Boolean(document.querySelector('#screen [data-h5-submit]'))`, 'actual public answer form did not render');
-  await screenshot(cdp, 375, 'public-survey-answer-375.png');
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-answer-${width}.png`);
   await evaluate(cdp, `document.querySelector('#screen [data-h5-submit]').click(); true`, 'submit incomplete required answer');
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-h5-error]')) && document.querySelector('#screen [data-h5-submit]')?.disabled === false`, 'required-answer validation did not retain an editable retry state');
   if (cdp.successSubmissions !== 0) throw new Error(`required-answer validation submitted=${cdp.successSubmissions}`);
@@ -98,7 +121,7 @@ try {
   await waitFor(cdp, `location.pathname === '/h5/result.html' && Boolean(document.querySelector('#screen [data-h5-result]')) && document.querySelector('#screen')?.textContent?.includes('提交已确认')`, 'actual result GET did not render');
   const successfulResult = await evaluate(cdp, `(() => { const text=document.querySelector('#screen')?.textContent || ''; const id=text.match(/提交编号\\s*(\\d+)/)?.[1] || ''; return { submissionID: Number(id), time: text.includes('提交时间'), version: text.includes('问卷版本'), internalScope: /处理范围|仅本地处理|外部效果/.test(text) }; })()`, 'read rendered result receipt');
   if (!successfulResult?.submissionID || !successfulResult.time || !successfulResult.version || successfulResult.internalScope) throw new Error(`public result receipt presentation is incomplete: ${JSON.stringify(successfulResult)}`);
-  await screenshot(cdp, 390, 'public-survey-result-390.png');
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-result-${width}.png`);
 
   await cdp.call('Page.navigate', { url: `${base}/q/${failureSlug}` });
   await waitFor(cdp, `location.pathname === '/h5/one.html' && document.body?.dataset.v3PublicSurvey === 'one' && document.querySelector('#screen [data-h5-progress]')?.textContent?.includes('1 / 2')`, 'authorized one-by-one route or progress did not mount');
@@ -109,7 +132,7 @@ try {
   await waitFor(cdp, `Boolean(document.querySelector('#screen [data-v3-survey-submitting]')) && !document.querySelector('#screen [data-h5-submit]')`, 'one-by-one submission did not expose its stable pending feedback');
   await waitFor(cdp, `document.querySelector('#screen [data-v3-survey-recovery]')?.textContent === '暂时无法完成操作，请保留当前页面并稍后重试。' && document.querySelector('#screen [data-v3-survey-error-detail]')?.textContent === '问题详情：HTTP 503' && document.querySelector('#screen [data-h5-submit]')?.disabled === false`, 'failure did not expose a recoverable transport explanation and retry action');
   if (cdp.failureSubmissions !== 1) throw new Error(`first failure submission requests=${cdp.failureSubmissions}`);
-  await screenshot(cdp, 430, 'public-survey-failure-430.png');
+  for (const width of [375, 390, 430]) await screenshot(cdp, width, `public-survey-failure-${width}.png`);
   await evaluate(cdp, `(() => { document.querySelector('#screen [data-h5-previous]')?.click(); return true; })()`, 'return to preserved answer');
   await waitFor(cdp, `document.querySelector('#screen label[data-option-id]')?.getAttribute('aria-pressed') === 'true'`, 'first failed submission cleared the selected answer');
   await evaluate(cdp, `document.querySelector('#screen [data-h5-next]').click(); true`, 'return to final retry step');
