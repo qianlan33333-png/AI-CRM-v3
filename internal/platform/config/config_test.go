@@ -557,6 +557,17 @@ func TestAdminLayoutScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	}
 }
 
+func TestChannelCenterScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR", "")
+	if value := ChannelCenterScreenshotDirectory(); value != "" {
+		t.Fatalf("missing screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_CHANNEL_CENTER_SCREENSHOT_DIR", "/tmp/aicrm-channel-center-evidence")
+	if value := ChannelCenterScreenshotDirectory(); value != "/tmp/aicrm-channel-center-evidence" {
+		t.Fatalf("screenshot directory=%q", value)
+	}
+}
+
 func TestAccessGovernanceScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
 	t.Setenv("AICRM_ACCESS_UI_SCREENSHOT_DIR", "")
 	if value := AccessGovernanceScreenshotDirectory(); value != "" {
@@ -620,6 +631,28 @@ func TestPublicCommerceScreenshotDirectoryUsesConfigurationBoundary(t *testing.T
 	t.Setenv("AICRM_PUBLIC_COMMERCE_SCREENSHOT_DIR", "/tmp/aicrm-public-commerce-evidence")
 	if value := PublicCommerceScreenshotDirectory(); value != "/tmp/aicrm-public-commerce-evidence" {
 		t.Fatalf("public commerce screenshot directory=%q", value)
+	}
+}
+
+func TestPublicSurveyScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_PUBLIC_SURVEY_SCREENSHOT_DIR", "")
+	if value := PublicSurveyScreenshotDirectory(); value != "" {
+		t.Fatalf("missing public Survey screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_PUBLIC_SURVEY_SCREENSHOT_DIR", "/tmp/aicrm-public-survey-evidence")
+	if value := PublicSurveyScreenshotDirectory(); value != "/tmp/aicrm-public-survey-evidence" {
+		t.Fatalf("public Survey screenshot directory=%q", value)
+	}
+}
+
+func TestQuestionnaireListScreenshotDirectoryUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR", "")
+	if value := QuestionnaireListScreenshotDirectory(); value != "" {
+		t.Fatalf("missing questionnaire list screenshot directory=%q", value)
+	}
+	t.Setenv("AICRM_QUESTIONNAIRE_LIST_SCREENSHOT_DIR", "/tmp/aicrm-questionnaire-list-evidence")
+	if value := QuestionnaireListScreenshotDirectory(); value != "/tmp/aicrm-questionnaire-list-evidence" {
+		t.Fatalf("questionnaire list screenshot directory=%q", value)
 	}
 }
 

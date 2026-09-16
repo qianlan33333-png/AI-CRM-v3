@@ -159,9 +159,14 @@ try {
   await waitFor(cdp, `fetch('/api/admin/wechat-pay/products/${productID}',{credentials:'same-origin'}).then((response)=>response.json()).then((body)=>body.admin_projection?.wecom_tagging?.enabled===true && body.admin_projection?.wecom_tagging?.tag_ids?.length===1 && String(body.admin_projection.wecom_tagging.tag_ids[0])===${JSON.stringify(tagID)})`, 'normal product save/readback did not persist the selected tag');
 
   await cdp.call('Page.navigate', { url: `${baseURL}/admin/channels/${channelID}/edit` });
-  await waitFor(cdp, "Boolean(document.querySelector('[data-channel-admission-page] [data-open-tag-picker]'))", `channel entry tag button did not mount: ${await diagnostic()}`);
+  // The channel Host adds its delegated handler only after the shared V3 tag
+  // capability has loaded. A visible frozen trigger alone can otherwise take
+  // the existing not-ready path before the Host is able to open the picker.
+  await waitFor(cdp, "(()=>{const button=document.querySelector('[data-channel-admission-page] [data-open-tag-picker]');return button instanceof HTMLButtonElement&&!button.disabled&&typeof window.AICRMTagPicker?.open==='function';})()", `channel entry tag picker did not become ready: ${await diagnostic()}`);
   await evaluate(cdp, "document.querySelector('[data-channel-admission-page] [data-open-tag-picker]').click(); true");
-  await waitFor(cdp, tagDialogPresent(), 'channel V3 entry tag dialog did not open');
+  await waitFor(cdp, `(${tagDialogPresent()})||Boolean(document.querySelector('[data-channel-entry-tag-picker-error]'))`, 'channel V3 entry tag dialog did not open');
+  const channelPickerError = await evaluate(cdp, "document.querySelector('[data-channel-entry-tag-picker-error]')?.textContent.trim() || ''");
+  if (channelPickerError) throw new Error(`channel V3 entry tag picker rejected its ready trigger: ${channelPickerError}`);
   await setViewport(cdp, 1440); await assertDialogLayout(cdp, 1440, 'channel-wide'); await screenshot(cdp, 'channel-tag-picker-1440.png');
   await setViewport(cdp, 1280); await assertDialogLayout(cdp, 1280, 'channel'); await screenshot(cdp, 'channel-tag-picker-1280.png');
   if (!await evaluate(cdp, pickFirst)) throw new Error('channel tag row was unavailable');
