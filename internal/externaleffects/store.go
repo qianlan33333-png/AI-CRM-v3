@@ -777,6 +777,13 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		} else if result.Completion == StateExecuted && result.CallAttempted && result.RealExternalCallExecuted {
 			next = StateExecuted
 			receipt = result.ReceiptDigest
+		} else if result.Completion == StateExecuted && envelope.Kind == KindWeComContactDescription &&
+			result.CallAttempted && !result.RealExternalCallExecuted && result.Artifact.Valid() {
+			// Description effects have a compare-before-write contract. A live
+			// read can prove already_present, too_long, or a changed snapshot;
+			// each is a terminal business result without fabricating a write.
+			next = StateExecuted
+			receipt = result.ReceiptDigest
 			// A browser-owned sidebar send can lose its one-time client receipt after
 			// the SDK may have been invoked. Preserve that distinct unknown result
 			// without recording a server-side Provider call that did not occur.
@@ -826,7 +833,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindCustomerTagCommand || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindCommerceProductPush || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == port.KindSidebarJSSDKSend || envelope.Kind == KindSurveyCompletion || envelope.Kind == KindAIAgentGenerate || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindWeComContactDescription || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindCustomerTagCommand || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindCommerceProductPush || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == port.KindSidebarJSSDKSend || envelope.Kind == KindSurveyCompletion || envelope.Kind == KindAIAgentGenerate || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = persistedState

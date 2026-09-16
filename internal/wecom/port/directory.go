@@ -41,7 +41,18 @@ type ExternalContactFollowInfo struct {
 	// Remark is nil when the Provider response did not project this field. An
 	// explicit empty string remains distinct from not-yet-projected history.
 	Remark *string
-	Tags   []ExternalContactTag
+	// Description is the follow-employee-level external-contact description.
+	// It is deliberately separate from Remark: the legacy ID projection wrote
+	// this provider field, while Remark remains a read-only display projection.
+	// Nil means the provider did not include description; an explicit empty
+	// string must remain distinguishable for a safe compare-before-write flow.
+	Description *string
+	// DescriptionProjected is true only when the Provider explicitly returned
+	// the description field (including an explicit empty string). A missing
+	// field is not evidence that the description is empty and must not enable a
+	// destructive replacement write.
+	DescriptionProjected bool
+	Tags                 []ExternalContactTag
 }
 
 type ExternalContactTag struct {

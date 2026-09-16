@@ -511,20 +511,21 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
-	sidebarMedia effectport.CompletionSink
-	tag          *TagCatalogCompletionSink
-	tagMutation  effectport.CompletionSink
-	group        *GroupMessageCompletionSink
-	channel      *ChannelAssetCompletionSink
-	entrant      *ChannelEntrantCompletionSink
-	link         *ChannelLinkCompletionSink
-	private      *PrivateMessageCompletionSink
-	automation   effectport.CompletionSink
-	sidebar      effectport.CompletionSink
-	survey       effectport.CompletionSink
-	customerTag  effectport.CompletionSink
-	ownerHandoff effectport.CompletionSink
-	commerce     effectport.CompletionSink
+	sidebarMedia       effectport.CompletionSink
+	tag                *TagCatalogCompletionSink
+	tagMutation        effectport.CompletionSink
+	group              *GroupMessageCompletionSink
+	channel            *ChannelAssetCompletionSink
+	entrant            *ChannelEntrantCompletionSink
+	link               *ChannelLinkCompletionSink
+	private            *PrivateMessageCompletionSink
+	automation         effectport.CompletionSink
+	sidebar            effectport.CompletionSink
+	survey             effectport.CompletionSink
+	customerTag        effectport.CompletionSink
+	ownerHandoff       effectport.CompletionSink
+	commerce           effectport.CompletionSink
+	contactDescription effectport.CompletionSink
 }
 
 func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
@@ -671,6 +672,12 @@ func (r *CompletionRouter) WithTagCatalogMutation(sink effectport.CompletionSink
 	}
 }
 
+func (r *CompletionRouter) WithContactDescription(sink effectport.CompletionSink) {
+	if r != nil {
+		r.contactDescription = sink
+	}
+}
+
 func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
 	if r == nil {
 		return errors.New("completion router is unavailable")
@@ -691,6 +698,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("tag catalog mutation completion sink is unavailable")
 		}
 		return r.tagMutation.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindWeComContactDescription:
+		if r.contactDescription == nil {
+			return errors.New("contact description completion sink is unavailable")
+		}
+		return r.contactDescription.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	case effectport.KindGroupMessage:
 		if r.group == nil {
 			return errors.New("Group Ops completion sink is unavailable")

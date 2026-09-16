@@ -396,9 +396,9 @@ let sidebarHTML = sidebarTemplate
   .replace('<link rel="stylesheet" href="/static/sidebar_workbench/sidebar_workbench.css?v=20260730-sidebar-material-search">', `${sidebarStylesheet}\n  ${sidebarVisualTokensStylesheet}\n  ${sidebarPresentationStylesheet}`)
   .replace('    data-other-staff-messages-url="/api/sidebar/v2/other-staff-messages"\n', '')
   .replace('    data-workbench-url="/api/sidebar/v2/workbench"\n', `    data-workbench-url="/api/sidebar/v2/workbench"\n    data-overlay-url="../${sidebarOverlay}"\n`)
-  .replace('            <div class="meta" id="customer-external-userid"></div>\n', '')
+  .replace('            <div class="meta" id="customer-external-userid"></div>\n', '            <div class="meta" id="customer-oneid"></div>\n')
   .replace('  <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>\n  <script src="/static/admin_console/image_resource_loader.js?v=resource-governance-v2-pending-retry"></script>\n  <script src="/static/sidebar_workbench/sidebar_workbench.js?v=20260805-context-bootstrap"></script>', `  <script src="${weComJSSDK}"></script>\n  ${imageResourceLoaderScript}\n  ${sidebarHostScript}`);
-if (sidebarHTML.includes('other-staff-messages') || sidebarHTML.includes('jweixin-1.6.0.js') || sidebarHTML.includes('sidebar_workbench.js')) throw new Error('standard sidebar overlay retained removed chat or retired runtime');
+if (sidebarHTML.includes('other-staff-messages') || sidebarHTML.includes('customer-external-userid') || sidebarHTML.includes('jweixin-1.6.0.js') || sidebarHTML.includes('sidebar_workbench.js')) throw new Error('standard sidebar overlay retained removed chat, raw identifier, or retired runtime');
 if (!sidebarHTML.includes(weComJSSDK) || !sidebarHTML.includes(imageResourceLoaderScript) || !sidebarHTML.includes(sidebarHostScript) || !sidebarHTML.includes(sidebarStylesheet) || !sidebarHTML.includes(sidebarVisualTokensStylesheet) || !sidebarHTML.includes(sidebarPresentationStylesheet) || !sidebarHTML.includes(`data-overlay-url="../${sidebarOverlay}"`)) throw new Error('standard sidebar overlay did not retain V3 bridge, image loader, generated renderer, and stylesheet closure');
 const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
 fs.writeFileSync(sidebarDocument, sidebarHTML);

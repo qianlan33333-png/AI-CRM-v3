@@ -11,8 +11,12 @@ import (
 	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
+
+var ErrContactDescriptionBackfillDisabled = errors.New("contact description backfill disabled")
 
 type CustomerSyncAuthenticator interface {
 	Authenticate(context.Context, *nethttp.Request) (accessdomain.Principal, error)
@@ -22,9 +26,13 @@ type CustomerSyncCSRF interface {
 }
 
 type CustomerSyncHTTPHandler struct {
-	Service CustomerSyncService
-	Auth    CustomerSyncAuthenticator
-	CSRF    CustomerSyncCSRF
+	Service              CustomerSyncService
+	Auth                 CustomerSyncAuthenticator
+	CSRF                 CustomerSyncCSRF
+	DescriptionEnabled   bool
+	DescriptionStatus    outboundport.ContactDescriptionRunStatusReader
+	DescriptionReadbacks outboundport.ContactDescriptionReadbackScheduler
+	UOW                  platformport.UnitOfWork
 }
 
 func (handler CustomerSyncHTTPHandler) Routes() nethttp.Handler {
@@ -32,7 +40,28 @@ func (handler CustomerSyncHTTPHandler) Routes() nethttp.Handler {
 	mux.HandleFunc("POST /api/admin/customer-sync-runs", handler.create)
 	mux.HandleFunc("GET /api/admin/customer-sync-runs", handler.list)
 	mux.HandleFunc("GET /api/admin/customer-sync-runs/{run_id}", handler.get)
+	mux.HandleFunc("POST /api/admin/wecom/contact-description-backfills", handler.createDescriptionBackfill)
+	mux.HandleFunc("GET /api/admin/wecom/contact-description-backfills/{run_id}", handler.getDescriptionBackfill)
+	mux.HandleFunc("GET /api/admin/wecom/contact-description-backfills/{run_id}/readback", handler.getDescriptionBackfill)
+	mux.HandleFunc("POST /api/admin/wecom/contact-description-backfills/{run_id}/readback", handler.scheduleDescriptionReadback)
 	return mux
+}
+
+func (handler CustomerSyncHTTPHandler) createDescriptionBackfill(response nethttp.ResponseWriter, request *nethttp.Request) {
+	principal, err := handler.CSRF.AuthorizeCSRF(request.Context(), request)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	if !customerSyncMayWrite(principal) {
+		writeSyncError(response, accessdomain.ErrPermissionDenied)
+		return
+	}
+	if !handler.descriptionReady() {
+		writeSyncError(response, ErrContactDescriptionBackfillDisabled)
+		return
+	}
+	handler.createAuthorized(response, request, principal)
 }
 
 func (handler CustomerSyncHTTPHandler) create(response nethttp.ResponseWriter, request *nethttp.Request) {
@@ -45,12 +74,16 @@ func (handler CustomerSyncHTTPHandler) create(response nethttp.ResponseWriter, r
 		writeSyncError(response, accessdomain.ErrPermissionDenied)
 		return
 	}
+	handler.createAuthorized(response, request, principal)
+}
+
+func (handler CustomerSyncHTTPHandler) createAuthorized(response nethttp.ResponseWriter, request *nethttp.Request, principal accessdomain.Principal) {
 	if request.Body != nil && request.ContentLength > 0 {
 		writeSyncError(response, errors.New("body_not_allowed"))
 		return
 	}
 	rawKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	if _, err = idempotency.Parse(rawKey); err != nil {
+	if _, err := idempotency.Parse(rawKey); err != nil {
 		writeSyncError(response, err)
 		return
 	}
@@ -129,6 +162,94 @@ func (handler CustomerSyncHTTPHandler) get(response nethttp.ResponseWriter, requ
 	writeSyncJSON(response, nethttp.StatusOK, run)
 }
 
+func (handler CustomerSyncHTTPHandler) getDescriptionBackfill(response nethttp.ResponseWriter, request *nethttp.Request) {
+	principal, err := handler.Auth.Authenticate(request.Context(), request)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	if !customerSyncMayWrite(principal) {
+		writeSyncError(response, accessdomain.ErrPermissionDenied)
+		return
+	}
+	if !handler.descriptionReady() {
+		writeSyncError(response, ErrContactDescriptionBackfillDisabled)
+		return
+	}
+	id, err := parseCustomerSyncRunID(request)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	run, err := handler.Service.Get(request.Context(), id)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	stats, err := handler.DescriptionStatus.ContactDescriptionRunStats(request.Context(), id)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	writeSyncJSON(response, nethttp.StatusOK, map[string]any{"run": run, "description_backfill": stats})
+}
+
+func (handler CustomerSyncHTTPHandler) scheduleDescriptionReadback(response nethttp.ResponseWriter, request *nethttp.Request) {
+	principal, err := handler.CSRF.AuthorizeCSRF(request.Context(), request)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	if !customerSyncMayWrite(principal) {
+		writeSyncError(response, accessdomain.ErrPermissionDenied)
+		return
+	}
+	if !handler.descriptionReady() {
+		writeSyncError(response, ErrContactDescriptionBackfillDisabled)
+		return
+	}
+	if request.Body != nil && request.ContentLength > 0 {
+		writeSyncError(response, errors.New("body_not_allowed"))
+		return
+	}
+	id, err := parseCustomerSyncRunID(request)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	if _, err = handler.Service.Get(request.Context(), id); err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	var scheduled int64
+	if err = handler.UOW.Within(request.Context(), func(txContext context.Context) error {
+		var scheduleErr error
+		scheduled, scheduleErr = handler.DescriptionReadbacks.ScheduleContactDescriptionReadbacksWithin(txContext, id)
+		return scheduleErr
+	}); err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	stats, err := handler.DescriptionStatus.ContactDescriptionRunStats(request.Context(), id)
+	if err != nil {
+		writeSyncError(response, err)
+		return
+	}
+	writeSyncJSON(response, nethttp.StatusAccepted, map[string]any{"run_id": id, "readback_scheduled": scheduled, "description_backfill": stats})
+}
+
+func (handler CustomerSyncHTTPHandler) descriptionReady() bool {
+	return handler.DescriptionEnabled && handler.DescriptionStatus != nil && handler.DescriptionReadbacks != nil && handler.UOW != nil
+}
+
+func parseCustomerSyncRunID(request *nethttp.Request) (int64, error) {
+	id, err := strconv.ParseInt(request.PathValue("run_id"), 10, 64)
+	if err != nil || id < 1 || strconv.FormatInt(id, 10) != request.PathValue("run_id") {
+		return 0, errors.New("invalid_id")
+	}
+	return id, nil
+}
+
 func writeSyncError(response nethttp.ResponseWriter, err error) {
 	status, code := nethttp.StatusInternalServerError, "internal_error"
 	switch {
@@ -144,6 +265,8 @@ func writeSyncError(response nethttp.ResponseWriter, err error) {
 		status, code = 404, "sync_run_not_found"
 	case errors.Is(err, ErrSyncNotReady):
 		status, code = 503, "provider_disabled"
+	case errors.Is(err, ErrContactDescriptionBackfillDisabled):
+		status, code = 503, "contact_description_backfill_disabled"
 	case errors.Is(err, idempotency.ErrInvalidKey), strings.HasPrefix(err.Error(), "invalid_") || err.Error() == "body_not_allowed":
 		status, code = 400, "invalid_request"
 	}

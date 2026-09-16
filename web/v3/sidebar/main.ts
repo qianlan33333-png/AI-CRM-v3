@@ -91,6 +91,11 @@ function oneString(value: unknown, keys: string[]): string {
   return "";
 }
 
+function canonicalOneID(value: unknown): string {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return /^CID-[1-9][0-9]*$/.test(candidate) ? candidate : "";
+}
+
 function formatMoney(minor: unknown, currency = "CNY"): string {
   const value = Number(minor);
   if (!Number.isFinite(value)) return "";
@@ -154,6 +159,10 @@ export class SidebarBridge {
   private customerID = "";
   private profileVersion = 0;
   private profile: Json = {};
+  // OneID comes only from the ready bootstrap workbench. Profile writes have a
+  // separate response contract, so they must not retain or reconstruct other
+  // profile fields that a server response deliberately omits.
+  private oneID = "";
   private periodicVersions = new Map<string, number>();
   private startFlight: Promise<void> | null = null;
   private refreshFlight: Promise<void> | null = null;
@@ -253,6 +262,7 @@ export class SidebarBridge {
     this.customerID = "";
     this.contextIdentityStamp = "";
     this.profile = {};
+    this.oneID = "";
     this.profileVersion = 0;
     this.contextNeedsValidation = false;
     this.contextController.abort();
@@ -306,10 +316,19 @@ export class SidebarBridge {
     if (!Number.isSafeInteger(customerID) || customerID < 1) throw failure("侧边栏未返回可信客户主键。");
     this.externalUserID = externalUserID;
     this.customerID = String(customerID);
+    try {
+      this.rememberWorkbench(bootstrap.workbench || {});
+    } catch (error) {
+      this.invalidateContext();
+      throw error;
+    }
     this.token = String(bootstrap.context_token);
     this.contextIdentityStamp = idempotency("sidebar-context");
-    this.rememberWorkbench(bootstrap.workbench || {});
     this.contextNeedsValidation = false;
+    // The standard overlay has already cleared its presentation for this
+    // generation. It may reload only after the Host has established this new,
+    // scoped bootstrap response; no provider identifier is included here.
+    window.dispatchEvent(new CustomEvent("aicrm-sidebar-context-ready", { detail: { generation } }));
   }
 
   private startOAuth(): void {
@@ -744,7 +763,16 @@ export class SidebarBridge {
 
   private rememberWorkbench(workbench: Json): void {
     const profile = workbench.profile || {};
+    const profileCustomerID = Number(profile.customer_id || 0);
+    if (!Number.isSafeInteger(profileCustomerID) || profileCustomerID < 1 || profileCustomerID !== Number(this.customerID)) {
+      throw failure("侧边栏 workbench 客户主键与可信上下文不一致。");
+    }
+    const oneID = canonicalOneID(profile.oneid);
+    if (!oneID || oneID !== `CID-${this.customerID}`) {
+      throw failure("侧边栏 workbench OneID 与可信客户主键不一致。");
+    }
     this.profile = profile;
+    this.oneID = oneID;
     this.profileVersion = Number(profile.profile_version || 0);
   }
 
@@ -754,6 +782,7 @@ export class SidebarBridge {
     return {
       customer: {
         display_name: profile.display_name || profile.name || "当前客户",
+        oneid: this.oneID,
         mobile: profile.phone_masked || "",
         // Declared phone data never upgrades the UI to provider-verified.
         phone_assurance: phoneAssurance,
@@ -908,11 +937,11 @@ function start(): void {
     root.dataset.v3SidebarContext = "invalid";
     const customerName = root.querySelector<HTMLElement>("#customer-name");
     const customerMobile = root.querySelector<HTMLElement>("#customer-mobile");
+    const customerOneID = root.querySelector<HTMLElement>("#customer-oneid");
     const bindingState = root.querySelector<HTMLElement>("#binding-state");
-    const externalID = root.querySelector<HTMLElement>("#customer-external-userid");
     if (customerName) customerName.textContent = "客户上下文已失效";
     if (customerMobile) customerMobile.textContent = "";
-    if (externalID) externalID.textContent = "";
+    if (customerOneID) customerOneID.textContent = "";
     if (bindingState) {
       bindingState.className = "phone-state unbound";
       bindingState.textContent = "请重新打开";

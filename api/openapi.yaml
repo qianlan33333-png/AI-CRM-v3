@@ -1005,6 +1005,60 @@ paths:
       responses:
         "200": {description: Non-PII durable stage and reconciled counts, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerSyncRun"}}}}
         "404": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom/contact-description-backfills:
+    post:
+      operationId: createWeComContactDescriptionBackfill
+      tags: [WeCom]
+      description: Starts the existing full customer-sync enumeration as an explicit contact-description backfill/replan. Directory enumeration success and Provider description completion remain separate counters.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses:
+        "200": {description: Existing idempotent backfill run replay, content: {application/json: {schema: {$ref: "#/components/schemas/ContactDescriptionBackfillAccepted"}}}}
+        "202": {description: Durable full backfill run accepted, content: {application/json: {schema: {$ref: "#/components/schemas/ContactDescriptionBackfillAccepted"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/wecom/contact-description-backfills/{run_id}:
+    get:
+      operationId: getWeComContactDescriptionBackfill
+      tags: [WeCom]
+      description: Returns safe Provider-effect counters for a source sync run. A succeeded sync run is not reported as a completed description backfill until readback confirms it or the target was already present.
+      security: [{adminSession: []}]
+      parameters: [{name: run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Sync run and digest-safe description-backfill status, content: {application/json: {schema: {$ref: "#/components/schemas/ContactDescriptionBackfillStatus"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/wecom/contact-description-backfills/{run_id}/readback:
+    get:
+      operationId: getWeComContactDescriptionReadbackStatus
+      tags: [WeCom]
+      description: Reads the same safe run counters at the readback action URL; it never invokes a Provider operation.
+      security: [{adminSession: []}]
+      parameters: [{name: run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Sync run and digest-safe description-backfill status, content: {application/json: {schema: {$ref: "#/components/schemas/ContactDescriptionBackfillStatus"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: scheduleWeComContactDescriptionReadback
+      tags: [WeCom]
+      description: Schedules Provider-read-only confirmations only for already executed writes whose original readback failed. It never creates a replacement Provider write or changes an outcome_unknown effect key.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "202": {description: Readback-only plans accepted, content: {application/json: {schema: {$ref: "#/components/schemas/ContactDescriptionReadbackAccepted"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/hxc-dashboard/summary:
     get:
       operationId: getHXCDashboardSummary
@@ -7246,6 +7300,46 @@ components:
         completed_at: {type: [string, "null"], format: date-time}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    ContactDescriptionBackfillStats:
+      type: object
+      additionalProperties: false
+      required: [discovered, queued, written, already_present, readback_confirmed, readback_failed, description_changed, too_long, not_authorized, retryable_failed, terminal_failed, outcome_unknown, backfill_completed]
+      properties:
+        discovered: {type: integer, minimum: 0}
+        queued: {type: integer, minimum: 0}
+        written: {type: integer, minimum: 0}
+        already_present: {type: integer, minimum: 0}
+        readback_confirmed: {type: integer, minimum: 0}
+        readback_failed: {type: integer, minimum: 0}
+        description_changed: {type: integer, minimum: 0}
+        too_long: {type: integer, minimum: 0}
+        not_authorized: {type: integer, minimum: 0}
+        retryable_failed: {type: integer, minimum: 0}
+        terminal_failed: {type: integer, minimum: 0}
+        outcome_unknown: {type: integer, minimum: 0}
+        backfill_completed: {type: integer, minimum: 0, description: Count confirmed by provider readback or already containing the target external identity.}
+    ContactDescriptionBackfillAccepted:
+      type: object
+      additionalProperties: false
+      required: [run, replayed]
+      properties:
+        run: {$ref: "#/components/schemas/CustomerSyncRun"}
+        replayed: {type: boolean}
+    ContactDescriptionBackfillStatus:
+      type: object
+      additionalProperties: false
+      required: [run, description_backfill]
+      properties:
+        run: {$ref: "#/components/schemas/CustomerSyncRun"}
+        description_backfill: {$ref: "#/components/schemas/ContactDescriptionBackfillStats"}
+    ContactDescriptionReadbackAccepted:
+      type: object
+      additionalProperties: false
+      required: [run_id, readback_scheduled, description_backfill]
+      properties:
+        run_id: {$ref: "#/components/schemas/PositiveID"}
+        readback_scheduled: {type: integer, minimum: 0}
+        description_backfill: {$ref: "#/components/schemas/ContactDescriptionBackfillStats"}
     JSSDKSignature:
       type: object
       required: [timestamp, nonceStr, signature, jsApiList]
@@ -8091,9 +8185,10 @@ components:
     SidebarWorkbenchProfile:
       type: object
       additionalProperties: false
-      required: [customer_id, name, display_name, status, activation_status, profile_version, version, updated_at]
+      required: [customer_id, oneid, name, display_name, status, activation_status, profile_version, version, updated_at]
       properties:
         customer_id: {$ref: "#/components/schemas/PositiveID"}
+        oneid: {type: string, pattern: "^CID-[1-9][0-9]*$"}
         name: {type: string}
         display_name: {type: string}
         avatar_url: {type: string}

@@ -359,7 +359,11 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 			if remarkErr != nil {
 				return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
 			}
-			value := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Remark: remark, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
+			description, descriptionProjected, descriptionErr := externalContactDescription(follow.Description)
+			if descriptionErr != nil {
+				return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
+			}
+			value := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Remark: remark, Description: description, DescriptionProjected: descriptionProjected, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
 			for _, tag := range follow.Tags {
 				tag.ID, tag.Name = strings.TrimSpace(tag.ID), strings.TrimSpace(tag.Name)
 				if tag.ID == "" || invalid(tag.ID) || invalidOptional(tag.Name) || tag.Type < 1 || tag.Type > 2 {
@@ -406,9 +410,10 @@ func (client *Client) ReadExternalContact(ctx context.Context, externalUserID st
 		return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
 	}
 	var rawFollows []struct {
-		UserID string  `json:"userid"`
-		Remark *string `json:"remark"`
-		Tags   []struct {
+		UserID      string          `json:"userid"`
+		Remark      *string         `json:"remark"`
+		Description json.RawMessage `json:"description"`
+		Tags        []struct {
 			ID   string `json:"tag_id"`
 			Name string `json:"name"`
 			Type int16  `json:"type"`
@@ -427,7 +432,11 @@ func (client *Client) ReadExternalContact(ctx context.Context, externalUserID st
 		if remarkErr != nil {
 			return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
 		}
-		entry := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Remark: remark, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
+		description, descriptionProjected, descriptionErr := externalContactDescription(follow.Description)
+		if descriptionErr != nil {
+			return wecomport.ExternalContact{}, classifyDirectoryReadError(ErrResponse)
+		}
+		entry := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Remark: remark, Description: description, DescriptionProjected: descriptionProjected, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
 		for _, tag := range follow.Tags {
 			tag.ID, tag.Name = strings.TrimSpace(tag.ID), strings.TrimSpace(tag.Name)
 			if invalid(tag.ID) || invalidOptional(tag.Name) || tag.Type < 1 || tag.Type > 2 {
@@ -715,9 +724,10 @@ type response struct {
 		// batch/get_by_user is called with one staff ID, and WeCom returns the
 		// corresponding relationship as one object rather than an array.
 		FollowInfo *struct {
-			UserID string  `json:"userid"`
-			Remark *string `json:"remark"`
-			Tags   []struct {
+			UserID      string          `json:"userid"`
+			Remark      *string         `json:"remark"`
+			Description json.RawMessage `json:"description"`
+			Tags        []struct {
 				ID   string `json:"tag_id"`
 				Name string `json:"tag_name"`
 				Type int16  `json:"type"`
@@ -1182,6 +1192,34 @@ func (client *Client) MarkContactTags(ctx context.Context, employeeID, externalU
 		requestErr = &providerResponseError{statusCode: http.StatusOK}
 	}
 	return classifyContactTagWriteError(requestErr)
+}
+
+// UpdateExternalContactDescription is the narrow WeCom leaf for the
+// externalcontact/remark endpoint's description field. It is not a general
+// profile writer: Outbound owns the durable effect and is responsible for the
+// compare-before-write/readback protocol. This method neither logs nor retains
+// the follow employee, external contact ID, or description.
+func (client *Client) UpdateExternalContactDescription(ctx context.Context, update wecomport.ExternalContactDescriptionUpdate) error {
+	if !client.DirectoryReady() || invalid(update.EmployeeID) || invalid(update.ExternalUserID) || !validExternalContactDescription(update.Description) {
+		return wecomport.WrapProviderWriteError(ErrUnavailable, false)
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.WrapProviderWriteError(err, false)
+	}
+	body, err := json.Marshal(map[string]string{"userid": update.EmployeeID, "external_userid": update.ExternalUserID, "description": update.Description})
+	if err != nil {
+		return wecomport.WrapProviderWriteError(ErrResponse, false)
+	}
+	payload, requestErr := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/remark", url.Values{"access_token": {token}}, body)
+	if requestErr == nil && !confirmedMarkTagSuccess(payload.ErrCode) {
+		requestErr = &providerResponseError{statusCode: http.StatusOK}
+	}
+	return classifyContactTagWriteError(requestErr)
+}
+
+func validExternalContactDescription(value string) bool {
+	return value != "" && len([]rune(value)) <= 150 && !strings.ContainsRune(value, '\x00')
 }
 func (client *Client) ListManagedAcquisitionLinks(ctx context.Context, cursor string, limit int) (wecomport.CustomerAcquisitionLinkPage, error) {
 	if !client.DirectoryReady() || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
@@ -1988,6 +2026,25 @@ func invalidOptional(value string) bool {
 // externalContactRemark keeps the provider-projected text. A remark may be
 // multi-line; only NUL is rejected because PostgreSQL cannot retain it.
 func externalContactRemark(value *string) (*string, error) {
+	return externalContactProfileText(value)
+}
+
+// externalContactDescription keeps the provider description distinct from
+// remark. A historical/manual value may already exceed the endpoint's 150
+// rune write limit; retain it for the compare-before-write decision so the
+// caller can report too_long rather than failing an entire directory page.
+func externalContactDescription(raw json.RawMessage) (*string, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil || strings.ContainsRune(value, '\x00') {
+		return nil, false, ErrResponse
+	}
+	return &value, true, nil
+}
+
+func externalContactProfileText(value *string) (*string, error) {
 	if value == nil {
 		return nil, nil
 	}

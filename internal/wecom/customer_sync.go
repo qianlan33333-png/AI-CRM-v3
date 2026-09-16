@@ -10,7 +10,9 @@ import (
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
@@ -132,7 +134,11 @@ type CustomerSyncService struct {
 	Store      CustomerSyncStore
 	Outbox     platformoutbox.Service
 	Enqueuer   CustomerSyncJobEnqueuer
-	Audit      interface {
+	// DescriptionIntents is optional until the composition root supplies the
+	// Outbound-owned immutable dispatch store. Its nil default preserves the
+	// current read-only directory sync behavior.
+	DescriptionIntents outboundport.ContactDescriptionIntentWriter
+	Audit              interface {
 		Append(context.Context, platformaudit.Event) (platformaudit.Event, error)
 	}
 	UOW platformport.UnitOfWork
@@ -333,6 +339,30 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 			if err := service.Store.UpsertProfileObservations(txContext, run.ID, run.CorpScope, provision.CustomerID, contact.FollowInfo, observedAt); err != nil {
 				return err
 			}
+			if service.DescriptionIntents != nil {
+				for _, follow := range contact.FollowInfo {
+					if !follow.DescriptionProjected || follow.Description == nil || follow.EmployeeID == "" {
+						continue
+					}
+					externalDigest := effectDigest(contact.ExternalUserID)
+					observedDigest := outboundport.ContactDescriptionObservedDigest(*follow.Description)
+					target := outboundport.ContactDescriptionTargetDigest(follow.EmployeeID, contact.ExternalUserID)
+					payload := outboundport.ContactDescriptionPayloadDigest(observedDigest)
+					_, enqueueErr := service.DescriptionIntents.WriteContactDescriptionIntentWithin(txContext, outboundport.ContactDescriptionIntentCommand{
+						CustomerID: provision.CustomerID, EmployeeUserID: follow.EmployeeID,
+						SourceDigest: effectDigest("wecom.contact.description.source.v1", "run", strconv.FormatInt(run.ID, 10), run.CorpScope, follow.EmployeeID, string(externalDigest), string(observedDigest)),
+						TargetDigest: target, ObservedDescriptionDigest: observedDigest, PayloadDigest: payload,
+						ReceiptKey: outboundport.ContactDescriptionRelationshipKey(run.CorpScope, follow.EmployeeID, externalDigest), SourceRunID: run.ID,
+						// A manual run is an explicit administrator backfill/replan. It
+						// may make a new immutable plan only after the former plan is
+						// terminal and non-unknown; routine/callback maintenance cannot.
+						Replan: run.Trigger == "manual", Operation: outboundport.ContactDescriptionOperationWrite,
+					})
+					if enqueueErr != nil {
+						return enqueueErr
+					}
+				}
+			}
 			if !inserted {
 				continue
 			}
@@ -380,6 +410,8 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 		return err
 	})
 }
+
+func effectDigest(parts ...string) effectport.Digest { return effectport.Hash(parts...) }
 
 func (service CustomerSyncService) reconcile(ctx context.Context, run CustomerSyncRun) error {
 	now := service.now()
