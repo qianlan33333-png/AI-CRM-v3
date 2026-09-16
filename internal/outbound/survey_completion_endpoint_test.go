@@ -23,24 +23,31 @@ func TestSurveyEndpointMetadataOverridesEditableFields(t *testing.T) {
 	}
 }
 
-func TestEditableSurveyEndpointRejectsPrivateAndAmbiguousDestinations(t *testing.T) {
+func TestEditableSurveyEndpointRejectsNonPublicDestinations(t *testing.T) {
 	for _, endpoint := range []string{
-		"https://localhost/hook",
-		"https://service.local/hook",
-		"https://127.0.0.1/hook",
-		"https://10.0.0.8/hook",
-		"https://169.254.169.254/latest/meta-data",
-		"https://[::1]/hook",
-		"https://example.com:8443/hook",
+		"https://receiver.example.test/complete",
+		"https://receiver.example.test:8443/complete",
 	} {
-		if editableSurveyEndpoint(endpoint, false) {
-			t.Fatalf("private or non-standard endpoint accepted: %s", endpoint)
+		if !editableSurveyEndpoint(endpoint) {
+			t.Fatalf("public endpoint rejected: %q", endpoint)
 		}
 	}
-	if !editableSurveyEndpoint("https://hooks.example.com/aicrm", false) {
-		t.Fatal("public HTTPS endpoint rejected")
-	}
-	if !editableSurveyEndpoint("https://127.0.0.1/hook", true) {
-		t.Fatal("explicit test-only loopback endpoint rejected")
+	for _, endpoint := range []string{
+		"http://receiver.example.test/complete",
+		"https://localhost/complete",
+		"https://receiver.local/complete",
+		"https://127.0.0.1/complete",
+		"https://10.0.0.1/complete",
+		"https://169.254.169.254/complete",
+		"https://224.0.0.1/complete",
+		"https://0.0.0.0/complete",
+		"https://[::1]/complete",
+		"https://[fe80::1]/complete",
+		"https://user:secret@receiver.example.test/complete",
+		"https://receiver.example.test/complete#fragment",
+	} {
+		if editableSurveyEndpoint(endpoint) {
+			t.Fatalf("unsafe endpoint accepted: %q", endpoint)
+		}
 	}
 }

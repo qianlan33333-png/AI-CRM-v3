@@ -390,6 +390,25 @@ func TestSubmittedPublicRoutesExposeOnlyCompletionAction(t *testing.T) {
 	if submitResponse.Code != nethttp.StatusConflict || !strings.Contains(submitResponse.Body.String(), `"type":"lead_qr"`) || !strings.Contains(submitResponse.Body.String(), `"lead_qr":{"url":"https://cdn.example.test/lead.png"}`) || strings.Contains(submitResponse.Body.String(), "42") {
 		t.Fatalf("submit status=%d body=%s", submitResponse.Code, submitResponse.Body.String())
 	}
+
+	// Stored completion targets may intentionally be same-origin paths. The
+	// session response and a revisited /q entry must carry the exact same safe
+	// action rather than falling back to the answer form or done carrier.
+	survey.publicStatus = surveyport.PublicSubmissionStatus{Submitted: true, CompletionAction: surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "/h5/finished?source=survey"}}
+	relativeSession := httptest.NewRequest(nethttp.MethodGet, "/api/h5/surveys/session?slug=growth", nil)
+	relativeSession.AddCookie(cookie)
+	relativeSessionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(relativeSessionResponse, relativeSession)
+	if relativeSessionResponse.Code != nethttp.StatusOK || !strings.Contains(relativeSessionResponse.Body.String(), `"redirect_url":"/h5/finished?source=survey"`) {
+		t.Fatalf("relative session status=%d body=%s", relativeSessionResponse.Code, relativeSessionResponse.Body.String())
+	}
+	relativeEntry := httptest.NewRequest(nethttp.MethodGet, "/q/growth", nil)
+	relativeEntry.AddCookie(cookie)
+	relativeEntryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(relativeEntryResponse, relativeEntry)
+	if relativeEntryResponse.Code != nethttp.StatusSeeOther || relativeEntryResponse.Header().Get("Location") != "/h5/finished?source=survey" {
+		t.Fatalf("relative entry status=%d location=%q", relativeEntryResponse.Code, relativeEntryResponse.Header().Get("Location"))
+	}
 }
 
 func TestPublicSubmissionSuccessEmitsCompletionActionOnlyAtTopLevel(t *testing.T) {
@@ -428,10 +447,11 @@ func TestCompletionLocationFallsBackToDoneCarrier(t *testing.T) {
 	if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "https://safe.example.test/complete#fragment"}); got != "/h5/done.html?slug=growth" {
 		t.Fatalf("fragment redirect location=%q", got)
 	}
-	for _, raw := range []string{"https://2130706433/complete", "https://127.1/complete", "https://0177.0.0.1/complete", "https://0x7f000001/complete", "https://0300.0250.0001.0001/complete"} {
-		if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: raw}); got != "/h5/done.html?slug=growth" {
-			t.Fatalf("legacy IPv4 redirect=%q location=%q", raw, got)
-		}
+	if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "/h5/finished?source=survey"}); got != "/h5/finished?source=survey" {
+		t.Fatalf("same-origin redirect location=%q", got)
+	}
+	if got := completionLocation("growth", surveyport.CompletionAction{Type: surveyport.CompletionActionRedirect, RedirectURL: "https://10.0.0.1/complete"}); got != "/h5/done.html?slug=growth" {
+		t.Fatalf("private redirect location=%q", got)
 	}
 }
 

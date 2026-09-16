@@ -144,15 +144,16 @@ func newSurveyCompletionChromiumFixture(t *testing.T) *surveyCompletionChromiumF
 		fixture.receiverCalls.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
-	fixture.receiverURL = receiver.URL
 	t.Cleanup(receiver.Close)
-	targets, err := json.Marshal(map[string]any{"survey.browser.target": map[string]any{"endpoint": receiver.URL, "signing_key": base64.RawStdEncoding.EncodeToString(key[:]), "client_id": "survey-browser", "version": "v1", "identity_kind": "unionid", "identity_scope": "wechat-open-platform:browser", "day": 30, "frequency": 1, "expires_at_ts": 2147483647}})
+	receiverEndpoint, receiverNetwork := surveyCompletionTLSEndpoint(t, receiver, "example.com")
+	fixture.receiverURL = receiverEndpoint
+	targets, err := json.Marshal(map[string]any{"survey.browser.target": map[string]any{"endpoint": receiverEndpoint, "signing_key": base64.RawStdEncoding.EncodeToString(key[:]), "client_id": "survey-browser", "version": "v1", "identity_kind": "unionid", "identity_scope": "wechat-open-platform:browser", "day": 30, "frequency": 1, "expires_at_ts": 2147483647}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
 	origin := "https://" + server.Listener.Addr().String()
-	application, err := composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, platformconfig.Runtime{Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin, ReleaseSHA: "survey-completion-chromium", WorkerOwner: "survey-completion-chromium", WorkerLimit: 1, GroupOps: platformconfig.GroupOps{WebhookSecret: "survey-browser-webhook-secret"}, Survey: platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(key[:]), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(key[:]), CompletionProviderEnabled: true, CompletionTargetsJSON: string(targets)}, Effects: platformconfig.Effects{ProviderEnabled: true}, Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "survey-browser-owner", Password: "survey-browser-owner-password", DisplayName: "Survey Browser Owner"}}, wecomadapter.New, receiver.Client())
+	application, err := composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, platformconfig.Runtime{Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin, ReleaseSHA: "survey-completion-chromium", WorkerOwner: "survey-completion-chromium", WorkerLimit: 1, GroupOps: platformconfig.GroupOps{WebhookSecret: "survey-browser-webhook-secret"}, Survey: platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(key[:]), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(key[:]), CompletionProviderEnabled: true, CompletionTargetsJSON: string(targets)}, Effects: platformconfig.Effects{ProviderEnabled: true}, Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "survey-browser-owner", Password: "survey-browser-owner-password", DisplayName: "Survey Browser Owner"}}, wecomadapter.New, receiver.Client(), receiverNetwork)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -54,7 +54,7 @@ const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'aicrm-survey-chromium-'
 let browser;
 let journeyFailed = false;
 try {
-  browser = spawn(chrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--no-first-run', '--ignore-certificate-errors', '--allow-insecure-localhost', 'about:blank'], { stdio: 'ignore' });
+  browser = spawn(chrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--no-first-run', '--ignore-certificate-errors', '--allow-insecure-localhost', '--no-proxy-server', '--host-resolver-rules=MAP example.com 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
   let address;
   try { address = await portURL(profile); } catch (error) { if (process.platform === 'darwin') { console.log('survey_completion_chromium: SKIP_DEVTOOLS'); process.exit(0); } throw error; }
   const created = await (await fetch(address + '/json/new?about:blank', { method: 'PUT' })).json();

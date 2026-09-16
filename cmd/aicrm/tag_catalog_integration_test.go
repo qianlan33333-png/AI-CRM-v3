@@ -405,7 +405,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	var receivedMu sync.Mutex
 	received := make([]string, 0, 1)
 	receivedSignal := make(chan struct{}, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		receivedMu.Lock()
 		received = append(received, string(body))
@@ -418,8 +418,9 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	}))
 	defer server.Close()
 	day, frequency, expiresAtTS := int64(15), int64(3), int64(2147483647)
-	target := outbound.SurveyCompletionTarget{Reference: "local-webhook", Endpoint: server.URL, SigningKey: []byte(strings.Repeat("s", 32)), ClientID: "survey-v3-test", AllowLoopbackHTTP: true, Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary", Day: &day, Frequency: &frequency, ExpiresAtTS: &expiresAtTS, CustomParams: map[string]string{"campaign": "control", "unionid": "must-not-send"}}
-	provider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: true, Targets: []outbound.SurveyCompletionTarget{target}, Reader: surveys, Identities: surveyCompletionIntegrationIdentity{}})
+	endpoint, network := surveyCompletionTLSEndpoint(t, server, "example.com")
+	target := outbound.SurveyCompletionTarget{Reference: "local-webhook", Endpoint: endpoint, SigningKey: []byte(strings.Repeat("s", 32)), ClientID: "survey-v3-test", Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary", Day: &day, Frequency: &frequency, ExpiresAtTS: &expiresAtTS, CustomParams: map[string]string{"campaign": "control", "unionid": "must-not-send"}}
+	provider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: true, Targets: []outbound.SurveyCompletionTarget{target}, Reader: surveys, Client: server.Client(), Network: network, Identities: surveyCompletionIntegrationIdentity{}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -80,7 +80,10 @@ let browser;
 let failed = false;
 try {
   await fs.mkdir(screenshots, { recursive: true, mode: 0o700 });
-  browser = spawn(chrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--no-first-run', '--ignore-certificate-errors', '--allow-insecure-localhost', '--user-agent=Mozilla/5.0 MicroMessenger/8.0', 'about:blank'], { stdio: 'ignore' });
+  // Keep every configured completion URL public-looking. This Chrome-only
+  // resolver maps the controlled hostname to the local TLS fixture without
+  // weakening production completion-target validation or application config.
+  browser = spawn(chrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--no-first-run', '--ignore-certificate-errors', '--allow-insecure-localhost', '--no-proxy-server', '--host-resolver-rules=MAP example.com 127.0.0.1', '--user-agent=Mozilla/5.0 MicroMessenger/8.0', 'about:blank'], { stdio: 'ignore' });
   let address;
   try { address = await portURL(profile); } catch (error) { if (process.platform === 'darwin') { console.log('public_survey_chromium: SKIP_DEVTOOLS'); process.exit(0); } throw error; }
   const target = await (await fetch(address + '/json/new?about:blank', { method: 'PUT' })).json();

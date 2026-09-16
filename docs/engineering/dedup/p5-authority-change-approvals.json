@@ -1442,21 +1442,21 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "19ce90a3e10d717afbc4a9321a77a4151381d047f348ec6af357f0f332b0ebdf",
-          "head_sha256": "7a6657d83ed04153a5c0f9beeb20359052fde487feda04b78e2142c0f5c3c965"
+          "head_sha256": "e1b231a32ef8d5821d3e5a8253345ca5c461e5ee1ccd360bd7047841d24471a3"
         },
         {
           "path": "web/donor-sources/source-index.json",
           "base_sha256": "eedcdb6f08279c6ad598fbf4a6dffc31af989d0b71eb9e00843d0ffb82cd2977",
-          "head_sha256": "7878590a9fdf724d2a9d606c15c88d0be3ebf611ade629acc0f4299a36adf996"
+          "head_sha256": "36be6c82deb2767ebac1c19f5588c555e6978246252002ece13dff5009328246"
         },
         {
           "path": "web/donor-sources/source-lock.json",
           "base_sha256": "8955e54a923cd24d55f081cf4e0cb76ae27bd361ce89bb2a27363be1562db63e",
-          "head_sha256": "a0436edb0cf3cfa3818265107032971c8d249dd1f4251fd8e824a17f2fce2565"
+          "head_sha256": "a4356197ce519efeffe73c225f4721adaa3ce0069a89c739c65721e0d2dbe980"
         }
       ],
-      "reason": "Extend the approved public Survey completion projection with optional channel QR copy while restoring the legacy questionnaire completion-action and external-push administration contract. Identity continues to read canonical Customer only; Provider writes remain in the existing External Effects and Outbound path.",
-      "review_reference": "User instructions in this Codex thread: completely replicate payment-success redirect and external push in V3, preserve the legacy administration configuration exactly, include questionnaire push and redirect, and complete, merge, and deploy the work. Ordinary PR review and required CI remain pending."
+      "reason": "Authorize the public Survey completion and operations contract: opaque safe navigation, legacy external-push configuration, release migration closure, and a minimal normal-submit receipt without a result token. Identity continues to read canonical Customer only; Provider writes remain in the existing External Effects and Outbound path.",
+      "review_reference": "User instructions in this Codex thread: implement the approved questionnaire single-submit and completion PRD, align the actual operations API, and do not expose a normal completion result token. This is product authorization only; ordinary PR review and required CI remain pending."
     }
   ]
 }

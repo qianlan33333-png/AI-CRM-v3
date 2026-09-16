@@ -25,6 +25,41 @@ function assertGroupOpsPlanListItemExamples(specification) {
   assert.equal(validate({ ...item, bound_group_count: -1 }), false, 'GroupOpsPlanListItem must reject a negative bound count');
 }
 
+function assertSurveyCompletionContracts(specification) {
+  const schemas = specification.components.schemas;
+  const completion = specification.paths['/api/admin/questionnaires/{questionnaire_id}/operations/completion'].put;
+  const externalPush = specification.paths['/api/admin/questionnaires/{questionnaire_id}/operations/external-push'].put;
+  const publicSubmit = specification.paths['/api/public/questionnaires/{slug}/submissions'].post;
+
+  const completionRequest = completion.requestBody.content['application/json'].schema;
+  const externalRequest = externalPush.requestBody.content['application/json'].schema;
+  assert.equal(completionRequest.oneOf?.length, 4, 'completion PUT must declare retained and explicit action payload variants');
+  assert.equal(externalRequest.additionalProperties, false, 'external-push request must reject undeclared top-level fields');
+  assert.equal(externalRequest.properties.metadata.additionalProperties, true, 'opaque metadata must retain explicit additional-properties semantics');
+  for (const field of ['webhook_url', 'type', 'expires_at_ts', 'day', 'frequency', 'remark', 'custom_params', 'configuration_version']) {
+    assert.ok(field in externalRequest.properties, `external-push request omitted ${field}`);
+  }
+
+  const response = schemas.SurveyPublicSubmissionResponse;
+  const publicSuccess = publicSubmit.responses['201'].content['application/json'].schema;
+  assert.equal(publicSuccess, response, 'public submit 201 must use the minimal completion response schema');
+  assert.deepEqual(response.required, ['receipt', 'completion_action'], 'ordinary public submit must return only the minimal receipt and completion action');
+  assert.ok(!('result_token' in response.properties), 'ordinary public submit must not expose a result token');
+  assert.ok(!('result_token' in schemas.SurveyPublicSubmissionReceipt.properties), 'public submit receipt must not nest a result token');
+
+  const redirect = schemas.CompletionAction.oneOf.find((value) => value.properties?.type?.const === 'redirect');
+  assert.equal(redirect?.properties?.redirect_url?.oneOf?.length, 2, 'completion redirect must use the safe relative-or-HTTPS URL contract');
+  const parserPath = require.resolve('@apidevtools/swagger-parser');
+  const Ajv = require(require.resolve('ajv', { paths: [path.dirname(parserPath)] }));
+  const validateRedirect = new Ajv({ allErrors: true, strict: false }).compile(schemas.SurveySafeRedirectURL);
+  for (const value of ['/h5/done.html?slug=growth', 'https://approved.example/complete']) {
+    assert.equal(validateRedirect(value), true, `safe completion redirect rejected ${value}: ${JSON.stringify(validateRedirect.errors)}`);
+  }
+  for (const value of ['//evil.example/complete', 'http://approved.example/complete', 'https://user@approved.example/complete', 'https://approved.example/complete#fragment']) {
+    assert.equal(validateRedirect(value), false, `unsafe completion redirect accepted ${value}`);
+  }
+}
+
 try {
   // Keep the repository's normal OpenAPI structural validation.  The
   // dereferenced copy below is only for compiling the local DTO examples.
@@ -32,6 +67,7 @@ try {
   assertOpenAPIRouteParity(specification);
   const dereferenced = await SwaggerParser.dereference('api/openapi.yaml');
   assertGroupOpsPlanListItemExamples(dereferenced);
+  assertSurveyCompletionContracts(specification);
   console.log(`validated OpenAPI ${specification.openapi}: ${Object.keys(specification.paths).length} paths`);
 } catch (error) {
   console.error(`OpenAPI validation failed: ${error instanceof Error ? error.message : String(error)}`);

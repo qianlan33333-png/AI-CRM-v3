@@ -34,14 +34,20 @@ export interface ErrorResponse {
   request_id?: string;
 }
 
+/**
+ * Public HTTPS URL without userinfo or a fragment.
+ * @maxLength 4096
+ * @pattern ^https://[^/@\s#]+(?:/[^\s#]*)?(?:\?[^\s#]*)?$
+ */
+export type SurveyPublicHTTPSURL = string;
+
 export type CompletionActionOneOf = {
   type: "default";
 };
 
 export type CompletionActionOneOfTwo = {
   type: "redirect";
-  /** @pattern ^https:// */
-  redirect_url: string;
+  redirect_url: SurveySafeRedirectURL;
 };
 
 export type CompletionActionOneOfThree = {
@@ -264,8 +270,6 @@ export interface SurveyPublicSubmissionReceipt {
 
 export interface SurveyPublicSubmissionResponse {
   receipt: SurveyPublicSubmissionReceipt;
-  /** @pattern ^[A-Za-z0-9_-]{43}$ */
-  result_token: string;
   completion_action: CompletionAction;
 }
 

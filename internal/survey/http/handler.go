@@ -472,13 +472,11 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 			resultError(w, err)
 			return
 		}
-		publicReceipt := struct {
-			QuestionnaireID   surveyport.ID `json:"questionnaire_id"`
-			QuestionnaireSlug string        `json:"questionnaire_slug"`
-			DefinitionVersion int64         `json:"definition_version"`
-			SubmissionID      surveyport.ID `json:"submission_id"`
-		}{receipt.QuestionnaireID, receipt.QuestionnaireSlug, receipt.DefinitionVersion, receipt.SubmissionID}
-		writeJSON(w, 201, map[string]any{"receipt": publicReceipt, "result_token": receipt.ResultToken, "completion_action": receipt.CompletionAction})
+		// The result-query credential remains server-side. Completing a public
+		// questionnaire must not expose it in either a top-level or nested receipt.
+		publicReceipt := receipt
+		publicReceipt.ResultToken = ""
+		writeJSON(w, 201, map[string]any{"receipt": publicReceipt, "completion_action": receipt.CompletionAction})
 		return
 	}
 	method(w, "GET or POST")
@@ -663,7 +661,7 @@ func completionLocation(slug string, action surveyport.CompletionAction) string 
 }
 
 func safeCompletionRedirectURL(raw string) bool {
-	return surveyport.SafePublicCompletionURL(raw)
+	return surveyport.ValidPublicCompletionURL(raw)
 }
 
 func (h *Handler) surveySession(r *http.Request) (surveyport.SubmissionIdentity, bool) {

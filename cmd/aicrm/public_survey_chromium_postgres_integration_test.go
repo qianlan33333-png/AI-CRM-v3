@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -43,7 +44,7 @@ func TestPostgreSQLPublicSurveyPresentationChromiumJourney(t *testing.T) {
 	fixture := newPublicSurveyPresentationChromiumFixture(t)
 	command := exec.CommandContext(fixture.ctx, "node", filepath.Join(filepath.Dir(fixture.script), "public_survey_chromium_journey.mjs"))
 	command.Env = append(os.Environ(),
-		"AICRM_PUBLIC_SURVEY_BROWSER_URL="+fixture.server.URL,
+		"AICRM_PUBLIC_SURVEY_BROWSER_URL="+fixture.browserURL,
 		"AICRM_PUBLIC_SURVEY_BROWSER_SESSION="+fixture.session,
 		"AICRM_PUBLIC_SURVEY_BROWSER_SECOND_SESSION="+fixture.secondSession,
 		"AICRM_PUBLIC_SURVEY_BROWSER_SUCCESS_SLUG="+fixture.success.Slug,
@@ -127,6 +128,7 @@ type publicSurveyPresentationChromiumFixture struct {
 	native         *pgxpool.Pool
 	submissions    *surveyapp.SubmissionService
 	server         *httptest.Server
+	browserURL     string
 	success        surveyport.Questionnaire
 	failure        surveyport.Questionnaire
 	redirect       surveyport.Questionnaire
@@ -185,10 +187,17 @@ func newPublicSurveyPresentationChromiumFixture(t *testing.T) *publicSurveyPrese
 	oauthStore := &surveyJourneyOAuthStore{OAuthStore: repository}
 
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
-	origin := "https://" + server.Listener.Addr().String()
+	_, port, splitErr := net.SplitHostPort(server.Listener.Addr().String())
+	if splitErr != nil {
+		t.Fatal(splitErr)
+	}
+	// The browser only receives public-looking completion values. Chromium maps
+	// this test hostname to the local TLS fixture; the production URL validator
+	// keeps rejecting loopback/private configuration.
+	origin := "https://example.com:" + port
 	redirectTarget := origin + "/browser-completion-redirect"
 	leadQRURL := origin + "/browser-completion-lead-qr.png"
-	if err = submissions.BindPublicCompletionTarget(surveyJourneyCompletionResolver{"browser-completion-redirect": "/browser-completion-redirect"}); err != nil {
+	if err = submissions.BindPublicCompletionTarget(surveyJourneyCompletionResolver{"browser-completion-redirect": redirectTarget}); err != nil {
 		t.Fatal(err)
 	}
 	if err = submissions.BindPublicLeadQRCode(surveyJourneyLeadQRCodeReader{501: {URL: "/browser-completion-lead-qr.png"}}); err != nil {
@@ -373,7 +382,7 @@ func newPublicSurveyPresentationChromiumFixture(t *testing.T) *publicSurveyPrese
 		}
 		screenshots = configured
 	}
-	return &publicSurveyPresentationChromiumFixture{ctx: ctx, native: native, submissions: submissions, server: server, success: success, failure: failure, redirect: redirect, leadQR: leadQR, session: cookies[0].Value, secondSession: secondCookies[0].Value, script: source, screenshots: screenshots, redirectTarget: redirectTarget, leadQRURL: leadQRURL}
+	return &publicSurveyPresentationChromiumFixture{ctx: ctx, native: native, submissions: submissions, server: server, browserURL: origin, success: success, failure: failure, redirect: redirect, leadQR: leadQR, session: cookies[0].Value, secondSession: secondCookies[0].Value, script: source, screenshots: screenshots, redirectTarget: redirectTarget, leadQRURL: leadQRURL}
 }
 
 // The journey fixture crosses only Survey's two public read Ports. Its local

@@ -160,11 +160,11 @@ type composedApplication struct {
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
-	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, wecomadapter.New, nil)
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, wecomadapter.New, nil, outbound.SurveyCompletionNetwork{})
 }
 
 func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error)) (*composedApplication, error) {
-	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, providerFactory, nil)
+	return composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx, cfg, providerFactory, nil, outbound.SurveyCompletionNetwork{})
 }
 
 func weComProviderConfig(cfg platformconfig.Runtime) wecomadapter.Config {
@@ -178,7 +178,7 @@ func weComProviderConfig(cfg platformconfig.Runtime) wecomadapter.Config {
 // composeWithWeComClientFactoryAndSurveyCompletionHTTPClient keeps a supplied
 // HTTPS client inside test Composition only. Production Composition passes nil
 // and therefore retains the outbound provider's locked default transport.
-func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error), surveyCompletionHTTPClient *http.Client) (*composedApplication, error) {
+func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error), surveyCompletionHTTPClient *http.Client, surveyCompletionNetwork outbound.SurveyCompletionNetwork) (*composedApplication, error) {
 	if providerFactory == nil {
 		return nil, errors.New("WeCom client factory is required")
 	}
@@ -767,14 +767,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	// A non-nil client is accepted only by the package-private composition test
-	// seam. It permits controlled loopback receivers without exposing a runtime
-	// setting that could weaken production target validation.
-	if surveyCompletionHTTPClient != nil {
-		for index := range surveyCompletionTargets {
-			surveyCompletionTargets[index].AllowLoopbackHTTP = true
-		}
-	}
 	surveyCompletionRuntime, err := outbound.NewStaticSurveyCompletionTargets(surveyCompletionTargets)
 	if err != nil {
 		return fail(err)
@@ -784,7 +776,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		surveyCompletionRefs = append(surveyCompletionRefs, target.Reference)
 	}
 	surveyCompletionEndpoints := outbound.NewSurveyCompletionEndpoints(pool.Native(), surveyCompletionRuntime, surveyCompletionRefs)
-	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Resolver: surveyCompletionEndpoints, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Identities: queries})
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Resolver: surveyCompletionEndpoints, Reader: surveyRepository, Client: surveyCompletionHTTPClient, Network: surveyCompletionNetwork, Identities: queries})
 	if err != nil {
 		return fail(err)
 	}

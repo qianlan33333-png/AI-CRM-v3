@@ -41,9 +41,33 @@ func SafePublicCompletionURL(raw string) bool {
 		return false
 	}
 	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
-		return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified())
+		return !DisallowedPublicIP(ip)
 	}
 	return true
+}
+
+// ValidPublicCompletionURL is the final public browser boundary. It preserves
+// the compatibility parser while rejecting whitespace and network-path URLs.
+func ValidPublicCompletionURL(raw string) bool {
+	if raw != strings.TrimSpace(raw) || strings.HasPrefix(raw, "//") {
+		return false
+	}
+	return SafePublicCompletionURL(raw)
+}
+
+func ValidPublicCompletionHost(raw string) bool {
+	host := strings.TrimSuffix(strings.ToLower(raw), ".")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || legacyIPv4Hostname(host) {
+		return false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return !DisallowedPublicIP(ip)
+	}
+	return !strings.Contains(host, ":")
+}
+
+func DisallowedPublicIP(value netip.Addr) bool {
+	return value.IsLoopback() || value.IsPrivate() || value.IsLinkLocalUnicast() || value.IsLinkLocalMulticast() || value.IsMulticast() || value.IsUnspecified() || value.Is6() && value.Is4In6() && DisallowedPublicIP(value.Unmap())
 }
 
 func legacyIPv4Hostname(host string) bool {

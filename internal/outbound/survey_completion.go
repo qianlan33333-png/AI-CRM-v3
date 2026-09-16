@@ -33,7 +33,6 @@ type SurveyCompletionTarget struct {
 	Endpoint                    string
 	SigningKey                  []byte
 	ClientID                    string
-	AllowLoopbackHTTP           bool // test-only; normal targets must be HTTPS.
 	Version                     string
 	IdentityKind                identitydomain.Kind
 	IdentityScope               string
@@ -43,12 +42,26 @@ type SurveyCompletionTarget struct {
 }
 
 type SurveyCompletionProviderConfig struct {
-	Enabled    bool
-	Targets    []SurveyCompletionTarget
-	Resolver   SurveyCompletionTargetResolver
-	Reader     surveyport.CompletionPayloadReader
-	Client     *http.Client
+	Enabled  bool
+	Targets  []SurveyCompletionTarget
+	Resolver SurveyCompletionTargetResolver
+	Reader   surveyport.CompletionPayloadReader
+	Client   *http.Client
+	// Network is a test-composition seam. Production always validates the
+	// resolved public address and never permits a loopback target.
+	Network    SurveyCompletionNetwork
 	Identities identityport.ExternalIdentityValueReader
+}
+
+type SurveyCompletionHostResolver interface {
+	LookupNetIP(context.Context, string, string) ([]netip.Addr, error)
+}
+
+// SurveyCompletionNetwork supplies controlled TLS fixture routing only. It
+// does not weaken endpoint parsing or resolved-IP validation.
+type SurveyCompletionNetwork struct {
+	Resolver    SurveyCompletionHostResolver
+	DialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 type SurveyCompletionProvider struct {
@@ -109,7 +122,7 @@ func NewSurveyCompletionProvider(c SurveyCompletionProviderConfig) (*SurveyCompl
 			return nil, err
 		}
 	}
-	client := lockedSurveyCompletionHTTPClient(c.Client)
+	client := lockedSurveyCompletionHTTPClient(c.Client, c.Network)
 	if c.Enabled && c.Identities == nil {
 		return nil, errors.New("survey completion identity reader is required")
 	}
@@ -161,8 +174,14 @@ func (p *SurveyCompletionProvider) Execute(ctx context.Context, envelope effectp
 	req.Header.Set("X-AICRM-Event-Id", eventID)
 	req.Header.Set("X-AICRM-Signature", "sha256="+signature)
 	req.Header.Set("X-AICRM-Idempotency-Key", payload.IdempotencyKey)
-	response, err := guardedSurveyCompletionHTTPClient(p.client, target.AllowLoopbackHTTP).Do(req)
+	response, err := p.client.Do(req)
 	if err != nil {
+		if errors.Is(err, errSurveyCompletionTargetDisallowed) {
+			return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "target-disallowed")}, nil
+		}
+		if errors.Is(err, errSurveyCompletionTargetResolutionUnavailable) {
+			return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash(string(base), "target-unavailable")}, errors.New("survey completion target unavailable")
+		}
 		// Once Do is entered, request delivery is ambiguous. Reuse this exact
 		// key through EER reconciliation; never mint a second Provider write.
 		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "request-unknown"), CallAttempted: true, RealExternalCallExecuted: true}, errors.New("survey completion request failed")
@@ -178,73 +197,90 @@ func (p *SurveyCompletionProvider) Execute(ctx context.Context, envelope effectp
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", response.Status, string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true}, nil
 }
 
-func lockedSurveyCompletionHTTPClient(source *http.Client) *http.Client {
+var (
+	errSurveyCompletionTargetDisallowed            = errors.New("survey completion target disallowed")
+	errSurveyCompletionTargetResolutionUnavailable = errors.New("survey completion target resolution unavailable")
+)
+
+func lockedSurveyCompletionHTTPClient(source *http.Client, network SurveyCompletionNetwork) *http.Client {
 	if source == nil {
 		source = &http.Client{Timeout: 10 * time.Second}
 	}
 	client := *source
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if configured, ok := source.Transport.(*http.Transport); ok && configured != nil {
+		transport = configured.Clone()
+	}
+	resolver := network.Resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	dial := network.DialContext
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	}
+	transport.Proxy = nil
+	transport.DialTLS = nil
+	transport.DialTLSContext = nil
+	transport.DialContext = guardedSurveyCompletionDialer(resolver, dial)
+	client.Transport = transport
 	// Completion bodies and their HMAC are authorized for exactly one
 	// configured target. Never follow a provider redirect to a different URL.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &client
 }
 
-func guardedSurveyCompletionHTTPClient(source *http.Client, allowLoopback bool) *http.Client {
-	return guardedSurveyCompletionHTTPClientWithResolver(source, allowLoopback, net.DefaultResolver.LookupNetIP)
-}
-
-func guardedSurveyCompletionHTTPClientWithResolver(source *http.Client, allowLoopback bool, lookup func(context.Context, string, string) ([]netip.Addr, error)) *http.Client {
-	client := lockedSurveyCompletionHTTPClient(source)
-	var transport *http.Transport
-	if configured, ok := client.Transport.(*http.Transport); ok {
-		transport = configured.Clone()
-	} else {
-		transport = http.DefaultTransport.(*http.Transport).Clone()
-	}
-	transport.Proxy = nil
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+func guardedSurveyCompletionDialer(resolver SurveyCompletionHostResolver, dial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
-		if err != nil || !validCommercePort(port) {
-			return nil, errors.New("survey completion target dial rejected")
+		if err != nil || !validSurveyCompletionPort(port) || !validSurveyCompletionHost(host) {
+			return nil, errSurveyCompletionTargetDisallowed
 		}
-		normalized := strings.TrimSuffix(strings.ToLower(host), ".")
-		if normalized == "localhost" || strings.HasSuffix(normalized, ".localhost") || strings.HasSuffix(normalized, ".local") {
-			if !allowLoopback || !isLoopbackCommerceHost(normalized) {
-				return nil, errors.New("survey completion target dial rejected")
+		addresses, err := resolver.LookupNetIP(ctx, "ip", host)
+		if err != nil || len(addresses) == 0 {
+			return nil, errSurveyCompletionTargetResolutionUnavailable
+		}
+		for _, value := range addresses {
+			if surveyport.DisallowedPublicIP(value) {
+				return nil, errSurveyCompletionTargetDisallowed
 			}
 		}
-		addresses, resolveErr := lookup(ctx, "ip", host)
-		if resolveErr != nil || len(addresses) == 0 {
-			return nil, errors.New("survey completion target resolution unavailable")
-		}
-		for _, ip := range addresses {
-			if disallowedCommerceIP(ip, allowLoopback) {
-				return nil, errors.New("survey completion target dial rejected")
-			}
-		}
-		dialer := &net.Dialer{Timeout: 10 * time.Second}
-		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+		return dial(ctx, network, net.JoinHostPort(addresses[0].String(), port))
 	}
-	client.Transport = transport
-	return client
 }
 
 func validSurveyCompletionTarget(target SurveyCompletionTarget) bool {
 	if target.Reference == "" || strings.TrimSpace(target.Reference) != target.Reference || len(target.Reference) > 128 || target.Version == "" || len(target.Version) > 128 || target.ClientID == "" || len(target.ClientID) > 256 || len(target.SigningKey) < 32 || identitydomain.ValidateNamespace(target.IdentityKind, target.IdentityScope) != nil {
 		return false
 	}
-	parsed, err := url.Parse(target.Endpoint)
-	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Fragment != "" || target.Endpoint != strings.TrimSpace(target.Endpoint) {
+	return validSurveyCompletionEndpoint(target.Endpoint)
+}
+
+func validSurveyCompletionEndpoint(raw string) bool {
+	if raw == "" || len(raw) > 4096 || raw != strings.TrimSpace(raw) || strings.ContainsAny(raw, "\\\\\r\n\t") {
 		return false
 	}
-	if parsed.Scheme == "https" {
-		host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-		if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
-			return target.AllowLoopbackHTTP && isLoopbackCommerceHost(host)
-		}
-		return !isDisallowedCommerceHost(host, target.AllowLoopbackHTTP)
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || !validSurveyCompletionHost(parsed.Hostname()) {
+		return false
 	}
-	return target.AllowLoopbackHTTP && parsed.Scheme == "http" && (parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost" || parsed.Hostname() == "::1")
+	return parsed.Port() == "" || validSurveyCompletionPort(parsed.Port())
+}
+
+func validSurveyCompletionHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return !surveyport.DisallowedPublicIP(ip)
+	}
+	return surveyport.ValidPublicCompletionHost(host)
+}
+
+func validSurveyCompletionPort(raw string) bool {
+	value, err := strconv.Atoi(raw)
+	return err == nil && value >= 1 && value <= 65535
 }
 
 func (target SurveyCompletionTarget) policyDigest() string {
