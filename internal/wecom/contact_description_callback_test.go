@@ -50,15 +50,18 @@ func (identity *descriptionCallbackIdentity) Resolve(_ context.Context, referenc
 }
 
 type descriptionCallbackReader struct {
-	contact wecomport.ExternalContact
-	calls   int
-	value   string
+	target         wecomport.ExternalContactDescriptionTarget
+	err            error
+	calls          int
+	externalUserID string
+	employeeUserID string
 }
 
-func (reader *descriptionCallbackReader) ReadExternalContact(_ context.Context, externalUserID string) (wecomport.ExternalContact, error) {
+func (reader *descriptionCallbackReader) ReadExternalContactDescriptionTarget(_ context.Context, externalUserID, employeeUserID string) (wecomport.ExternalContactDescriptionTarget, error) {
 	reader.calls++
-	reader.value = externalUserID
-	return reader.contact, nil
+	reader.externalUserID = externalUserID
+	reader.employeeUserID = employeeUserID
+	return reader.target, reader.err
 }
 
 type descriptionCallbackIntentWriter struct {
@@ -100,7 +103,7 @@ func TestContactDescriptionCallbackWorkerReadsOnlyOneProcessedFullContact(t *tes
 	customerID := customerdomain.CustomerID(19)
 	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("corp-1", "employee-1", customerID): true}}
 	identity := &descriptionCallbackIdentity{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: customerID, IdentityID: 5}}
-	reader := &descriptionCallbackReader{contact: wecomport.ExternalContact{ExternalUserID: "external-1", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "employee-1", Description: &description, DescriptionProjected: true}}}}
+	reader := &descriptionCallbackReader{target: wecomport.ExternalContactDescriptionTarget{Description: description, Projected: true}}
 	intents := &descriptionCallbackIntentWriter{}
 	service := ContactDescriptionCallbackService{Enabled: true, CorpID: "corp-1", Inbox: inbox, Provider: reader, Identity: identity, Relationships: relationships, Intents: intents, UOW: directUOW{}}
 	worker := NewContactDescriptionCallbackWorker()
@@ -110,7 +113,7 @@ func TestContactDescriptionCallbackWorkerReadsOnlyOneProcessedFullContact(t *tes
 	if err = worker.Work(context.Background(), &river.Job[ContactDescriptionCallbackJobArgs]{JobRow: &rivertype.JobRow{}, Args: ContactDescriptionCallbackJobArgs{InboxID: 44}}); err != nil {
 		t.Fatal(err)
 	}
-	if reader.calls != 1 || reader.value != "external-1" || len(intents.commands) != 1 {
+	if reader.calls != 1 || reader.externalUserID != "external-1" || reader.employeeUserID != "employee-1" || len(intents.commands) != 1 {
 		t.Fatalf("reader=%+v intents=%+v", reader, intents.commands)
 	}
 	command := intents.commands[0]
@@ -151,7 +154,7 @@ func TestContactDescriptionCallbackWorkerSkipsNonFullAndNeverReplansUnknown(t *t
 			}
 			customerID := customerdomain.CustomerID(19)
 			relationships := &memoryRelationships{active: map[string]bool{relationshipKey("corp-1", "employee-1", customerID): true}}
-			reader := &descriptionCallbackReader{contact: wecomport.ExternalContact{ExternalUserID: "external-1", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "employee-1", Description: &description, DescriptionProjected: true}}}}
+			reader := &descriptionCallbackReader{target: wecomport.ExternalContactDescriptionTarget{Description: description, Projected: true}}
 			intents := &descriptionCallbackIntentWriter{err: testCase.intentErr}
 			service := ContactDescriptionCallbackService{Enabled: true, CorpID: "corp-1", Inbox: inbox, Provider: reader, Identity: &descriptionCallbackIdentity{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: customerID}}, Relationships: relationships, Intents: intents, UOW: directUOW{}}
 			if err = service.Process(context.Background(), 45); err != nil {
@@ -167,8 +170,7 @@ func TestContactDescriptionCallbackWorkerSkipsNonFullAndNeverReplansUnknown(t *t
 	}
 }
 
-func TestContactDescriptionCallbackWorkerRejectsMismatchedProviderDetail(t *testing.T) {
-	description := "manual"
+func TestContactDescriptionCallbackWorkerRejectsInvalidTargetReaderDetail(t *testing.T) {
 	event := CallbackEvent{CorpID: "corp-1", MsgType: "event", Event: "change_external_contact", ChangeType: ChangeAddExternalContact, ExternalUserID: "external-1", UserID: "employee-1"}
 	payload, err := json.Marshal(event)
 	if err != nil {
@@ -184,7 +186,7 @@ func TestContactDescriptionCallbackWorkerRejectsMismatchedProviderDetail(t *test
 	}
 	customerID := customerdomain.CustomerID(19)
 	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("corp-1", "employee-1", customerID): true}}
-	reader := &descriptionCallbackReader{contact: wecomport.ExternalContact{ExternalUserID: "different-contact", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "employee-1", Description: &description, DescriptionProjected: true}}}}
+	reader := &descriptionCallbackReader{err: errors.New("provider target mismatch")}
 	intents := &descriptionCallbackIntentWriter{}
 	service := ContactDescriptionCallbackService{Enabled: true, CorpID: "corp-1", Inbox: inbox, Provider: reader, Identity: &descriptionCallbackIdentity{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: customerID}}, Relationships: relationships, Intents: intents, UOW: directUOW{}}
 	if err = service.Process(context.Background(), 46); err == nil || len(intents.commands) != 0 {

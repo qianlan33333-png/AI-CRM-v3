@@ -26,13 +26,21 @@ func (s descriptionContactsStub) ResolveContactDescriptionTarget(context.Context
 }
 
 type descriptionReaderStub struct {
-	values []wecomport.ExternalContact
-	calls  int
+	values          []wecomport.ExternalContactDescriptionTarget
+	err             error
+	calls           int
+	externalUserIDs []string
+	employeeUserIDs []string
 }
 
-func (s *descriptionReaderStub) ReadExternalContact(context.Context, string) (wecomport.ExternalContact, error) {
+func (s *descriptionReaderStub) ReadExternalContactDescriptionTarget(_ context.Context, externalUserID, employeeUserID string) (wecomport.ExternalContactDescriptionTarget, error) {
+	s.externalUserIDs = append(s.externalUserIDs, externalUserID)
+	s.employeeUserIDs = append(s.employeeUserIDs, employeeUserID)
+	if s.err != nil {
+		return wecomport.ExternalContactDescriptionTarget{}, s.err
+	}
 	if s.calls >= len(s.values) {
-		return wecomport.ExternalContact{}, errors.New("unexpected read")
+		return wecomport.ExternalContactDescriptionTarget{}, errors.New("unexpected read")
 	}
 	v := s.values[s.calls]
 	s.calls++
@@ -59,27 +67,27 @@ func descriptionEnvelope(target effectport.Digest, current string) effectport.En
 	dispatch := descriptionDispatch(target, current)
 	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindWeComContactDescription, SourceRefDigest: effectport.Hash("description-source"), TargetRefDigest: target, PayloadDigest: dispatch.PayloadDigest, PolicyVersionHash: effectport.Hash("wecom.contact.description.policy.v1")}
 }
-func descriptionContact(value string) wecomport.ExternalContact {
-	return wecomport.ExternalContact{ExternalUserID: "external-1", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1", Description: &value, DescriptionProjected: true}}}
+func descriptionTarget(value string) wecomport.ExternalContactDescriptionTarget {
+	return wecomport.ExternalContactDescriptionTarget{Description: value, Projected: true}
 }
 
 func TestContactDescriptionProviderAppendsAndSeparatesReadbackState(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
-	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{descriptionContact("manual"), descriptionContact("manual\nexternal-1")}}
+	reader := &descriptionReaderStub{values: []wecomport.ExternalContactDescriptionTarget{descriptionTarget("manual"), descriptionTarget("manual\nexternal-1")}}
 	writer := &descriptionWriterStub{}
 	p, err := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "manual")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := p.Execute(context.Background(), descriptionEnvelope(target, "manual"), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
-	if err != nil || result.Completion != effectport.StateExecuted || writer.calls != 1 || writer.update.Description != "manual\nexternal-1" || !result.Artifact.Valid() || string(result.Artifact.Payload) != `{"status":"written","readback":"confirmed"}` {
+	if err != nil || result.Completion != effectport.StateExecuted || writer.calls != 1 || writer.update.Description != "manual\nexternal-1" || !result.Artifact.Valid() || string(result.Artifact.Payload) != `{"status":"written","readback":"confirmed"}` || len(reader.employeeUserIDs) != 2 || reader.employeeUserIDs[0] != "staff-1" || reader.externalUserIDs[0] != "external-1" {
 		t.Fatalf("result=%+v write=%+v calls=%d err=%v", result, writer.update, writer.calls, err)
 	}
 }
 
 func TestContactDescriptionProviderSkipsExistingAndNeverWrites(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
-	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{descriptionContact("manual\nexternal-1")}}
+	reader := &descriptionReaderStub{values: []wecomport.ExternalContactDescriptionTarget{descriptionTarget("manual\nexternal-1")}}
 	writer := &descriptionWriterStub{}
 	p, _ := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "manual\nexternal-1")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
 	result, err := p.Execute(context.Background(), descriptionEnvelope(target, "manual\nexternal-1"), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
@@ -90,7 +98,7 @@ func TestContactDescriptionProviderSkipsExistingAndNeverWrites(t *testing.T) {
 
 func TestContactDescriptionProviderWritesWithoutReadbackConfirmation(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
-	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{descriptionContact("")}}
+	reader := &descriptionReaderStub{values: []wecomport.ExternalContactDescriptionTarget{descriptionTarget("")}}
 	writer := &descriptionWriterStub{}
 	p, _ := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
 	result, err := p.Execute(context.Background(), descriptionEnvelope(target, ""), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
@@ -101,7 +109,7 @@ func TestContactDescriptionProviderWritesWithoutReadbackConfirmation(t *testing.
 
 func TestContactDescriptionProviderSkipsWhenDescriptionWasNotProjected(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
-	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{{ExternalUserID: "external-1", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1"}}}}}
+	reader := &descriptionReaderStub{values: []wecomport.ExternalContactDescriptionTarget{{}}}
 	writer := &descriptionWriterStub{}
 	p, _ := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
 	result, err := p.Execute(context.Background(), descriptionEnvelope(target, ""), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
@@ -110,22 +118,20 @@ func TestContactDescriptionProviderSkipsWhenDescriptionWasNotProjected(t *testin
 	}
 }
 
-func TestContactDescriptionProviderRejectsDifferentLiveExternalIdentity(t *testing.T) {
+func TestContactDescriptionProviderDoesNotAttemptWriteWhenTargetReadFails(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
-	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{{ExternalUserID: "external-other", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-1", Description: stringPointer("manual"), DescriptionProjected: true}}}}}
+	reader := &descriptionReaderStub{err: errors.New("target detail invalid")}
 	writer := &descriptionWriterStub{}
 	p, _ := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "manual")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
 	result, err := p.Execute(context.Background(), descriptionEnvelope(target, "manual"), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
-	if err != nil || result.Completion != effectport.StateFinalFailed || writer.calls != 0 || string(result.Artifact.Payload) != `{"reason":"relationship_unavailable"}` {
-		t.Fatalf("result=%+v calls=%d err=%v", result, writer.calls, err)
+	if err == nil || result.Completion != effectport.StateRetryable || result.CallAttempted || result.RealExternalCallExecuted || writer.calls != 0 {
+		t.Fatalf("result=%+v writer_calls=%d err=%v", result, writer.calls, err)
 	}
 }
 
-func stringPointer(value string) *string { return &value }
-
 func TestContactDescriptionProviderSkipsSnapshotChange(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
-	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{descriptionContact("edited after scheduling")}}
+	reader := &descriptionReaderStub{values: []wecomport.ExternalContactDescriptionTarget{descriptionTarget("edited after scheduling")}}
 	writer := &descriptionWriterStub{}
 	p, _ := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "manual")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
 	result, err := p.Execute(context.Background(), descriptionEnvelope(target, "manual"), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
@@ -136,7 +142,7 @@ func TestContactDescriptionProviderSkipsSnapshotChange(t *testing.T) {
 
 func TestContactDescriptionProviderRetainsOnlyNumericRejectedProviderCode(t *testing.T) {
 	target := effectport.Hash("wecom.contact.description.target.v1", "staff-1", "external-1")
-	reader := &descriptionReaderStub{values: []wecomport.ExternalContact{descriptionContact("")}}
+	reader := &descriptionReaderStub{values: []wecomport.ExternalContactDescriptionTarget{descriptionTarget("")}}
 	writer := &descriptionWriterStub{err: wecomport.WrapProviderWriteDispositionWithCode(errors.New("provider message that must not be persisted"), true, false, false, 40003)}
 	p, _ := NewContactDescriptionProvider(true, descriptionDispatchStub{descriptionDispatch(target, "")}, descriptionContactsStub{wecomport.CurrentExternalContact{EmployeeUserID: "staff-1", ExternalUserID: "external-1"}}, reader, writer)
 	result, err := p.Execute(context.Background(), descriptionEnvelope(target, ""), effectport.Attempt{EffectID: "eer_1", Number: 1, Generation: 1, Fence: 1})
