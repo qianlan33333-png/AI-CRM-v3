@@ -131,5 +131,5 @@ try {
   await stopBrowser(browser);
   // Chromium can finish a late profile write after its root process exits.
   // Keep cleanup bounded and preserve the actual journey failure when present.
-  try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch (error) { if (!failed) throw error; }
+  try { await fs.rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch (error) { if (failed) console.error(`remaining_pages_chromium: profile cleanup failed after journey error: ${error?.code || error?.message || "unknown"}`); else throw error; }
 }
