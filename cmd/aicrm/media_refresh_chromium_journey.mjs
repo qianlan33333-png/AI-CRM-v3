@@ -132,13 +132,13 @@ try {
  // Real navigation must retain the selected material type (the former server redirect bug).
  for (const [tab, page] of [['attachments','attach'],['miniprograms','mpLib']]) {
    await cdp.call('Page.navigate',{url:`${baseURL}/admin/materials?tab=${tab}`});
-   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && Boolean(document.querySelector('[data-material-group-value="group:"]'))`, `${tab} group sidebar`);
+   await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && Boolean(document.querySelector('[data-material-group-value="group:"]'))`, `${tab} group sidebar`);
    await value(cdp, `document.querySelector('[data-material-group-value="group:"]').click();true`);
-   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped navigation`);
+   await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped navigation`);
    await cdp.call('Page.reload');
-   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped reload`);
+   await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped reload`);
    await value(cdp, `document.querySelector('[data-material-group-value="all"]').click();true`);
-   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && !new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="all"]')?.getAttribute('aria-pressed')==='true'`, `${tab} all groups navigation`);
+   await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && !new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="all"]')?.getAttribute('aria-pressed')==='true'`, `${tab} all groups navigation`);
  }
  await cdp.call("Page.navigate",{url:`${baseURL}/admin/operation-cycles`}); await wait(cdp,"Boolean([...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情'))","operation cycles");
  await value(cdp,"[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情').click();true"); await wait(cdp,"Boolean([...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次'))","strategy detail");
