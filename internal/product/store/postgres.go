@@ -139,12 +139,12 @@ func (r *Repository) List(ctx context.Context, after *productport.ID, limit int3
 	query := `SELECT ` + productColumns + ` FROM products WHERE ` + ordinaryStatusSQL()
 	args := []any{}
 	if after != nil {
-		query += ` AND id > $1`
+		query += ` AND id < $1`
 		args = append(args, int64(*after))
 	}
 	// Product limits are small (at most 101), so format the placeholder without
 	// accepting arbitrary SQL input.
-	query += ` ORDER BY id LIMIT $` + itoa(len(args)+1)
+	query += ` ORDER BY id DESC LIMIT $` + itoa(len(args)+1)
 	args = append(args, limit)
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
@@ -170,7 +170,7 @@ func (r *Repository) ListOffset(ctx context.Context, limit, offset int32) ([]pro
 	if limit < 1 || limit > productapp.MaximumLimit || offset < 0 || offset > productapp.MaximumLegacyOffset {
 		return nil, ErrInvalid
 	}
-	rows, err := tx.Query(ctx, `SELECT `+productColumns+` FROM products WHERE `+ordinaryStatusSQL()+` ORDER BY id LIMIT $1 OFFSET $2`, limit, offset)
+	rows, err := tx.Query(ctx, `SELECT `+productColumns+` FROM products WHERE `+ordinaryStatusSQL()+` ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, mapDatabaseError(err)
 	}

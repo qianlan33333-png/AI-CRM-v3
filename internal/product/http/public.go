@@ -164,10 +164,15 @@ func (h *PublicHandler) publicPage(w http.ResponseWriter, r *http.Request, payme
 	}
 	product.PromotionContext = promotionContext
 	product.PaymentPath = publicPaymentPath(product.PaymentPath, promotionContext)
+	if !payment && len(product.Images) == 0 {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, product.PaymentPath, http.StatusFound)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", publicCommerceContentSecurityPolicy())
-	data := publicProductPageView{Product: product, Payment: true, Detail: !payment, Presentation: publicPresentationTemplateFor(presentation)}
+	data := publicProductPageView{Product: product, Payment: true, Detail: !payment && len(product.Images) > 0, Presentation: publicPresentationTemplateFor(presentation)}
 	if err := publicProductPage.Execute(w, data); err != nil {
 		return
 	}

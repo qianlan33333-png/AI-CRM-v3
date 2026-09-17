@@ -217,6 +217,11 @@ func (h *Handler) ordinaryRoot(w http.ResponseWriter, r *http.Request) {
 		if len(projection) == 0 {
 			projection = productapp.DefaultLegacyAdminProjection()
 		}
+		projection, err = productapp.EnabledLegacyAdminProjectionForCreate(projection)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
 		product, err := h.catalog.Create(r.Context(), productport.CreateCommand{
 			ProductCode: body.ProductCode, Name: body.Name, Description: body.Description,
 			PriceMinor: body.PriceMinor, Currency: body.Currency, StockQuantity: body.StockQuantity,

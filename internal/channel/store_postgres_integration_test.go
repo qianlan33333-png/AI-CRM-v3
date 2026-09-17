@@ -291,6 +291,50 @@ func TestPostgreSQLVerifiedLegacyAssetCanBeRetiredIntegration(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLPublicLeadQRCodeUsesVerifiedLegacyAssetIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	actorID := insertChannelAdmin(t, ctx, pool)
+	store := NewPostgreSQLCatalogStore()
+	events, err := NewChannelCatalogEventAppender(mustChannelAuditService(t), platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := validCatalogCreate()
+	create.Config.QRCodeURL = ""
+	create.Config.Assignment.Assignees[0].StaffID = actorID
+	created, err := NewCatalogService(unit, store, store, events, nil, nil, fixedCatalogStaffReader{actorID: actorID}).Create(ctx, CatalogMutation{ActorID: actorID, IdempotencyKey: "pg-public-lead-qr-0001", Create: create})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := make([]byte, sha256.Size)
+	var importRunID int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO channel_history_import_runs(snapshot_id,source_host_digest,snapshot_timestamp,manifest_digest,state,completed_at) VALUES('public-lead-qr-snapshot',$1,clock_timestamp(),$1,'reconciled',clock_timestamp()) RETURNING id`, digest).Scan(&importRunID); err != nil {
+		t.Fatal(err)
+	}
+	const want = "https://wework.qpic.cn/public-lead.png"
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO channel_legacy_acquisition_assets(import_run_id,source_asset_id,channel_id,config_version,asset_version,kind,provider_asset_ref,result_url,source_status,verification_status,source_digest,provider_readback_digest,verified_at) VALUES($1,1,$2,$3,1,'contact_way_qrcode','provider-reference',$4,'active','legacy_verified_active',$5,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',clock_timestamp())`, importRunID, created.ID, created.ConfigVersion, want, digest); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewPostgreSQLPublicLeadQRCodeReader(unit)
+	lead, err := reader.ReadPublicLeadQRCode(ctx, created.ID)
+	if err != nil || lead.URL != want {
+		t.Fatalf("lead=%+v err=%v", lead, err)
+	}
+	if _, err = pool.Native().Exec(ctx, `UPDATE channels SET status='archived',archived_at=clock_timestamp() WHERE id=$1`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = reader.ReadPublicLeadQRCode(ctx, created.ID); err == nil {
+		t.Fatal("archived Channel exposed a public QR")
+	}
+}
+
 func mustChannelAuditService(t *testing.T) *platformaudit.Service {
 	t.Helper()
 	service, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())

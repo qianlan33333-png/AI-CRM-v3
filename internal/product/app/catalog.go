@@ -566,8 +566,8 @@ func validProduct(p productport.Product) bool {
 }
 func validProducts(ps []productport.Product) bool {
 	var prev productport.ID
-	for _, p := range ps {
-		if !validProduct(p) || p.ID <= prev {
+	for index, p := range ps {
+		if !validProduct(p) || index > 0 && p.ID >= prev {
 			return false
 		}
 		prev = p.ID
@@ -613,6 +613,27 @@ func decodeJSON(raw []byte) (any, bool) {
 func DefaultLegacyAdminProjection() json.RawMessage {
 	projection, _ := CanonicalLegacyAdminProjection(json.RawMessage(`{"schema_version":1}`))
 	return projection
+}
+
+// EnabledLegacyAdminProjectionForCreate applies the product-create default
+// without changing update, copy, import, or service-period semantics.
+func EnabledLegacyAdminProjectionForCreate(raw json.RawMessage) (json.RawMessage, error) {
+	canonical, err := CanonicalLegacyAdminProjection(raw)
+	if err != nil {
+		return nil, err
+	}
+	var projection map[string]json.RawMessage
+	if json.Unmarshal(canonical, &projection) != nil {
+		return nil, ErrInvalidProduct
+	}
+	projection["status"] = json.RawMessage(`"active"`)
+	projection["enabled"] = json.RawMessage(`true`)
+	return CanonicalLegacyAdminProjection(mustJSON(projection))
+}
+
+func mustJSON(value any) json.RawMessage {
+	encoded, _ := json.Marshal(value)
+	return encoded
 }
 
 func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error) {
