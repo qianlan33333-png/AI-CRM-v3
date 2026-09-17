@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -34,10 +35,11 @@ type productTestStore struct {
 
 func (s *productTestStore) List(_ context.Context, after *productport.ID, limit int32) ([]productport.Product, error) {
 	items := append([]productport.Product(nil), s.products...)
+	sort.Slice(items, func(i, j int) bool { return items[i].ID > items[j].ID })
 	if after != nil {
 		filtered := items[:0]
 		for _, item := range items {
-			if item.ID > *after {
+			if item.ID < *after {
 				filtered = append(filtered, item)
 			}
 		}
@@ -50,14 +52,16 @@ func (s *productTestStore) List(_ context.Context, after *productport.ID, limit 
 }
 func (s *productTestStore) ListOffset(_ context.Context, limit, offset int32) ([]productport.Product, error) {
 	s.listLimit, s.listOffset = limit, offset
-	if int(offset) >= len(s.products) {
+	items := append([]productport.Product(nil), s.products...)
+	sort.Slice(items, func(i, j int) bool { return items[i].ID > items[j].ID })
+	if int(offset) >= len(items) {
 		return []productport.Product{}, nil
 	}
 	end := int(offset + limit)
-	if end > len(s.products) {
-		end = len(s.products)
+	if end > len(items) {
+		end = len(items)
 	}
-	return append([]productport.Product(nil), s.products[offset:end]...), nil
+	return append([]productport.Product(nil), items[offset:end]...), nil
 }
 func (s *productTestStore) Count(context.Context) (int64, error) {
 	s.countCalls++
@@ -187,6 +191,35 @@ func TestNormalizeClonesImagesWithoutCollapsingEmptySlice(t *testing.T) {
 	}
 	if normalized.Images == nil {
 		t.Fatal("normalize() collapsed a non-nil empty image list")
+	}
+}
+
+func TestEnabledLegacyAdminProjectionForCreatePreservesConfigurationAndEnablesProduct(t *testing.T) {
+	projection, err := EnabledLegacyAdminProjectionForCreate(json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"require_mobile":true,"slices":[{"image_id":8}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value struct {
+		Status        string           `json:"status"`
+		Enabled       bool             `json:"enabled"`
+		RequireMobile bool             `json:"require_mobile"`
+		Slices        []map[string]any `json:"slices"`
+	}
+	if json.Unmarshal(projection, &value) != nil || value.Status != "active" || !value.Enabled || !value.RequireMobile || len(value.Slices) != 1 {
+		t.Fatalf("create projection=%s", projection)
+	}
+}
+
+func TestListReturnsNewestProductsFirstAcrossCursor(t *testing.T) {
+	store := &productTestStore{products: []productport.Product{validTestProduct(1), validTestProduct(2), validTestProduct(3)}}
+	service := NewService(&productTestUoW{}, store, &productTestEvents{})
+	first, err := service.List(context.Background(), "", 2)
+	if err != nil || len(first.Items) != 2 || first.Items[0].ID != 3 || first.Items[1].ID != 2 || first.NextCursor == "" {
+		t.Fatalf("first page=%+v err=%v", first, err)
+	}
+	second, err := service.List(context.Background(), first.NextCursor, 2)
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != 1 || second.NextCursor != "" {
+		t.Fatalf("second page=%+v err=%v", second, err)
 	}
 }
 

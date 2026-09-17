@@ -770,6 +770,10 @@ func TestHandlerWriteRequiresAdminCSRFAndMintsCompatibilityKey(t *testing.T) {
 	if recorder.Code != http.StatusCreated || catalog.createCall == nil || len(catalog.createCall.IdempotencyKey) < 16 {
 		t.Fatalf("status=%d create=%+v body=%s", recorder.Code, catalog.createCall, recorder.Body.String())
 	}
+	projected, err := productapp.ProjectLocalProduct(productport.Product{ID: 8, ProductCode: "p-8", Name: "商品八", Currency: "CNY", Version: 1, CreatedBy: 9, CreatedAt: time.Now(), UpdatedAt: time.Now(), LegacyAdminProjection: catalog.createCall.LegacyAdminProjection})
+	if err != nil || projected.Lifecycle != productport.LocalProductEnabled || !projected.Enabled {
+		t.Fatalf("new Product default projection=%s local=%+v err=%v", catalog.createCall.LegacyAdminProjection, projected, err)
+	}
 }
 
 func TestHandlerReturnsTruthfulCompatibilityReads(t *testing.T) {

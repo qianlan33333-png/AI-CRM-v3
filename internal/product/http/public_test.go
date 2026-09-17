@@ -221,6 +221,25 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	}
 }
 
+func TestPublicProductWithoutPageMaterialRedirectsDirectlyToPayment(t *testing.T) {
+	product := enabledPublicProduct(7, "course-7")
+	product.Images = []string{}
+	handler, err := NewPublicHandler(&testCatalog{product: product})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/p/course-7?promotion_context="+promotionContextToken(), nil))
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "/pay/course-7?promotion_context="+promotionContextToken() || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d location=%q headers=%v body=%s", response.Code, response.Header().Get("Location"), response.Header(), response.Body.String())
+	}
+	payment := httptest.NewRecorder()
+	handler.ServeHTTP(payment, httptest.NewRequest(http.MethodGet, response.Header().Get("Location"), nil))
+	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), `data-public-commerce-route="payment"`) || strings.Contains(payment.Body.String(), `id="detailContent"`) {
+		t.Fatalf("payment status=%d body=%s", payment.Code, payment.Body.String())
+	}
+}
+
 func TestPublicPaymentCompletionRefreshJourney(t *testing.T) {
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {

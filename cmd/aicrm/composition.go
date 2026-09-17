@@ -1029,7 +1029,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = surveySubmissions.BindPublicCompletionTarget(publicCompletionResolver); err != nil {
 		return fail(err)
 	}
-	if err = surveySubmissions.BindPublicLeadQRCode(channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+	publicLeadQRCodes := channelstore.NewPostgreSQLPublicLeadQRCodeReader(uow)
+	if err = surveySubmissions.BindPublicLeadQRCode(publicLeadQRCodes); err != nil {
 		return fail(err)
 	}
 	// Bind Survey HTTP only after its two public completion read boundaries are
@@ -1359,7 +1360,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = paymentHandler.SetCommercePushDeliveryReaders(orderService, commercePushService); err != nil {
 		return fail(err)
 	}
-	if err = paymentHandler.SetPaidPurchaseActionReader(paidPurchaseActions, channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+	if err = paymentHandler.SetPaidPurchaseActionReader(paidPurchaseActions, publicLeadQRCodes); err != nil {
 		return fail(err)
 	}
 	if cfg.WeChatPay.Enabled {
@@ -1384,7 +1385,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = publicServicePeriodHandler.SetPublicMediaReader(mediaService); err != nil {
 		return fail(err)
 	}
-	if err = publicServicePeriodHandler.SetPublicLeadQRCodeReader(channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+	if err = publicServicePeriodHandler.SetPublicLeadQRCodeReader(publicLeadQRCodes); err != nil {
 		return fail(err)
 	}
 	h5OAuthService, err := paymenth5oauth.NewService(uow, paymenth5oauth.PostgreSQL{}, h5OAuthProvider, paymentSession)

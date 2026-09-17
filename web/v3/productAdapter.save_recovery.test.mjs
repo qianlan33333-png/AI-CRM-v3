@@ -44,7 +44,10 @@ async function verifyDefaultPolicyAtActualCreateAlias() {
         const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
         if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [{ id: 88, product_code: 'already-used', name: '已有商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' }], next_cursor: '' });
         if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created, 201);
-        if (url.pathname === '/api/admin/wechat-pay/products/201/external-push' && (method === 'POST' || method === 'PUT')) return reply({ product_id: 201, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', updated_at: '2026-09-08T00:01:00Z' });
+        if (url.pathname === '/api/admin/wechat-pay/products/201/external-push' && method === 'PUT') {
+          const body = JSON.parse(String(init.body || '{}'));
+          return reply({ product_id: 201, product_kind: 'wechat_pay', ...body, revision: 1, configuration_reference: '', custom_params: JSON.parse(body.custom_params), custom_params_json: body.custom_params, updated_at: '2026-09-08T00:01:00Z' });
+        }
         if (url.pathname === '/api/admin/channels') return reply({ items: [{ id: 17, channel_name: '付款后添加企微', channel_code: 'paid-lead', status: 'active' }, { id: 18, channel_name: '已归档渠道', channel_code: 'archived', status: 'archived' }], total: 2 });
         if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [], items: [], count: 0, total_tags: 0, tag_limit: 1000 });
         if (url.pathname === '/api/admin/image-library' || url.pathname === '/api/admin/attachment-library' || url.pathname === '/api/admin/mini-program-library' || url.pathname === '/api/admin/wecom/tag-groups' || url.pathname === '/api/admin/questionnaires' || url.pathname === '/api/admin/customers' || url.pathname === '/api/admin/orders' || url.pathname === '/api/admin/service-period-products' || url.pathname === '/api/admin/coupons') return reply({ items: [], total: 0, has_more: false });
@@ -62,6 +65,12 @@ async function verifyDefaultPolicyAtActualCreateAlias() {
   assert.equal(policy.querySelector('[data-distribution-policy-enabled]').checked, false, 'actual ordinary create alias starts with a disabled Product policy');
   const leadChannels = dom.window.document.querySelector('[data-product-purchase-lead-channel]');
   assert.deepEqual([...leadChannels.options].map((option) => [option.value, option.textContent]), [['', '不配置引流渠道码'], ['17', '付款后添加企微']], 'new Product action must list active Channel resources and exclude archived choices');
+  const pushPanel = await waitFor(() => dom.window.document.querySelector('[data-product-parity-push]'), 'new Product must mount the same external-push panel as edit');
+  assert.equal(pushPanel.querySelector('[data-product-parity-push-url]')?.disabled, false, 'new Product external-push fields are editable before the first save');
+  const pushEnabled = pushPanel.querySelector('[data-product-parity-push-enabled]');
+  pushEnabled.checked = true; pushEnabled.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  pushPanel.querySelector('[data-product-parity-push-url]').value = 'https://hooks.example.test/new-product';
+  pushPanel.querySelector('[data-product-parity-push-type]').value = 'paid_notify';
   const actionEnabled = dom.window.document.querySelector('[data-product-purchase-enabled]');
   actionEnabled.checked = true; actionEnabled.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   const qr = dom.window.document.querySelector('input[name="pfPurchaseActionMode"][value="qr"]');
@@ -81,7 +90,12 @@ async function verifyDefaultPolicyAtActualCreateAlias() {
   await waitFor(() => calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST').length === 1, 'actual ordinary create alias must submit the first Product command');
   const create = calls.find((call) => call.path === '/api/v1/products' && call.method === 'POST');
   assert.deepEqual(JSON.parse(create.body).distribution_policy, { enabled: false, commission_rate_basis_points: 0, wait_days: 7, version: 0 }, 'actual ordinary create alias must atomically submit the default Product policy');
+  assert.equal(JSON.parse(create.body).admin_projection.enabled, true, 'new Product is enabled by default in its first subject command');
+  assert.equal(JSON.parse(create.body).admin_projection.status, 'active', 'new Product starts in the enabled lifecycle');
   assert.equal(JSON.parse(create.body).admin_projection.lead_channel_id, 17, 'new Product action must persist the selected Channel resource');
+  await waitFor(() => calls.some((call) => call.path === '/api/admin/wechat-pay/products/201/external-push' && call.method === 'PUT'), 'first Product save must persist the parity external-push draft after receiving its ID');
+  const pushWrite = calls.find((call) => call.path === '/api/admin/wechat-pay/products/201/external-push' && call.method === 'PUT');
+  assert.deepEqual(JSON.parse(pushWrite.body), { enabled: true, webhook_url: 'https://hooks.example.test/new-product', push_type: 'paid_notify', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: '{}', expected_revision: 0 });
   await waitFor(() => dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度'), 'actual ordinary create alias must finish the complete saved-product flow');
   assert.equal(dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('分销设置尚未加载'), false, 'actual ordinary create alias must not reject its default policy as unloaded');
   await waitFor(() => new URL(dom.window.location.href).searchParams.get('id') === '201', 'actual ordinary create alias must retain the created ID');
@@ -125,6 +139,7 @@ const created = { id: 101, product_code: 'recovery-product', name: '恢复商品
 const calls = [];
 let savedVersion = 1;
 let failEditProduct = false;
+let failCreatePush = true;
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', () => undefined);
 const navigationErrors = [];
@@ -155,7 +170,11 @@ const dom = new JSDOM(page, {
       }
       if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [], next_cursor: '' });
       if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created);
-      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {}, custom_params_json: '{}' });
+      if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') {
+        if (method === 'PUT' && failCreatePush) { failCreatePush = false; return reply({ code: 'dependency_unavailable' }, 503); }
+        const body = method === 'PUT' ? JSON.parse(String(init.body || '{}')) : {};
+        return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: body.enabled ?? false, configuration_reference: '', revision: method === 'PUT' ? 1 : 0, webhook_url: body.webhook_url ?? '', push_type: body.push_type ?? '', expires_at_ts: body.expires_at_ts ?? null, day: body.day ?? null, frequency: body.frequency ?? null, remark: body.remark ?? '', custom_params: JSON.parse(body.custom_params ?? '{}'), custom_params_json: body.custom_params ?? '{}' });
+      }
       if (url.pathname === '/api/admin/channels') return reply({ items: [{ id: 17, channel_name: '付款后添加企微', channel_code: 'paid-lead', status: 'active' }], total: 1 });
       if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [{ group_id: 4, group_name: '已同步标签' }], items: [{ tag_id: 37, tag_name: '已购买', group_id: 4, group_name: '已同步标签' }], count: 1, total_tags: 1, tag_limit: 1000 });
       if (url.pathname === '/api/admin/image-library/38') return reply({ item: { id: 38, name: '页面素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });
@@ -237,7 +256,7 @@ const save = [...dom.window.document.querySelectorAll('button')].find((button) =
 assert.ok(save, 'frozen product form must retain save action');
 save.click();
 save.click();
-await waitFor(() => dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度'), 'product create must finish through the retained frozen save action');
+await waitFor(() => dom.window.document.body.textContent.includes('商品已创建，外部推送保存失败'), 'a failed first external-push write must report that the Product already exists');
 const creates = calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST');
 assert.equal(creates.length, 1, 'duplicate save clicks must create one product');
 assert.match(creates[0].key, /^product-save-/, 'subject create must carry an idempotency key');
@@ -248,6 +267,10 @@ assert.deepEqual(createPayload.distribution_policy, { enabled: true, commission_
 assert.equal(createPayload.admin_projection.purchase_action_enabled, true, 'product save must enable the selected purchase action');
 assert.equal(createPayload.admin_projection.purchase_action_mode, 'qr', 'product save must preserve the selected QR action mode');
 assert.equal(new URL(dom.window.location.href).searchParams.get('id'), '101', 'created product must enter its editor URL');
+dom.window.document.querySelector('[data-product-parity-push-save]').click();
+await waitFor(() => calls.filter((call) => call.path === '/api/admin/wechat-pay/products/101/external-push' && call.method === 'PUT').length === 2, 'the retained parity panel must retry only the failed configuration command');
+await waitFor(() => dom.window.document.querySelector('[data-product-parity-push-result]')?.textContent.includes('配置已保存'), 'the retained parity panel must finish its retry');
+assert.equal(calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST').length, 1, 'external-push retry must not create a second Product');
 const policyAfterCreate = dom.window.document.querySelector('[data-distribution-policy]');
 assert.equal(policyAfterCreate.dataset.distributionPolicyVersion, '1', 'new ordinary product must read back the server policy revision after receiving an ID');
 assert.equal(policyAfterCreate.querySelector('[data-distribution-policy-enabled]').checked, true, 'new ordinary product readback must retain the selected distribution state');

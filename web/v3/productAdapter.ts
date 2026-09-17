@@ -507,6 +507,11 @@ api.saveProduct = (input) => {
   }
   const keys = stableProductSaveKeys(input);
   const productID = input.id;
+  const creating = input.id == null;
+  const createPushDraft = creating ? readNewProductParityPushDraft() : undefined;
+  const subjectInput = creating && input.adminProjection
+    ? { ...input, adminProjection: { ...input.adminProjection, status: 'active', enabled: true } }
+    : input;
   const context: ProductSaveContext = {
     productID,
     opened: productID ? openedProductPayloads.get(productID) : undefined,
@@ -520,7 +525,19 @@ api.saveProduct = (input) => {
       // External push is now its own legacy-parity command.  The frozen
       // product controller still carries its retired reference field, so do
       // not let an ordinary dimension save overwrite or disable that config.
-      const saved = await donorSaveProduct({ ...input, externalPush: undefined });
+      const saved = await donorSaveProduct({ ...subjectInput, externalPush: undefined });
+      if (createPushDraft) {
+        try {
+          const configured = await saveCreatedProductParityPush(saved, createPushDraft, context.externalPushKey);
+          document.dispatchEvent(new CustomEvent('aicrm:created-product-external-push', { detail: configured }));
+        } catch (error) {
+          // This is the complete parity configuration command, not the retired
+          // configuration_reference write recovered by pendingExternalPush.
+          context.externalPushAttempted = false;
+          retainPartiallyCreatedProduct(saved);
+          throw new Error(`商品已创建，外部推送保存失败；请在当前商品继续保存：${error instanceof Error ? error.message : '请求失败'}`);
+        }
+      }
       // An editor may intentionally change the subject after an earlier
       // external-push failure.  That normal PUT is still an edit of the same
       // product, never a second create; its completed push supersedes the
@@ -844,10 +861,15 @@ function productEditorRoute(): { id: number; prefix: 'pf' | 'spf' } | undefined 
 
 function externalPushPage(): ExternalPushPage | undefined {
   const route = productEditorRoute();
-  if (!route) return undefined;
-  const productID = route.id;
-  if (route.prefix === 'pf') return { productID, productKind: 'wechat_pay', anchor: '#product-push', endpoint: `/api/admin/wechat-pay/products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/wechat-pay/products/${productID}/external-push` };
-  return { productID, productKind: 'service_period', anchor: '#sp-push', endpoint: `/api/admin/service-period-products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/service-period-products/${productID}/external-push` };
+  let prefix = route?.prefix;
+  if (!prefix) {
+    const page = document.body?.dataset.page;
+    prefix = page === 'productForm' ? 'pf' : page === 'spProductForm' ? 'spf' : undefined;
+  }
+  if (!prefix) return undefined;
+  const productID = route?.id || 0;
+  if (prefix === 'pf') return { productID, productKind: 'wechat_pay', anchor: '#product-push', endpoint: productID ? `/api/admin/wechat-pay/products/${productID}/external-push/test` : '', configurationEndpoint: productID ? `/api/admin/wechat-pay/products/${productID}/external-push` : '' };
+  return { productID, productKind: 'service_period', anchor: '#sp-push', endpoint: productID ? `/api/admin/service-period-products/${productID}/external-push/test` : '', configurationEndpoint: productID ? `/api/admin/service-period-products/${productID}/external-push` : '' };
 }
 
 const externalPushStateLabel: Record<string, string> = {
@@ -1719,6 +1741,57 @@ function mountPurchaseActionControls(): void {
 }
 
 type LegacyParityPushConfig = { enabled: boolean; revision: number; webhookURL: string; pushType: string; expiresAtTS: number | null; day: number | null; frequency: number | null; remark: string; customParamsJSON: string };
+type NewProductParityPushDraft = { enabled: boolean; webhook_url: string; push_type: string; expires_at_ts: number | null; day: number | null; frequency: number | null; remark: string; custom_params: string; expected_revision: 0 };
+
+function readNewProductParityPushDraft(): NewProductParityPushDraft | undefined {
+  const page = externalPushPage();
+  if (!page || page.productID !== 0) return undefined;
+  const panel = document.querySelector<HTMLElement>(`${page.anchor} [data-product-parity-push]`);
+  if (!panel) return undefined;
+  const enabled = panel.querySelector<HTMLInputElement>('[data-product-parity-push-enabled]')?.checked === true;
+  const webhookURL = panel.querySelector<HTMLInputElement>('[data-product-parity-push-url]')?.value.trim() || '';
+  if (enabled) {
+    const parsed = new URL(webhookURL);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('请填写有效的 HTTPS 推送地址');
+  }
+  const params: Record<string, string> = {};
+  for (const row of panel.querySelectorAll<HTMLElement>('[data-product-parity-param-row]')) {
+    const key = row.querySelector<HTMLInputElement>('[data-product-parity-param-key]')?.value.trim() || '';
+    if (!key) continue;
+    if (Object.prototype.hasOwnProperty.call(params, key)) throw new Error(`custom_params 参数 ${key} 重复`);
+    params[key] = row.querySelector<HTMLInputElement>('[data-product-parity-param-value]')?.value || '';
+  }
+  return {
+    enabled,
+    webhook_url: webhookURL,
+    push_type: panel.querySelector<HTMLInputElement>('[data-product-parity-push-type]')?.value.trim() || '',
+    expires_at_ts: parityOptionalInteger(panel.querySelector<HTMLInputElement>('[data-product-parity-push-expires]')?.value || ''),
+    day: parityOptionalInteger(panel.querySelector<HTMLInputElement>('[data-product-parity-push-day]')?.value || ''),
+    frequency: parityOptionalInteger(panel.querySelector<HTMLInputElement>('[data-product-parity-push-frequency]')?.value || ''),
+    remark: panel.querySelector<HTMLTextAreaElement>('[data-product-parity-push-remark]')?.value || '',
+    custom_params: JSON.stringify(params),
+    expected_revision: 0,
+  };
+}
+
+async function saveCreatedProductParityPush(product: Product, draft: NewProductParityPushDraft, idempotencyKey: string): Promise<unknown> {
+  const productID = Number(product.resourceId);
+  if (!Number.isSafeInteger(productID) || productID < 1) throw new Error('后端未返回有效商品 ID');
+  const page = document.body.dataset.page === 'spProductForm'
+    ? { productID, productKind: 'service_period' as const, configurationEndpoint: `/api/admin/service-period-products/${productID}/external-push` }
+    : { productID, productKind: 'wechat_pay' as const, configurationEndpoint: `/api/admin/wechat-pay/products/${productID}/external-push` };
+  const response = await externalPushRequest(page.configurationEndpoint, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(draft) });
+  legacyParityPushConfig(response, { ...page, anchor: '', endpoint: '' });
+  return response;
+}
+
+function retainPartiallyCreatedProduct(saved: Product): void {
+  const id = Number(saved.resourceId);
+  if (!Number.isSafeInteger(id) || id < 1) return;
+  const next = new URL(location.href);
+  next.searchParams.set('id', String(id));
+  history.replaceState(null, '', next.pathname + next.search + next.hash);
+}
 
 function parityOptionalInteger(value: string): number | null {
   const trimmed = value.trim();
@@ -1920,21 +1993,48 @@ function mountLegacyParityPushPanel(): void {
     if (busy) throw new Error('外部推送保存进行中');
     setBusy(true);
     try {
+      const currentPage = externalPushPage();
+      if (!currentPage) throw new Error('商品页面上下文已失效，请刷新后重试');
+      if (currentPage.productID === 0) {
+        setBusy(false);
+        result.textContent = '正在先保存商品，再保存外部推送…';
+        const primary = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button !== panel.querySelector('[data-product-parity-push-save]') && button.textContent?.trim() === '保存当前维度');
+        if (!primary) throw new Error('商品保存按钮不可用，请刷新后重试');
+        primary.click();
+        return;
+      }
       const webhookURL = url.value.trim();
       if (enabled.checked) { const parsed = new URL(webhookURL); if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('请填写有效的 HTTPS 推送地址'); }
-      const response = await externalPushRequest(page.configurationEndpoint, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushConfigurationIdempotencyKey() }, body: JSON.stringify({ enabled: enabled.checked, webhook_url: webhookURL, push_type: type.value.trim(), expires_at_ts: parityOptionalInteger(expires.value), day: parityOptionalInteger(day.value), frequency: parityOptionalInteger(frequency.value), remark: remark.value, custom_params: readParams(), expected_revision: revision }) });
-      fill(legacyParityPushConfig(response, page)); result.textContent = '配置已保存'; showMessage('外部推送已保存', true);
+      const response = await externalPushRequest(currentPage.configurationEndpoint, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushConfigurationIdempotencyKey() }, body: JSON.stringify({ enabled: enabled.checked, webhook_url: webhookURL, push_type: type.value.trim(), expires_at_ts: parityOptionalInteger(expires.value), day: parityOptionalInteger(day.value), frequency: parityOptionalInteger(frequency.value), remark: remark.value, custom_params: readParams(), expected_revision: revision }) });
+      fill(legacyParityPushConfig(response, currentPage)); result.textContent = '配置已保存'; showMessage('外部推送已保存', true);
     } finally { if (!retainBusy) setBusy(false); }
   };
   enabled.addEventListener('change', setVisible);
   panel.querySelector<HTMLButtonElement>('[data-product-parity-push-add]')!.addEventListener('click', () => addParam());
   panel.querySelector<HTMLButtonElement>('[data-product-parity-push-save]')!.addEventListener('click', (event) => { event.stopPropagation(); void save().catch((error) => { result.textContent = error instanceof Error ? error.message : '外部推送保存失败'; }); });
   panel.querySelector<HTMLButtonElement>('[data-product-parity-push-test]')!.addEventListener('click', (event) => { event.stopPropagation(); void save(true).then(async () => {
-    const response = await externalPushRequest(page.endpoint, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushIdempotencyKey() }, body: '{}' });
+    const currentPage = externalPushPage();
+    if (!currentPage?.endpoint) throw new Error('请先保存商品后再测试推送');
+    const response = await externalPushRequest(currentPage.endpoint, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushIdempotencyKey() }, body: '{}' });
     const item = object(response); const delivery = object(item.delivery ?? object(item.result).delivery); result.textContent = `测试推送 ${String(delivery.status || item.state || '已受理')}，delivery_id: ${String(delivery.delivery_id || item.delivery_id || '')}`;
   }).catch((error) => { result.textContent = error instanceof Error ? error.message : '测试失败'; }).finally(() => setBusy(false)); });
   setControlsDisabled(true);
-  void externalPushRequest(page.configurationEndpoint, { method: 'GET', headers: { Accept: 'application/json' } }).then((response) => {
+  document.addEventListener('aicrm:created-product-external-push', ((event: CustomEvent) => {
+    const detail = object(event.detail);
+    const productID = Number(detail.product_id);
+    const productKind = detail.product_kind === 'service_period' ? 'service_period' : detail.product_kind === 'wechat_pay' ? 'wechat_pay' : undefined;
+    if (!Number.isSafeInteger(productID) || productID < 1 || !productKind) return;
+    const createdPage: ExternalPushPage = productKind === 'service_period'
+      ? { productID, productKind, anchor: '#sp-push', endpoint: `/api/admin/service-period-products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/service-period-products/${productID}/external-push` }
+      : { productID, productKind, anchor: '#product-push', endpoint: `/api/admin/wechat-pay/products/${productID}/external-push/test`, configurationEndpoint: `/api/admin/wechat-pay/products/${productID}/external-push` };
+    fill(legacyParityPushConfig(event.detail, createdPage)); setControlsDisabled(false); result.textContent = '配置已保存';
+  }) as EventListener);
+  if (page.productID === 0) {
+    fill({ enabled: false, revision: 0, webhookURL: '', pushType: '', expiresAtTS: null, day: null, frequency: null, remark: '', customParamsJSON: '{}' });
+    setControlsDisabled(false);
+    panel.querySelector<HTMLButtonElement>('[data-product-parity-push-test]')!.disabled = true;
+    result.textContent = '首次保存商品时会一并保存当前外部推送配置';
+  } else void externalPushRequest(page.configurationEndpoint, { method: 'GET', headers: { Accept: 'application/json' } }).then((response) => {
     fill(legacyParityPushConfig(response, page)); setControlsDisabled(false);
   }).catch((error) => { result.textContent = error instanceof Error ? error.message : '外部推送读取失败'; });
 }
