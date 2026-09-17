@@ -105,7 +105,7 @@ function customerPresentation(value: unknown): CustomerPresentation {
     // A local CRM owner is not a WeCom follow relation. Do not derive a name
     // from another projection when this directory response does not provide it.
     ownerDisplayName: text(customer.owner_display_name),
-    oneID: text(customer.customer_number, text(customer.oneid)),
+    oneID: text(customer.customer_number) || text(customer.oneid),
     activationStatus: text(customer.activation_status),
   };
 }
