@@ -42,10 +42,10 @@ async function verifyDefaultPolicyAtActualCreateAlias() {
         const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
         calls.push({ path: url.pathname, method, body: typeof init.body === 'string' ? init.body : '' });
         const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
-        if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [], next_cursor: '' });
+        if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [{ id: 88, product_code: 'already-used', name: '已有商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' }], next_cursor: '' });
         if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created, 201);
         if (url.pathname === '/api/admin/wechat-pay/products/201/external-push' && (method === 'POST' || method === 'PUT')) return reply({ product_id: 201, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', updated_at: '2026-09-08T00:01:00Z' });
-        if (url.pathname === '/api/admin/channels') return reply({ items: [], total: 0 });
+        if (url.pathname === '/api/admin/channels') return reply({ items: [{ id: 17, channel_name: '付款后添加企微', channel_code: 'paid-lead', status: 'active' }, { id: 18, channel_name: '已归档渠道', channel_code: 'archived', status: 'archived' }], total: 2 });
         if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [], items: [], count: 0, total_tags: 0, tag_limit: 1000 });
         if (url.pathname === '/api/admin/image-library' || url.pathname === '/api/admin/attachment-library' || url.pathname === '/api/admin/mini-program-library' || url.pathname === '/api/admin/wecom/tag-groups' || url.pathname === '/api/admin/questionnaires' || url.pathname === '/api/admin/customers' || url.pathname === '/api/admin/orders' || url.pathname === '/api/admin/service-period-products' || url.pathname === '/api/admin/coupons') return reply({ items: [], total: 0, has_more: false });
         if (url.pathname === '/api/admin/config') return reply({ categories: [] });
@@ -60,6 +60,12 @@ async function verifyDefaultPolicyAtActualCreateAlias() {
   await waitFor(() => dom.window.document.getElementById('pfName'), 'actual ordinary create alias must mount the frozen Product form');
   const policy = await waitFor(() => dom.window.document.querySelector('[data-distribution-policy]'), 'actual ordinary create alias must mount Product distribution controls');
   assert.equal(policy.querySelector('[data-distribution-policy-enabled]').checked, false, 'actual ordinary create alias starts with a disabled Product policy');
+  const leadChannels = dom.window.document.querySelector('[data-product-purchase-lead-channel]');
+  assert.deepEqual([...leadChannels.options].map((option) => [option.value, option.textContent]), [['', '不配置引流渠道码'], ['17', '付款后添加企微']], 'new Product action must list active Channel resources and exclude archived choices');
+  const actionEnabled = dom.window.document.querySelector('[data-product-purchase-enabled]');
+  actionEnabled.checked = true; actionEnabled.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  const qr = dom.window.document.querySelector('input[name="pfPurchaseActionMode"][value="qr"]');
+  qr.checked = true; qr.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   for (const [id, value] of [['pfName', '默认分销商品'], ['pfCode', 'default-policy-product'], ['pfPrice', '0.02'], ['pfStock', '1']]) {
     const field = dom.window.document.getElementById(id);
     field.value = value;
@@ -68,9 +74,14 @@ async function verifyDefaultPolicyAtActualCreateAlias() {
   const save = [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存当前维度');
   assert.ok(save, 'actual ordinary create alias must retain the frozen save action');
   save.click();
+  await waitFor(() => dom.window.document.querySelector('#fb-toast')?.textContent.includes('请选择引流渠道码'), 'QR action without a Channel must show an actionable validation message');
+  assert.equal(calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST').length, 0, 'missing QR Channel must not send an invalid Product command');
+  leadChannels.value = '17'; leadChannels.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  save.click();
   await waitFor(() => calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST').length === 1, 'actual ordinary create alias must submit the first Product command');
   const create = calls.find((call) => call.path === '/api/v1/products' && call.method === 'POST');
   assert.deepEqual(JSON.parse(create.body).distribution_policy, { enabled: false, commission_rate_basis_points: 0, wait_days: 7, version: 0 }, 'actual ordinary create alias must atomically submit the default Product policy');
+  assert.equal(JSON.parse(create.body).admin_projection.lead_channel_id, 17, 'new Product action must persist the selected Channel resource');
   await waitFor(() => dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('已保存当前维度'), 'actual ordinary create alias must finish the complete saved-product flow');
   assert.equal(dom.window.document.querySelector('#product-v3-toast')?.textContent.includes('分销设置尚未加载'), false, 'actual ordinary create alias must not reject its default policy as unloaded');
   await waitFor(() => new URL(dom.window.location.href).searchParams.get('id') === '201', 'actual ordinary create alias must retain the created ID');
@@ -79,7 +90,37 @@ async function verifyDefaultPolicyAtActualCreateAlias() {
   dom.window.close();
 }
 
+async function verifyDuplicateCodeIsExplainedBeforeCreate() {
+  const calls = [];
+  const dom = new JSDOM(page, {
+    url: 'https://test.invalid/admin/wechat-pay/productForm.html', runScripts: 'outside-only', pretendToBeVisual: true,
+    beforeParse(window) {
+      window.Request = Request; window.Response = Response; window.Headers = Headers;
+      window.AICRMTagPicker = { open() {} };
+      window.fetch = async (input, init = {}) => {
+        const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+        const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        calls.push({ path: url.pathname, method });
+        const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+        if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [{ id: 5, product_code: '123', name: '测试商品', description: '', price_minor: 0, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' }] });
+        if (url.pathname === '/api/admin/channels') return reply({ items: [], total: 0 });
+        if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [], items: [], count: 0, total_tags: 0, tag_limit: 1000 });
+        if (url.pathname.startsWith('/api/admin/')) return reply({ items: [], total: 0, has_more: false });
+        return reply({ code: 'unexpected' }, 500);
+      };
+    },
+  });
+  dom.window.eval(host); dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+  await waitFor(() => dom.window.document.getElementById('pfName'), 'duplicate-code form must mount');
+  for (const [id, value] of [['pfName', '定金'], ['pfCode', '123'], ['pfPrice', '100'], ['pfStock', '1']]) dom.window.document.getElementById(id).value = value;
+  [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存当前维度').click();
+  await waitFor(() => dom.window.document.querySelector('#fb-toast')?.textContent.includes('商品编码「123」已存在'), 'duplicate code must have a business error');
+  assert.equal(calls.filter((call) => call.path === '/api/v1/products' && call.method === 'POST').length, 0, 'known duplicate code must not POST');
+  dom.window.close();
+}
+
 await verifyDefaultPolicyAtActualCreateAlias();
+await verifyDuplicateCodeIsExplainedBeforeCreate();
 const created = { id: 101, product_code: 'recovery-product', name: '恢复商品', description: '', price_minor: 2, currency: 'CNY', stock_quantity: 1, images: [], admin_projection: projection, lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0, version: 1, distribution_policy: { enabled: true, commission_rate_basis_points: 1234, wait_days: 8, version: 1 }, created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z' };
 const calls = [];
 let savedVersion = 1;
@@ -115,7 +156,7 @@ const dom = new JSDOM(page, {
       if (url.pathname === '/api/v1/products' && method === 'GET') return reply({ items: [], next_cursor: '' });
       if (url.pathname === '/api/v1/products' && method === 'POST') return reply(created);
       if (url.pathname === '/api/admin/wechat-pay/products/101/external-push') return reply({ product_id: 101, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', revision: 0, webhook_url: '', push_type: '', expires_at_ts: null, day: null, frequency: null, remark: '', custom_params: {}, custom_params_json: '{}' });
-      if (url.pathname === '/api/admin/channels') return reply({ items: [], total: 0 });
+      if (url.pathname === '/api/admin/channels') return reply({ items: [{ id: 17, channel_name: '付款后添加企微', channel_code: 'paid-lead', status: 'active' }], total: 1 });
       if (url.pathname === '/api/admin/wecom/tags') return reply({ read_model_status: 'ready', groups: [{ group_id: 4, group_name: '已同步标签' }], items: [{ tag_id: 37, tag_name: '已购买', group_id: 4, group_name: '已同步标签' }], count: 1, total_tags: 1, tag_limit: 1000 });
       if (url.pathname === '/api/admin/image-library/38') return reply({ item: { id: 38, name: '页面素材', original_url: '/api/admin/image-library/38/variants/original', thumb_320_url: '/api/admin/image-library/38/variants/thumb_320', enabled: true } });
       if (url.pathname === '/api/admin/image-library/39') return reply({ item: { id: 39, name: '后续页素材', original_url: '/api/admin/image-library/39/variants/original', thumb_320_url: '/api/admin/image-library/39/variants/thumb_320', enabled: true } });
@@ -174,6 +215,7 @@ const actionEnabled = dom.window.document.querySelector('[data-product-purchase-
 actionEnabled.checked = true; actionEnabled.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 const qr = dom.window.document.querySelector('input[name="pfPurchaseActionMode"][value="qr"]');
 qr.checked = true; qr.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+dom.window.document.querySelector('[data-product-purchase-lead-channel]').value = '17';
 assert.equal(dom.window.document.querySelector('[data-product-purchase-lead]').hidden, false, 'QR fields must appear only for QR mode');
 assert.equal(dom.window.document.querySelector('[data-product-purchase-redirect]').hidden, true, 'redirect fields must stay hidden in QR mode');
 for (const [id, value] of [['pfName', '恢复商品'], ['pfCode', 'recovery-product'], ['pfPrice', '0.02'], ['pfStock', '1']]) {
