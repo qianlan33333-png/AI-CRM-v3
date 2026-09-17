@@ -19,7 +19,7 @@ func (*ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) er
 	}
 	var ready bool
 	err := pool.QueryRow(ctx, `SELECT
-		NOT EXISTS (SELECT 1 FROM unnest(ARRAY['hxc_dashboard_versions','hxc_dashboard_rows','hxc_registration_coverage']) required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)
+		NOT EXISTS (SELECT 1 FROM unnest(ARRAY['hxc_dashboard_versions','hxc_dashboard_rows','hxc_registration_coverage','hxc_dashboard_views','hxc_dashboard_view_receipts','hxc_dashboard_shares','hxc_dashboard_share_key']) required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)
 AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY[
  'hxc_dashboard_versions.shared_facts_available',
  'hxc_dashboard_rows.formally_logged_in','hxc_dashboard_rows.formal_login_at','hxc_dashboard_rows.has_token_usage',

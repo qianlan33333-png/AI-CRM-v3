@@ -364,34 +364,25 @@ type Group struct {
 	Count int64  `json:"count"`
 }
 
+type workspaceReader interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
 func (store *PostgreSQL) QueryRows(ctx context.Context, q Query) ([]Row, []Group, bool, error) {
-	where := []string{"projection_id=$1"}
-	args := []any{q.ProjectionID}
-	addArray := func(column string, values []string) {
-		if len(values) > 0 {
-			args = append(args, values)
-			where = append(where, fmt.Sprintf("%s=ANY($%d)", column, len(args)))
-		}
-	}
-	addArray("stage", q.Stages)
-	addArray("subscription_tier", q.SubscriptionTiers)
-	addArray("last_capability", q.LastCapabilities)
-	addArray("business_stage", q.BusinessStages)
-	addArray("user_segment", q.UserSegments)
-	addArray("identity_state", q.IdentityStates)
-	addArray("matched_by", q.MatchedBy)
-	addArray("identity_reason_code", q.IdentityReasonCodes)
-	if len(q.SubjectDigest) > 0 {
-		args = append(args, q.SubjectDigest)
-		where = append(where, fmt.Sprintf("subject_digest=$%d", len(args)))
-	}
+	return queryWorkspaceRows(ctx, store.pool, q)
+}
+func queryWorkspaceRows(ctx context.Context, reader workspaceReader, q Query) ([]Row, []Group, bool, error) {
+	where, args := queryPredicate(q)
 	order := map[string]string{"last_used_at_desc": "last_used_at DESC NULLS LAST,subject_digest", "source_updated_at_desc": "source_updated_at DESC,subject_digest", "subscription_expires_at_asc": "subscription_expires_at ASC NULLS LAST,subject_digest", "subscription_expires_at_desc": "subscription_expires_at DESC NULLS LAST,subject_digest", "messages_7d_desc": "user_messages_7d DESC,subject_digest"}[q.Sort]
 	if order == "" {
 		order = "last_used_at DESC NULLS LAST,subject_digest"
 	}
+	if column := map[string]string{"stage": "stage", "subscription_tier": "subscription_tier", "last_capability": "last_capability", "business_stage": "business_stage", "user_segment": "user_segment", "identity_state": "identity_state", "matched_by": "matched_by", "identity_reason_code": "identity_reason_code"}[q.GroupBy]; column != "" {
+		order = column + " ASC NULLS LAST," + order
+	}
 	args = append(args, q.Limit+1, q.Offset)
 	sqlText := `SELECT user_ref,stage,subscription_tier,subscription_expires_at,monthly_chat_quota,current_period_used,consultation_limit,consultation_used,membership_attribution,sessions_7d,sessions_30d,sessions_total,user_messages_7d,user_messages_30d,user_messages_total,capability_usage,last_used_at,COALESCE(last_capability,''),COALESCE(business_stage,''),COALESCE(main_line_type,''),COALESCE(user_segment,''),focus_topics,COALESCE(pain_tag,''),identity_state,matched_by,identity_reason_code,COALESCE(identity_case_id,0),COALESCE(merge_candidate_id,0),source_updated_at FROM hxc_dashboard_rows WHERE ` + strings.Join(where, " AND ") + " ORDER BY " + order + fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
-	rows, err := store.pool.Query(ctx, sqlText, args...)
+	rows, err := reader.Query(ctx, sqlText, args...)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -415,7 +406,7 @@ func (store *PostgreSQL) QueryRows(ctx context.Context, q Query) ([]Row, []Group
 	groupColumn := map[string]string{"stage": "stage", "subscription_tier": "subscription_tier", "last_capability": "last_capability", "business_stage": "business_stage", "user_segment": "user_segment", "identity_state": "identity_state", "matched_by": "matched_by", "identity_reason_code": "identity_reason_code"}[q.GroupBy]
 	if groupColumn != "" {
 		groupArgs := args[:len(args)-2]
-		groupRows, groupErr := store.pool.Query(ctx, `SELECT COALESCE(`+groupColumn+`,'(empty)'),COUNT(*) FROM hxc_dashboard_rows WHERE `+strings.Join(where, " AND ")+` GROUP BY `+groupColumn+` ORDER BY COUNT(*) DESC,1`, groupArgs...)
+		groupRows, groupErr := reader.Query(ctx, `SELECT COALESCE(`+groupColumn+`,'(empty)'),COUNT(*) FROM hxc_dashboard_rows WHERE `+strings.Join(where, " AND ")+` GROUP BY `+groupColumn+` ORDER BY COUNT(*) DESC,1`, groupArgs...)
 		if groupErr != nil {
 			return nil, nil, false, groupErr
 		}
@@ -427,6 +418,109 @@ func (store *PostgreSQL) QueryRows(ctx context.Context, q Query) ([]Row, []Group
 			}
 			groups = append(groups, group)
 		}
+		if err = groupRows.Err(); err != nil {
+			return nil, nil, false, err
+		}
 	}
 	return items, groups, more, nil
+}
+
+func queryPredicate(q Query) ([]string, []any) {
+	where := []string{"projection_id=$1"}
+	args := []any{q.ProjectionID}
+	addArray := func(column string, values []string) {
+		if len(values) > 0 {
+			args = append(args, values)
+			where = append(where, fmt.Sprintf("%s=ANY($%d)", column, len(args)))
+		}
+	}
+	addArray("stage", q.Stages)
+	addArray("subscription_tier", q.SubscriptionTiers)
+	addArray("last_capability", q.LastCapabilities)
+	addArray("business_stage", q.BusinessStages)
+	addArray("user_segment", q.UserSegments)
+	addArray("identity_state", q.IdentityStates)
+	addArray("matched_by", q.MatchedBy)
+	addArray("identity_reason_code", q.IdentityReasonCodes)
+	if len(q.SubjectDigest) > 0 {
+		args = append(args, q.SubjectDigest)
+		where = append(where, fmt.Sprintf("subject_digest=$%d", len(args)))
+	}
+	return where, args
+}
+
+// QueryMetrics uses the identical relation predicate as the paginated rows.
+func (store *PostgreSQL) QueryMetrics(ctx context.Context, q Query) (map[string]int64, []Group, error) {
+	return queryWorkspaceMetrics(ctx, store.pool, q)
+}
+func queryWorkspaceMetrics(ctx context.Context, reader workspaceReader, q Query) (map[string]int64, []Group, error) {
+	where, args := queryPredicate(q)
+	counts := map[string]int64{"total": 0, "active_used": 0, "active_unused": 0, "registered_no_active_membership": 0}
+	rows, err := reader.Query(ctx, `SELECT stage, count(*) FROM hxc_dashboard_rows WHERE `+strings.Join(where, " AND ")+` GROUP BY stage`, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var stage string
+		var count int64
+		if err = rows.Scan(&stage, &count); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		counts[stage] = count
+		counts["total"] += count
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+	tiers := []Group{}
+	rows, err = reader.Query(ctx, `SELECT subscription_tier,count(*) FROM hxc_dashboard_rows WHERE `+strings.Join(where, " AND ")+` GROUP BY subscription_tier ORDER BY count(*) DESC,subscription_tier`, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g Group
+		if err = rows.Scan(&g.Key, &g.Count); err != nil {
+			return nil, nil, err
+		}
+		tiers = append(tiers, g)
+	}
+	return counts, tiers, rows.Err()
+}
+
+// QueryWorkspace pins rows, full group counts and metrics to one PostgreSQL
+// snapshot, including while retention deletes an older published generation.
+type WorkspaceResult struct {
+	Items         []Row
+	Groups, Tiers []Group
+	Metrics       map[string]int64
+	More          bool
+}
+
+func (store *PostgreSQL) QueryWorkspace(ctx context.Context, q Query) (out WorkspaceResult, err error) {
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback(ctx)
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM hxc_dashboard_versions WHERE id=$1)`, q.ProjectionID).Scan(&exists); err != nil {
+		return out, err
+	}
+	if !exists {
+		return out, ErrNotFound
+	}
+	out.Items, out.Groups, out.More, err = queryWorkspaceRows(ctx, tx, q)
+	if err != nil {
+		return out, err
+	}
+	out.Metrics, out.Tiers, err = queryWorkspaceMetrics(ctx, tx, q)
+	if err != nil {
+		return out, err
+	}
+	err = tx.Commit(ctx)
+	return out, err
 }

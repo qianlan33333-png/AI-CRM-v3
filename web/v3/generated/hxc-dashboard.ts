@@ -281,12 +281,18 @@ export interface HXCDashboardGroup {
   count: number;
 }
 
+export type HXCDashboardQueryResponseMetrics = { [key: string]: number };
+
 export interface HXCDashboardQueryResponse {
   projection_id: PositiveID;
   /** @maxItems 100 */
   items: HXCDashboardRow[];
   groups: HXCDashboardGroup[];
   next_cursor: string;
+  /** @minimum 0 */
+  total: number;
+  metrics: HXCDashboardQueryResponseMetrics;
+  tiers: HXCDashboardGroup[];
 }
 
 export type HXCDashboardRefreshTrigger =

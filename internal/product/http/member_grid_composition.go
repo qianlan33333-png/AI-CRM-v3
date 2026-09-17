@@ -66,6 +66,19 @@ type memberGridRow struct {
 }
 
 func (h *Handler) queryDonorGridComposed(ctx context.Context, productID int64, config donorGridConfig, rawCursor string, limit int32) ([]map[string]any, string, error) {
+	return h.queryDonorGridWithMetrics(ctx, productID, config, rawCursor, limit, nil)
+}
+
+type memberGridMetrics struct {
+	Total      int       `json:"total"`
+	Active     int       `json:"active"`
+	Expired    int       `json:"expired"`
+	Expiring7D int       `json:"expiring_7d"`
+	Other      int       `json:"other"`
+	SnapshotAt time.Time `json:"snapshot_at"`
+}
+
+func (h *Handler) queryDonorGridWithMetrics(ctx context.Context, productID int64, config donorGridConfig, rawCursor string, limit int32, metrics *memberGridMetrics) ([]map[string]any, string, error) {
 	if h == nil || h.members == nil || h.names == nil || limit < 1 || limit > 200 {
 		return nil, "", errors.New("member readers unavailable")
 	}
@@ -119,9 +132,15 @@ func (h *Handler) queryDonorGridComposed(ctx context.Context, productID int64, c
 		return nil, "", err
 	}
 	rows := memberGridRows(items, names, facts, unavailable, snapshot)
+	if config.Base != nil {
+		rows = filterMemberGridRows(rows, *config.Base)
+	}
 	rows = filterMemberGridRows(rows, config)
 	sortMemberGridRows(rows, config)
 	attachMemberGridGroupCounts(rows, config)
+	if metrics != nil {
+		*metrics = summarizeMemberGrid(rows, snapshot)
+	}
 
 	relationHash, err := memberGridRelationHash(rows, configHash, snapshot, factsVersion, unavailable)
 	if err != nil {
@@ -959,4 +978,21 @@ func productMemberGridQueryError(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	return true
+}
+
+func summarizeMemberGrid(rows []memberGridRow, at time.Time) memberGridMetrics {
+	result := memberGridMetrics{Total: len(rows), SnapshotAt: at}
+	for _, row := range rows {
+		if row.entitlement.Status == "active" && row.entitlement.EndAt.After(at) {
+			result.Active++
+			if !row.entitlement.EndAt.After(at.Add(7 * 24 * time.Hour)) {
+				result.Expiring7D++
+			}
+		} else if row.entitlement.Status == "expired" || (row.entitlement.Status == "active" && !row.entitlement.EndAt.After(at)) {
+			result.Expired++
+		} else {
+			result.Other++
+		}
+	}
+	return result
 }

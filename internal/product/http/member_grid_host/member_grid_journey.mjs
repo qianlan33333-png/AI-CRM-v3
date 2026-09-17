@@ -102,7 +102,7 @@ async function runInternalJourney() {
     '/service-period-member-grid-assets/member_grid.js',
   ], 'host must load before every frozen grid script');
   await eventually(() => document.querySelector('#spGridBody tr[data-record-id]'), 'initial member read');
-  await eventually(() => document.getElementById('spResultSummary')?.textContent.trim() === '当前显示 1 行', 'internal grid visible-row summary');
+  await eventually(() => document.getElementById('spResultSummary')?.textContent.trim() === '共 1 行', 'internal grid full-relation summary');
 
   // A saved filter is a real persisted dd8 view configuration. Reopening it
   // executes its remaining-days filter against the HTTP API.

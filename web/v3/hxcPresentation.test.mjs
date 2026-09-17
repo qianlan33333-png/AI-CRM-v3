@@ -10,6 +10,9 @@ const bundle = (await build({
     contents: "import { mountFunnelGrid } from '../src/admin/sections/funnelGrid'; window.HXCFunnel = { mountFunnelGrid };",
     resolveDir: path.join(root, 'web/v3'), sourcefile: 'hxc-presentation-entry.ts',
   },
+  // Presentation adapter assertions run without layout/canvas. The real
+  // Tabulator/ECharts integration is exercised by the required Host Chromium journey.
+  plugins:[{name:'workspace-presentation-fixture',setup(b){b.onResolve({filter:/shared\/ui\/dataWorkspace$/},()=>({path:'workspace',namespace:'presentation-test'}));b.onLoad({filter:/.*/,namespace:'presentation-test'},()=>({contents:`export class DataWorkspace {constructor(root,columns){this.root=root;this.columns=columns;}placeToolbar(){} async configure(){} async render(rows){this.root.replaceChildren();for(const row of rows){const el=document.createElement('div');el.textContent=this.columns.map(c=>row[c.field]??'').join(' ');this.root.append(el);}}destroy(){} }`,loader:'js'}));}}],
   bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, minify: true, logLevel: 'warning',
 })).outputFiles[0].text;
 const wait = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -18,10 +21,12 @@ const queryRequests = [];
 const dom = new JSDOM('<!doctype html><body><main id="stage"></main></body>', {
   url: 'https://test.invalid/admin/funnel.html', runScripts: 'dangerously', pretendToBeVisual: true,
   beforeParse(window) {
+    window.structuredClone = structuredClone;
     window.Response = Response;
     window.Headers = Headers;
     window.fetch = async (input, init) => {
       const url = new URL(String(input), window.location.href);
+      if(url.pathname.endsWith("/views")) return new Response(JSON.stringify({views:[]}),{status:200});
       const summary = url.pathname.endsWith('/summary');
       const request = summary ? {} : JSON.parse(String(init?.body || "{}"));
       if (!summary) queryRequests.push(request);
@@ -54,7 +59,7 @@ const dom = new JSDOM('<!doctype html><body><main id="stage"></main></body>', {
           groups: request.group_by === 'subscription_tier'
             ? [{ key: '创始人计划', count: 1 }, { key: '', count: 1 }]
             : [{ key: 'no_match', count: 2 }],
-          next_cursor: '',
+          next_cursor: '',total:1,metrics:{total:1,active_used:0,active_unused:0,registered_no_active_membership:1},tiers:[],
         };
       return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
     };

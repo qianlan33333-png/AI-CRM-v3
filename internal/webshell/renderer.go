@@ -495,7 +495,7 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 	// Product list pages use the shared V3 shell title and action slot; form
 	// pages use the same shell header for their existing editor actions. The
 	// Product adapter retains original controls while removing duplicate donor headings.
-	data.ShowPageHeader = page == "products" || page == "spProducts" || page == "productForm" || page == "spProductForm"
+	data.ShowPageHeader = page == "products" || page == "spProducts" || page == "productForm" || page == "spProductForm" || page == "spProductData"
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
 	if err != nil {

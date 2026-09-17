@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"mime"
 	"net/http"
@@ -42,6 +43,10 @@ func (h *UIHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		writer.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if request.URL.Path == "/shared/data-dashboard" || strings.HasPrefix(request.URL.Path, "/dashboard-public-assets/") {
+		h.publicUI(writer, request)
 		return
 	}
 	if request.URL.Path == dashboardPagePath {
@@ -138,6 +143,12 @@ func (h *UIHandler) serveAsset(writer http.ResponseWriter, request *http.Request
 }
 
 type releaseManifest struct {
+	Files map[string]struct {
+		Imports []struct {
+			Path     string `json:"path"`
+			External bool   `json:"external"`
+		} `json:"imports"`
+	} `json:"files"`
 	Entries      map[string]string          `json:"entries"`
 	ReleaseFiles map[string]json.RawMessage `json:"release_files"`
 }
@@ -157,4 +168,60 @@ func (h *UIHandler) manifest() (releaseManifest, error) {
 		return releaseManifest{}, errors.New("dashboard release manifest is incomplete")
 	}
 	return manifest, nil
+}
+
+// Anonymous assets are restricted to the public entry's dependency closure.
+// An anonymous URL cannot be used to fetch an administrator entry.
+func (h *UIHandler) publicUI(w http.ResponseWriter, r *http.Request) {
+	manifest, err := h.manifest()
+	if err != nil {
+		http.Error(w, "dashboard unavailable", 503)
+		return
+	}
+	entry := manifest.Entries["dashboardShare"]
+	allowed := map[string]bool{}
+	var visit func(string) bool
+	visit = func(file string) bool {
+		if allowed[file] {
+			return true
+		}
+		if !strings.HasPrefix(file, "assets/") || path.Clean(file) != file {
+			return false
+		}
+		if _, ok := manifest.ReleaseFiles[file]; !ok {
+			return false
+		}
+		allowed[file] = true
+		meta, ok := manifest.Files[file]
+		if !ok {
+			return false
+		}
+		for _, dep := range meta.Imports {
+			if dep.External || !visit(dep.Path) {
+				return false
+			}
+		}
+		return true
+	}
+	if !visit(entry) {
+		http.Error(w, "dashboard unavailable", 503)
+		return
+	}
+	if r.URL.Path == "/shared/data-dashboard" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.Method != http.MethodHead {
+			_, _ = io.WriteString(w, `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>数据看板 · 只读分享</title><body><main id="dashboard-share"></main><script type="module" src="/dashboard-public-assets/`+html.EscapeString(strings.TrimPrefix(entry, "assets/"))+`"></script></body></html>`)
+		}
+		return
+	}
+	relative := strings.TrimPrefix(r.URL.Path, "/dashboard-public-assets/")
+	if !allowed["assets/"+relative] {
+		http.NotFound(w, r)
+		return
+	}
+	clone := r.Clone(r.Context())
+	clone.URL.Path = dashboardAssetPrefix + relative
+	h.serveAsset(w, clone)
 }

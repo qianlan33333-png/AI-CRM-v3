@@ -74,6 +74,23 @@ func (h *productUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	assets, err := h.assets()
+	if err == nil && page == "spProductData" {
+		var manifest buildManifest
+		raw, e := os.ReadFile(filepath.Join(h.dist, "asset-manifest.json"))
+		if e == nil {
+			e = json.Unmarshal(raw, &manifest)
+		}
+		if e != nil {
+			err = e
+		} else {
+			value := manifest.Entries["productWorkspace"]
+			if _, exists := manifest.Files[value]; value == "" || !exists || !strings.HasPrefix(value, "assets/") || strings.Contains(value, "..") {
+				err = errors.New("product workspace asset missing")
+			} else {
+				assets.HostJS = "/product-assets/" + strings.TrimPrefix(value, "assets/")
+			}
+		}
+	}
 	if err != nil {
 		http.Error(w, "product UI unavailable", http.StatusServiceUnavailable)
 		return

@@ -1457,6 +1457,28 @@
       ],
       "reason": "Authorize the public Survey completion and operations contract: opaque safe navigation, legacy external-push configuration, release migration closure, a minimal nested completion receipt without a result token, and the retained top-level result-query compatibility token. Identity continues to read canonical Customer only; Provider writes remain in the existing External Effects and Outbound path.",
       "review_reference": "User instructions in this Codex thread: implement the approved questionnaire single-submit and completion PRD, align the actual operations API, do not expose a normal completion token in the nested receipt or H5 flow, and preserve existing result-query compatibility with a nonempty top-level result_token. This is product authorization only; ordinary PR review and required CI remain pending."
+    },
+    {
+      "base_commit": "b522c3f56953b96ce57efd91313c8bfb199d34ff",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "53fa0b1257e40a1a2fdf979351cabb36c4f067b92a379f37b931a6f212bb1e2e",
+          "head_sha256": "82e2e8d219672d4368956928b56e24c347428224f4d4ae36d9bf0b34b11d7428"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "e9a6de8de9c81d4605b18c259bfec1b23a74c6502b0d29828fd29439b0839308",
+          "head_sha256": "3969410b8b39bb3dc70102d267111c79eccf20f7a34d8b34d752f2115d8d1c5c"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "670f173cd84c685fba478552bab573b7ca77407b604b2b9c1fb8e26633110f55",
+          "head_sha256": "60b636e2d9c62c9135836b163e3eca0292279231216a246f74b6fa1384ef8eb3"
+        }
+      ],
+      "reason": "Implement user-approved basic data workspace PRD: HXC saved views, owner-scoped readonly dashboard shares and aggregate query metadata. Only active V3 OpenAPI authority changes; frozen donors remain byte-identical.",
+      "review_reference": "User explicitly requested implementation of the supplied PRD in this task on 2026-09-17. This records product authorization only; PR review and complete CI remain required. docs/prd/2026-09-17-basic-data-workspaces.md"
     }
   ]
 }

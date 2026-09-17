@@ -35,6 +35,13 @@ type Handler struct {
 
 func (h Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/hxc-dashboard/shares", h.shares)
+	mux.HandleFunc("POST /api/admin/hxc-dashboard/shares", h.shares)
+	mux.HandleFunc("DELETE /api/admin/hxc-dashboard/shares", h.shares)
+	mux.HandleFunc("POST /api/public/hxc-dashboard/query", h.publicQuery)
+	mux.HandleFunc("GET /api/admin/hxc-dashboard/views", h.views)
+	mux.HandleFunc("POST /api/admin/hxc-dashboard/views", h.views)
+	mux.HandleFunc("DELETE /api/admin/hxc-dashboard/views", h.views)
 	mux.HandleFunc("GET /api/admin/hxc-dashboard/summary", h.summary)
 	mux.HandleFunc("POST /api/admin/hxc-dashboard/query", h.query)
 	mux.HandleFunc("POST /api/admin/hxc-dashboard/refreshes", h.refresh)
@@ -91,8 +98,9 @@ type queryFilters struct {
 	IdentityReason   []string `json:"identity_reason_code,omitempty"`
 }
 type cursor struct {
-	ProjectionID int64 `json:"p"`
-	Offset       int   `json:"o"`
+	ProjectionID int64  `json:"p"`
+	Offset       int    `json:"o"`
+	QueryHash    string `json:"q"`
 }
 
 func (h Handler) query(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +116,7 @@ func (h Handler) query(w http.ResponseWriter, r *http.Request) {
 	if request.Limit == 0 {
 		request.Limit = 50
 	}
-	if request.Limit < 1 || request.Limit > 100 || !validValues(request.Filters.Stage, []string{"active_used", "active_unused", "registered_no_active_membership"}) || !validValues(request.Filters.IdentityState, []string{"matched", "unmatched", "conflict"}) || !validValues(request.Filters.MatchedBy, []string{"none", "unionid", "phone", "both"}) || !validValues(request.Filters.IdentityReason, []string{"matched_unionid", "matched_phone", "matched_both", "no_match", "missing_identity", "invalid_unionid", "invalid_phone", "duplicate_hxc_unionid", "duplicate_hxc_phone", "duplicate_hxc_customer", "identity_multiple_roots", "unionid_phone_cross_root", "concurrent_identity_conflict"}) || !validFreeform(request.Filters.SubscriptionTier) || !validFreeform(request.Filters.LastCapability) || !validFreeform(request.Filters.BusinessStage) || !validFreeform(request.Filters.UserSegment) || len(request.ExactHXCUserID) > 255 || !validSort(request.Sort) || !validGroup(request.GroupBy) {
+	if !validQuery(request) {
 		writeError(w, errors.New("invalid_query"))
 		return
 	}
@@ -123,7 +131,7 @@ func (h Handler) query(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Cursor != "" {
 		value, err := h.verifyCursor(request.Cursor)
-		if err != nil || value.ProjectionID != projectionID {
+		if err != nil || value.ProjectionID != projectionID || value.QueryHash != queryFingerprint(request, "internal") {
 			writeError(w, errors.New("invalid_cursor"))
 			return
 		}
@@ -138,16 +146,17 @@ func (h Handler) query(w http.ResponseWriter, r *http.Request) {
 		}
 		q.SubjectDigest = digest[:]
 	}
-	items, groups, more, err := h.Store.QueryRows(r.Context(), q)
+	result, err := h.Store.QueryWorkspace(r.Context(), q)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	items, groups, more, metrics, tiers := result.Items, result.Groups, result.More, result.Metrics, result.Tiers
 	next := ""
 	if more {
-		next = h.signCursor(cursor{ProjectionID: projectionID, Offset: offset + len(items)})
+		next = h.signCursor(cursor{ProjectionID: projectionID, Offset: offset + len(items), QueryHash: queryFingerprint(request, "internal")})
 	}
-	writeJSON(w, 200, map[string]any{"projection_id": projectionID, "items": items, "groups": groups, "next_cursor": next})
+	writeJSON(w, 200, map[string]any{"projection_id": projectionID, "items": items, "groups": groups, "next_cursor": next, "total": metrics["total"], "metrics": metrics, "tiers": tiers})
 }
 func (h Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	principal, err := h.Auth.AuthorizeCSRF(r.Context(), r)
@@ -317,4 +326,19 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func validQuery(request queryRequest) bool {
+	if request.Limit == 0 {
+		request.Limit = 50
+	}
+	return !(request.Limit < 1 || request.Limit > 100 || !validValues(request.Filters.Stage, []string{"active_used", "active_unused", "registered_no_active_membership"}) || !validValues(request.Filters.IdentityState, []string{"matched", "unmatched", "conflict"}) || !validValues(request.Filters.MatchedBy, []string{"none", "unionid", "phone", "both"}) || !validValues(request.Filters.IdentityReason, []string{"matched_unionid", "matched_phone", "matched_both", "no_match", "missing_identity", "invalid_unionid", "invalid_phone", "duplicate_hxc_unionid", "duplicate_hxc_phone", "duplicate_hxc_customer", "identity_multiple_roots", "unionid_phone_cross_root", "concurrent_identity_conflict"}) || !validFreeform(request.Filters.SubscriptionTier) || !validFreeform(request.Filters.LastCapability) || !validFreeform(request.Filters.BusinessStage) || !validFreeform(request.Filters.UserSegment) || len(request.ExactHXCUserID) > 255 || !validSort(request.Sort) || !validGroup(request.GroupBy))
+}
+
+func queryFingerprint(q queryRequest, scope string) string {
+	q.Cursor = ""
+	q.ProjectionID = 0
+	data, _ := json.Marshal(q)
+	sum := sha256.Sum256(append([]byte(scope+"\x00"), data...))
+	return hex.EncodeToString(sum[:])
 }
