@@ -15,7 +15,7 @@ body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presenta
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  padding: 10px 10px max(16px, env(safe-area-inset-bottom));
+  padding: 6px 10px max(16px, env(safe-area-inset-bottom));
   background: var(--v3-ui-canvas);
   overflow-x: clip;
 }
@@ -24,8 +24,8 @@ body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presenta
   position: sticky;
   top: 0;
   z-index: 2;
-  margin: -10px -10px 10px;
-  padding: max(10px, env(safe-area-inset-top)) 10px 8px;
+  margin: -6px -10px 8px;
+  padding: max(6px, env(safe-area-inset-top)) 10px 6px;
   background: color-mix(in srgb, var(--v3-ui-canvas) 94%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--v3-ui-line) 70%, transparent);
   backdrop-filter: blur(8px);
@@ -38,7 +38,7 @@ body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presenta
 }
 
 body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .profile-card {
-  padding: 12px;
+  padding: 10px;
   border-radius: var(--v3-ui-radius-lg);
 }
 
@@ -54,6 +54,11 @@ body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presenta
 }
 
 body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   color: var(--v3-ui-text);
   font-size: 16px;
   font-weight: 600;
@@ -214,7 +219,7 @@ body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presenta
   }
 
   body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .change {
-    width: 100%;
+    width: auto;
     white-space: nowrap;
   }
 
@@ -241,16 +246,85 @@ body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presenta
   }
 
   body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .material {
-    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-columns: 48px minmax(0, 1fr) auto;
   }
 
   body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] :is(.material-thumb, .thumb) {
-    width: 56px;
-    height: 56px;
+    width: 48px;
+    min-width: 48px;
+    max-width: 48px;
+    height: 48px;
   }
 
   body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .material-send {
-    grid-column: 2;
-    justify-self: start;
+    grid-column: 3;
+    justify-self: end;
   }
+}
+
+/* Keep identity context visible while leaving room for the active module. */
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .profile-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .identity {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 8px;
+  row-gap: 1px;
+  align-items: start;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .name-row {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-content: start;
+  gap: 3px 6px;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] :is(#customer-mobile, #customer-oneid) {
+  grid-column: 2;
+  margin: 0;
+  font-size: 12px;
+  line-height: 19px;
+  text-align: right;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] #workflow-title {
+  grid-column: 1 / -1;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] #workflow-title:empty {
+  display: none;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .change {
+  justify-self: end;
+  width: auto;
+  min-height: 28px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .tab {
+  min-height: 34px;
+  padding: 5px;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .material > :is(.material-thumb, .thumb) {
+  grid-column: 1;
+  grid-row: 1;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .material-main {
+  grid-column: 2;
+  grid-row: 1;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .material .material-send {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  width: auto;
+  min-width: 48px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .material-title {
+  font-size: 13px;
+  line-height: 19px;
+}
+body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .material--image .tags {
+  margin-top: 4px;
 }

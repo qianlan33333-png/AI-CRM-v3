@@ -87,6 +87,23 @@ async function captureScreenshot(cdp, name) {
   const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
   await fs.writeFile(path.join(screenshotDirectory, `${name}.png`), Buffer.from(shot.data, "base64"), { mode: 0o600 });
 }
+async function settleScrollAtTop(cdp) {
+  // Wheel scrolling and resize anchoring finish on compositor frames. A single
+  // scrollTo plus 50ms could measure at scrollY=30 and mistake sticky overlap
+  // for a layout defect. Require a stable top before measuring the same bounds.
+  const settled = await evaluate(cdp, `new Promise(resolve => {
+    let frames = 0, stable = 0;
+    const tick = () => {
+      if (window.scrollY === 0) stable++; else stable = 0;
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      if (stable >= 6) return resolve(true);
+      if (++frames >= 120) return resolve(false);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  if (!settled) throw new Error("sidebar viewport did not settle at scroll top");
+}
 async function browserExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   await Promise.race([new Promise((resolve) => child.once("exit", resolve)), delay(3000)]);
@@ -357,15 +374,44 @@ try {
     const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), bootstrap: resources.get("/api/sidebar/v2/bootstrap") || 0, materials: resources.get("/api/sidebar/v2/materials") || 0, thumbnail: [...resources.entries()].some(([path, status]) => /variants\/thumb_320$/.test(path) && status === 200), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
     throw new Error(`sidebar thumbnail did not render: ${diagnostic}`);
   }
-  await evaluate(cdp, "window.scrollTo(0, 0); true");
-  await delay(50);
+  await settleScrollAtTop(cdp);
   await captureScreenshot(cdp, "materials-430");
   await cdp.call("Emulation.setDeviceMetricsOverride", { width:420, height:900, deviceScaleFactor:1, mobile:false });
-  await evaluate(cdp, "window.scrollTo(0, 0); true");
-  await delay(50);
-  const materialGeometry = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{const submit=document.querySelector("[data-material-search-form] button[type=submit]");const r=submit?.getBoundingClientRect();const top=document.querySelector(".top")?.getBoundingClientRect();const segment=document.querySelector(".material-seg")?.getBoundingClientRect();return {scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth,visible:Boolean(r&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight),height:Math.round(r?.height||0),topBottom:Math.round(top?.bottom||0),segmentTop:Math.round(segment?.top||0)}})())'));
+  await settleScrollAtTop(cdp);
+  const materialGeometry = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{const submit=document.querySelector("[data-material-search-form] button[type=submit]");const r=submit?.getBoundingClientRect();const top=document.querySelector(".top")?.getBoundingClientRect();const segment=document.querySelector(".material-seg")?.getBoundingClientRect();return {scrollY:window.scrollY,scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth,visible:Boolean(r&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight),height:Math.round(r?.height||0),topBottom:Math.round(top?.bottom||0),segmentTop:Math.round(segment?.top||0)}})())'));
   if (materialGeometry.scroll > materialGeometry.client || !materialGeometry.visible || materialGeometry.height < 36 || materialGeometry.segmentTop < materialGeometry.topBottom) throw new Error("material narrow geometry " + JSON.stringify(materialGeometry));
   await captureScreenshot(cdp, "materials-420");
+  for (const width of [320, 360, 390, 430]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height:900, deviceScaleFactor:1, mobile:false });
+    await settleScrollAtTop(cdp);
+    const geometry = JSON.parse(await evaluate(cdp, `JSON.stringify((()=>{
+      const card=document.querySelector('[data-material-card]');
+      const thumb=card.querySelector('.thumb').getBoundingClientRect();
+      const button=card.querySelector('.material-send').getBoundingClientRect();
+      const main=card.querySelector('.material-main').getBoundingClientRect();
+      const profile=document.querySelector('.profile-card').getBoundingClientRect();
+      return {overflow:document.documentElement.scrollWidth>innerWidth, sameRow:button.top<thumb.bottom&&button.bottom>thumb.top, right:button.left>=main.right, title:card.querySelector('.material-title')?.textContent, profileHeight:profile.height};
+    })())`));
+    if (geometry.overflow || !geometry.sameRow || !geometry.right || !geometry.title || geometry.profileHeight > 135) throw new Error("compact sidebar " + width + " " + JSON.stringify(geometry));
+    await captureScreenshot(cdp, "materials-compact-" + width);
+  }
+
+
+  await evaluate(cdp, `document.querySelector('[data-material-type="radar"]')?.click(); true`);
+  try { await waitFor(cdp, `Boolean(document.querySelector('.material [data-copy-url]'))`, "radar material did not render"); } catch (error) { throw new Error(String(error) + " " + await evaluate(cdp, "document.querySelector('#content').textContent")); }
+  for (const width of [320, 390, 430]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height:900, deviceScaleFactor:1, mobile:false });
+    const radarGeometry = JSON.parse(await evaluate(cdp, `JSON.stringify((()=>{
+      const button=document.querySelector('.material [data-copy-url]').getBoundingClientRect();
+      const main=document.querySelector('.material .material-main').getBoundingClientRect();
+      const thumb=document.querySelector('.material .thumb').getBoundingClientRect();
+      return {overflow:document.documentElement.scrollWidth>innerWidth, right:button.left>=main.right, sameRow:button.top<thumb.bottom&&button.bottom>thumb.top};
+    })())`));
+    if (radarGeometry.overflow || !radarGeometry.right || !radarGeometry.sameRow) throw new Error("radar compact " + width + " " + JSON.stringify(radarGeometry));
+    await captureScreenshot(cdp, "radar-compact-" + width);
+  }
+  await evaluate(cdp, `document.querySelector('[data-material-type="image"]')?.click(); true`);
+  await waitFor(cdp, `Boolean(document.querySelector('[data-material-search-input]'))`, "image tab did not return");
 
   // Composition changes only the draft input. A request can happen only on the
   // explicit form submit after composition ends.
@@ -383,8 +429,7 @@ try {
   await waitFor(cdp, 'Boolean(document.querySelector("[data-v3-sidebar-retained-error]")) && document.querySelectorAll("[data-material-card]").length===7 && document.querySelector("[data-material-search-input]")?.value==="Chromium"', "transient material refresh did not retain the authorized result");
   const transientReads = requestRecords.slice(transientStart).filter(record => new URL(record.url).pathname === "/api/sidebar/v2/materials");
   if (transientReads.length !== 1) throw new Error("transient material refresh request count " + JSON.stringify(transientReads));
-  await evaluate(cdp, "window.scrollTo(0, 0); true");
-  await delay(50);
+  await settleScrollAtTop(cdp);
   await captureScreenshot(cdp, "materials-transient-420");
   materialFaults.delete("Chromium");
   const materialRetryStart = requestRecords.length;
@@ -416,8 +461,7 @@ try {
   materialFaults.set("Chromium", { status: 403 });
   await evaluate(cdp, '(()=>{const input=document.querySelector("[data-material-search-input]");input.value="Chromium";document.querySelector("[data-material-search-form]").requestSubmit();return true})()');
   await waitFor(cdp, 'document.body.textContent.includes("当前客户上下文已失效") && !document.body.textContent.includes("sidebar thumbnail customer") && document.querySelectorAll("[data-material-card]").length===0 && document.querySelectorAll("[data-material-send]").length===0 && [...document.querySelectorAll("#tabs button[data-tab]")].every((tab)=>tab.disabled)', "authorization failure did not clear sensitive material content");
-  await evaluate(cdp, "window.scrollTo(0, 0); true");
-  await delay(50);
+  await settleScrollAtTop(cdp);
   await captureScreenshot(cdp, "materials-forbidden-420");
   materialFaults.delete("Chromium");
 

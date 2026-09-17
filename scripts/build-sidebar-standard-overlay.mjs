@@ -33,6 +33,11 @@ for (const fragment of [
 
 for (const anchor of ["function renderProfile()", "function renderQuestionnaires()", "function renderProducts()", "function renderOrders()", "function renderCoupons()", "function renderMaterials()", "function renderRadarLinks(controls)"]) once(anchor, "donor render");
 
+// Preserve the frozen card and handlers, adding the owner-provided image name.
+const materialMainAnchor = '<div class="material-main"><div class="material-tags tags">';
+once(materialMainAnchor, "image material title");
+js = js.replace(materialMainAnchor, `<div class="material-main"><h3 class="material-title">' + escapeHtml(item.name || "未命名图片") + '</h3><div class="material-tags tags">`);
+
 // S02: remove all archive/chat presentation and dispatch.  This is deliberately
 // a source-range removal, not CSS hiding, so no chat request can be reached.
 for (const fragment of ["    [\"other_staff_messages\", \"其他客服聊天\"],\n", "    other_staff_messages: 9000,\n", "      other_staff_messages: null,\n"]) { once(fragment, "chat removal"); js = js.replace(fragment, ""); }
