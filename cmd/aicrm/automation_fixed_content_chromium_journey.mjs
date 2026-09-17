@@ -235,6 +235,25 @@ try {
   await resize(cdp, 1440);
   await assertLayout(cdp, 1440, "readonly");
   await capture(cdp, "automation-fixed-content-1440.png");
+  if (process.env.AICRM_AUTOMATION_LIFECYCLE_TEST === "true") {
+    await cdp.call("Page.navigate", { url: `${baseURL}/admin/automation-agents` });
+    await waitFor(cdp, "document.querySelector('[data-agent-action=pause]')?.textContent==='启用'", "paused agent exposes enable action");
+    await pointerClick(cdp, '[data-agent-action=pause]', 'enable paused automation');
+    await waitFor(cdp, "document.querySelector('#fb-ok')?.textContent==='启用'", "enable confirmation");
+    await pointerClick(cdp, '#fb-ok', 'confirm enable');
+    await waitFor(cdp, "document.querySelector('#fb-ok')?.textContent==='发布并启用'", "unpublished draft confirmation");
+    await pointerClick(cdp, '#fb-ok', 'publish and enable');
+    await waitFor(cdp, "document.querySelector('[data-agent-action=pause]')?.textContent==='暂停' && document.body.innerText.includes('启用中')", "active state readback");
+    const active = await evaluate(cdp, `fetch('/api/admin/automation-agents/${agentID}').then(r=>r.json()).then(d=>d.agent)`);
+    if (active.status !== 'active' || active.execution_enabled !== true || active.published_version !== 2) throw new Error('enable did not persist');
+    await capture(cdp, 'automation-lifecycle-active.png');
+    await pointerClick(cdp, '[data-agent-action=pause]', 'pause active automation');
+    await waitFor(cdp, "document.querySelector('#fb-ok')?.textContent==='暂停'", "pause confirmation");
+    await pointerClick(cdp, '#fb-ok', 'confirm pause');
+    await waitFor(cdp, "document.querySelector('[data-agent-action=pause]')?.textContent==='启用' && document.body.innerText.includes('已暂停')", "paused state readback");
+    const paused = await evaluate(cdp, `fetch('/api/admin/automation-agents/${agentID}').then(r=>r.json()).then(d=>d.agent)`);
+    if (paused.status !== 'paused' || paused.execution_enabled !== false) throw new Error('pause did not persist');
+  }
   console.log(`automation_fixed_content_chromium: PASS screenshots=${screenshotDirectory}`);
 } catch (error) {
   journeyError = error instanceof Error ? error : new Error(String(error));

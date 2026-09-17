@@ -54,6 +54,7 @@ const entryPoints = {
   surveyHost: path.join(repository, 'web', 'v3', 'surveyAdapter.ts'),
   surveyOperationsHost: path.join(repository, 'web', 'v3', 'surveyOperationsHost.ts'),
   surveyOperationsStyles: path.join(repository, 'web', 'v3', 'surveyOperations.css'),
+  automationLifecycleHost: path.join(repository, 'web', 'v3', 'automationLifecycleAdapter.ts'),
   automationContentHost: path.join(repository, 'web', 'v3', 'automationContentHost.ts'),
   automationContentStyles: path.join(repository, 'web', 'v3', 'automationContent.css'),
   surfaceFeedbackHost: path.join(repository, 'web', 'v3', 'surfaceFeedbackHost.ts'),

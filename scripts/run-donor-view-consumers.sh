@@ -78,6 +78,7 @@ run_frontend_and_stage_checks() {
   node --test web/v3/shared/ui/contentPresentation.test.mjs
   node --test web/v3/shared/ui/contentComposer.test.mjs
   node web/v3/automationContentHost.test.mjs
+  node web/v3/automationLifecycle.test.mjs
   node web/v3/shared/ui/groupPickerAdapter.test.mjs
   node web/v3/shared/ui/tagPickerAdapter.test.mjs
   node web/v3/shared/ui/staffPickerAdapter.test.mjs

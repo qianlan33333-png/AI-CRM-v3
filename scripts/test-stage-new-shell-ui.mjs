@@ -29,6 +29,8 @@ const componentStatesHost = sourceManifest.entries?.componentStatesHost;
 const overviewAdmin = sourceManifest.entries?.overviewAdmin;
 const overviewStyles = sourceManifest.entries?.overviewStyles;
 const navigationHost = sourceManifest.entries?.navigationHost;
+const automationLifecycleHost = sourceManifest.entries?.automationLifecycleHost;
+assert.equal(sourceManifest.files?.[automationLifecycleHost]?.entry_point, 'web/v3/automationLifecycleAdapter.ts', 'automation lifecycle Host must be V3-owned');
 const automationContentHost = sourceManifest.entries?.automationContentHost;
 const automationContentStyles = sourceManifest.entries?.automationContentStyles;
 assert.equal(sourceManifest.files?.[sharedVisualTokens]?.entry_point, 'web/v3/shared/ui/visualTokens.css', 'shared visual tokens must be V3-owned');
@@ -48,7 +50,7 @@ const entryKeys = [
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'materialLibraryHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'pageHeaderActionHost', 'radarHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'sidebarPresentationStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost',
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
-  'automationContentHost', 'automationContentStyles',
+  'automationLifecycleHost', 'automationContentHost', 'automationContentStyles',
   'publicCommerceHost', 'publicCommerceStyles',
   'navigationHost', 'overviewAdmin', 'overviewStyles',
 ];
@@ -188,7 +190,7 @@ try {
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-survey-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   const before = fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json'));
   const requiredAssets = [
-    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['automationContentHost', 'automation fixed-content Host'], ['automationContentStyles', 'automation fixed-content stylesheet'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet'], ['sidebarPresentationStyles', 'sidebar presentation stylesheet'], ['selectionDialogStyles', 'selection dialog stylesheet'], ['confirmationDialogHost', 'confirmation dialog Host'], ['confirmationDialogStyles', 'confirmation dialog stylesheet'], ['sharedVisualTokens', 'shared visual tokens'], ['componentStatesStyles', 'component state stylesheet'], ['componentStatesHost', 'component state Host'], ['publicCommerceHost', 'public commerce Host'], ['publicCommerceStyles', 'public commerce stylesheet'], ['navigationHost', 'shared navigation Host'], ['overviewAdmin', 'overview Host'], ['overviewStyles', 'overview stylesheet']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
+    ...[['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host'], ['automationLifecycleHost', 'automation lifecycle Host'], ['automationContentHost', 'automation fixed-content Host'], ['automationContentStyles', 'automation fixed-content stylesheet'], ['sidebarStandardOverlay', 'sidebar standard overlay'], ['sidebarImageResourceLoader', 'sidebar standard image loader'], ['sidebarStandardStyles', 'sidebar standard stylesheet'], ['sidebarPresentationStyles', 'sidebar presentation stylesheet'], ['selectionDialogStyles', 'selection dialog stylesheet'], ['confirmationDialogHost', 'confirmation dialog Host'], ['confirmationDialogStyles', 'confirmation dialog stylesheet'], ['sharedVisualTokens', 'shared visual tokens'], ['componentStatesStyles', 'component state stylesheet'], ['componentStatesHost', 'component state Host'], ['publicCommerceHost', 'public commerce Host'], ['publicCommerceStyles', 'public commerce stylesheet'], ['navigationHost', 'shared navigation Host'], ['overviewAdmin', 'overview Host'], ['overviewStyles', 'overview stylesheet']].map(([entryKey, label]) => ({ relative: sourceManifest.entries?.[entryKey], label, entry: true })),
     ...['assets/standard-components/coupon_form.html', 'assets/standard-components/coupon_form_runtime.js', 'assets/standard-components/coupon_styles.html', 'assets/standard-components/channel_code_form.html', 'assets/standard-components/channel_admission_pages.js'].map((relative) => ({ relative, label: `passive standard asset ${relative}`, entry: false })),
   ];
   for (const { relative: missing, label, entry } of requiredAssets) {

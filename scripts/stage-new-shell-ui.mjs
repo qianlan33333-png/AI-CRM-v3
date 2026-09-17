@@ -26,7 +26,7 @@ const entryKeys = [
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'sidebarPresentationStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost',
   'distributionCenter', 'distributionAdmin', 'distributionStyles',
   // Automation agent detail pages are private admin documents. Their fixed-content Host and stylesheet are loaded only by agentEdit, but must be in the same staged shell closure because browser journeys replace web/dist with this exact release artifact.
-  'automationContentHost', 'automationContentStyles',
+  'automationLifecycleHost', 'automationContentHost', 'automationContentStyles',
   // These two files are the narrowly mounted anonymous Product-public
   // closure. They must be present in the verified release manifest before
   // Composition can expose them under /product-public-assets/; they remain

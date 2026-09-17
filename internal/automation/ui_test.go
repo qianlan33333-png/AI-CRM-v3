@@ -22,7 +22,7 @@ func TestAgentUIExtractsPrivateTemplateAndPreservesAliases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, p := range []string{"tokens.css", "labs.css", "admin.js", "presentation.css", "automation-content.css", "selection-dialog.css", "automation-content.js"} {
+	for _, p := range []string{"tokens.css", "labs.css", "admin.js", "automation-lifecycle.js", "presentation.css", "automation-content.css", "selection-dialog.css", "automation-content.js"} {
 		if err := os.WriteFile(filepath.Join(dist, "assets", p), []byte(p), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -35,12 +35,15 @@ func TestAgentUIExtractsPrivateTemplateAndPreservesAliases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(`{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","presentationStyles":"assets/presentation.css","automationContentStyles":"assets/automation-content.css","selectionDialogStyles":"assets/selection-dialog.css","automationContentHost":"assets/automation-content.js"},"files":{"assets/tokens.css":{},"assets/labs.css":{},"assets/admin.js":{},"assets/presentation.css":{},"assets/automation-content.css":{},"assets/selection-dialog.css":{},"assets/automation-content.js":{},"assets/standard-components/material_picker.css":{},"assets/standard-components/material_picker.js":{}}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(`{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","automationLifecycleHost":"assets/automation-lifecycle.js","presentationStyles":"assets/presentation.css","automationContentStyles":"assets/automation-content.css","selectionDialogStyles":"assets/selection-dialog.css","automationContentHost":"assets/automation-content.js"},"files":{"assets/tokens.css":{},"assets/labs.css":{},"assets/admin.js":{},"assets/automation-lifecycle.js":{},"assets/presentation.css":{},"assets/automation-content.css":{},"assets/selection-dialog.css":{},"assets/automation-content.js":{},"assets/standard-components/material_picker.css":{},"assets/standard-components/material_picker.js":{}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var gotPage, gotTemplate string
 	var gotBootstrap AgentPageBootstrap
-	h := NewModuleRegistration().UIBinding(dist, func(_ http.ResponseWriter, _ *http.Request, page, tpl string, _ AgentAssets, bootstrap AgentPageBootstrap) error {
+	h := NewModuleRegistration().UIBinding(dist, func(_ http.ResponseWriter, _ *http.Request, page, tpl string, assets AgentAssets, bootstrap AgentPageBootstrap) error {
+		if page == "agents" && assets.AdminJS != "/assets/automation-lifecycle.js" {
+			t.Fatalf("list must mount lifecycle host, got %q", assets.AdminJS)
+		}
 		gotPage, gotTemplate = page, tpl
 		gotBootstrap = bootstrap
 		return nil

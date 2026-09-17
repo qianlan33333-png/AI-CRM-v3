@@ -27,6 +27,14 @@ import (
 // existing Automation Owner; the page only exercises a fixed-content command
 // and readback. No Provider, Outbound intent, upload, or execution is enabled.
 func TestPostgreSQLAutomationFixedContentChromiumJourney(t *testing.T) {
+	runAutomationContentJourney(t, false)
+}
+
+func TestPostgreSQLAutomationLifecycleChromiumJourney(t *testing.T) {
+	runAutomationContentJourney(t, true)
+}
+
+func runAutomationContentJourney(t *testing.T, lifecycle bool) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1")
 	}
@@ -93,6 +101,7 @@ func TestPostgreSQLAutomationFixedContentChromiumJourney(t *testing.T) {
 		"AICRM_AUTOMATION_CONTENT_TEST_AGENT_ID="+strconv.FormatInt(agentID, 10),
 		"AICRM_AUTOMATION_CONTENT_TEST_IMAGE_ID="+strconv.FormatInt(imageID, 10),
 		"AICRM_AUTOMATION_CONTENT_SCREENSHOT_DIR="+screenshots,
+		"AICRM_AUTOMATION_LIFECYCLE_TEST="+strconv.FormatBool(lifecycle),
 	)
 	output, err := command.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "automation_fixed_content_chromium: PASS") {
@@ -129,7 +138,11 @@ func TestPostgreSQLAutomationFixedContentChromiumJourney(t *testing.T) {
 	if err = json.Unmarshal(readback.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Agent.DraftVersion != 2 || payload.Agent.PublishedVersion != 1 || payload.Agent.DraftRolePrompt != "保留角色 Prompt" || payload.Agent.DraftTaskPrompt != "保留任务 Prompt" || payload.Agent.LegacyConfiguration["keep"] != "legacy" || payload.Agent.FixedContentPackage.ContentText != "浏览器确认的中文固定话术" || len(payload.Agent.FixedContentPackage.ImageIDs) != 1 || payload.Agent.FixedContentPackage.ImageIDs[0] != imageID {
+	expectedPublished := int64(1)
+	if lifecycle {
+		expectedPublished = 2
+	}
+	if payload.Agent.DraftVersion != 2 || payload.Agent.PublishedVersion != expectedPublished || payload.Agent.DraftRolePrompt != "保留角色 Prompt" || payload.Agent.DraftTaskPrompt != "保留任务 Prompt" || payload.Agent.LegacyConfiguration["keep"] != "legacy" || payload.Agent.FixedContentPackage.ContentText != "浏览器确认的中文固定话术" || len(payload.Agent.FixedContentPackage.ImageIDs) != 1 || payload.Agent.FixedContentPackage.ImageIDs[0] != imageID {
 		t.Fatalf("fixed-content persisted/readback boundary is wrong: %+v", payload.Agent)
 	}
 	t.Logf("automation fixed-content Chromium screenshots: %s", screenshots)
