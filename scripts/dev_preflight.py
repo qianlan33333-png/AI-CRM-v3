@@ -146,7 +146,9 @@ class Preflight:
         self.report["required_browser_tests"] = names
         self.save()
         pattern = "^(" + "|".join(names) + ")$"
-        log = self.run("browser-execution", ["bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-json", "-p", "1", "-count=1", "-run", pattern, "./cmd/aicrm"], env)
+        # The complete discovered suite exceeds Go's default ten-minute package
+        # budget; individual journey and browser assertion deadlines remain bounded.
+        log = self.run("browser-execution", ["bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-json", "-p", "1", "-count=1", "-timeout=15m", "-run", pattern, "./cmd/aicrm"], env)
         self.report["browser_results"] = verify_journey_results(log, names)
 
     def full(self):

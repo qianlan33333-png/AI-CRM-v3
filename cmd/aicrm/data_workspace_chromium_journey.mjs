@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
+import { chromiumStartupDiagnostic, chromiumStartupTimeoutMS } from "../../internal/webshell/chromium_launch.mjs";
 const origin = process.env.AICRM_DATA_WORKSPACE_URL;
 const session = process.env.AICRM_DATA_WORKSPACE_SESSION;
 const csrf = process.env.AICRM_DATA_WORKSPACE_CSRF;
@@ -28,8 +29,12 @@ const child = spawn(
     "--user-data-dir=" + profile,
     "about:blank",
   ],
-  { stdio: "ignore" },
+  { stdio: ["ignore", "ignore", "pipe"] },
 );
+let stderr = "";
+let launchError;
+child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-4096); });
+child.on("error", error => { launchError = error; });
 let ws;
 let seq = 0;
 const waiting = new Map();
@@ -43,15 +48,17 @@ async function poll(test, message) {
   throw new Error(message);
 }
 try {
-  const port = await poll(async () => {
+  let port;
+  const startupDeadline = Date.now() + chromiumStartupTimeoutMS;
+  while (Date.now() < startupDeadline) {
     try {
-      return (
-        await fs.readFile(path.join(profile, "DevToolsActivePort"), "utf8")
-      ).split("\n")[0];
-    } catch {
-      return null;
-    }
-  }, "browser startup");
+      const candidate = (await fs.readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0];
+      if (/^\d+$/.test(candidate)) { port = candidate; break; }
+    } catch {}
+    if (launchError || child.exitCode !== null || child.signalCode) break;
+    await delay();
+  }
+  if (!port) throw new Error(chromiumStartupDiagnostic({profile, stderr, launchError, exitCode: child.exitCode, signalCode: child.signalCode}));
   const tab = await (
     await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
       method: "PUT",

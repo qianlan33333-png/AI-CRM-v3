@@ -300,7 +300,7 @@ try {
     if (layout.headers !== 0 || !layout.stage || layout.renderedRootCount < 1 || !layout.innerBar || !layout.innerBarText || !layout.title || layout.titleCount > 1 || Math.abs(layout.stage.left - layout.main.left) > 1 || Math.abs(layout.stage.top - layout.main.top) > 1 || Math.abs(layout.innerBar.left - layout.stage.left) > 1 || Math.abs(layout.innerBar.top - layout.stage.top) > 1 || Math.abs(layout.innerBar.right - layout.main.right) > 1 || layout.stage.paddingLeft !== "0px" || layout.stage.paddingTop !== "0px") throw new Error(`${label} embedded workspace/header geometry invalid`);
   };
   const assertHXCLayout = async label => {
-    await assertLayout("standard", label, "#hxcStats");
+    await assertLayout("standard", label, ".dw-cards");
     const hxc = await evaluate(cdp, `(() => {
       const stage=document.querySelector('#stage.labs.sec-funnel');
       const crumb=stage?.querySelector(':scope > .crumb');
@@ -998,7 +998,7 @@ try {
   const aiDetailMounted = await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] [data-plan-approve]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] [data-plan-reject]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);
   if (aiDetailMounted) await assertHeaderActionWidths("ai-detail", "ai-plan-detail", ["返回一级页", "拒绝计划", "确认并发送"]);
   await navigateStandard("/admin/customers", "Boolean(document.querySelector('[data-customer-directory-root]'))", "customers", true, true);
-  const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel')) && document.querySelectorAll('#hxcBody tr').length > 1", "hxc", "standard", "#hxcStats", false, true);
+  const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel')) && document.querySelectorAll('.sec-funnel .tabulator-row:not(.tabulator-group)').length > 1", "hxc", "standard", ".dw-cards", false, true);
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
   await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", questionnaireTitle, true, true);
   const radarMounted = await navigateStandard("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar #listRows')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"radar-list\"] a[href=\"/admin/radarForm.html\"]'))", "radar", true, true);
@@ -1275,9 +1275,9 @@ try {
   });
   await captureDesktopEvidence({
     label: "member-grid", pathname: "/admin/spProductData.html?id=" + serviceProductID,
-    ready: "Boolean(document.querySelector('#spMemberGrid[data-mode=\"internal\"]')) && document.querySelectorAll('#spGridBody tr[data-record-id]').length === 1 && document.querySelector('#spResultSummary')?.textContent?.trim() === '当前显示 1 行'",
-    kind: "embedded", titleSelector: "h1", assertShell: false,
-    assertPage: `(() => ({ready:document.querySelectorAll('h1').length === 1 && document.querySelector('h1')?.textContent?.includes('周期商品会员数据') && document.querySelectorAll('#spGridBody tr[data-record-id]').length === 1 && document.querySelector('#spResultSummary')?.textContent?.trim() === '当前显示 1 行',width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+    ready: "document.querySelectorAll('.data-workspace .tabulator-row:not(.tabulator-group)').length === 1 && document.querySelector('[role=status]')?.textContent?.includes('共 1 人')",
+    kind: "standard", titleSelector: ".tabulator-header",
+    assertPage: `(() => ({ready:document.querySelectorAll('.admin-topbar .admin-page-title').length === 1 && document.querySelector('.admin-topbar .admin-page-title')?.textContent?.includes('周期商品') && document.querySelectorAll('.data-workspace .tabulator-row:not(.tabulator-group)').length === 1 && document.querySelector('[role=status]')?.textContent?.includes('共 1 人'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
   });
   await captureDesktopEvidence({
     label: "channels-new", pathname: "/admin/channels/new",
@@ -1416,11 +1416,11 @@ try {
   currentStep = "hxc-refresh";
   try {
     await cdp.call("Page.navigate", { url: baseURL + "/admin/hxc-dashboard" });
-    await waitFor(cdp, "location.pathname === '/admin/hxc-dashboard' && Boolean(document.querySelector('#hxcRefresh')) && document.querySelectorAll('#hxcBody tr').length > 1", "HXC data rows did not return for refresh");
-    const hxcContent = await evaluate(cdp, `(() => { const crumb=document.querySelector('.sec-funnel > .crumb'); const heading=document.querySelector('.sec-funnel > .page-head > :first-child'); const refresh=document.querySelector('#hxcRefresh'); const grid=document.querySelector('.sec-funnel .grid-scroll'); return {crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', headingHidden: Boolean(heading) && getComputedStyle(heading).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', scrollable: Boolean(grid) && grid.scrollHeight > grid.clientHeight}; })()`);
+    await waitFor(cdp, "location.pathname === '/admin/hxc-dashboard' && Boolean(document.querySelector('#hxcRefresh')) && document.querySelectorAll('.sec-funnel .tabulator-row:not(.tabulator-group)').length > 1", "HXC data rows did not return for refresh");
+    const hxcContent = await evaluate(cdp, `(() => { const crumb=document.querySelector('.sec-funnel > .crumb'); const heading=document.querySelector('.sec-funnel > .page-head > :first-child'); const refresh=document.querySelector('#hxcRefresh'); const grid=document.querySelector('.sec-funnel .tabulator-tableholder'); return {crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', headingHidden: Boolean(heading) && getComputedStyle(heading).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', scrollable: Boolean(grid) && grid.scrollHeight > grid.clientHeight}; })()`);
     if (!hxcContent?.crumbHidden || !hxcContent?.headingHidden || !hxcContent?.refreshVisible || !hxcContent?.scrollable) throw new Error("HXC duplicate title/action/scroll layout invalid");
-    await evaluate(cdp, "(() => { const grid=document.querySelector('.sec-funnel .grid-scroll'); grid.scrollTop=grid.scrollHeight; return grid.scrollTop > 0; })()");
-    if (!await evaluate(cdp, "document.querySelector('.sec-funnel .grid-scroll')?.scrollTop > 0")) throw new Error("HXC grid did not retain a user scroll");
+    await evaluate(cdp, "(() => { const grid=document.querySelector('.sec-funnel .tabulator-tableholder'); grid.scrollTop=grid.scrollHeight; return grid.scrollTop > 0; })()");
+    if (!await evaluate(cdp, "document.querySelector('.sec-funnel .tabulator-tableholder')?.scrollTop > 0")) throw new Error("HXC grid did not retain a user scroll");
     // These arrays are bounded diagnostics for the full route matrix. Reset
     // them immediately before this one interaction so their window cannot be
     // invalidated by a later ring-buffer eviction.
