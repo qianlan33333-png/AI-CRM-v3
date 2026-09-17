@@ -1,7 +1,7 @@
 import { DataWorkspace } from "./shared/ui/dataWorkspace";
 const root = document.getElementById("dashboard-share")!;
 const raw = location.hash.slice(1);
-history.replaceState(null, "", location.pathname);
+history.replaceState(null, "", location.pathname + location.search);
 const [dataset, token] = raw.split(":");
 const names: Record<string, string> = {
   user_ref: "安全用户引用",
@@ -41,8 +41,13 @@ status.setAttribute("role", "status");
 const controls = document.createElement("div");
 const target = document.createElement("div");
 root.classList.add("dw-page");
-root.append(title, status, controls, target);
-root.style.cssText = "max-width:1440px;margin:auto;padding:20px";
+const heading = document.createElement("header");
+heading.className = "dw-public-head";
+const readonly = document.createElement("span");
+readonly.textContent = "只读分享";
+heading.append(title, readonly);
+root.append(heading, status, controls, target);
+root.style.cssText = "max-width:1440px;margin:auto;padding:0";
 let grid: DataWorkspace | undefined,
   cursor = "",
   next = "",
@@ -83,7 +88,7 @@ const retry = button("刷新", () => {
   previous.splice(0);
   void load();
 });
-root.insertBefore(retry, target);
+heading.append(retry);
 controls.append(field, value, group, sort, apply, prev, forward);
 async function load() {
   const mine = ++generation;
@@ -174,6 +179,8 @@ async function load() {
           title: names[key] || key,
           minWidth: 140,
         })),
+        undefined,
+        { allowDetails: false },
       );
       await grid.configure(data.presentation || {});
       const chosen = [field.value, group.value, sort.value];
@@ -210,9 +217,36 @@ async function load() {
         if ([...el.options].some((o) => o.value === chosen[i]))
           el.value = chosen[i];
       });
-      grid.placeToolbar(controls);
-      controls.hidden = data.mode !== "details";
+      grid.setMeta(status);
+      const filterControls = document.createElement("div");
+      filterControls.className = "dw-query";
+      filterControls.append(field, value, apply);
+      const groupControls = document.createElement("div"),
+        sortControls = document.createElement("div"),
+        pagination = document.createElement("div");
+      groupControls.append(
+        group,
+        button("应用分组", () => apply.click()),
+      );
+      sortControls.append(
+        sort,
+        button("应用排序", () => apply.click()),
+      );
+      pagination.append(prev, forward);
+      controls.remove();
+      if (data.mode === "details") {
+        grid.placeToolbar(filterControls);
+        grid.addTool("分组", groupControls, true);
+        grid.addTool("排序", sortControls, true);
+        grid.setFooter(pagination);
+      }
       grid.showDetails(data.mode === "details");
+      grid.setPage(
+        new URLSearchParams(location.search).get("tab") === "details"
+          ? "details"
+          : "overview",
+        false,
+      );
     }
     await grid.render(
       data.items.map((row: Record<string, unknown>) => ({
@@ -295,6 +329,23 @@ async function load() {
       ],
       group.value ? [group.value] : [],
     );
+    grid.setScope([
+      { label: "分享授权范围" },
+      ...(field.value && value.value
+        ? [
+            {
+              label: `${names[field.value] || field.value}：${value.value}`,
+              remove: () => {
+                field.value = "";
+                value.value = "";
+                cursor = "";
+                previous.splice(0);
+                void load();
+              },
+            },
+          ]
+        : []),
+    ]);
     next = data.next_cursor;
     prev.disabled = !previous.length;
     forward.disabled = !next;
@@ -303,6 +354,7 @@ async function load() {
     if (mine !== generation) return;
     grid?.destroy();
     grid = undefined;
+    root.insertBefore(status, target);
     root.insertBefore(controls, target);
     target.replaceChildren();
     controls.hidden = true;

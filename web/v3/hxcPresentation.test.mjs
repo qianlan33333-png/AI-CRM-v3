@@ -12,7 +12,7 @@ const bundle = (await build({
   },
   // Presentation adapter assertions run without layout/canvas. The real
   // Tabulator/ECharts integration is exercised by the required Host Chromium journey.
-  plugins:[{name:'workspace-presentation-fixture',setup(b){b.onResolve({filter:/shared\/ui\/dataWorkspace$/},()=>({path:'workspace',namespace:'presentation-test'}));b.onLoad({filter:/.*/,namespace:'presentation-test'},()=>({contents:`export class DataWorkspace {constructor(root,columns){this.root=root;this.columns=columns;}placeToolbar(){} async configure(){} async render(rows){this.root.replaceChildren();for(const row of rows){const el=document.createElement('div');el.textContent=this.columns.map(c=>row[c.field]??'').join(' ');this.root.append(el);}}destroy(){} }`,loader:'js'}));}}],
+  plugins:[{name:'workspace-presentation-fixture',setup(b){b.onResolve({filter:/shared\/ui\/dataWorkspace$/},()=>({path:'workspace',namespace:'presentation-test'}));b.onLoad({filter:/.*/,namespace:'presentation-test'},()=>({contents:`export function storedWorkspaceView(){return null;} export function workspaceButton(label,action){const b=document.createElement("button");b.textContent=label;b.onclick=action;return b;} export class DataWorkspace {constructor(root,columns){this.root=root;this.columns=columns;this.rows=document.createElement("div");root.append(this.rows);}placeToolbar(el){this.root.append(el);} setViewPicker(el){this.root.append(el);} setMeta(el){this.root.append(el);} setFooter(el){this.root.append(el);} addTool(label,el){this.root.append(el);} setScope(){} closeTools(){} refreshLinks(){} setPage(){} setDrilldown(){} markDirty(){} markSaved(){} async confirmViewChange(){return true;} async configure(){} async render(rows){this.rows.replaceChildren();for(const row of rows){const el=document.createElement('div');el.textContent=this.columns.map(c=>row[c.field]??'').join(' ');this.rows.append(el);}}destroy(){} }`,loader:'js'}));}}],
   bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, minify: true, logLevel: 'warning',
 })).outputFiles[0].text;
 const wait = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -70,7 +70,7 @@ dom.window.eval(bundle);
 await dom.window.HXCFunnel.mountFunnelGrid(dom.window.document.querySelector('#stage'), {});
 await wait(10);
 const text = dom.window.document.querySelector('#stage')?.textContent || '';
-assert.ok(text.includes('统计时点 2026-09-07 08:00:00'), 'HXC summary renders a Shanghai time with seconds');
+assert.ok(text.includes('统计时间 2026-09-07 08:00:00'), 'HXC summary renders a Shanghai time with seconds');
 assert.ok(text.includes('免费版、已过期或未填写到期时间'), 'HXC explanation does not expose the free enum');
 assert.ok(text.includes('免费版'), 'HXC rows map the free subscription enum');
 assert.ok(text.includes('创始人计划'), 'HXC preserves an existing Chinese business tier name');

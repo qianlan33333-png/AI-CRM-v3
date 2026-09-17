@@ -313,7 +313,7 @@ try {
       const style=stage ? getComputedStyle(stage) : null;
       return {pageTitleVisible, stage: Boolean(stage), paddingLeft: style?.paddingLeft || '', paddingTop: style?.paddingTop || '', crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', titleHidden: Boolean(title) && getComputedStyle(title).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', refreshInTopbar: Boolean(refreshBox && topbarBox && refreshBox.top >= topbarBox.top && refreshBox.bottom <= topbarBox.bottom)};
     })()`);
-    if (!hxc?.stage || !hxc.pageTitleVisible || hxc.paddingLeft !== "20px" || hxc.paddingTop !== "16px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible || !hxc.refreshInTopbar) throw new Error(label + " HXC title/padding/action layout invalid");
+    if (!hxc?.stage || !hxc.pageTitleVisible || hxc.paddingLeft !== "0px" || hxc.paddingTop !== "0px" || !hxc.crumbHidden || !hxc.titleHidden || !hxc.refreshVisible || !hxc.refreshInTopbar) throw new Error(label + " HXC title/padding/action layout invalid");
   };
   const assertRadarListLayout = async label => {
     await assertLayout("standard", label, ".admin-page-title");
@@ -998,7 +998,7 @@ try {
   const aiDetailMounted = await navigateAIAssistant("/admin/cloud-orchestrator/plans/" + aiPlanID, "ai-detail", "Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] [data-plan-approve]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] [data-plan-reject]')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"ai-plan-detail\"] a[href=\"/admin/cloud-orchestrator/plans\"]')) && document.querySelector('[data-plan-detail-state]')?.textContent?.trim().length > 0 && document.querySelector('[data-plan-name]')?.textContent?.includes('AI layout detail fixture')", true);
   if (aiDetailMounted) await assertHeaderActionWidths("ai-detail", "ai-plan-detail", ["返回一级页", "拒绝计划", "确认并发送"]);
   await navigateStandard("/admin/customers", "Boolean(document.querySelector('[data-customer-directory-root]'))", "customers", true, true);
-  const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel')) && document.querySelectorAll('.sec-funnel .tabulator-row:not(.tabulator-group)').length > 1", "hxc", "standard", ".dw-cards", false, true);
+  const hxcMounted = await navigate("/admin/hxc-dashboard", "Boolean(document.querySelector('#hxcRefresh')) && Boolean(document.querySelector('.sec-funnel')) && document.querySelectorAll('.sec-funnel .dw-card').length > 1", "hxc", "standard", ".dw-cards", false, true);
   if (hxcMounted) await recordGeometry("hxc", () => assertHXCLayout("hxc"), true);
   await navigate("/admin/questionnaires", "Boolean(document.querySelector('#stage.admin-workspace-stage--embedded'))", "questionnaires", "embedded", questionnaireTitle, true, true);
   const radarMounted = await navigateStandard("/admin/radar-links", "Boolean(document.querySelector('#stage.labs.sec-radar #listRows')) && Boolean(document.querySelector('.admin-topbar [data-page-header-actions=\"radar-list\"] a[href=\"/admin/radarForm.html\"]'))", "radar", true, true);
@@ -1275,9 +1275,9 @@ try {
   });
   await captureDesktopEvidence({
     label: "member-grid", pathname: "/admin/spProductData.html?id=" + serviceProductID,
-    ready: "document.querySelectorAll('.data-workspace .tabulator-row:not(.tabulator-group)').length === 1 && document.querySelector('[role=status]')?.textContent?.includes('共 1 人')",
-    kind: "standard", titleSelector: ".tabulator-header",
-    assertPage: `(() => ({ready:document.querySelectorAll('.admin-topbar .admin-page-title').length === 1 && document.querySelector('.admin-topbar .admin-page-title')?.textContent?.includes('周期商品') && document.querySelectorAll('.data-workspace .tabulator-row:not(.tabulator-group)').length === 1 && document.querySelector('[role=status]')?.textContent?.includes('共 1 人'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
+    ready: "document.querySelectorAll('.dw-card').length >= 4 && document.querySelector('[role=status]')?.textContent?.includes('共 1 人')",
+    kind: "standard", titleSelector: ".dw-cards",
+    assertPage: `(() => ({ready:document.querySelectorAll('.admin-topbar .admin-page-title').length === 1 && document.querySelector('.admin-topbar .admin-page-title')?.textContent?.includes('周期商品') && document.querySelectorAll('.dw-card').length >= 4 && document.querySelector('[role=status]')?.textContent?.includes('共 1 人'),width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1}))()`
   });
   await captureDesktopEvidence({
     label: "channels-new", pathname: "/admin/channels/new",
@@ -1415,7 +1415,7 @@ try {
 
   currentStep = "hxc-refresh";
   try {
-    await cdp.call("Page.navigate", { url: baseURL + "/admin/hxc-dashboard" });
+    await cdp.call("Page.navigate", { url: baseURL + "/admin/hxc-dashboard?tab=details" });
     await waitFor(cdp, "location.pathname === '/admin/hxc-dashboard' && Boolean(document.querySelector('#hxcRefresh')) && document.querySelectorAll('.sec-funnel .tabulator-row:not(.tabulator-group)').length > 1", "HXC data rows did not return for refresh");
     const hxcContent = await evaluate(cdp, `(() => { const crumb=document.querySelector('.sec-funnel > .crumb'); const heading=document.querySelector('.sec-funnel > .page-head > :first-child'); const refresh=document.querySelector('#hxcRefresh'); const grid=document.querySelector('.sec-funnel .tabulator-tableholder'); return {crumbHidden: Boolean(crumb) && getComputedStyle(crumb).display === 'none', headingHidden: Boolean(heading) && getComputedStyle(heading).display === 'none', refreshVisible: Boolean(refresh) && getComputedStyle(refresh).display !== 'none', scrollable: Boolean(grid) && grid.scrollHeight > grid.clientHeight}; })()`);
     if (!hxcContent?.crumbHidden || !hxcContent?.headingHidden || !hxcContent?.refreshVisible || !hxcContent?.scrollable) throw new Error("HXC duplicate title/action/scroll layout invalid");
@@ -1429,7 +1429,7 @@ try {
     await evaluate(cdp, "(() => { document.querySelector('#hxcRefresh').click(); return true; })()");
     await waitForRecorded(requestEvents, value => value === "POST /api/admin/hxc-dashboard/refreshes", "HXC refresh did not issue its configured POST");
     await waitForRecorded(responses, value => value === "POST /api/admin/hxc-dashboard/refreshes:503", "HXC refresh did not reach the disabled runtime contract");
-    await waitFor(cdp, "document.querySelector('#hxcRefresh')?.disabled === false && document.querySelector('#hxcRefresh')?.textContent === '立即刷新'", "HXC refresh action did not settle");
+    await waitFor(cdp, "document.querySelector('#hxcRefresh')?.disabled === false && document.querySelector('#hxcRefresh')?.textContent === '同步数据'", "HXC refresh action did not settle");
   } catch (error) {
     await recordRouteFailure("hxc-refresh", error);
     interactionFailures.push("hxc-refresh:" + String(error instanceof Error ? error.message : "refresh assertion failed").replace(/[^A-Za-z0-9_.: -]/g, "_").slice(0, 160));

@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -151,7 +152,16 @@ func validProductUIQuery(r *http.Request, page, canonicalID string) bool {
 	if canonicalID != "" && !positiveDecimal(canonicalID) {
 		return false
 	}
-	values := r.URL.Query()
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return false
+	}
+	if tabs, ok := values["tab"]; ok {
+		if page != "spProductData" || len(tabs) != 1 || (tabs[0] != "overview" && tabs[0] != "details") {
+			return false
+		}
+		delete(values, "tab")
+	}
 	if len(values) == 0 {
 		return true
 	}

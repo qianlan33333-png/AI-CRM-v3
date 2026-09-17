@@ -1,6 +1,8 @@
 import { openDashboardShare } from "../../../v3/shared/ui/dashboardShareDialog";
 import {
   DataWorkspace,
+  workspaceButton,
+  storedWorkspaceView,
   type WorkspacePresentation,
 } from "../../../v3/shared/ui/dataWorkspace";
 import type { AdminApi } from "../../shared/api/client";
@@ -187,10 +189,11 @@ export async function mountFunnelGrid(
     return;
   }
   root.className = "labs sec-funnel dw-page";
+  root.style.padding = "0";
   root.innerHTML = `<div class="crumb">客户管理后台 / 运营 / <b>漏斗 / 数据看板</b></div>
-  <div class="page-head"><div><div class="page-title">漏斗 / 数据看板</div><div class="page-desc">HXC 当前全量投影 · OneID 仅作为次级质量指标</div></div><button class="btn primary" id="hxcRefresh">立即刷新</button></div>
-  <div id="hxcStale"></div><details><summary>全量概况与内部身份诊断</summary><div class="stats" id="hxcStats"><div class="card stat"><div class="stat-l">正在加载</div></div></div></details>
-  <div class="card" style="padding:14px;margin-top:14px"><div class="grid-toolbar" style="display:flex;gap:8px;flex-wrap:wrap">
+  <div class="page-head"><div><div class="page-title">漏斗 / 数据看板</div><div class="page-desc">HXC 当前全量投影 · OneID 仅作为次级质量指标</div></div><button class="btn primary" id="hxcRefresh">同步数据</button></div>
+  <div id="hxcStale"></div><details id="hxcDiagnostics"><summary>全量概况与内部身份诊断</summary><div class="stats" id="hxcStats"><div class="card stat"><div class="stat-l">正在加载</div></div></div></details>
+  <div class="card dw-host-card" style="padding:14px;margin-top:14px"><div class="grid-toolbar" style="display:flex;gap:8px;flex-wrap:wrap">
     <select class="select" id="hxcStage"><option value="">全部漏斗阶段</option><option value="active_used">有效会员 · 已使用</option><option value="active_unused">有效会员 · 未使用</option><option value="registered_no_active_membership">已注册 · 无有效会员</option></select>
     <select class="select" id="hxcIdentity"><option value="">全部 OneID 状态</option><option value="matched">已匹配</option><option value="unmatched">未匹配</option><option value="conflict">冲突</option></select>
     <select class="select" id="hxcMatchedBy"><option value="">全部匹配来源</option><option value="unionid">UnionID</option><option value="phone">手机号</option><option value="both">双键</option><option value="none">未命中</option></select>
@@ -225,7 +228,55 @@ export async function mountFunnelGrid(
       presentation = value;
     },
   );
-  workspace.placeToolbar($(".grid-toolbar"));
+  const filters = $(".grid-toolbar");
+  const grouping = document.createElement("div"),
+    sorting = document.createElement("div"),
+    diagnostics = document.createElement("div");
+  grouping.append(
+    $("#hxcGroup"),
+    workspaceButton("应用分组", () => $("#hxcApply").click()),
+  );
+  sorting.append(
+    $("#hxcSort"),
+    workspaceButton("应用排序", () => $("#hxcApply").click()),
+  );
+  diagnostics.className = "dw-query";
+  diagnostics.append(
+    $("#hxcIdentity"),
+    $("#hxcMatchedBy"),
+    $("label[for=hxcExact]"),
+    $("#hxcExact"),
+    $("#hxcExactHelp"),
+    workspaceButton("应用诊断筛选", () => $("#hxcApply").click()),
+    $("#hxcDiagnostics"),
+  );
+  workspace.placeToolbar(filters);
+  workspace.addTool("分组", grouping, true);
+  workspace.addTool("排序", sorting, true);
+  workspace.addTool("内部诊断", diagnostics, true);
+  workspace.setMeta($("#hxcMeta"));
+  workspace.setMeta($("#hxcVersion"));
+  $(".grid-meta").remove();
+  workspace.setFooter($("#hxcPrev").parentElement!);
+  $("#hxcGroups").hidden = true;
+  root.addEventListener("input", () => workspace.markDirty());
+  filters.addEventListener("change", () => workspace.markDirty());
+  grouping.addEventListener("change", () => workspace.markDirty());
+  sorting.addEventListener("change", () => workspace.markDirty());
+  diagnostics.addEventListener("change", () => workspace.markDirty());
+  workspace.setDrilldown((key) => {
+    restoreQuery(committedQuery || payload());
+    if (key !== "total" && key in stageName) {
+      $("#hxcStage").setAttribute("data-drill", key);
+      ($("#hxcStage") as HTMLSelectElement).value = key;
+      workspace.markDirty();
+    }
+    workspace.setPage("details");
+    currentCursor = "";
+    history.splice(0);
+    void loadRows();
+  });
+  let committedQuery: ReturnType<typeof payload> | undefined;
   let requestGeneration = 0;
   let summary: Summary | undefined;
   let currentCursor = "";
@@ -275,14 +326,14 @@ export async function mountFunnelGrid(
         ? '<div class="card" style="padding:12px;color:#D97917;margin-bottom:12px">⚠ 当前展示上一成功版本，数据已超过 8 小时未刷新。</div>'
         : "";
     $("#hxcVersion").textContent =
-      `统计时点 ${fmtTime(summary.projection_as_of)} · 发布 ${fmtTime(summary.published_at)} · 源水位 ${fmtTime(summary.source_watermark)}`;
+      `统计时间 ${fmtTime(summary.projection_as_of)} · ${summary.freshness === "stale" ? "更新延迟" : "数据已更新"}`;
   }
   let failedQuery: ReturnType<typeof payload> | undefined;
   const retryQuery = document.createElement("button");
   retryQuery.className = "btn";
   retryQuery.textContent = "重试上次查询";
   retryQuery.hidden = true;
-  $(".grid-toolbar").append(retryQuery);
+  workspace.setMeta(retryQuery);
   retryQuery.onclick = () => {
     if (failedQuery) void loadRows(failedQuery);
   };
@@ -303,7 +354,57 @@ export async function mountFunnelGrid(
       );
       if (generation !== requestGeneration) return;
       failedQuery = undefined;
+      committedQuery = structuredClone(submitted);
+      workspace.closeTools();
       retryQuery.hidden = true;
+      const labels: Record<string, string> = {
+        stage: "会员阶段",
+        subscription_tier: "会员等级",
+        last_capability: "最近能力",
+        business_stage: "业务阶段",
+        user_segment: "用户分群",
+        identity_state: "身份状态",
+        matched_by: "匹配来源",
+      };
+      const ids: Record<string, string> = {
+        stage: "hxcStage",
+        subscription_tier: "hxcTier",
+        last_capability: "hxcCapability",
+        business_stage: "hxcBusiness",
+        user_segment: "hxcSegment",
+        identity_state: "hxcIdentity",
+        matched_by: "hxcMatchedBy",
+      };
+      workspace.setScope([
+        ...Object.entries(submitted.filters)
+          .filter(([, v]) => v.length)
+          .map(([key, value]) => ({
+            label: `${labels[key]}：${value.map((v) => (key === "stage" ? stageName[v as Stage] : key === "subscription_tier" ? subscriptionTierLabel(v) : key === "identity_state" ? identityName[v as IdentityState] : key === "matched_by" ? matchName[v as Row["matched_by"]] : v)).join("、")}`,
+            remove: () => {
+              restoreQuery(submitted);
+              ($("#" + ids[key]) as HTMLInputElement).value = "";
+              currentCursor = "";
+              history.splice(0);
+              workspace.markDirty();
+              void loadRows();
+            },
+          })),
+        ...(submitted.exact_hxc_user_id
+          ? [
+              {
+                label: "精确用户查找",
+                remove: () => {
+                  restoreQuery(submitted);
+                  ($("#hxcExact") as HTMLInputElement).value = "";
+                  workspace.markDirty();
+                  currentCursor = "";
+                  history.splice(0);
+                  void loadRows();
+                },
+              },
+            ]
+          : []),
+      ]);
       nextCursor = result.next_cursor;
       const groupField = submitted.group_by;
       await workspace.render(
@@ -349,8 +450,8 @@ export async function mountFunnelGrid(
             label,
             value: result.metrics?.[key] ?? null,
             percentage:
-              result.total > 0
-                ? ((result.metrics?.[key] ?? 0) / result.total) * 100
+              result.total > 0 && result.metrics?.[key] != null
+                ? (result.metrics[key] / result.total) * 100
                 : null,
           })),
           {
@@ -365,6 +466,7 @@ export async function mountFunnelGrid(
         ],
         groupField ? [groupField] : [],
       );
+      if (generation !== requestGeneration) return;
       $("#hxcGroups").innerHTML = result.groups.length
         ? result.groups
             .map(
@@ -373,8 +475,7 @@ export async function mountFunnelGrid(
             )
             .join("")
         : "";
-      $("#hxcMeta").textContent =
-        `共 ${result.total} 人 · 当前页 ${result.items.length} 行 · 投影 #${result.projection_id}`;
+      $("#hxcMeta").textContent = `共 ${result.total} 人`;
       ($("#hxcPrev") as HTMLButtonElement).disabled = history.length === 0;
       ($("#hxcNext") as HTMLButtonElement).disabled = !nextCursor;
     } catch (error) {
@@ -408,6 +509,7 @@ export async function mountFunnelGrid(
     }
   });
   async function reload() {
+    requestGeneration++;
     try {
       await loadSummary();
       currentCursor = "";
@@ -427,11 +529,15 @@ export async function mountFunnelGrid(
     if (!nextCursor) return;
     history.push(currentCursor);
     currentCursor = nextCursor;
-    void loadRows();
+    void loadRows(
+      committedQuery ? { ...committedQuery, cursor: currentCursor } : undefined,
+    );
   });
   $("#hxcPrev").addEventListener("click", () => {
     currentCursor = history.pop() || "";
-    void loadRows();
+    void loadRows(
+      committedQuery ? { ...committedQuery, cursor: currentCursor } : undefined,
+    );
   });
   const refreshButton = $("#hxcRefresh") as HTMLButtonElement;
   refreshButton.addEventListener("click", async () => {
@@ -459,7 +565,7 @@ export async function mountFunnelGrid(
       toast(error instanceof Error ? error.message : "刷新失败", true);
     } finally {
       button.disabled = false;
-      button.textContent = "立即刷新";
+      button.textContent = "同步数据";
     }
   });
   // The V3 shell owns the page title. Move the existing action with its bound
@@ -467,10 +573,19 @@ export async function mountFunnelGrid(
   const topbar = root
     .closest(".admin-main-wrap")
     ?.querySelector(".admin-topbar");
+  const headerActions = document.createElement("div");
+  headerActions.dataset.workspaceActions = "hxc";
   if (topbar) {
+    topbar.querySelector("[data-workspace-actions=hxc]")?.remove();
+    topbar.append(headerActions);
     topbar.querySelector("#hxcRefresh")?.remove();
-    refreshButton.className = "admin-button admin-button--primary";
-    topbar.appendChild(refreshButton);
+    refreshButton.className = "admin-button";
+    headerActions.appendChild(refreshButton);
+    const readRefresh = workspaceButton("刷新", () => {
+      void reload();
+    });
+    readRefresh.className = "admin-button";
+    headerActions.prepend(readRefresh);
   }
   type SavedView = {
     id: number;
@@ -499,7 +614,9 @@ export async function mountFunnelGrid(
   const controls = document.createElement("div");
   controls.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0";
   controls.append(views, viewName, save, remove);
-  root.prepend(controls);
+  workspace.setViewPicker(views);
+  workspace.addTool("视图管理", controls);
+  viewName.classList.add("dw-view-name");
   const shareButton = document.createElement("button");
   shareButton.className = "btn";
   shareButton.textContent = "只读分享";
@@ -531,21 +648,12 @@ export async function mountFunnelGrid(
     );
     savedViews = result.views;
     views.replaceChildren(
-      new Option("临时视图", ""),
+      new Option("默认视图", ""),
       ...savedViews.map((v) => new Option(v.name, String(v.id))),
     );
     if (selectedView) views.value = String(selectedView.id);
   }
-  views.onchange = () => {
-    selectedView = savedViews.find((v) => String(v.id) === views.value);
-    window.history.replaceState(
-      null,
-      "",
-      location.pathname + "#view=" + encodeURIComponent(views.value),
-    );
-    viewName.value = selectedView?.name || "";
-    if (!selectedView) return;
-    const q = selectedView.config.query;
+  function restoreQuery(q: Partial<ReturnType<typeof payload>>) {
     for (const [id, key] of [
       ["hxcStage", "stage"],
       ["hxcTier", "subscription_tier"],
@@ -555,15 +663,36 @@ export async function mountFunnelGrid(
       ["hxcIdentity", "identity_state"],
       ["hxcMatchedBy", "matched_by"],
     ]) {
-      ($("#" + id) as HTMLInputElement).value = (
-        ((q.filters || {}) as Record<string, string[]>)[key] || []
-      ).join(",");
+      ($("#" + id) as HTMLInputElement).value =
+        ((q.filters || {}) as Record<string, string[]>)[key]?.join(",") || "";
     }
     ($("#hxcSort") as HTMLSelectElement).value = q.sort || "last_used_at_desc";
     ($("#hxcGroup") as HTMLSelectElement).value = q.group_by || "";
-    ($("#hxcExact") as HTMLInputElement).value = "";
-    presentation = selectedView.config.presentation || {};
-    void workspace.configure(presentation);
+    ($("#hxcExact") as HTMLInputElement).value = q.exact_hxc_user_id || "";
+  }
+  views.onchange = async () => {
+    const chosen = views.value;
+    if (!(await workspace.confirmViewChange(() => writeView("POST")))) {
+      views.value = String(selectedView?.id || "");
+      return;
+    }
+    views.value = chosen;
+    selectedView = savedViews.find((v) => String(v.id) === chosen);
+    window.history.replaceState(
+      null,
+      "",
+      location.pathname +
+        location.search +
+        "#view=" +
+        encodeURIComponent(chosen),
+    );
+    viewName.value = selectedView?.name || "";
+    restoreQuery(selectedView?.config.query || {});
+    presentation = selectedView?.config.presentation || {};
+    await workspace.configure(presentation);
+    workspace.markSaved();
+    workspace.refreshLinks();
+    storedWorkspaceView(chosen);
     currentCursor = "";
     history.splice(0);
     void loadRows();
@@ -571,15 +700,20 @@ export async function mountFunnelGrid(
   if (topbar) {
     for (const b of [save, shareButton]) {
       b.className = "admin-button";
-      topbar.append(b);
+      headerActions.append(b);
     }
   }
   let pendingView: { body: string; method: string; key: string } | undefined;
-  async function writeView(method: string) {
+  async function writeView(method: string): Promise<boolean> {
     save.disabled = true;
     remove.disabled = true;
     try {
-      if (method === "DELETE" && !selectedView) return;
+      if (method === "DELETE" && !selectedView) return false;
+      if (method !== "DELETE" && !viewName.value.trim()) {
+        const name = window.prompt("视图名称", selectedView?.name || "");
+        if (!name) return false;
+        viewName.value = name;
+      }
       const q = payload();
       if (q.exact_hxc_user_id)
         throw new Error("源系统用户 ID 仅用于临时查询，请清空后保存视图");
@@ -609,13 +743,22 @@ export async function mountFunnelGrid(
         null,
         "",
         location.pathname +
+          location.search +
           "#view=" +
           encodeURIComponent(String(selectedView?.id || "")),
       );
       await refreshViews();
+      workspace.markSaved();
+      workspace.refreshLinks();
+      storedWorkspaceView(String(selectedView?.id || ""));
+      currentCursor = "";
+      history.splice(0);
+      await loadRows();
       toast(method === "DELETE" ? "视图已删除" : "视图已保存");
+      return true;
     } catch (error) {
       toast(error instanceof Error ? error.message : "保存失败", true);
+      return false;
     } finally {
       save.disabled = false;
       remove.disabled = false;
@@ -638,7 +781,9 @@ export async function mountFunnelGrid(
   await reload();
   try {
     await refreshViews();
-    const restored = new URLSearchParams(location.hash.slice(1)).get("view");
+    const restored =
+      new URLSearchParams(location.hash.slice(1)).get("view") ??
+      storedWorkspaceView();
     if (restored && savedViews.some((v) => String(v.id) === restored)) {
       views.value = restored;
       views.dispatchEvent(new Event("change"));

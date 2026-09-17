@@ -92,6 +92,13 @@ func TestProductPageRejectsUnexpectedQueriesAndNonPositiveIDs(t *testing.T) {
 		want bool
 	}{
 		{path: "/admin/wechat-pay/products?view=form", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=overview", want: true},
+		{path: "/admin/spProductData.html?id=7&tab=details", want: true},
+		{path: "/admin/spProductData.html?id=7&tab=other", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=details&tab=overview", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=details&extra=1", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=%ZZ", want: false},
+		{path: "/admin/productForm.html?id=7&tab=details", want: false},
 		{path: "/admin/productForm.html?id=0", want: false},
 		{path: "/admin/service-period-products/0/edit", want: false},
 		{path: "/admin/service-period-products/new", want: true},

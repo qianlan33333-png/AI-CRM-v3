@@ -1,20 +1,10 @@
 import { TabulatorFull, type ColumnDefinition } from "tabulator-tables";
 import { init, use, type EChartsType } from "echarts/core";
 import { BarChart } from "echarts/charts";
-import {
-  GridComponent,
-  TooltipComponent,
-  TitleComponent,
-} from "echarts/components";
+import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-use([
-  BarChart,
-  GridComponent,
-  TooltipComponent,
-  TitleComponent,
-  CanvasRenderer,
-]);
-
+import { workspaceStyle } from "./dataWorkspaceStyle";
+use([BarChart, GridComponent, TooltipComponent, CanvasRenderer]);
 export interface WorkspaceMetric {
   key: string;
   label: string;
@@ -28,56 +18,366 @@ export interface WorkspacePresentation {
   metrics?: string[];
   order?: string[];
 }
-// Querying and authorization belong to the caller. The grid never filters a
-// page locally or derives total/group counts from its loaded rows.
+type Page = "overview" | "details";
+export function workspaceButton(
+  label: string,
+  action: () => void,
+): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.onclick = action;
+  return b;
+}
+function icon(
+  kind: "overview" | "details" | "filter" | "settings",
+): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.4");
+  svg.setAttribute("class", "dw-icon");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(svg.namespaceURI, "path");
+  path.setAttribute(
+    "d",
+    {
+      overview: "M3 16V9h3v7zm6 0V4h3v12zm6 0V7h3v9z",
+      details: "M3 3h14v14H3zM3 8h14M3 12h14M8 3v14",
+      filter: "M2 4h16l-6 7v5l-4 2v-7z",
+      settings: "M3 5h14M3 10h14M3 15h14M7 3v4M13 8v4M8 13v4",
+    }[kind],
+  );
+  svg.append(path);
+  return svg;
+}
+// Persist only the selected view reference, never query values or row data.
+export function storedWorkspaceView(value?: string): string | null {
+  const key =
+    "crm-workspace-view:" +
+    location.pathname +
+    ":" +
+    (new URLSearchParams(location.search).get("id") || "");
+  try {
+    if (value !== undefined) localStorage.setItem(key, value);
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+// The component owns presentation and navigation only. Its caller owns scope,
+// authorization, full-result metrics/group counts and cursor pagination.
 export class DataWorkspace {
-  private grid: TabulatorFull;
-  private chart: EChartsType;
-  private tierChart: EChartsType;
-  private tierPlot = document.createElement("div");
-  private cards = document.createElement("div");
-  private settings = document.createElement("details");
-  private plot = document.createElement("div");
-  private observer: ResizeObserver;
-  private ready: Promise<void>;
+  private grid?: TabulatorFull;
+  private ready?: Promise<void>;
+  private chart?: EChartsType;
+  private tierChart?: EChartsType;
   private metrics: WorkspaceMetric[] = [];
-  private metricOptions = document.createElement("div");
-  private changed?: (value: WorkspacePresentation) => void;
+  private rows: Record<string, unknown>[] = [];
+  private groupFields: string[] = [];
   private presentation: WorkspacePresentation = {};
-  private defaultColumns: string[] = [];
+  private applying = false;
+  private destroyed = false;
+  private revision = 0;
+  private allowedDetails = true;
+  private page: Page = "overview";
+  private nav = document.createElement("nav");
+  private bar = document.createElement("div");
+  private tools = document.createElement("div");
+  private scope = document.createElement("div");
+  private meta = document.createElement("div");
+  private overview = document.createElement("section");
+  private details = document.createElement("section");
+  private table = document.createElement("div");
+  private cards = document.createElement("div");
+  private chartGrid = document.createElement("div");
+  private plot = document.createElement("div");
+  private tierPlot = document.createElement("div");
+  private mainCard = document.createElement("div");
+  private tierCard = document.createElement("div");
+  private drawer = document.createElement("dialog");
+  private drawerBody = document.createElement("div");
+  private drawerTitle = document.createElement("h2");
+  private configButton: HTMLButtonElement;
+  private dirtyLabel = document.createElement("span");
+  private detailTools: HTMLElement[] = [];
+  private defaultColumns: string[];
+  private dirty = false;
+  private drill?: (key: string) => void;
+  private drillKeys?: string[];
+  private observer: ResizeObserver;
+  private pop = () =>
+    this.setPage(
+      new URLSearchParams(location.search).get("tab") === "details"
+        ? "details"
+        : "overview",
+      false,
+    );
   constructor(
     readonly root: HTMLElement,
-    columns: ColumnDefinition[],
-    onChange?: (value: WorkspacePresentation) => void,
+    private columns: ColumnDefinition[],
+    private changed?: (value: WorkspacePresentation) => void,
+    options: { allowDetails?: boolean } = {},
   ) {
     if (!document.getElementById("data-workspace-style")) {
-      const style = document.createElement("style");
-      style.id = "data-workspace-style";
-      style.textContent = `.dw-page button,.dw-page select,.dw-page input:not([type=checkbox]),.dw-dialog button,.dw-dialog select,.dw-dialog input:not([type=checkbox]){font:inherit;border:1px solid #dee0e3;border-radius:6px;background:white;padding:7px 12px;color:#1f2329;min-height:34px;box-sizing:border-box}.dw-page button,.dw-dialog button{cursor:pointer}.dw-page button:hover,.dw-dialog button:hover{border-color:#3370ff;color:#245bdb}.dw-page button:disabled{opacity:.45;cursor:default}.dw-page input:focus,.dw-page select:focus{outline:2px solid #c2d4ff}.dw-page [role=status]{font-size:13px;color:#646a73;padding:8px 0}.dw-query{border:1px solid #e5e6eb;border-radius:8px;padding:12px;background:#fff;margin:12px 0}.dw-orders{display:flex;gap:16px;flex-wrap:wrap}.dw-dialog::backdrop{background:#1f232966}.data-workspace{font:14px system-ui;color:#1f2329;min-width:0}.dw-cards{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}.dw-card{flex:1;min-width:145px;border:1px solid #e5e6eb;border-radius:8px;padding:16px;background:white}.dw-card strong{display:block;font-size:26px;margin-top:8px}.dw-plot{height:220px}.data-workspace details{padding:8px 0}.data-workspace label{display:inline-flex;gap:6px;margin:6px 14px 6px 0}.data-workspace .tabulator{position:relative;border:1px solid #e5e6eb;background:white;text-align:left;overflow:hidden}.data-workspace .tabulator-header{position:relative;overflow:hidden;background:#f5f6f7;font-weight:600;white-space:nowrap}.data-workspace .tabulator-header-contents,.data-workspace .tabulator-headers{position:relative;display:inline-block}.data-workspace .tabulator-col{display:inline-flex;position:relative;flex-direction:column;box-sizing:border-box;border-right:1px solid #e5e6eb}.data-workspace .tabulator-col-content{padding:12px;position:relative}.data-workspace .tabulator-col-title{overflow:hidden;text-overflow:ellipsis}.data-workspace .tabulator-col-resize-handle{position:absolute;right:0;top:0;width:6px;height:100%;cursor:col-resize}.data-workspace .tabulator-tableholder{position:relative;overflow:auto;white-space:nowrap}.data-workspace .tabulator-table{position:relative;display:inline-block}.data-workspace .tabulator-row{position:relative;box-sizing:border-box;white-space:nowrap;border-bottom:1px solid #eff0f1}.data-workspace .tabulator-row:hover{background:#f5f8ff}.data-workspace .tabulator-cell{display:inline-block;position:relative;box-sizing:border-box;padding:12px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;border-right:1px solid #eff0f1}.data-workspace .tabulator-group{padding:12px;cursor:pointer;background:#f5f6f7}.data-workspace .tabulator-arrow{display:inline-block;margin-right:8px;border-left:6px solid #646a73;border-top:4px solid transparent;border-bottom:4px solid transparent}.data-workspace .tabulator-group-visible .tabulator-arrow{transform:rotate(90deg)}.data-workspace .tabulator-placeholder{padding:30px;text-align:center}.data-workspace .tabulator-footer{display:none}@media(max-width:600px){.dw-card{min-width:100%;box-sizing:border-box}}`;
-      document.head.append(style);
+      const s = document.createElement("style");
+      s.id = "data-workspace-style";
+      s.textContent = workspaceStyle;
+      document.head.append(s);
     }
-    this.changed = onChange;
+    this.allowedDetails = options.allowDetails !== false;
     this.defaultColumns = columns
       .filter((c) => c.visible !== false)
       .map((c) => c.field!)
       .filter(Boolean);
-    this.settings.append(this.metricOptions);
     root.classList.add("data-workspace");
+    this.nav.className = "dw-nav";
+    this.nav.setAttribute("aria-label", "数据页面");
+    for (const [value, label] of [
+      ["overview", "数据总览"],
+      ["details", "明细视图"],
+    ] as const) {
+      const a = document.createElement("a");
+      const url = new URL(location.href);
+      url.searchParams.set("tab", value);
+      a.href = url.pathname + url.search + url.hash;
+      a.dataset.workspaceTab = value;
+      a.append(icon(value), document.createTextNode(label));
+      a.onclick = (e) => {
+        if (!e.ctrlKey && !e.metaKey && !e.shiftKey && e.button === 0) {
+          e.preventDefault();
+          this.setPage(value);
+        }
+      };
+      this.nav.append(a);
+    }
+    this.bar.className = "dw-bar";
+    this.tools.className = "dw-tools";
+    this.scope.className = "dw-scope";
+    this.meta.className = "dw-meta";
+    this.overview.className = "dw-overview";
+    this.overview.setAttribute("aria-label", "数据总览");
+    this.details.className = "dw-details";
+    this.details.setAttribute("aria-label", "明细视图");
     this.cards.className = "dw-cards";
-    this.plot.className = "dw-plot";
-    this.tierPlot.className = "dw-plot";
-    this.tierPlot.hidden = true;
-    const summary = document.createElement("summary");
-    summary.textContent = "显示列与指标";
-    this.settings.prepend(summary);
-    const table = document.createElement("div");
-    root.append(this.settings, this.cards, this.plot, this.tierPlot, table);
-    this.grid = new TabulatorFull(table, {
-      height: 480,
+    this.chartGrid.className = "dw-chart-grid";
+    const chartCard = (
+      card: HTMLElement,
+      plot: HTMLElement,
+      title: string,
+      subtitle: string,
+    ) => {
+      card.className = "dw-chart-card";
+      const h = document.createElement("h3"),
+        p = document.createElement("p");
+      h.textContent = title;
+      p.textContent = subtitle;
+      plot.className = "dw-plot";
+      card.append(h, p, plot);
+    };
+    chartCard(this.mainCard, this.plot, "会员状态分布", "当前筛选范围内的人数");
+    chartCard(
+      this.tierCard,
+      this.tierPlot,
+      "会员等级分布",
+      "当前筛选范围内的等级构成",
+    );
+    this.chartGrid.append(this.mainCard, this.tierCard);
+    this.overview.append(this.cards, this.chartGrid);
+    this.details.append(this.table);
+    this.dirtyLabel.className = "dw-dirty";
+    this.dirtyLabel.hidden = true;
+    this.dirtyLabel.textContent = "未保存";
+    this.configButton = workspaceButton("配置看板", () => this.openSettings());
+    this.configButton.className = "dw-config-button";
+    this.bar.append(this.tools, this.dirtyLabel, this.configButton);
+    this.drawer.className = "dw-drawer";
+    const header = document.createElement("header");
+    const close = workspaceButton("×", () => this.drawer.close());
+    close.setAttribute("aria-label", "关闭设置");
+    header.append(this.drawerTitle, close);
+    this.drawerBody.className = "dw-drawer-body";
+    this.drawer.append(header, this.drawerBody);
+    root.append(
+      this.nav,
+      this.bar,
+      this.scope,
+      this.meta,
+      this.overview,
+      this.details,
+      this.drawer,
+    );
+    this.observer = new ResizeObserver(() => {
+      if (this.page === "overview") {
+        this.chart?.resize();
+        this.tierChart?.resize();
+      }
+    });
+    this.observer.observe(this.overview);
+    window.addEventListener("popstate", this.pop);
+    this.pop();
+  }
+  setPage(page: Page, push = true) {
+    if (this.destroyed) return;
+    this.page =
+      page === "details" && this.allowedDetails ? "details" : "overview";
+    this.root.dataset.workspacePage = this.page;
+    for (const a of this.nav.querySelectorAll<HTMLAnchorElement>("a")) {
+      a.hidden = a.dataset.workspaceTab === "details" && !this.allowedDetails;
+      if (a.dataset.workspaceTab === this.page)
+        a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+      const u = new URL(location.href);
+      u.searchParams.set("tab", a.dataset.workspaceTab!);
+      a.href = u.pathname + u.search + u.hash;
+    }
+    if (push) {
+      const u = new URL(location.href);
+      u.searchParams.set("tab", this.page);
+      window.history.pushState(null, "", u.pathname + u.search + u.hash);
+    }
+    this.overview.hidden = this.page !== "overview";
+    this.details.hidden = this.page !== "details";
+    this.detailTools.forEach((el) => {
+      el.hidden = this.page !== "details";
+    });
+    this.configButton.replaceChildren(
+      icon("settings"),
+      document.createTextNode(this.page === "overview" ? "配置看板" : "列设置"),
+    );
+    for (const p of this.tools.querySelectorAll("details")) p.open = false;
+    if (this.drawer.open) this.drawer.close();
+    if (this.page === "details") void this.renderTable();
+    else this.renderMetrics();
+  }
+  closeTools() {
+    for (const el of this.tools.querySelectorAll("details")) el.open = false;
+  }
+  refreshLinks() {
+    for (const a of this.nav.querySelectorAll<HTMLAnchorElement>("a")) {
+      const u = new URL(location.href);
+      u.searchParams.set("tab", a.dataset.workspaceTab!);
+      a.href = u.pathname + u.search + u.hash;
+    }
+  }
+  setViewPicker(el: HTMLElement) {
+    this.bar.prepend(el);
+  }
+  setMeta(el: HTMLElement) {
+    this.meta.append(el);
+  }
+  setFooter(el: HTMLElement) {
+    el.classList.add("dw-footer");
+    this.details.append(el);
+  }
+  setScope(items: { label: string; remove?: () => void }[]) {
+    this.scope.replaceChildren();
+    const label = document.createElement("span");
+    label.textContent = items.length ? "当前范围" : "当前范围：全部授权数据";
+    this.scope.append(label);
+    for (const item of items) {
+      const b = workspaceButton(
+        item.label + (item.remove ? " ×" : ""),
+        item.remove || (() => {}),
+      );
+      b.setAttribute(
+        "aria-label",
+        (item.remove ? "移除条件：" : "条件：") + item.label,
+      );
+      if (!item.remove) b.disabled = true;
+      this.scope.append(b);
+    }
+  }
+  addTool(label: string, content: HTMLElement, detailsOnly = false) {
+    const d = document.createElement("details"),
+      s = document.createElement("summary"),
+      p = document.createElement("div"),
+      h = document.createElement("h3");
+    d.className = "dw-tool";
+    s.append(
+      icon(label === "筛选" ? "filter" : "settings"),
+      document.createTextNode(label),
+    );
+    p.className = "dw-popover";
+    h.textContent = label;
+    p.append(h, content);
+    d.append(s, p);
+    this.tools.append(d);
+    if (detailsOnly) {
+      this.detailTools.push(d);
+      d.hidden = this.page !== "details";
+    }
+    d.addEventListener("toggle", () => {
+      if (d.open)
+        for (const other of this.tools.querySelectorAll("details"))
+          if (other !== d) other.open = false;
+    });
+    return d;
+  }
+  placeToolbar(toolbar: HTMLElement) {
+    return this.addTool("筛选", toolbar);
+  }
+  markDirty() {
+    this.dirty = true;
+    this.dirtyLabel.hidden = false;
+  }
+  markSaved() {
+    this.dirty = false;
+    this.dirtyLabel.hidden = true;
+  }
+  async confirmViewChange(save: () => Promise<boolean>): Promise<boolean> {
+    if (!this.dirty) return true;
+    const dialog = document.createElement("dialog");
+    dialog.className = "dw-dialog";
+    const h = document.createElement("h3"),
+      p = document.createElement("p"),
+      footer = document.createElement("footer");
+    h.textContent = "保存当前视图的修改？";
+    p.textContent = "当前筛选和展示设置尚未保存。";
+    dialog.append(h, p, footer);
+    this.root.append(dialog);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v: boolean) => {
+        if (done) return;
+        done = true;
+        dialog.close();
+        dialog.remove();
+        resolve(v);
+      };
+      footer.append(
+        workspaceButton("取消", () => finish(false)),
+        workspaceButton("放弃修改", () => finish(true)),
+        workspaceButton("保存并切换", () => {
+          void save()
+            .then(finish)
+            .catch(() => finish(false));
+        }),
+      );
+      dialog.addEventListener("cancel", () => finish(false));
+      dialog.showModal();
+    });
+  }
+  setDrilldown(fn: (key: string) => void, keys?: string[]) {
+    this.drill = fn;
+    this.drillKeys = keys;
+    this.renderMetrics();
+  }
+  private notify() {
+    if (this.applying || this.destroyed) return;
+    this.markDirty();
+    this.changed?.(structuredClone(this.presentation));
+  }
+  private async ensureGrid() {
+    if (this.grid) return this.ready;
+    this.grid = new TabulatorFull(this.table, {
+      height: 540,
       layout: "fitData",
       placeholder: "没有符合条件的数据",
-      columns: columns.map((c) => ({
+      columns: this.columns.map((c) => ({
         ...c,
+        minWidth: c.minWidth || 140,
         headerSort: false,
         formatter: c.formatter || "plaintext",
       })),
@@ -85,141 +385,132 @@ export class DataWorkspace {
       movableColumns: true,
       groupToggleElement: "header",
     });
-    this.ready = new Promise((resolve) => this.grid.on("tableBuilt", resolve));
-    this.chart = init(this.plot);
-    this.tierPlot.hidden = false;
-    this.tierChart = init(this.tierPlot);
-    this.tierPlot.hidden = true;
-    this.observer = new ResizeObserver(() => {
-      this.chart.resize();
-      if (!this.tierPlot.hidden) this.tierChart.resize();
-    });
-    this.observer.observe(this.plot);
-    const changed = () => {
+    this.ready = new Promise<void>((resolve) =>
+      this.grid!.on("tableBuilt", resolve),
+    );
+    this.grid.on("columnResized", () => {
+      if (this.applying) return;
       this.presentation.widths = Object.fromEntries(
-        this.grid.getColumns().map((c) => [c.getField(), c.getWidth()]),
+        this.grid!.getColumns().map((c) => [c.getField(), c.getWidth()]),
       );
-      onChange?.(structuredClone(this.presentation));
-    };
-    this.grid.on("columnResized", changed);
+      this.notify();
+    });
     this.grid.on("columnMoved", () => {
-      this.presentation.order = this.grid.getColumns().map((c) => c.getField());
-      changed();
+      this.presentation.order = this.grid!.getColumns().map((c) =>
+        c.getField(),
+      );
+      this.notify();
     });
-    this.ready.then(() => {
-      for (const c of columns) {
-        if (!c.field) continue;
-        const label = document.createElement("label");
-        const input = document.createElement("input");
-        input.type = "checkbox";
-        input.checked = c.visible !== false;
-        input.dataset.column = c.field;
-        label.append(input, document.createTextNode(String(c.title)));
-        input.onchange = () => {
-          if (input.checked) this.grid.showColumn(c.field!);
-          else this.grid.hideColumn(c.field!);
-          this.presentation.columns = this.grid
-            .getColumns()
-            .filter((c) => c.isVisible())
-            .map((c) => c.getField());
-          changed();
-        };
-        this.settings.append(label);
-      }
-    });
+    await this.ready;
+    if (!this.destroyed) this.applyColumns();
   }
-  placeToolbar(toolbar: HTMLElement) {
-    this.tierPlot.after(toolbar);
+  private applyColumns() {
+    if (!this.grid) return;
+    this.applying = true;
+    for (const field of [
+      ...(this.presentation.order ||
+        this.columns.map((c) => c.field!).filter(Boolean)),
+    ].reverse()) {
+      const first = this.grid.getColumns()[0]?.getField();
+      if (first && field !== first && this.grid.getColumn(field))
+        this.grid.moveColumn(field, first, false);
+    }
+    for (const c of this.grid.getColumns()) {
+      const f = c.getField();
+      if ((this.presentation.columns || this.defaultColumns).includes(f))
+        c.show();
+      else c.hide();
+      const originalWidth = this.columns.find(
+        (column) => column.field === f,
+      )?.width;
+      c.setWidth(
+        this.presentation.widths?.[f] ||
+          (typeof originalWidth === "number" ? originalWidth : true),
+      );
+    }
+    this.applying = false;
   }
   async render(
     rows: Record<string, unknown>[],
     metrics: WorkspaceMetric[],
-    groupFields: string[] = [],
+    groups: string[] = [],
   ) {
-    await this.ready;
+    this.rows = rows;
     this.metrics = metrics;
-    this.metricOptions.replaceChildren();
-    for (const metric of metrics) {
-      const label = document.createElement("label");
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked =
-        !this.presentation.metrics ||
-        this.presentation.metrics.includes(metric.key);
-      label.append(input, document.createTextNode(metric.label));
-      input.onchange = () => {
-        const selected = this.presentation.metrics || metrics.map((m) => m.key);
-        this.presentation.metrics = input.checked
-          ? [...selected, metric.key]
-          : selected.filter((key) => key !== metric.key);
-        this.renderMetrics();
-        this.changed?.(structuredClone(this.presentation));
-      };
-      const earlier = document.createElement("button");
-      earlier.type = "button";
-      earlier.textContent = "↑";
-      earlier.setAttribute("aria-label", metric.label + "前移");
-      earlier.onclick = () => {
-        const order = [
-          ...(this.presentation.metrics || metrics.map((m) => m.key)),
-        ];
-        const index = order.indexOf(metric.key);
-        if (index > 0) {
-          [order[index - 1], order[index]] = [order[index], order[index - 1]];
-          this.presentation.metrics = order;
-          this.renderMetrics();
-          this.changed?.(structuredClone(this.presentation));
-        }
-      };
-      label.append(earlier);
-      this.metricOptions.append(label);
-    }
-
-    const keyed = rows.map((row) => {
+    this.groupFields = groups;
+    this.revision++;
+    if (this.page === "details") await this.renderTable();
+    else this.renderMetrics();
+  }
+  private async renderTable() {
+    const version = this.revision;
+    await this.ensureGrid();
+    if (this.destroyed || version !== this.revision) return;
+    const keyed = this.rows.map((row) => {
       const result = { ...row };
       const values = row.__groupValues as Record<string, unknown> | undefined;
-      for (const field of groupFields)
-        result["__groupKey_" + field] = JSON.stringify(
-          values && field in values ? values[field] : row[field],
+      for (const f of this.groupFields)
+        result["__groupKey_" + f] = JSON.stringify(
+          values && f in values ? values[f] : row[f],
         );
       return result;
     });
-    this.grid.setGroupBy(groupFields.map((field) => "__groupKey_" + field));
-    this.grid.setGroupHeader((value, _count, data, group) => {
-      const level = group.getField().replace(/^__groupKey_/, "");
+    this.grid!.setGroupBy(this.groupFields.map((f) => "__groupKey_" + f));
+    this.grid!.setGroupHeader((_value, _count, data, group) => {
+      const f = group.getField().replace(/^__groupKey_/, "");
       const row = data[0] as Record<string, unknown> | undefined;
       const counts = row?.__groupCounts as Record<string, number> | undefined;
       const span = document.createElement("span");
-      span.textContent = `${row?.[level] || "未填写"} · ${counts?.[level] ?? "未知"} 人`;
+      span.textContent = `${row?.[f] || "未填写"} · ${counts?.[f] ?? "未知"} 人`;
       return span.outerHTML;
     });
-    await this.grid.replaceData(keyed);
-    this.renderMetrics();
+    await this.grid!.replaceData(keyed);
+    if (this.page === "details") this.grid!.redraw(true);
   }
   private renderMetrics() {
-    this.cards.replaceChildren();
+    if (this.destroyed || this.page !== "overview") return;
     const selected =
       this.presentation.metrics || this.metrics.map((m) => m.key);
+    this.cards.replaceChildren();
     for (const key of selected) {
-      const metric = this.metrics.find((m) => m.key === key);
-      if (!metric || metric.distribution) continue;
-      const card = document.createElement("div");
+      const m = this.metrics.find((m) => m.key === key);
+      if (!m || m.distribution) continue;
+      const card = document.createElement("div"),
+        label = document.createElement("span"),
+        value = document.createElement("strong");
       card.className = "dw-card";
-      const title = document.createElement("span");
-      title.textContent = metric.label;
-      const value = document.createElement("strong");
+      card.dataset.metric = key;
+      label.textContent = m.label;
       value.textContent =
-        metric.value === null ? "未知" : metric.value.toLocaleString();
-      card.append(title, value);
-      if (metric.percentage !== undefined) {
-        const note = document.createElement("small");
-        note.textContent =
-          metric.percentage === null
+        m.value === null ? "未知" : m.value.toLocaleString("zh-CN");
+      card.append(label, value);
+      const note = document.createElement("small");
+      note.textContent =
+        m.percentage === undefined
+          ? "当前筛选范围"
+          : m.percentage === null
             ? "占比未知"
-            : `占比 ${metric.percentage.toFixed(1)}%`;
-        card.append(note);
+            : `占比 ${m.percentage.toFixed(1)}%`;
+      card.append(note);
+      if (
+        this.drill &&
+        (!this.drillKeys || this.drillKeys.includes(key)) &&
+        m.value !== null &&
+        m.value > 0 &&
+        !m.distribution
+      ) {
+        const b = workspaceButton("查看明细 →", () => this.drill?.(key));
+        b.className = "dw-drill";
+        b.dataset.drillMetric = key;
+        card.append(b);
       }
       this.cards.append(card);
+    }
+    if (!selected.length) {
+      const p = document.createElement("p");
+      p.className = "dw-empty";
+      p.textContent = "暂未选择指标，可在“配置看板”中添加";
+      this.cards.append(p);
     }
     const series = this.metrics.filter(
       (m) =>
@@ -231,83 +522,162 @@ export class DataWorkspace {
     const distribution = this.metrics.find(
       (m) => m.distribution && selected.includes(m.key),
     );
-    this.tierPlot.hidden = !distribution;
-    if (distribution) {
-      this.tierChart.resize();
-      this.tierChart.setOption(
-        {
-          animation: false,
-          title: { text: distribution.label },
-          tooltip: { trigger: "axis", renderMode: "richText" },
-          grid: { left: 60, right: 20, bottom: 55, top: 25 },
-          xAxis: {
-            type: "category",
-            data: distribution.distribution!.map((v) => v.label),
-          },
-          yAxis: { type: "value", minInterval: 1 },
-          series: [
-            {
-              type: "bar",
-              data: distribution.distribution!.map((v) => v.value),
-              barMaxWidth: 48,
-              itemStyle: { color: "#14a39a" },
-            },
-          ],
+    this.mainCard.hidden = !series.length;
+    this.tierCard.hidden = !distribution;
+    const option = (
+      labels: string[],
+      values: (number | null)[],
+      color: string,
+    ) => ({
+      animation: false,
+      tooltip: { trigger: "axis", renderMode: "richText" },
+      grid: { left: 42, right: 20, top: 35, bottom: 55 },
+      xAxis: {
+        type: "category",
+        data: labels,
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: "#dee0e3" } },
+        axisLabel: {
+          color: "#646a73",
+          interval: 0,
+          overflow: "break",
+          width: 100,
+          fontSize: 11,
         },
+      },
+      yAxis: {
+        type: "value",
+        minInterval: 1,
+        axisLabel: { color: "#8f959e", fontSize: 11 },
+        splitLine: { lineStyle: { color: "#eff0f1", type: "dashed" } },
+      },
+      series: [
+        {
+          type: "bar",
+          data: values,
+          barMaxWidth: 40,
+          itemStyle: { color, borderRadius: [3, 3, 0, 0] },
+        },
+      ],
+    });
+    if (series.length) {
+      this.chart ||= init(this.plot);
+      this.chart.resize();
+      this.chart.setOption(
+        option(
+          series.map((m) => m.label),
+          series.map((m) => m.value),
+          "#4e6ef2",
+        ),
         true,
       );
     }
-    this.chart.setOption(
-      {
-        animation: false,
-        tooltip: { trigger: "axis", renderMode: "richText" },
-        grid: { left: 60, right: 20, bottom: 55, top: 20 },
-        xAxis: {
-          type: "category",
-          data: series.map((m) => m.label),
-          axisLabel: { interval: 0, overflow: "truncate", width: 100 },
-        },
-        yAxis: { type: "value", minInterval: 1 },
-        series: [
-          {
-            type: "bar",
-            data: series.map((m) => m.value),
-            itemStyle: { color: "#3370ff" },
-            barMaxWidth: 48,
-          },
-        ],
-      },
-      true,
+    if (distribution) {
+      this.tierCard.querySelector("h3")!.textContent = distribution.label;
+      this.tierChart ||= init(this.tierPlot);
+      this.tierChart.resize();
+      this.tierChart.setOption(
+        option(
+          distribution.distribution!.map((m) => m.label),
+          distribution.distribution!.map((m) => m.value),
+          "#7b89f5",
+        ),
+        true,
+      );
+    }
+  }
+  openSettings() {
+    this.drawerBody.replaceChildren();
+    this.drawerTitle.textContent =
+      this.page === "overview" ? "配置看板" : "列设置";
+    const p = document.createElement("p");
+    p.textContent =
+      this.page === "overview"
+        ? "选择需要展示的预设指标，调整顺序后保存视图。"
+        : "设置明细字段的显示状态。列宽和顺序也会随视图保存。";
+    this.drawerBody.append(p);
+    const metricPage = this.page === "overview";
+    const items = metricPage
+      ? this.metrics.map((m) => ({ key: m.key, label: m.label }))
+      : this.columns
+          .filter((c) => c.field)
+          .map((c) => ({ key: c.field!, label: String(c.title) }));
+    const selected = metricPage
+      ? this.presentation.metrics || this.metrics.map((m) => m.key)
+      : this.presentation.columns || this.defaultColumns;
+    const order = metricPage
+      ? selected
+      : this.presentation.order || items.map((i) => i.key);
+    items.sort(
+      (a, b) =>
+        (order.includes(a.key) ? order.indexOf(a.key) : 999) -
+        (order.includes(b.key) ? order.indexOf(b.key) : 999),
     );
+    for (const item of items) {
+      const row = document.createElement("label"),
+        checkbox = document.createElement("input"),
+        name = document.createElement("span");
+      row.className = "dw-setting-row";
+      checkbox.type = "checkbox";
+      checkbox.checked = selected.includes(item.key);
+      checkbox.dataset[metricPage ? "metric" : "column"] = item.key;
+      name.textContent = item.label;
+      row.append(checkbox, name);
+      checkbox.onchange = () => {
+        const chosen = metricPage
+          ? this.presentation.metrics || this.metrics.map((m) => m.key)
+          : this.presentation.columns || this.defaultColumns;
+        const next = checkbox.checked
+          ? [...chosen, item.key]
+          : chosen.filter((k) => k !== item.key);
+        if (metricPage) this.presentation.metrics = next;
+        else this.presentation.columns = next;
+        this.applyColumns();
+        this.renderMetrics();
+        this.notify();
+      };
+      const up = workspaceButton("↑", () => {
+        const next = [
+          ...(metricPage
+            ? this.presentation.metrics || this.metrics.map((m) => m.key)
+            : this.presentation.order || items.map((i) => i.key)),
+        ];
+        const i = next.indexOf(item.key);
+        if (i > 0) {
+          [next[i - 1], next[i]] = [next[i], next[i - 1]];
+          if (metricPage) this.presentation.metrics = next;
+          else this.presentation.order = next;
+          this.applyColumns();
+          this.renderMetrics();
+          this.notify();
+          this.openSettings();
+        }
+      });
+      up.setAttribute("aria-label", item.label + "前移");
+      row.append(up);
+      this.drawerBody.append(row);
+    }
+    if (!this.drawer.open) this.drawer.showModal();
   }
   async configure(value: WorkspacePresentation) {
-    await this.ready;
     this.presentation = structuredClone(value);
-    for (const field of [...(value.order || [])].reverse()) {
-      const first = this.grid.getColumns()[0]?.getField();
-      if (first && field !== first && this.grid.getColumn(field))
-        this.grid.moveColumn(field, first, false);
-    }
-    for (const column of this.grid.getColumns()) {
-      const field = column.getField();
-      if ((value.columns || this.defaultColumns).includes(field)) column.show();
-      else column.hide();
-      if (value.widths?.[field]) column.setWidth(value.widths[field]);
-      const input = this.settings.querySelector<HTMLInputElement>(
-        `input[data-column="${field}"]`,
-      );
-      if (input) input.checked = column.isVisible();
-    }
+    if (this.ready) await this.ready;
+    if (this.destroyed) return;
+    this.applyColumns();
     this.renderMetrics();
   }
   showDetails(show: boolean) {
-    this.root.querySelector<HTMLElement>(".tabulator")!.hidden = !show;
+    this.allowedDetails = show;
+    this.setPage(this.page, false);
   }
   destroy() {
+    this.destroyed = true;
+    window.removeEventListener("popstate", this.pop);
     this.observer.disconnect();
-    this.chart.dispose();
-    this.tierChart.dispose();
-    this.grid.destroy();
+    this.chart?.dispose();
+    this.tierChart?.dispose();
+    this.grid?.destroy();
+    this.drawer.remove();
     this.root.replaceChildren();
   }
 }

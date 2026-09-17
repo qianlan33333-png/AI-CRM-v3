@@ -1,6 +1,7 @@
 import { openDashboardShare } from "./shared/ui/dashboardShareDialog";
 import {
   DataWorkspace,
+  storedWorkspaceView,
   type WorkspacePresentation,
 } from "./shared/ui/dataWorkspace";
 import { request } from "../src/api/transport";
@@ -77,7 +78,7 @@ function button(label: string, action: () => void) {
 async function mount(root: HTMLElement) {
   root.replaceChildren();
   root.classList.add("dw-page");
-  root.style.padding = "20px";
+  root.style.padding = "0";
   const status = document.createElement("div");
   status.setAttribute("role", "status");
   root.append(status);
@@ -98,6 +99,7 @@ async function mount(root: HTMLElement) {
       next = "",
       generation = 0;
     const history: string[] = [];
+    let committedQuery: Config | undefined;
     const toolbar = document.createElement("div");
     toolbar.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0";
     const viewSelect = select([]);
@@ -106,14 +108,16 @@ async function mount(root: HTMLElement) {
     search.placeholder = "查找会员姓名";
     search.setAttribute("aria-label", "查找会员姓名");
     const conditions = document.createElement("div");
-    const orders = document.createElement("div");
-    orders.className = "dw-orders";
+    const groupControls = document.createElement("div"),
+      sortControls = document.createElement("div");
+    groupControls.className = sortControls.className = "dw-orders";
     const logic = select([
       { value: "and", label: "满足全部条件" },
       { value: "or", label: "满足任一条件" },
     ]);
     logic.onchange = () => {
       config.filter.logic = logic.value;
+      workspace.markDirty();
     };
     toolbar.append(
       viewSelect,
@@ -127,7 +131,14 @@ async function mount(root: HTMLElement) {
     root.append(viewSelect);
     const queryPanel = document.createElement("div");
     queryPanel.className = "dw-query";
-    queryPanel.append(toolbar, conditions, orders);
+    queryPanel.append(
+      conditions,
+      button("应用筛选", () => {
+        cursor = "";
+        history.splice(0);
+        void load();
+      }),
+    );
     const gridRoot = document.createElement("div");
     root.append(gridRoot);
     const workspace = new DataWorkspace(
@@ -157,17 +168,38 @@ async function mount(root: HTMLElement) {
         config.presentation = presentation;
       },
     );
+    workspace.setViewPicker(viewSelect);
+    workspace.setDrilldown(() => workspace.setPage("details"), ["total"]);
+    viewSelect.setAttribute("aria-label", "保存的视图");
+    workspace.setMeta(status);
     workspace.placeToolbar(queryPanel);
+    workspace.addTool("查找", toolbar, true);
+    workspace.addTool("分组", groupControls, true);
+    workspace.addTool("排序", sortControls, true);
+    root.addEventListener("input", () => workspace.markDirty());
+    root.addEventListener("change", (e) => {
+      if (e.target !== viewSelect) workspace.markDirty();
+    });
     const prev = button("上一页", () => {
       cursor = history.pop() || "";
-      void load();
+      void load(
+        committedQuery
+          ? { config: committedQuery, cursor, limit: 50 }
+          : undefined,
+      );
     });
     const following = button("下一页", () => {
       history.push(cursor);
       cursor = next;
-      void load();
+      void load(
+        committedQuery
+          ? { config: committedQuery, cursor, limit: 50 }
+          : undefined,
+      );
     });
-    root.append(prev, following);
+    const pagination = document.createElement("div");
+    pagination.append(prev, following);
+    workspace.setFooter(pagination);
     function redraw() {
       conditions.replaceChildren(logic);
       logic.value = config.filter.logic;
@@ -237,6 +269,7 @@ async function mount(root: HTMLElement) {
             config.filter.conditions = config.filter.conditions.filter(
               (c) => c !== condition,
             );
+            workspace.markDirty();
             redraw();
           }),
         );
@@ -250,11 +283,13 @@ async function mount(root: HTMLElement) {
               operator: "contains",
               value: "",
             });
+            workspace.markDirty();
             redraw();
           }
         }),
       );
-      orders.replaceChildren();
+      groupControls.replaceChildren();
+      sortControls.replaceChildren();
       for (const [key, label, max] of [
         ["groups", "分组", 2],
         ["sorts", "排序", 8],
@@ -296,11 +331,12 @@ async function mount(root: HTMLElement) {
             );
             if (field && config[key].length < max) {
               config[key].push({ field: field.id, direction: "asc" });
+              workspace.markDirty();
               redraw();
             }
           }),
         );
-        orders.append(wrap);
+        (key === "groups" ? groupControls : sortControls).append(wrap);
       }
     }
     let failedQuery:
@@ -309,7 +345,7 @@ async function mount(root: HTMLElement) {
       if (failedQuery) void load(failedQuery);
     });
     retry.hidden = true;
-    toolbar.append(retry);
+    workspace.setMeta(retry);
     async function load(retryQuery?: {
       config: Config;
       cursor: string;
@@ -340,7 +376,26 @@ async function mount(root: HTMLElement) {
         );
         if (mine !== generation) return;
         failedQuery = undefined;
+        committedQuery = structuredClone(query);
+        workspace.closeTools();
         retry.hidden = true;
+        workspace.setScope(
+          query.filter.conditions.map((c, index) => ({
+            label: `${fields.find((f) => f.id === c.field)?.label || c.field} ${fields.find((f) => f.id === c.field)?.filter_operators.find((o) => o.id === c.operator)?.label || c.operator} ${Array.isArray(c.value) ? c.value.join("、") : (c.value ?? "")}`,
+            remove: () => {
+              const presentation = config.presentation;
+              config = structuredClone(query);
+              config.presentation = presentation;
+              config.filter.conditions.splice(index, 1);
+              search.value = "";
+              cursor = "";
+              history.splice(0);
+              redraw();
+              workspace.markDirty();
+              void load();
+            },
+          })),
+        );
         next = data.next_cursor;
         const rows = data.rows.map((row: any) => {
           const values: Record<string, unknown> = {
@@ -391,7 +446,7 @@ async function mount(root: HTMLElement) {
           query.groups.map((g) => g.field),
         );
         if (mine !== generation) return;
-        status.textContent = `共 ${data.total} 人 · 当前页 ${rows.length} 行 · 统计时间 ${new Date(data.metrics.snapshot_at).toLocaleString("zh-CN")}`;
+        status.textContent = `共 ${data.total} 人 · 统计时间 ${new Date(data.metrics.snapshot_at).toLocaleString("zh-CN")}`;
         prev.disabled = history.length === 0;
         following.disabled = !next;
       } catch (err) {
@@ -411,7 +466,13 @@ async function mount(root: HTMLElement) {
       );
       if (active) viewSelect.value = String(active.id);
     }
-    viewSelect.onchange = () => {
+    viewSelect.onchange = async () => {
+      const chosen = viewSelect.value;
+      if (!(await workspace.confirmViewChange(saveView))) {
+        viewSelect.value = String(active?.id || views[0]?.id || "");
+        return;
+      }
+      viewSelect.value = chosen;
       active = views.find((v) => String(v.id) === viewSelect.value);
       window.history.replaceState(
         null,
@@ -426,7 +487,10 @@ async function mount(root: HTMLElement) {
       cursor = "";
       history.splice(0);
       redraw();
-      void workspace.configure(config.presentation || {});
+      await workspace.configure(config.presentation || {});
+      workspace.markSaved();
+      workspace.refreshLinks();
+      storedWorkspaceView(viewSelect.value);
       void load();
     };
     let composing = false;
@@ -474,48 +538,61 @@ async function mount(root: HTMLElement) {
       });
     }
 
-    if (access.can_manage_views || access.CanManageViews) {
+    async function saveView(): Promise<boolean> {
+      if (!(access.can_manage_views || access.CanManageViews)) return false;
+      try {
+        const name = window.prompt(
+          "视图名称",
+          active?.name === "默认视图" ? "" : active?.name || "",
+        );
+        if (!name) return false;
+        const id = active?.view_id;
+        const body = {
+          name,
+          config: currentConfig(),
+          ...(id ? { version: active!.version } : {}),
+        };
+        const serialized = JSON.stringify(body);
+        if (pendingSave?.body !== serialized)
+          pendingSave = { body: serialized, key: crypto.randomUUID() };
+        const data = await json(
+          id
+            ? base.replace("/member-grid", "/member-views/") + id
+            : base.replace("/member-grid", "/member-views"),
+          body,
+          id ? "PUT" : "POST",
+          pendingSave!.key,
+        );
+        pendingSave = undefined;
+        active = data.view;
+        window.history.replaceState(
+          null,
+          "",
+          location.pathname +
+            location.search +
+            "#view=" +
+            encodeURIComponent(String(active!.id)),
+        );
+        storedWorkspaceView(String(active!.id));
+        workspace.refreshLinks();
+        await readViews();
+        workspace.markSaved();
+        await load();
+        status.textContent = "视图已保存";
+        return true;
+      } catch (e) {
+        report(e);
+        return false;
+      }
+    }
+    if (access.can_manage_views || access.CanManageViews)
       actions.push({
         label: "保存视图",
         onClick: async () => {
-          const name = window.prompt(
-            "视图名称",
-            active?.name === "默认视图" ? "" : active?.name || "",
-          );
-          if (!name) return;
-          const id = active?.view_id;
-          const body = {
-            name,
-            config: currentConfig(),
-            ...(id ? { version: active!.version } : {}),
-          };
-          const serialized = JSON.stringify(body);
-          if (pendingSave?.body !== serialized)
-            pendingSave = { body: serialized, key: crypto.randomUUID() };
-          const data = await json(
-            id
-              ? base.replace("/member-grid", "/member-views/") + id
-              : base.replace("/member-grid", "/member-views"),
-            body,
-            id ? "PUT" : "POST",
-            pendingSave!.key,
-          );
-          pendingSave = undefined;
-          active = data.view;
-          window.history.replaceState(
-            null,
-            "",
-            location.pathname +
-              location.search +
-              "#view=" +
-              encodeURIComponent(String(active!.id)),
-          );
-          await readViews();
-          status.textContent = "视图已保存";
+          await saveView();
         },
         onError: report,
       });
-    }
     actions.push({
       label: "刷新",
       onClick: async () => {
@@ -528,7 +605,9 @@ async function mount(root: HTMLElement) {
     mountPageHeaderActions("product-data-workspace", actions);
     redraw();
     await readViews();
-    const restored = new URLSearchParams(location.hash.slice(1)).get("view");
+    const restored =
+      new URLSearchParams(location.hash.slice(1)).get("view") ??
+      storedWorkspaceView();
     if (restored && views.some((v) => String(v.id) === restored)) {
       viewSelect.value = restored;
       viewSelect.dispatchEvent(new Event("change"));

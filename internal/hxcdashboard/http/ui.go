@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -50,7 +51,7 @@ func (h *UIHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	if request.URL.Path == dashboardPagePath {
-		if request.URL.RawQuery != "" {
+		if !validDashboardPageQuery(request.URL.RawQuery) {
 			http.NotFound(writer, request)
 			return
 		}
@@ -70,6 +71,19 @@ func (h *UIHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	h.serveAsset(writer, request)
+}
+
+// Only page navigation crosses the UI boundary; data filters stay in the
+// authenticated query body and retain the existing field allowlist.
+func validDashboardPageQuery(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	q, err := url.ParseQuery(raw)
+	if err != nil || len(q) != 1 || len(q["tab"]) != 1 {
+		return false
+	}
+	return q.Get("tab") == "overview" || q.Get("tab") == "details"
 }
 
 func (h *UIHandler) pageAssets() (PageAssets, error) {

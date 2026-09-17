@@ -126,7 +126,7 @@ try {
     await poll(
       () =>
         evaluate(
-          `document.querySelectorAll('.dw-card').length>=4 && !!document.querySelector('.tabulator-header')`,
+          `document.querySelectorAll('.dw-card').length>=4 && document.querySelector('[data-workspace-page=overview]')`,
         ),
       name + " workspace did not render",
     ).catch(async (err) => {
@@ -145,6 +145,22 @@ try {
       path.join(output, name + "-desktop.png"),
       Buffer.from(screenshot.data, "base64"),
     );
+    assert.equal(await evaluate(`document.querySelectorAll('.tabulator').length`),0,"overview does not mount a detail table");
+    await evaluate(`document.querySelector('[data-workspace-tab=details]').click()`);
+    await poll(()=>evaluate(`!!document.querySelector('.tabulator-header') && document.querySelectorAll('.tabulator-row:not(.tabulator-group)').length>0`),"detail page rows");
+    assert.equal(await evaluate(`document.querySelector('.dw-overview').hidden`),true,"details does not show dashboard");
+    assert.equal(await evaluate(`new URLSearchParams(location.search).get('tab')`),"details");
+    const detailshot=await call("Page.captureScreenshot",{format:"png"});
+    await fs.writeFile(path.join(output,name+"-details-desktop.png"),Buffer.from(detailshot.data,"base64"));
+    await evaluate(`document.querySelector('.dw-config-button').click()`);
+    assert.equal(await evaluate(`document.querySelector('dialog[open] h2').textContent`),"列设置");
+    assert.equal(await evaluate(`document.querySelectorAll('dialog[open] input[data-metric]').length`),0,"column panel excludes metrics");
+    await evaluate(`document.querySelector('dialog[open] button[aria-label="关闭设置"]').click();history.back()`);
+    await poll(()=>evaluate(`document.querySelector('[data-workspace-page=overview]')`),"back restores overview");
+    await evaluate(`document.querySelector('.dw-config-button').click()`);
+    assert.equal(await evaluate(`document.querySelector('dialog[open] h2').textContent`),"配置看板");
+    assert.equal(await evaluate(`document.querySelectorAll('dialog[open] input[data-column]').length`),0,"dashboard panel excludes columns");
+    await evaluate(`document.querySelector('dialog[open] button[aria-label="关闭设置"]').click()`);
     if (name === "hxc") {
       await evaluate(
         `document.querySelector('#hxcStage').value='active_used';document.querySelector('#hxcApply').click()`,
@@ -256,6 +272,12 @@ try {
       path.join(output, name + "-mobile.png"),
       Buffer.from(mobile.data, "base64"),
     );
+    await evaluate(`document.querySelector('[data-workspace-tab=details]').click()`);
+    await poll(()=>evaluate(`!!document.querySelector('.tabulator-header')`),"mobile details");
+    assert.ok(await evaluate(`document.querySelector('.tabulator-tableholder').scrollWidth >= document.querySelector('.tabulator-tableholder').clientWidth`),"grid scroll surface");
+    const detailMobile=await call("Page.captureScreenshot",{format:"png"});await fs.writeFile(path.join(output,name+"-details-mobile.png"),Buffer.from(detailMobile.data,"base64"));
+    await call("Page.reload");
+    await poll(()=>evaluate(`document.querySelector('[data-workspace-page=details]') && document.querySelectorAll('.tabulator-row:not(.tabulator-group)').length>0`),name+" direct detail reload").catch(async e=>{throw new Error(e.message+" "+await evaluate(`JSON.stringify({url:location.href,text:document.body.innerText.slice(0,1800),page:document.querySelector('[data-workspace-page]')?.dataset.workspacePage})`))});
   }
   // Snapshot-bound pagination, full aggregate and saved view CAS through the Host.
   const adminCall = (url, body, key, method = "POST") =>
@@ -337,6 +359,16 @@ try {
     await evaluate(`document.querySelectorAll('.dw-card').length`),
     2,
   );
+  await evaluate(`document.querySelector('.dw-config-button').click();document.querySelector('input[data-metric="total"]').click();document.querySelector('dialog[open] button[aria-label="关闭设置"]').click()`);
+  assert.equal(await evaluate(`document.querySelectorAll('.dw-card[data-metric="total"]').length`),0,"dashboard selection changes cards");
+  await evaluate(`(()=>{const select=document.querySelector('.dw-bar > select');select.value='';select.dispatchEvent(new Event('change'))})()`);
+  await poll(()=>evaluate(`!!document.querySelector('.dw-dialog[open]')`),"unsaved view guard");
+  await evaluate(`[...document.querySelectorAll('.dw-dialog button')].find(b=>b.textContent==='取消').click()`);
+  assert.equal(await evaluate(`document.querySelectorAll('.dw-card').length`),1,"cancel keeps current settings");
+  await evaluate(`(()=>{const select=document.querySelector('.dw-bar > select');select.value='';select.dispatchEvent(new Event('change'))})()`);
+  await poll(()=>evaluate(`!!document.querySelector('.dw-dialog[open]')`),"discard guard");
+  await evaluate(`[...document.querySelectorAll('.dw-dialog button')].find(b=>b.textContent==='放弃修改').click()`);
+  await poll(()=>evaluate(`document.querySelector('#hxcMeta')?.textContent.includes('共 30 人') && document.querySelectorAll('.dw-card').length===4`),"discard restores default view scope and presentation");
   const grouped = await adminCall(
     "/api/admin/hxc-dashboard/query",
     { filters: {}, group_by: "stage", limit: 10 },
@@ -455,7 +487,15 @@ try {
   );
   assert.equal(issued.status, 200, "issue authenticated share");
   const token = issued.value.token;
+  const metricsOnly = await adminCall('/api/admin/hxc-dashboard/shares', {mode:'metrics',fields:[],config:{query:{filters:{}}}}, 'browser-metrics-only');
+  assert.equal(metricsOnly.status,200);
   await call("Network.clearBrowserCookies");
+  await call("Page.navigate", {url:origin+'/shared/data-dashboard?tab=details#hxc:'+metricsOnly.data.token});
+  await poll(()=>evaluate(`document.querySelector('.dw-card strong')?.textContent==='30'`),"metrics only view");
+  assert.equal(await evaluate(`document.querySelector('[data-workspace-tab=details]').hidden`),true,"tampered tab cannot reveal detail navigation");
+  assert.equal(await evaluate(`document.querySelectorAll('.tabulator').length`),0,"metrics only cannot mount rows");
+  const metricsResponse=await publicCall('/api/public/hxc-dashboard/query',{token:metricsOnly.data.token});
+  assert.equal((metricsResponse.data.items||[]).length,0,"metrics only API excludes detail rows");
   await call("Page.navigate", {
     url: origin + "/shared/data-dashboard#hxc:" + token,
   });
@@ -468,6 +508,7 @@ try {
     await evaluate(`document.documentElement.scrollWidth<=innerWidth+1`),
     "public mobile must not overflow viewport",
   );
+  await evaluate(`document.querySelector('[data-workspace-tab=details]').click()`);
   await evaluate(
     `document.querySelector('select[aria-label="分组"]').value='stage';[...document.querySelectorAll('button')].find(b=>b.textContent==='应用').click();`,
   );
