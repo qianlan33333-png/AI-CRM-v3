@@ -14,7 +14,7 @@ func TestDashboardWorkspacePostgreSQLReceiptsCASAndRevocation(t *testing.T) {
 	pool, uow, cleanup := hxcIntegrationPool(t)
 	defer cleanup()
 	ctx := context.Background()
-	raw, err := os.ReadFile(hxcMigrationPath(t, "0178_hxc_dashboard_views.sql"))
+	raw, err := os.ReadFile(hxcMigrationPath(t, "0181_hxc_dashboard_views.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -156,3 +156,5 @@ GitHub 参考：[Metabase dashboard interactivity](https://github.com/metabase/m
 - 独立 PostgreSQL 16 + 真实 Chromium：`TestPostgreSQLAdminShellLayoutChromiumJourney`、`TestPostgreSQLDataWorkspaceChromiumJourney` 通过；覆盖总览无表格、明细无看板、分别设置、页签后退/刷新、未保存取消/放弃、保存视图恢复、IME/乱序/失败重试、全量组计数、仅指标 URL 篡改与无明细 API、匿名范围及撤销。
 - 两个 Owner 的 UI 路由仅允许 `tab=overview|details`；重复值、未知值及异常查询拒绝。
 - 截图为独立测试数据，非生产业务数据。完整 CI 以 PR 当前提交为准；未部署。
+
+合并主分支后，主分支已占用迁移 0178–0180，本 PR 未发布的 HXC 看板迁移顺延为 `0181_hxc_dashboard_views.sql`，同步安装与就绪校验。CI 发现的重复编号在本地准确复现，修复后全新安装/升级及当前模块就绪用例均通过。

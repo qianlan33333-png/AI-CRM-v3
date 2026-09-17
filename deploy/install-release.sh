@@ -201,7 +201,7 @@ test -f "$release_dir/migrations/0174_product_external_push_test_delivery_id.sql
 test -f "$release_dir/migrations/0175_customer_minimum_directory_projection.sql"
 test -f "$release_dir/migrations/0176_survey_single_submission_claims.sql"
 test -f "$release_dir/migrations/0177_survey_operation_legacy_parity.sql"
-test -f "$release_dir/migrations/0178_hxc_dashboard_views.sql"
+test -f "$release_dir/migrations/0181_hxc_dashboard_views.sql"
 test -f "$release_dir/migrations/0067_survey_completion_snapshots.sql"
 test -f "$release_dir/migrations/0084_hxc_shared_facts.sql"
 test -f "$release_dir/migrations/0090_survey_oauth_state_redirect.sql"
