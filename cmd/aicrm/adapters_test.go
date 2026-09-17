@@ -625,6 +625,7 @@ func TestApplicationRouterAndAdminAPIsMountRecoveryAndWeChatPayRefundPrefixesExa
 		t.Fatal(err)
 	}
 	for _, path := range []string{
+		"/api/admin/refunds/recovery",
 		"/api/admin/wechat-pay/profit-sharing/receivers/psrecv_9/recover",
 		"/api/admin/wechat-pay/refunds/9/reconcile",
 	} {
@@ -638,6 +639,11 @@ func TestApplicationRouterAndAdminAPIsMountRecoveryAndWeChatPayRefundPrefixesExa
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/profit-sharing/recover", nil))
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("unexpected broad payment route status=%d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/refunds/recovery/extra", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unexpected broad refund recovery route status=%d", response.Code)
 	}
 }
 
