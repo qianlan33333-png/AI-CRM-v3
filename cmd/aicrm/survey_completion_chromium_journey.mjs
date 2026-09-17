@@ -67,17 +67,21 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"]'))", 'login did not render');
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`, 'submit login');
   await waitFor(cdp, "location.pathname === '/admin/questionnaireOps.html'", 'login did not reach questionnaire operations');
-  await waitFor(cdp, "Boolean(document.querySelector('.qo-page')) && document.querySelector('[data-push-enabled]')?.checked === false", 'legacy-parity operations configuration did not render');
+  await waitFor(cdp, "Boolean(document.querySelector('.qo-page')) && Boolean(document.querySelector('[data-param-name]')) && document.querySelector('[data-push-enabled]')?.checked === false", 'legacy-parity operations configuration did not finish loading');
   await evaluate(cdp, "document.querySelector('[data-tab=\"push\"]')?.click(); true", 'open external push tab');
-  await waitFor(cdp, "Boolean(document.querySelector('#qo-push-url')) && Boolean(document.querySelector('[data-save-push]'))", 'legacy external push fields did not render');
+  await waitFor(cdp, "Boolean(document.querySelector('#qo-push-url')) && Boolean(document.querySelector('[data-save-push]')) && Boolean(document.querySelector('[data-param-name]'))", 'legacy external push fields did not render');
   await evaluate(cdp, `(() => {
     const set=(selector,value)=>{const node=document.querySelector(selector);if(!node)throw new Error('missing '+selector);node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));};
     const toggle=document.querySelector('[data-push-enabled]'); toggle.checked=true; toggle.dispatchEvent(new Event('change',{bubbles:true}));
     set('[data-webhook]',${JSON.stringify(webhook)}); set('[data-push-type]','subscription'); set('[data-expires]','2147483000'); set('[data-day]','45'); set('[data-frequency]','2'); set('[data-remark]','browser parity');
-    if(!document.querySelector('[data-param-name]'))document.querySelector('[data-add-param]').click();
+    return true;
+  })()`, 'enable legacy external push fields');
+  await waitFor(cdp, "Boolean(document.querySelector('[data-param-name]')) && Boolean(document.querySelector('[data-param-value]'))", 'external push parameter row did not render');
+  await evaluate(cdp, `(() => {
+    const set=(selector,value)=>{const node=document.querySelector(selector);if(!node)throw new Error('missing '+selector);node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));};
     set('[data-param-name]','campaign'); set('[data-param-value]','survey-browser');
     document.querySelector('[data-save-push]').click(); return true;
-  })()`, 'enable and save legacy external push fields');
+  })()`, 'save legacy external push fields');
   await waitFor(cdp, "document.querySelector('[data-toast]')?.textContent === '外部推送已保存'", 'visible configuration save confirmation did not render');
   if(cdp.saveRequests!==1) throw new Error('header save request count='+cdp.saveRequests);
   const reloadMarker = 'survey-journey-reload';
