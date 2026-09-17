@@ -219,6 +219,7 @@ make_release() {
     0175_customer_minimum_directory_projection.sql \
     0176_survey_single_submission_claims.sql \
     0177_survey_operation_legacy_parity.sql \
+    0181_hxc_dashboard_views.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \

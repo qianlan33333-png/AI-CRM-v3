@@ -26,6 +26,8 @@ func TestProductUIAllowlistUsesDonorTemplateAndMountsDataPage(t *testing.T) {
 		}
 	}
 	manifest := buildManifest{Entries: map[string]string{"tokens": "assets/tokens.css", "labs": "assets/labs.css", "productDistributionStyles": "assets/product-distribution.css", "productHost": "assets/product-host.js", "standardComponentsHost": "assets/standard-components-host.js", "selectionDialogStyles": "assets/selection-dialog.css", "sharedDetailDrawerStyles": "assets/shared-detail-drawer.css"}, Files: map[string]json.RawMessage{"assets/tokens.css": json.RawMessage("null"), "assets/labs.css": json.RawMessage("null"), "assets/product-distribution.css": json.RawMessage("null"), "assets/product-host.js": json.RawMessage("null"), "assets/standard-components-host.js": json.RawMessage("null"), "assets/selection-dialog.css": json.RawMessage("null"), "assets/shared-detail-drawer.css": json.RawMessage("null"), "assets/standard-components/material_picker.css": json.RawMessage("null"), "assets/standard-components/send_content_composer.css": json.RawMessage("null"), "assets/standard-components/wecom_tag_picker.css": json.RawMessage("null")}}
+	manifest.Entries["productWorkspace"] = "assets/product-workspace.js"
+	manifest.Files["assets/product-workspace.js"] = json.RawMessage("null")
 	rawManifest, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +92,13 @@ func TestProductPageRejectsUnexpectedQueriesAndNonPositiveIDs(t *testing.T) {
 		want bool
 	}{
 		{path: "/admin/wechat-pay/products?view=form", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=overview", want: true},
+		{path: "/admin/spProductData.html?id=7&tab=details", want: true},
+		{path: "/admin/spProductData.html?id=7&tab=other", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=details&tab=overview", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=details&extra=1", want: false},
+		{path: "/admin/spProductData.html?id=7&tab=%ZZ", want: false},
+		{path: "/admin/productForm.html?id=7&tab=details", want: false},
 		{path: "/admin/productForm.html?id=0", want: false},
 		{path: "/admin/service-period-products/0/edit", want: false},
 		{path: "/admin/service-period-products/new", want: true},

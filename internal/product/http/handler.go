@@ -142,6 +142,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	switch {
+	case path == "/api/public/service-period-member-grid/scoped-query":
+		h.publicScopedQuery(w, r)
 	case path == "/api/public/service-period-member-grid/bootstrap":
 		h.publicMemberGridBootstrap(w, r)
 	case path == "/api/public/service-period-member-grid/query":
@@ -624,6 +626,8 @@ func (h *Handler) serviceTail(w http.ResponseWriter, r *http.Request, tail strin
 		h.memberViews(w, r, id)
 	case strings.HasPrefix(suffix, "member-views/"):
 		h.memberView(w, r, id, strings.TrimPrefix(suffix, "member-views/"))
+	case suffix == "member-grid/scoped-shares":
+		h.scopedShares(w, r, id)
 	case suffix == "member-grid/query":
 		h.memberGridQuery(w, r, id)
 	case suffix == "member-grid/collaborators":
@@ -1572,14 +1576,15 @@ func (h *Handler) memberGridQuery(w http.ResponseWriter, r *http.Request, id int
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	rows, next, err := h.queryDonorGridComposed(r.Context(), id, config, body.Cursor, body.Limit)
+	var metrics memberGridMetrics
+	rows, next, err := h.queryDonorGridWithMetrics(r.Context(), id, config, body.Cursor, body.Limit, &metrics)
 	if err != nil {
 		if !productMemberGridQueryError(w, err) {
 			resultError(w, err)
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "limit": body.Limit, "next_cursor": next, "has_more": next != ""})
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "limit": body.Limit, "next_cursor": next, "has_more": next != "", "total": metrics.Total, "metrics": metrics})
 }
 func memberGridMemberRef(id int64) string {
 	var raw [16]byte

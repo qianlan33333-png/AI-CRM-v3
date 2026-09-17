@@ -10,6 +10,9 @@ const bundle = (await build({
     contents: "import { mountFunnelGrid } from '../src/admin/sections/funnelGrid'; window.HXCFunnel = { mountFunnelGrid };",
     resolveDir: path.join(root, 'web/v3'), sourcefile: 'hxc-presentation-entry.ts',
   },
+  // Presentation adapter assertions run without layout/canvas. The real
+  // Tabulator/ECharts integration is exercised by the required Host Chromium journey.
+  plugins:[{name:'workspace-presentation-fixture',setup(b){b.onResolve({filter:/shared\/ui\/dataWorkspace$/},()=>({path:'workspace',namespace:'presentation-test'}));b.onLoad({filter:/.*/,namespace:'presentation-test'},()=>({contents:`export function storedWorkspaceView(){return null;} export function workspaceButton(label,action){const b=document.createElement("button");b.textContent=label;b.onclick=action;return b;} export class DataWorkspace {constructor(root,columns){this.root=root;this.columns=columns;this.rows=document.createElement("div");root.append(this.rows);}placeToolbar(el){this.root.append(el);} setViewPicker(el){this.root.append(el);} setMeta(el){this.root.append(el);} setFooter(el){this.root.append(el);} addTool(label,el){this.root.append(el);} setScope(){} closeTools(){} refreshLinks(){} setPage(){} setDrilldown(){} markDirty(){} markSaved(){} async confirmViewChange(){return true;} async configure(){} async render(rows){this.rows.replaceChildren();for(const row of rows){const el=document.createElement('div');el.textContent=this.columns.map(c=>row[c.field]??'').join(' ');this.rows.append(el);}}destroy(){} }`,loader:'js'}));}}],
   bundle: true, format: 'iife', platform: 'browser', target: 'es2020', write: false, minify: true, logLevel: 'warning',
 })).outputFiles[0].text;
 const wait = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -18,10 +21,12 @@ const queryRequests = [];
 const dom = new JSDOM('<!doctype html><body><main id="stage"></main></body>', {
   url: 'https://test.invalid/admin/funnel.html', runScripts: 'dangerously', pretendToBeVisual: true,
   beforeParse(window) {
+    window.structuredClone = structuredClone;
     window.Response = Response;
     window.Headers = Headers;
     window.fetch = async (input, init) => {
       const url = new URL(String(input), window.location.href);
+      if(url.pathname.endsWith("/views")) return new Response(JSON.stringify({views:[]}),{status:200});
       const summary = url.pathname.endsWith('/summary');
       const request = summary ? {} : JSON.parse(String(init?.body || "{}"));
       if (!summary) queryRequests.push(request);
@@ -54,7 +59,7 @@ const dom = new JSDOM('<!doctype html><body><main id="stage"></main></body>', {
           groups: request.group_by === 'subscription_tier'
             ? [{ key: '创始人计划', count: 1 }, { key: '', count: 1 }]
             : [{ key: 'no_match', count: 2 }],
-          next_cursor: '',
+          next_cursor: '',total:1,metrics:{total:1,active_used:0,active_unused:0,registered_no_active_membership:1},tiers:[],
         };
       return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
     };
@@ -65,7 +70,7 @@ dom.window.eval(bundle);
 await dom.window.HXCFunnel.mountFunnelGrid(dom.window.document.querySelector('#stage'), {});
 await wait(10);
 const text = dom.window.document.querySelector('#stage')?.textContent || '';
-assert.ok(text.includes('统计时点 2026-09-07 08:00:00'), 'HXC summary renders a Shanghai time with seconds');
+assert.ok(text.includes('统计时间 2026-09-07 08:00:00'), 'HXC summary renders a Shanghai time with seconds');
 assert.ok(text.includes('免费版、已过期或未填写到期时间'), 'HXC explanation does not expose the free enum');
 assert.ok(text.includes('免费版'), 'HXC rows map the free subscription enum');
 assert.ok(text.includes('创始人计划'), 'HXC preserves an existing Chinese business tier name');

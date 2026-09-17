@@ -30,6 +30,20 @@ class BrowserCoverage(unittest.TestCase):
         self.assertFalse(early & later)
         self.assertEqual(early | later, set(select_journeys(listing, "all")))
 
+    def test_browser_execution_keeps_all_discovered_tests_with_suite_budget(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(dev_preflight.os.environ, {"AICRM_DATABASE_URL": "isolated-test"}):
+            check = Preflight(Path(directory))
+            listing = Path(directory) / "listing.log"
+            extra = "TestPostgreSQLDataWorkspaceChromiumJourney"
+            listing.write_text(self.listing([extra]))
+            with patch.object(check, "run", return_value=listing) as run, patch.object(dev_preflight, "verify_journey_results", return_value={}):
+                check.browser("all")
+            command = run.call_args_list[-1].args[1]
+            self.assertIn("-timeout=15m", command)
+            pattern = command[command.index("-run") + 1]
+            for name in REQUIRED_JOURNEYS | {extra}:
+                self.assertIn(name, pattern)
+
     def test_missing_existing_test_fails(self):
         for name in REQUIRED_JOURNEYS:
             with self.subTest(name=name), self.assertRaises(ValueError):

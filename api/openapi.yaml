@@ -1065,6 +1065,162 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/hxc-dashboard/views:
+    get:
+      operationId: getHXCWorkspaceViews
+      tags: [DataWorkspace]
+      description: Private saved views with owner isolation and CAS.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: postHXCWorkspaceViews
+      tags: [DataWorkspace]
+      description: Private saved views with owner isolation and CAS.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 200}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspaceView"}}}}
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteHXCWorkspaceViews
+      tags: [DataWorkspace]
+      description: Private saved views with owner isolation and CAS.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 200}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspaceView"}}}}
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/hxc-dashboard/shares:
+    get:
+      operationId: getHXCWorkspaceShares
+      tags: [DataWorkspace]
+      description: Immutable scope share capabilities; DELETE revokes a version. HXC requires SuperAdmin; Product requires CanShare.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: postHXCWorkspaceShares
+      tags: [DataWorkspace]
+      description: Immutable scope share capabilities; DELETE revokes a version. HXC requires SuperAdmin; Product requires CanShare.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 200}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspaceShare"}}}}
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteHXCWorkspaceShares
+      tags: [DataWorkspace]
+      description: Immutable scope share capabilities; DELETE revokes a version. HXC requires SuperAdmin; Product requires CanShare.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 200}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspaceShare"}}}}
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{product_id}/member-grid/scoped-shares:
+    get:
+      operationId: getProductWorkspaceShares
+      tags: [DataWorkspace]
+      description: Immutable scope share capabilities; DELETE revokes a version. HXC requires SuperAdmin; Product requires CanShare.
+      security: [{adminSession: []}]
+      parameters: [{name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: postProductWorkspaceShares
+      tags: [DataWorkspace]
+      description: Immutable scope share capabilities; DELETE revokes a version. HXC requires SuperAdmin; Product requires CanShare.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 200}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspaceShare"}}}}
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteProductWorkspaceShares
+      tags: [DataWorkspace]
+      description: Immutable scope share capabilities; DELETE revokes a version. HXC requires SuperAdmin; Product requires CanShare.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 200}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspaceShare"}}}}
+      responses:
+        "200": {description: Persisted result or list, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/public/hxc-dashboard/query:
+    post:
+      operationId: queryPublicHXCWorkspace
+      tags: [DataWorkspace]
+      security: []
+      description: Credential-free session-independent read. Token authorizes only the frozen base scope. Extra predicates intersect the base. Returned fields are projected server-side; metrics mode never returns rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string, minLength: 43, maxLength: 43, writeOnly: true}
+                query: {type: object, additionalProperties: true}
+      responses:
+        "200": {description: Authorized metrics and optional redacted rows, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspacePublicResult"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "410": {$ref: "#/components/responses/Error"}
+  /api/public/service-period-member-grid/scoped-query:
+    post:
+      operationId: queryPublicProductWorkspace
+      tags: [DataWorkspace]
+      security: []
+      description: Credential-free session-independent read. Token authorizes only the frozen base scope. Extra predicates intersect the base. Returned fields are projected server-side; metrics mode never returns rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string, minLength: 43, maxLength: 43, writeOnly: true}
+                config: {type: object, additionalProperties: true}
+                cursor: {type: string, maxLength: 4096}
+      responses:
+        "200": {description: Authorized metrics and optional redacted rows, content: {application/json: {schema: {$ref: "#/components/schemas/DataWorkspacePublicResult"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "410": {$ref: "#/components/responses/Error"}
   /api/admin/hxc-dashboard/summary:
     get:
       operationId: getHXCDashboardSummary
@@ -4791,15 +4947,48 @@ components:
       additionalProperties: false
       required: [key, count]
       properties: {key: {type: string}, count: {type: integer, format: int64, minimum: 0}}
+    DataWorkspaceView:
+      type: object
+      properties:
+        id: {type: integer, minimum: 0}
+        version: {type: integer, minimum: 0}
+        name: {type: string, minLength: 1, maxLength: 60}
+        config: {type: object, additionalProperties: true, description: Query and presentation; excludes raw source ID, cursor and projection ID.}
+    DataWorkspaceShare:
+      type: object
+      properties:
+        id: {type: integer, minimum: 0}
+        version: {type: integer, minimum: 0}
+        config: {type: object, additionalProperties: true, description: Frozen owner-specific query and presentation.}
+        fields: {type: array, uniqueItems: true, items: {type: string}, description: Explicit public field allowlist; identities and free-text notes prohibited.}
+        mode: {type: string, enum: [metrics, details], default: metrics}
+    DataWorkspacePublicResult:
+      type: object
+      required: [items, total, metrics, next_cursor, mode, fields]
+      properties:
+        items: {type: array, maxItems: 50, items: {type: object, additionalProperties: true}}
+        total: {type: integer, minimum: 0}
+        metrics: {type: object, additionalProperties: true}
+        next_cursor: {type: string}
+        mode: {type: string, enum: [metrics, details]}
+        fields: {type: array, items: {type: string}}
+        presentation: {type: object, additionalProperties: true}
+        groups: {type: array, items: {$ref: "#/components/schemas/HXCDashboardGroup"}}
+        tiers: {type: array, items: {$ref: "#/components/schemas/HXCDashboardGroup"}}
+        snapshot_at: {type: string, format: date-time}
+        stale: {type: boolean}
     HXCDashboardQueryResponse:
       type: object
       additionalProperties: false
-      required: [projection_id, items, groups, next_cursor]
+      required: [projection_id, items, groups, next_cursor, total, metrics, tiers]
       properties:
         projection_id: {$ref: "#/components/schemas/PositiveID"}
         items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/HXCDashboardRow"}}
         groups: {type: array, items: {$ref: "#/components/schemas/HXCDashboardGroup"}}
         next_cursor: {type: string}
+        total: {type: integer, minimum: 0}
+        metrics: {type: object, additionalProperties: {type: integer, minimum: 0}}
+        tiers: {type: array, items: {$ref: "#/components/schemas/HXCDashboardGroup"}}
     HXCDashboardRefresh:
       type: object
       additionalProperties: false

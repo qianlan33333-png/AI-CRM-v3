@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { chromiumStartupDiagnostic } from "../../internal/webshell/chromium_launch.mjs";
+import { chromiumStartupDiagnostic, chromiumStartupTimeoutMS as accessChromiumStartupTimeoutMS } from "../../internal/webshell/chromium_launch.mjs";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -15,7 +15,6 @@ const credentials = {
 };
 if (!/^https:\/\//.test(baseURL || "") || !screenshots || Object.values(credentials).flat().some((value) => !value)) throw new Error("Access UI Chromium journey environment is incomplete");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const accessChromiumStartupTimeoutMS = 8_000;
 const browserBinary = () => {
   const choices = [process.env.AICRM_CHROMIUM_BINARY, process.env.CHROME_BIN, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "google-chrome", "chromium"].filter(Boolean);
   for (const candidate of choices) { try { if (candidate.includes("/") ? spawnSync(candidate, ["--version"], { stdio: "ignore" }).status === 0 : spawnSync("which", [candidate], { stdio: "ignore" }).status === 0) return candidate; } catch (_) {} }

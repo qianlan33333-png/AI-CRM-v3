@@ -1895,6 +1895,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/public/wechat-shop/", paymentHandler)
 	adminAPIs.Handle("/api/public/service-period-member-grid/bootstrap", productBindings.Products)
 	adminAPIs.Handle("/api/public/service-period-member-grid/query", productBindings.Products)
+	adminAPIs.Handle("/api/public/service-period-member-grid/scoped-query", productBindings.Products)
+	adminAPIs.Handle("/api/public/hxc-dashboard/query", hxcHandler.Routes())
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
@@ -2026,9 +2028,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	})
 	memberGridUI := producthttp.NewMemberGridUI()
 	productUI := productModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets productmodule.ProductAssets) error {
-		if page == "spProductData" {
-			return producthttp.RenderMemberGridInternal(writer, request, request.URL.Query().Get("id"))
-		}
 		titles := map[string]string{"products": "商品管理", "productForm": "创建普通商品", "spProducts": "周期商品管理", "spProductForm": "创建周期商品", "spProductData": "周期商品 · 会员数据"}
 		if page == "productForm" && (request.URL.Query().Get("id") != "" || strings.HasSuffix(request.URL.Path, "/edit")) {
 			titles[page] = "编辑普通商品"
@@ -2247,6 +2246,10 @@ func mountOpenPlatformUI(next, ui http.Handler, authentication accessAuthenticat
 
 func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthentication) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/shared/data-dashboard" || strings.HasPrefix(request.URL.Path, "/dashboard-public-assets/") {
+			dashboardUI.ServeHTTP(writer, request)
+			return
+		}
 		if request.URL.Path == "/admin/hxc-dashboard" || strings.HasPrefix(request.URL.Path, "/hxc-dashboard-assets/") {
 			requireAdminSession(authentication, dashboardUI).ServeHTTP(writer, request)
 			return
@@ -2564,6 +2567,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/service-period-products/", productHandler)
 	mux.Handle("/api/public/service-period-member-grid/bootstrap", productHandler)
 	mux.Handle("/api/public/service-period-member-grid/query", productHandler)
+	mux.Handle("/api/public/service-period-member-grid/scoped-query", productHandler)
+	mux.Handle("/api/public/hxc-dashboard/query", identity)
 	mux.Handle("/api/admin/coupons", couponHandler)
 	mux.Handle("/api/admin/coupons/", couponHandler)
 	mux.Handle("/api/admin/config/", configHandler)
@@ -2811,7 +2816,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		// (icon layout) and therefore share the donor pages' style relaxation.
 		_, distAdminPage := webshell.DistAdminPageFile("web/dist", request.URL.Path)
 		ownerHandoffPage := isOwnerHandoffUIPath(request.URL.Path)
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage || ownerHandoffPage || distAdminPage {
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || request.URL.Path == "/shared/data-dashboard" || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage || ownerHandoffPage || distAdminPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

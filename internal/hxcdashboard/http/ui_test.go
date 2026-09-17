@@ -42,6 +42,14 @@ func TestUIHandlerRendersDashboardAndServesOnlyReleaseAssets(t *testing.T) {
 		t.Fatalf("page status=%d cache=%q body=%q", response.Code, response.Header().Get("Cache-Control"), response.Body.String())
 	}
 
+	for _, tab := range []string{"overview", "details"} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, dashboardPagePath+"?tab="+tab, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("tab %s status=%d", tab, response.Code)
+		}
+	}
+
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/hxc-dashboard-assets/chunks/funnel-HASH.js", nil))
 	if response.Code != http.StatusOK || response.Body.String() != "funnel" || !strings.Contains(response.Header().Get("Content-Type"), "javascript") || !strings.Contains(response.Header().Get("Cache-Control"), "immutable") {
@@ -50,6 +58,10 @@ func TestUIHandlerRendersDashboardAndServesOnlyReleaseAssets(t *testing.T) {
 
 	for _, target := range []string{
 		"/admin/hxc-dashboard?persisted=1",
+		"/admin/hxc-dashboard?tab=other",
+		"/admin/hxc-dashboard?tab=details&tab=overview",
+		"/admin/hxc-dashboard?tab=details&user=1",
+		"/admin/hxc-dashboard?tab=%ZZ",
 		"/hxc-dashboard-assets/not-in-release-HASH.js",
 		"/hxc-dashboard-assets/chunks/../admin-HASH.js",
 	} {

@@ -189,3 +189,9 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 | 1、3–8、11–12、14–21、24、26–34、37–41、44、47–49、51–58、62–75、80–83 | C0 | 仅路由、Host、assets 或未完成页面边界核对；逐页真实数据、失败态、权限与 readback 尚待验收。 |
 
 矩阵当前覆盖的是 clean main 能确认的 route/view 与既有 artifact；`C0`、共享组件测试、注入式 Host 或单一页面截图都不会自动升级为 `C3`。四类曾识别的真实缺口已有 remaining-pages clean tree `e2dded70f8f0` 隔离 Chromium 证据，#355/#358/#359/#360/#361 已入 main；生产认证 readback、部署和 Provider receipt 仍待。`/admin/coupons`、couponForm、couponData、`/admin/service-period-products`、`/admin/external-effects`、`/admin/channels/new`、`/admin/api-docs`／runtime releases、`/admin/owner-migration` 已有后台 1280/1440 证据。H5 auth/all/one/error/result 有三宽证据；其余八个 H5 build carrier 与无独立公共 UI 的渠道按代码可达性记 N/A。当前未发现应新增页面的遗漏，也不扩大业务验收范围。GroupOps 标准群运营、运营闭环、自动化话术、AI 助手四类页面也必须保持独立记录。
+
+## 基础多维表与指标看板（2026-09-17，待完整 CI）
+
+`web/v3/shared/ui/dataWorkspace.ts` 由 `/admin/spProductData.html` 的 `productWorkspace`、`/admin/hxc-dashboard` 的 `funnelGrid.ts` 和 `/shared/data-dashboard` 的 `dashboardShare` 调用。Tabulator 仅处理展示、列及折叠，Go Owner 在分页前计算范围、指标和组人数；共享组件不访问领域存储。后台复用既有 transport、单页头，匿名入口只加载独立 manifest 闭包。`dashboardShareDialog.ts` 复用分享交互，Product/HXC 各自授权、持久化、审计。公开字段只读白名单与不可扩大的基础范围在服务端执行。真实 Chromium 覆盖范围/撤销及移动端，证据状态见 PRD 验证记录；不代表生产部署。
+
+页面层级修订：同一 DataWorkspace 提供顶部总览／明细导航、按需挂载 Tabulator、分别配置指标与列的右侧面板、可撤回范围条件、未保存切换提示。样式集中在 `dataWorkspaceStyle.ts`，三个调用方共享；HXC Host 明确允许 `tab=overview|details`。当前改造验证独立记录，不沿用旧布局 CI。

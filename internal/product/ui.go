@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -74,6 +75,23 @@ func (h *productUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	assets, err := h.assets()
+	if err == nil && page == "spProductData" {
+		var manifest buildManifest
+		raw, e := os.ReadFile(filepath.Join(h.dist, "asset-manifest.json"))
+		if e == nil {
+			e = json.Unmarshal(raw, &manifest)
+		}
+		if e != nil {
+			err = e
+		} else {
+			value := manifest.Entries["productWorkspace"]
+			if _, exists := manifest.Files[value]; value == "" || !exists || !strings.HasPrefix(value, "assets/") || strings.Contains(value, "..") {
+				err = errors.New("product workspace asset missing")
+			} else {
+				assets.HostJS = "/product-assets/" + strings.TrimPrefix(value, "assets/")
+			}
+		}
+	}
 	if err != nil {
 		http.Error(w, "product UI unavailable", http.StatusServiceUnavailable)
 		return
@@ -134,7 +152,16 @@ func validProductUIQuery(r *http.Request, page, canonicalID string) bool {
 	if canonicalID != "" && !positiveDecimal(canonicalID) {
 		return false
 	}
-	values := r.URL.Query()
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return false
+	}
+	if tabs, ok := values["tab"]; ok {
+		if page != "spProductData" || len(tabs) != 1 || (tabs[0] != "overview" && tabs[0] != "details") {
+			return false
+		}
+		delete(values, "tab")
+	}
 	if len(values) == 0 {
 		return true
 	}

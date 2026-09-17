@@ -19,7 +19,9 @@ import (
 // accepts the complete configuration shape, then admits only fields whose
 // current Owner can evaluate them over the full member relation.
 type donorGridConfig struct {
-	SchemaVersion int `json:"schema_version"`
+	Base          *donorGridConfig `json:"-"`
+	SchemaVersion int              `json:"schema_version"`
+	Presentation  json.RawMessage  `json:"presentation,omitempty"`
 	Filter        struct {
 		Logic      string               `json:"logic"`
 		Conditions []donorGridCondition `json:"conditions"`
@@ -561,7 +563,8 @@ func (h *Handler) publicMemberGridQuery(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	rows, next, err := h.queryDonorGridComposed(r.Context(), int64(share.ProductID), config, body.Cursor, body.Limit)
+	var metrics memberGridMetrics
+	rows, next, err := h.queryDonorGridWithMetrics(r.Context(), int64(share.ProductID), config, body.Cursor, body.Limit, &metrics)
 	if err != nil {
 		if !productMemberGridQueryError(w, err) {
 			resultError(w, err)

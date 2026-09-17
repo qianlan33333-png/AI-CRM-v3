@@ -37,6 +37,7 @@ runs:
       run: |
         npm install --global npm@11.12.1
         npm ci --no-audit --no-fund
+        npm ci --prefix web/v3 --no-audit --no-fund
         npm run version:check
     - name: Checkout frozen v2 donor
       if: inputs.donors == 'true'

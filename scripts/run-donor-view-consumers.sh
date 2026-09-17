@@ -6,6 +6,7 @@ set -euo pipefail
 mode="${1:-}"
 v2_donor="${AICRM_V2_FROZEN_DONOR_DIR:-${PR07_DONOR_DIR:?PR07_DONOR_DIR is required}}"
 sidebar_donor="${AICRM_SIDEBAR_DONOR_DIR:?AICRM_SIDEBAR_DONOR_DIR is required}"
+npm ci --prefix web/v3 --no-audit --no-fund
 node scripts/check-donor-source-view-ignore.mjs >/dev/null
 node scripts/prepare-donor-source-views.mjs >/dev/null
 
