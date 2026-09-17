@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHmac } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -373,6 +374,37 @@ try {
   );
   assert.equal(productPublic.status, 200);
   assert.equal(productPublic.data.total, 1);
+  const internalGrid = await adminCall(
+    `/api/admin/service-period-products/${product}/member-grid/query`,
+    { config: pq.config, limit: 50 },
+    "browser-product-internal",
+  );
+  const reference = internalGrid.data.rows[0].record_id;
+  const visitorComputed = createHmac("sha256", productShare.data.token)
+    .update(
+      "dashboard-share-v2\0product-row\0" +
+        productShare.data.share.id +
+        "\0" +
+        reference,
+    )
+    .digest("base64url")
+    .slice(0, 22);
+  assert.notEqual(
+    productPublic.data.items[0].user_ref,
+    visitorComputed,
+    "public bearer must not be the pseudonym key",
+  );
+  assert.equal(
+    (
+      await publicCall(
+        "/api/public/service-period-member-grid/scoped-query",
+        pq,
+      )
+    ).data.items[0].user_ref,
+    productPublic.data.items[0].user_ref,
+    "opaque reference remains stable",
+  );
+
   assert.deepEqual(
     Object.keys(productPublic.data.items[0]).sort(),
     ["__groupCounts", "__groupValues", "remaining_days", "user_ref"].sort(),

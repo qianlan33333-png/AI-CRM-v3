@@ -144,9 +144,18 @@ func (h *Handler) publicScopedQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	safe := []map[string]any{}
 	if share.Mode == "details" {
+		records := make([]string, 0, len(rows))
+		for _, row := range rows {
+			records = append(records, row["record_id"].(string))
+		}
+		references, e := service.ScopedRowReferences(r.Context(), share.ID, records)
+		if e != nil {
+			resultError(w, e)
+			return
+		}
 		for _, row := range rows {
 			v := row["values"].(map[string]any)
-			item := map[string]any{"user_ref": readshare.Token([]byte(body.Token), "product-row", 0, row["record_id"].(string))[:16]}
+			item := map[string]any{"user_ref": references[row["record_id"].(string)]}
 			for _, f := range share.Fields {
 				item[f] = v[f]
 			}

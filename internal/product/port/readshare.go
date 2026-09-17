@@ -6,6 +6,7 @@ import (
 )
 
 type ScopedMemberGridShares interface {
+	ScopedRowReferences(context.Context, int64, []string) (map[string]string, error)
 	ScopedShareToken(context.Context, int64, string) (string, error)
 	SaveScopedShare(context.Context, readshare.Share, MemberGridActor, string) (readshare.Share, error)
 	ReadScopedShare(context.Context, []byte) (readshare.Share, error)

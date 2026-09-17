@@ -67,3 +67,22 @@ func (s *MemberGridWorkspaceService) ScopedShareToken(ctx context.Context, actor
 	}
 	return readshare.Token(secret, "product", actor, key), nil
 }
+
+// ScopedRowReferences uses a server-private key, never the visitor's bearer
+// capability, so visitors cannot enumerate internal record IDs from references.
+func (s *MemberGridWorkspaceService) ScopedRowReferences(ctx context.Context, shareID int64, records []string) (map[string]string, error) {
+	store, ok := s.store.(readshare.Store)
+	if !ok || shareID < 1 || len(records) > 100 {
+		return nil, ErrUnavailable
+	}
+	var key []byte
+	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; key, e = store.ReadShareKey(tx); return e })
+	if err != nil || len(key) != 32 {
+		return nil, ErrUnavailable
+	}
+	out := make(map[string]string, len(records))
+	for _, ref := range records {
+		out[ref] = readshare.Token(key, "product-row", shareID, ref)[:22]
+	}
+	return out, nil
+}
