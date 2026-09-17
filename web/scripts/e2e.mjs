@@ -1781,7 +1781,7 @@ console.log('admin/questionnaireDetail.html（新建/编辑路由）');
   click(assessment.dom, assessment.dom.window.document.querySelector('#save-btn'));
   await sleep(250);
   const assessmentCreate = assessment.trace.find((entry) => entry.path === '/api/admin/questionnaires' && entry.method === 'POST');
-  ok('旧测评 URL 不恢复测评创建入口或提交测评定义', !assessment.dom.window.document.querySelector('[data-assessment-step], #open-assessment-settings') && !!assessment.dom.window.document.querySelector('#field-name') && !assessmentCreate);
+  ok('旧测评 URL 不恢复测评创建入口或提交测评定义', !assessment.dom.window.document.querySelector('[data-assessment-step], #open-assessment-settings') && !!assessment.dom.window.document.querySelector('#field-name') && assessmentCreate?.body?.assessment_enabled === false && Object.keys(assessmentCreate.body.assessment_config || {}).length === 0);
   assessment.dom.window.close();
 }
 

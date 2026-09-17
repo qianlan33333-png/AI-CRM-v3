@@ -1457,6 +1457,28 @@
       ],
       "reason": "Authorize the public Survey completion and operations contract: opaque safe navigation, legacy external-push configuration, release migration closure, a minimal nested completion receipt without a result token, and the retained top-level result-query compatibility token. Identity continues to read canonical Customer only; Provider writes remain in the existing External Effects and Outbound path.",
       "review_reference": "User instructions in this Codex thread: implement the approved questionnaire single-submit and completion PRD, align the actual operations API, do not expose a normal completion token in the nested receipt or H5 flow, and preserve existing result-query compatibility with a nonempty top-level result_token. This is product authorization only; ordinary PR review and required CI remain pending."
+    },
+    {
+      "base_commit": "b522c3f56953b96ce57efd91313c8bfb199d34ff",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "53fa0b1257e40a1a2fdf979351cabb36c4f067b92a379f37b931a6f212bb1e2e",
+          "head_sha256": "abddc4a6cc1a89cc365ff4e93ee3b4d310dcdd24ac6291588cf6382748240322"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "e9a6de8de9c81d4605b18c259bfec1b23a74c6502b0d29828fd29439b0839308",
+          "head_sha256": "bde0be83d6b04d5ef6fa65b25932f9f7e8d95f8e3eedf79ea2d956490a47eb22"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "670f173cd84c685fba478552bab573b7ca77407b604b2b9c1fb8e26633110f55",
+          "head_sha256": "34c9524c7ee6ff1d47d74f92e415aa751966d045f977ea6cb477ecaa0ed51cf0"
+        }
+      ],
+      "reason": "Extend the active V3 contract for the user-requested employee nickname refresh, encrypted model settings, material groups and stable public customer numbers. Frozen donor payloads and gate rules are unchanged.",
+      "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/379"
     }
   ]
 }
