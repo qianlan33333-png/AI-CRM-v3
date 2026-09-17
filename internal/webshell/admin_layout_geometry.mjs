@@ -353,10 +353,10 @@ try {
       const inputs=host ? Array.from(host.querySelectorAll('input')).map(node => node.type) : [];
       const text=String(host?.textContent || '');
       const headings=host ? Array.from(host.querySelectorAll('thead th')).map(node => String(node.textContent || '').trim()) : [];
-      return {host:Boolean(host),inputs,headings,rows:host?.querySelectorAll('tbody tr').length || 0,oldRows:Boolean(document.querySelector('#dRows')),visitor:text.includes('雷达布局访客'),external:text.includes('external-radar-layout-001'),oneid:/CID-[1-9][0-9]*/.test(text),time:text.includes('2026-09-07 09:02:03'),raw:text.includes('2026-09-07T01:02:03'),stage:text.includes('image_loaded'),exportVisible:Boolean(document.querySelector('#dExport')) && getComputedStyle(document.querySelector('#dExport')).display !== 'none'};
+      return {host:Boolean(host),inputs,headings,rows:host?.querySelectorAll('tbody tr').length || 0,oldRows:Boolean(document.querySelector('#dRows')),visitor:text.includes('雷达布局访客'),external:text.includes('external-radar-layout-001'),oneid:/[1-9][0-9]{6}/.test(host?.querySelector('tbody tr td:nth-child(3)')?.textContent || ''),time:text.includes('2026-09-07 09:02:03'),raw:text.includes('2026-09-07T01:02:03'),stage:text.includes('image_loaded'),exportVisible:Boolean(document.querySelector('#dExport')) && getComputedStyle(document.querySelector('#dExport')).display !== 'none'};
     })()`);
-    const expectedHeadings=['昵称','外部联系人 ID','OneID','打开时间'];
-    if (!detail?.host || detail.inputs.join(',') !== 'text,datetime-local,datetime-local' || detail.headings?.join(',') !== expectedHeadings.join(',') || detail.rows !== 1 || detail.oldRows || !detail.visitor || !detail.external || !detail.oneid || !detail.time || detail.raw || detail.stage || !detail.exportVisible) throw new Error("radar detail visitor Host did not replace the frozen query surface");
+    const expectedHeadings=['昵称','外部联系人 ID','用户编号','打开时间'];
+    if (!detail?.host || detail.inputs.join(',') !== 'text,datetime-local,datetime-local' || detail.headings?.join(',') !== expectedHeadings.join(',') || detail.rows !== 1 || detail.oldRows || !detail.visitor || !detail.external || !detail.oneid || !detail.time || detail.raw || detail.stage || !detail.exportVisible) throw new Error("radar detail visitor Host did not replace the frozen query surface: " + JSON.stringify(detail));
   };
   const assertRadarDetailNarrow = async () => {
     try {
@@ -955,14 +955,14 @@ try {
       return {root:box('[data-runtime-release-host].cc-page'),card:box('[data-runtime-release-host].cc-page .cc-card'),title:box('[data-runtime-release-host].cc-page .cc-card-h h2'),table:box('[data-runtime-release-host].cc-page .cc-category-table'),topbar:box('.admin-topbar'),headers:document.querySelectorAll('header.admin-topbar').length,headings,rows:table?.querySelectorAll('tbody [data-category-row]').length || 0,overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,titleText:String(title?.textContent || '').trim()};
     })()`);
     const expectedHeadings = ["类目", "是否生效", "生效开关", "配置"];
-    if (!layout.root || !layout.card || !layout.title || !layout.table || layout.titleText !== "配置类目" || !layout.topbar || layout.headers !== 1 || layout.overflow || layout.rows !== 12 || layout.headings.length !== expectedHeadings.length || layout.headings.some((heading, index) => heading !== expectedHeadings[index]) || layout.root.top + 1 < layout.topbar.bottom || layout.card.top + 1 < layout.root.top || layout.table.top + 1 < layout.card.top || layout.card.left + 1 < layout.root.left) throw new Error(label + " V3 topbar/config-center-card geometry invalid");
+    if (!layout.root || !layout.card || !layout.title || !layout.table || layout.titleText !== "配置类目" || !layout.topbar || layout.headers !== 1 || layout.overflow || layout.rows !== 5 || layout.headings.length !== expectedHeadings.length || layout.headings.some((heading, index) => heading !== expectedHeadings[index]) || layout.root.top + 1 < layout.topbar.bottom || layout.card.top + 1 < layout.root.top || layout.table.top + 1 < layout.card.top || layout.card.left + 1 < layout.root.left) throw new Error(label + " V3 topbar/config-center-card geometry invalid");
   };
   const navigateConfigCenter = async () => {
     currentStep = "config";
     try {
       await cdp.call("Page.navigate", { url: baseURL + "/admin/config" });
       await waitFor(cdp, "location.pathname === '/admin/config' && document.readyState !== 'loading'", "config center did not navigate");
-      await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-host].cc-page .cc-category-table')) && document.querySelectorAll('[data-runtime-release-host] .cc-category-table thead th').length === 4 && document.querySelectorAll('[data-runtime-release-host] [data-category-row]').length === 12", "config center Host did not become ready");
+      await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-host].cc-page .cc-category-table')) && document.querySelectorAll('[data-runtime-release-host] .cc-category-table thead th').length === 4 && document.querySelectorAll('[data-runtime-release-host] [data-category-row]').length === 5", "config center Host did not become ready");
       await waitForFonts("config");
       await recordGeometry("config", () => assertConfigCenterLayout("config"), true);
       return true;
@@ -1324,7 +1324,7 @@ try {
   await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference), "Boolean(document.querySelector('.order-host-layout')) && Boolean(document.body?.textContent?.includes('外部处理记录'))", "order-detail-history", "embedded", embeddedTitle, true);
   await navigate("/admin/orderDetail.html?id=" + encodeURIComponent(nativeOrderReference), "Boolean(document.querySelector('.order-refund-confirmation')) && Boolean(document.body?.textContent?.includes('订单信息')) && Boolean(document.body?.textContent?.includes('匿名退款演示商品'))", "order-detail-native", "embedded", embeddedTitle, true);
   const nativeOrderPresentation = await evaluate(cdp, `(() => ({
-    hasCanonicalCustomer: Boolean(document.body?.textContent?.includes('CID-')),
+    hasCanonicalCustomer: document.body.textContent.includes('用户编号') && [...document.querySelectorAll('[data-order-detail-grid] span')].some(cell => /^[1-9][0-9]{6}$/.test(cell.textContent.trim())),
     hasMaskedPhone: Boolean(document.body?.textContent?.includes('130****1234')),
     hasChinesePayment: Boolean(document.body?.textContent?.includes('微信支付')),
     hasChineseStatus: Boolean(document.body?.textContent?.includes('已支付')),
@@ -1332,7 +1332,7 @@ try {
     hasRawInternalCustomerKey: Boolean(document.body?.textContent?.includes('customer:')),
   }))()`);
   if (!nativeOrderPresentation?.hasCanonicalCustomer || !nativeOrderPresentation?.hasMaskedPhone || !nativeOrderPresentation?.hasChinesePayment || !nativeOrderPresentation?.hasChineseStatus || !nativeOrderPresentation?.hasRefundForm || nativeOrderPresentation?.hasRawInternalCustomerKey) {
-    interactionFailures.push("order-detail-native:business presentation or guarded form is invalid");
+    interactionFailures.push("order-detail-native:business presentation or guarded form is invalid " + JSON.stringify(nativeOrderPresentation));
   }
   // The mobile screenshot is intentionally a real narrow viewport, while the
   // rest of this layout matrix remains desktop-only. Historical orders must

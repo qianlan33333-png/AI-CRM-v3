@@ -190,6 +190,9 @@ const copyID = Number(duplicateCall?.response?.questionnaire?.id || duplicateCal
 if (!Number.isSafeInteger(copyID) || copyID <= normalID) {
   throw new Error(`frozen duplicate response did not identify its copy: ${JSON.stringify(duplicateCall)}`);
 }
+// A duplicate response precedes the controller's list refresh and copy hydration.
+// Keep the realm alive until its final success UI has rendered.
+await waitFor("duplicate editor hydration", () => normal.dom.window.location.search === `?id=${copyID}` && normalDocument.querySelector('#toast')?.textContent.includes('问卷已复制'));
 normal.dom.window.close();
 
 // The frozen management page owns the actual enable/disable controls. A saved
