@@ -371,7 +371,7 @@ func seedSidebarBusinessTimelineChromium(ctx context.Context, app *composedAppli
 	if err = tx.QueryRow(ctx, `SELECT id FROM customer_identities WHERE customer_id=1 AND assurance='verified' ORDER BY id LIMIT 1`).Scan(&identityID); err != nil {
 		return err
 	}
-	if err = tx.QueryRow(ctx, `INSERT INTO radar_links(public_code,name,title,content_type,destination_url,auth_policy,status,created_by,updated_by,created_at,updated_at) VALUES('rd_timeline12345678','Chromium雷达介绍','Chromium雷达介绍','link','https://example.test/timeline','unionid_required','enabled',1,1,$1,$1) RETURNING id`, now).Scan(&radarID); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO radar_links(public_code,name,title,content_type,destination_url,auth_policy,status,created_by,updated_by,created_at,updated_at) VALUES('rd_timeline12345678','Chromium雷达介绍','Chromium雷达介绍','link','https://example.com/timeline','unionid_required','enabled',1,1,$1,$1) RETURNING id`, now).Scan(&radarID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO radar_link_versions(radar_id,version,snapshot,actor_id,created_at) VALUES($1,1,'{}',1,$2)`, radarID, now); err != nil {

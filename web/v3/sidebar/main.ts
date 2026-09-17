@@ -916,7 +916,7 @@ export class SidebarBridge {
       const offset = Number(payload.offset);
       const limit = Number(payload.limit);
       if (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || sourceItems.length > limit) throw failure("素材分页响应无效。");
-      const materials = sourceItems.map((item: Json) => ({ id: item.id, tags: item.tags || [], thumbnail_url: `/api/sidebar/v2/materials/${encodeURIComponent(String(item.id))}/variants/thumb_320` }));
+      const materials = sourceItems.map((item: Json) => ({ id: item.id, name: item.name || item.file_name || "未命名图片", tags: item.tags || [], thumbnail_url: `/api/sidebar/v2/materials/${encodeURIComponent(String(item.id))}/variants/thumb_320` }));
       const nextOffset = offset + materials.length;
       if (!Number.isSafeInteger(nextOffset) || nextOffset < offset) throw failure("素材分页响应无效。");
       return { materials, total, limit, offset, has_more: materials.length > 0 && nextOffset < total, next_offset: nextOffset, quick_keywords: [] };

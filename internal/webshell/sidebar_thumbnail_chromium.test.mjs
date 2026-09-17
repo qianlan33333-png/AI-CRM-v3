@@ -366,6 +366,37 @@ try {
   const materialGeometry = JSON.parse(await evaluate(cdp, 'JSON.stringify((()=>{const submit=document.querySelector("[data-material-search-form] button[type=submit]");const r=submit?.getBoundingClientRect();const top=document.querySelector(".top")?.getBoundingClientRect();const segment=document.querySelector(".material-seg")?.getBoundingClientRect();return {scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth,visible:Boolean(r&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight),height:Math.round(r?.height||0),topBottom:Math.round(top?.bottom||0),segmentTop:Math.round(segment?.top||0)}})())'));
   if (materialGeometry.scroll > materialGeometry.client || !materialGeometry.visible || materialGeometry.height < 36 || materialGeometry.segmentTop < materialGeometry.topBottom) throw new Error("material narrow geometry " + JSON.stringify(materialGeometry));
   await captureScreenshot(cdp, "materials-420");
+  for (const width of [320, 360, 390, 430]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height:900, deviceScaleFactor:1, mobile:false });
+    await evaluate(cdp, "window.scrollTo(0, 0); true");
+    const geometry = JSON.parse(await evaluate(cdp, `JSON.stringify((()=>{
+      const card=document.querySelector('[data-material-card]');
+      const thumb=card.querySelector('.thumb').getBoundingClientRect();
+      const button=card.querySelector('.material-send').getBoundingClientRect();
+      const main=card.querySelector('.material-main').getBoundingClientRect();
+      const profile=document.querySelector('.profile-card').getBoundingClientRect();
+      return {overflow:document.documentElement.scrollWidth>innerWidth, sameRow:button.top<thumb.bottom&&button.bottom>thumb.top, right:button.left>=main.right, title:card.querySelector('.material-title')?.textContent, profileHeight:profile.height};
+    })())`));
+    if (geometry.overflow || !geometry.sameRow || !geometry.right || !geometry.title || geometry.profileHeight > 135) throw new Error("compact sidebar " + width + " " + JSON.stringify(geometry));
+    await captureScreenshot(cdp, "materials-compact-" + width);
+  }
+
+
+  await evaluate(cdp, `document.querySelector('[data-material-type="radar"]')?.click(); true`);
+  try { await waitFor(cdp, `Boolean(document.querySelector('.material [data-copy-url]'))`, "radar material did not render"); } catch (error) { throw new Error(String(error) + " " + await evaluate(cdp, "document.querySelector('#content').textContent")); }
+  for (const width of [320, 390, 430]) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width, height:900, deviceScaleFactor:1, mobile:false });
+    const radarGeometry = JSON.parse(await evaluate(cdp, `JSON.stringify((()=>{
+      const button=document.querySelector('.material [data-copy-url]').getBoundingClientRect();
+      const main=document.querySelector('.material .material-main').getBoundingClientRect();
+      const thumb=document.querySelector('.material .thumb').getBoundingClientRect();
+      return {overflow:document.documentElement.scrollWidth>innerWidth, right:button.left>=main.right, sameRow:button.top<thumb.bottom&&button.bottom>thumb.top};
+    })())`));
+    if (radarGeometry.overflow || !radarGeometry.right || !radarGeometry.sameRow) throw new Error("radar compact " + width + " " + JSON.stringify(radarGeometry));
+    await captureScreenshot(cdp, "radar-compact-" + width);
+  }
+  await evaluate(cdp, `document.querySelector('[data-material-type="image"]')?.click(); true`);
+  await waitFor(cdp, `Boolean(document.querySelector('[data-material-search-input]'))`, "image tab did not return");
 
   // Composition changes only the draft input. A request can happen only on the
   // explicit form submit after composition ends.
