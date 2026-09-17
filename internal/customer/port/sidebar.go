@@ -10,6 +10,7 @@ import (
 // SidebarProfile is the Customer-owned safe projection. It deliberately
 // contains neither raw external identifiers nor a clear-text phone.
 type SidebarProfile struct {
+	CustomerNumber        string                    `json:"customer_number,omitempty"`
 	CustomerID            customerdomain.CustomerID `json:"customer_id"`
 	DisplayName           string                    `json:"display_name"`
 	AvatarURL             string                    `json:"avatar_url,omitempty"`

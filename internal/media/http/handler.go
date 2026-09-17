@@ -709,7 +709,7 @@ func imageQuery(r *http.Request, limit, offset int, q string) (mediaapp.ImageQue
 			groups = append(groups, group)
 		}
 	}
-	return mediaapp.ImageQuery{Limit: limit, Offset: offset, EnabledOnly: enabled, Query: q, Category: strings.TrimSpace(values.Get("category")), Tags: tags, TagGroups: groups, OnlyUnlabeled: onlyUnlabeled}, nil
+	return mediaapp.ImageQuery{Limit: limit, Offset: offset, EnabledOnly: enabled, Query: q, Category: strings.TrimSpace(values.Get("category")), Tags: tags, TagGroups: groups, OnlyUnlabeled: onlyUnlabeled, OnlyUngrouped: values.Get("only_ungrouped") == "true"}, nil
 }
 
 var ErrInvalidQuery = errors.New("invalid media query")
@@ -868,6 +868,9 @@ func imageMutationEnvelope(item map[string]any, source string) map[string]any {
 }
 
 func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail string) {
+	if h.materialGroupRoute(w, r, "attachment", tail) {
+		return
+	}
 	if strings.HasPrefix(tail, "uploads") {
 		h.attachmentUpload(w, r, strings.Trim(strings.TrimPrefix(tail, "uploads"), "/"))
 		return
@@ -882,7 +885,24 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 				invalidQuery(w)
 				return
 			}
-			items, total, e := h.service.ListAttachments(r.Context(), limit, offset, enabled, q)
+			group, e := groupQuery(r)
+			if e != nil {
+				invalidQuery(w)
+				return
+			}
+			var items []map[string]any
+			var total int
+			if group != nil {
+				grouped, ok := h.service.(mediaapp.MaterialGrouping)
+				if !ok {
+					writeError(w, 503, "unavailable")
+					return
+				}
+				items, total, e = grouped.ListAttachmentsInGroup(r.Context(), limit, offset, enabled, q, group)
+			} else {
+				items, total, e = h.service.ListAttachments(r.Context(), limit, offset, enabled, q)
+			}
+
 			if e != nil {
 				resultError(w, e)
 				return
@@ -1124,6 +1144,9 @@ func splitCSV(value string) []string {
 }
 
 func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail string) {
+	if h.materialGroupRoute(w, r, "miniprogram", tail) {
+		return
+	}
 	if tail == "" {
 		if r.Method == http.MethodGet {
 			if !h.read(w, r) {
@@ -1134,7 +1157,24 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 				invalidQuery(w)
 				return
 			}
-			items, total, e := h.service.ListMiniPrograms(r.Context(), limit, offset, enabled, q)
+			group, e := groupQuery(r)
+			if e != nil {
+				invalidQuery(w)
+				return
+			}
+			var items []map[string]any
+			var total int
+			if group != nil {
+				grouped, ok := h.service.(mediaapp.MaterialGrouping)
+				if !ok {
+					writeError(w, 503, "unavailable")
+					return
+				}
+				items, total, e = grouped.ListMiniProgramsInGroup(r.Context(), limit, offset, enabled, q, group)
+			} else {
+				items, total, e = h.service.ListMiniPrograms(r.Context(), limit, offset, enabled, q)
+			}
+
 			if e != nil {
 				resultError(w, e)
 				return

@@ -65,7 +65,9 @@ const centerDom = new JSDOM('<!doctype html><html><body data-runtime-config-page
 });
 try {
   centerDom.window.eval(host);
-  await waitFor(() => centerDom.window.document.querySelectorAll("[data-category-row]").length === 12, "Config Center did not render the complete legacy category list");
+  await waitFor(() => centerDom.window.document.querySelectorAll("[data-category-row]").length === 5, "Config Center did not render the five operational categories");
+  assert.ok(centerDom.window.document.querySelector('a[href="/admin/configDetail.html?cat=ai_models"]'), "dedicated model settings entry is missing");
+  for (const key of ["api_access", "stability", "sidebar_identity", "ai_automation"]) assert.equal(centerDom.window.document.querySelector(`[data-category-row="${key}"]`),null,"technical category must be absent");
   const headers = [...centerDom.window.document.querySelectorAll(".cc-category-table thead th")].map((cell) => cell.textContent.trim());
   assert.deepEqual(headers, ["类目", "是否生效", "生效开关", "配置"], "Config Center must retain the donor table columns");
   assert.ok(centerDom.window.document.querySelector('[data-category-row="wecom_base"] [data-category-enabled]') === null, "Config Center must not invent a data-category-enabled command");
@@ -78,7 +80,7 @@ try {
   assert.equal(centerDom.window.document.querySelector('[data-category-row="sidebar_identity"] .cc-switch'), null, "a category without one primary enable field must show no aggregate switch");
   if (expectPendingClose) {
     const state = centerDom.window.document.querySelector('[data-category-row="wecom_base"] .cc-state');
-    assert.equal(state?.textContent.trim(), "关闭已发布，待读取", "a closed release remains pending until every required role reads its exact snapshot");
+    assert.equal(state?.textContent.trim(), "待生效", "a closed release remains pending until every required role reads its exact snapshot");
     assert.equal(state?.classList.contains("is-on"), false, "a pending close must not render as currently effective");
   } else {
     const originalWeComEnabled = wecomSwitch.checked;

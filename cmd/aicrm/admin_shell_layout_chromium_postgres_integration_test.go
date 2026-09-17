@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -82,7 +83,7 @@ func TestPostgreSQLAdminShellLayoutCompositionPreflight(t *testing.T) {
 		} `json:"items"`
 		Total int64 `json:"total"`
 	}
-	if err := json.Unmarshal(visitorResponse.Body.Bytes(), &visitors); err != nil || visitorResponse.Code != http.StatusOK || visitorResponse.Header().Get("Cache-Control") != "no-store" || visitors.Total != 1 || len(visitors.Items) != 1 || visitors.Items[0].Nickname == nil || *visitors.Items[0].Nickname != "雷达布局访客" || visitors.Items[0].ExternalContactID == nil || *visitors.Items[0].ExternalContactID != "external-radar-layout-001" || visitors.Items[0].ExternalContactStatus != "available" || visitors.Items[0].OneID == nil || !strings.HasPrefix(*visitors.Items[0].OneID, "CID-") || !visitors.Items[0].OpenedAt.Equal(time.Date(2026, time.September, 7, 1, 2, 3, 0, time.UTC)) || visitors.Items[0].AttributionStatus != "resolved" {
+	if err := json.Unmarshal(visitorResponse.Body.Bytes(), &visitors); err != nil || visitorResponse.Code != http.StatusOK || visitorResponse.Header().Get("Cache-Control") != "no-store" || visitors.Total != 1 || len(visitors.Items) != 1 || visitors.Items[0].Nickname == nil || *visitors.Items[0].Nickname != "雷达布局访客" || visitors.Items[0].ExternalContactID == nil || *visitors.Items[0].ExternalContactID != "external-radar-layout-001" || visitors.Items[0].ExternalContactStatus != "available" || visitors.Items[0].OneID == nil || !regexp.MustCompile(`^[1-9][0-9]{6}$`).MatchString(*visitors.Items[0].OneID) || !visitors.Items[0].OpenedAt.Equal(time.Date(2026, time.September, 7, 1, 2, 3, 0, time.UTC)) || visitors.Items[0].AttributionStatus != "resolved" {
 		t.Fatalf("admin layout visitor read status=%d cache=%q total=%d items=%d decode=%v", visitorResponse.Code, visitorResponse.Header().Get("Cache-Control"), visitors.Total, len(visitors.Items), err)
 	}
 	aiPlan := authenticatedAdminGet(t, fixture.application.handler, session, "/api/admin/ai-assistant/plans/"+strconv.FormatInt(fixture.aiPlanID, 10))

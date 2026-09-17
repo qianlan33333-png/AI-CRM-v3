@@ -117,3 +117,37 @@ func TestEnterpriseDirectoryCursorBindsActorSessionCorpAndQuery(t *testing.T) {
 		t.Fatalf("actor substituted cursor error=%v", err)
 	}
 }
+
+func (repo *memoryRepository) SetStaffDisplayName(_ context.Context, id int64, providerID, name string, now time.Time) error {
+	user, ok := repo.users[id]
+	if !ok || user.WeComUserID != providerID {
+		return domain.ErrConflict
+	}
+	user.DisplayName = name
+	user.UpdatedAt = now
+	repo.users[id] = user
+	return nil
+}
+
+func TestRefreshStaffNamesPreservesPermissionsAndProviderFailure(t *testing.T) {
+	service, repo, directory, actor := governanceFixture(t)
+	user := repo.users[2]
+	user.WeComUserID = "staff-two"
+	user.DisplayName = "企微客服 staff-two"
+	repo.users[2] = user
+	directory.employees = []wecomport.EnterpriseEmployee{{UserID: "staff-two", DisplayName: "员工昵称"}, {UserID: "not-provisioned", DisplayName: "其他员工"}}
+	if err := service.RefreshStaffNames(context.Background(), actor); err != nil {
+		t.Fatal(err)
+	}
+	updated := repo.users[2]
+	if updated.DisplayName != "员工昵称" || updated.LoginEnabled != user.LoginEnabled || updated.SessionVersion != user.SessionVersion || len(repo.users) != 3 || updated.Roles[0] != user.Roles[0] {
+		t.Fatalf("refresh changed access: %+v", updated)
+	}
+	directory.listErr = errors.New("provider unavailable")
+	if err := service.RefreshStaffNames(context.Background(), actor); !errors.Is(err, ErrEnterpriseDirectoryUnavailable) {
+		t.Fatalf("error = %v", err)
+	}
+	if repo.users[2].DisplayName != "员工昵称" {
+		t.Fatal("provider failure erased trusted nickname")
+	}
+}

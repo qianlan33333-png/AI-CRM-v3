@@ -1094,7 +1094,7 @@ function visitorExternalContact(visitor: RadarVisitor): string {
 }
 
 function visitorOneID(visitor: RadarVisitor): string {
-  if (visitor.attributionStatus === 'resolved') return visitor.oneID || 'OneID 暂缺';
+  if (visitor.attributionStatus === 'resolved') return visitor.oneID || '编号暂缺';
   return visitor.attributionStatus === 'anonymous' ? '未关联' : radarAttributionLabel(visitor.attributionStatus);
 }
 
@@ -1194,7 +1194,7 @@ class RadarDetailVisitorsHost {
     card.className = 'card filter-bar';
     const search = this.field('搜索访问者', this.search);
     this.search.className = 'input';
-    this.search.placeholder = '搜索昵称、外部联系人 ID 或 OneID';
+    this.search.placeholder = '搜索昵称、外部联系人 ID 或用户编号';
     search.style.flex = '1';
     search.style.minWidth = '220px';
     this.start.className = 'input';
@@ -1236,7 +1236,7 @@ class RadarDetailVisitorsHost {
     table.style.minWidth = '680px';
     const head = document.createElement('thead');
     const header = document.createElement('tr');
-    ['昵称', '外部联系人 ID', 'OneID', '打开时间'].forEach((value) => {
+    ['昵称', '外部联系人 ID', '用户编号', '打开时间'].forEach((value) => {
       const cell = document.createElement('th');
       cell.style.whiteSpace = 'nowrap';
       cell.textContent = value;

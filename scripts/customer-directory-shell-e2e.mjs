@@ -46,6 +46,7 @@ function response(payload, status = 200) {
 function customer() {
   return {
     customer_id: 42,
+    customer_number: '1000042',
     status: 'active',
     display_name: '测试客户',
     avatar_url: 'https://example.invalid/avatar.png',
@@ -205,7 +206,7 @@ try {
   const fields = document.querySelector('#customer-detail-fields')?.textContent || '';
   const profileFields = [...document.querySelectorAll('#customer-detail-fields .admin-profile-field')];
   const fieldValue = (label) => profileFields.find((field) => field.querySelector('span')?.textContent?.trim() === label)?.querySelector('strong')?.textContent?.trim() || '';
-  const identities = fieldValue('OneID');
+  const identities = fieldValue('已关联身份');
   const phones = fieldValue('手机号').replace('查询', '').trim();
   if (fields.includes('激活状态')) fail('activation status is still rendered in detail');
   if (identities.includes('phone') || identities.includes('declared')) fail('phone assurance leaked into the OneID summary');
@@ -214,7 +215,8 @@ try {
   if (!document.querySelector('.admin-split-grid.admin-customer-detail-layout')) fail('donor two-column detail structure is missing');
   const revealButton = profileFields.find((field) => field.querySelector('span')?.textContent?.trim() === '手机号')?.querySelector('button');
   if (!revealButton || revealButton.textContent?.trim() !== '查询') fail('detail phone query still requires a reason');
-  if (!(document.querySelector('#customer-360-sidebar')?.textContent || '').includes('风险等级：低')) fail('ready risk level is not localized');
+  if (fieldValue('用户编号') !== '1000042') fail('profile public number differs from list');
+  if (document.querySelector('#customer-tag-single') || document.body.textContent.includes('风险摘要')) fail('retired profile controls remain');
 
   revealButton.click();
   await sleep(30);
@@ -237,11 +239,9 @@ try {
   const { document } = degradedRisk.window;
   const risk = document.querySelector('#customer-360-sidebar')?.textContent || '';
   const orders = document.querySelector('#customer-360-main')?.textContent || '';
-  for (const expected of ['风险等级：未知（必要信息暂时不可用）', '身份信息暂时不可用，当前风险无法完整判定。', '订单信息暂时不可用，当前风险无法完整判定。', '已发现退款相关订单。', '已发现支付失败订单。']) {
-    if (!risk.includes(expected)) fail(`degraded risk summary omitted ${expected}`);
-  }
+  if (risk.includes('风险')) fail('retired risk summary remains');
   if (!orders.includes('该分区暂时不可用，其他用户信息不受影响。') || orders.includes('订单总数：')) fail('degraded order summary rendered unavailable values');
-  console.log('  ✓ customer detail keeps known risk facts visible when required sections degrade');
+  console.log('  ✓ customer detail retains order failure isolation without the retired risk block');
 } finally {
   degradedRisk.window.close();
 }

@@ -179,8 +179,8 @@ function commitSearch(input) {
 }
 
 await waitFor(() => Boolean(dom.window.document.querySelector('input[data-image-library-query="true"]')), "Host did not mount");
-await waitFor(() => Boolean(dom.window.document.querySelector('[data-material-refresh="true"]')), "MaterialSaveHost refresh/credential panel was not preserved");
-assert.ok(dom.window.document.querySelector('button[data-material-refresh-all]'), "MaterialSaveHost refresh action is not usable from the V3 image workspace");
+assert.equal(dom.window.document.querySelector('[data-material-refresh="true"]'), null, "operator library must not mount credential diagnostics");
+assert.ok([...dom.window.document.querySelectorAll("button")].some((button) => button.textContent === "刷新"), "normal library refresh must be available");
 assert.ok(
   calls.some((call) => call.path === "/api/admin/image-library" && call.query === "limit=20&offset=0&enabled_only=true"),
   `default image-library read did not explicitly request a bounded enabled-only page: ${JSON.stringify(calls)}`,
@@ -372,7 +372,7 @@ const materialReadsBeforeConfirmedEdit = materialRefreshReads;
 dom.window.document.querySelector("button[data-image-library-dialog-submit]")?.click();
 await waitFor(() => !dom.window.document.querySelector("#fImgName") && dom.window.document.body.textContent.includes("已更新素材"), "readback retry did not confirm the saved edit");
 assert.equal(calls.filter((call) => call.path === "/api/admin/image-library/11" && call.method === "PUT").length, 1, "readback retry repeated the saved mutation");
-await waitFor(() => materialRefreshReads > materialReadsBeforeConfirmedEdit, "confirmed image write did not refresh the existing MaterialSaveHost panel");
+assert.equal(materialRefreshReads, materialReadsBeforeConfirmedEdit, "a confirmed write must not restart retired diagnostics polling");
 
 // Closing an accepted edit and opening another dialog before its list readback
 // returns must not let the old result close the newer dialog.

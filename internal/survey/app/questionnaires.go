@@ -94,7 +94,7 @@ func (s *Service) Create(ctx context.Context, command surveyport.CreateCommand) 
 	if value.Status == "" {
 		value.Status = surveyport.StatusDraft
 	}
-	if command.ActorID < 1 || !validKey(command.IdempotencyKey) || value.Status != surveyport.StatusDraft && value.Status != surveyport.StatusDisabled || surveydomain.ValidateQuestionnaire(value) != nil {
+	if command.ActorID < 1 || !validKey(command.IdempotencyKey) || value.Status != surveyport.StatusDraft && value.Status != surveyport.StatusDisabled || value.Mode != surveyport.ModeSurvey || surveydomain.ValidateQuestionnaire(value) != nil {
 		return surveyport.Questionnaire{}, surveyport.ErrInvalid
 	}
 	payload, digest, err := digestPayload(value)
@@ -108,7 +108,7 @@ func (s *Service) Create(ctx context.Context, command surveyport.CreateCommand) 
 
 func (s *Service) Update(ctx context.Context, command surveyport.UpdateCommand) (surveyport.Questionnaire, error) {
 	value := command.Questionnaire
-	if value.ID < 1 || command.ActorID < 1 || command.ExpectedVersion < 1 || !validKey(command.IdempotencyKey) || surveydomain.ValidateQuestionnaire(value) != nil {
+	if value.ID < 1 || command.ActorID < 1 || command.ExpectedVersion < 1 || !validKey(command.IdempotencyKey) || value.Mode != surveyport.ModeSurvey || surveydomain.ValidateQuestionnaire(value) != nil {
 		return surveyport.Questionnaire{}, surveyport.ErrInvalid
 	}
 	payload, digest, err := digestPayload(struct {
@@ -122,6 +122,9 @@ func (s *Service) Update(ctx context.Context, command surveyport.UpdateCommand) 
 		current, err := s.store.Get(tx, value.ID, true)
 		if err != nil {
 			return surveyport.Questionnaire{}, err
+		}
+		if current.Mode != surveyport.ModeSurvey {
+			return surveyport.Questionnaire{}, surveyport.ErrInvalid
 		}
 		if current.Status == surveyport.StatusArchived {
 			return surveyport.Questionnaire{}, surveyport.ErrNotFound
@@ -142,7 +145,7 @@ func (s *Service) Duplicate(ctx context.Context, id surveyport.ID, actor int64, 
 		if err != nil {
 			return surveyport.Questionnaire{}, err
 		}
-		if source.Status == surveyport.StatusArchived {
+		if source.Status == surveyport.StatusArchived || source.Mode != surveyport.ModeSurvey {
 			return surveyport.Questionnaire{}, surveyport.ErrNotFound
 		}
 		source.ID, source.Version, source.CreatedBy = 0, 1, actor
@@ -190,6 +193,9 @@ func (s *Service) statusMutation(ctx context.Context, operation string, id surve
 		current, err := s.store.Get(tx, id, true)
 		if err != nil {
 			return surveyport.Questionnaire{}, err
+		}
+		if status == surveyport.StatusPublished && current.Mode != surveyport.ModeSurvey {
+			return surveyport.Questionnaire{}, surveyport.ErrInvalid
 		}
 		if current.Status == surveyport.StatusArchived {
 			return surveyport.Questionnaire{}, surveyport.ErrNotFound

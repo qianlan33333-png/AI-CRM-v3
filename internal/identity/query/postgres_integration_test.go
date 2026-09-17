@@ -94,6 +94,16 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 			($1, 'ext', 'ext:test', 'retired-secret', 'declared', 'integration', 1, 'retired', NULL)`, canonicalID, otherID); err != nil {
 		t.Fatal(err)
 	}
+	// Backfill real seven-digit aliases after existing identities exist. Existing
+	// canonical roots and identity ownership must survive the migration.
+	publicMigration, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "migrations", "0178_customer_public_numbers.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(publicMigration)); err != nil {
+		t.Fatal(err)
+	}
+
 	var evidenceID int64
 	if err = native.QueryRow(ctx, `
 		INSERT INTO identity_link_evidence(
@@ -132,6 +142,25 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 	}
 
 	if err = unit.Within(ctx, func(txContext context.Context) error {
+		numbers, numberErr := store.CustomerPublicNumbers(txContext, []customerdomain.CustomerID{customerdomain.CustomerID(canonicalID), customerdomain.CustomerID(mergedID), customerdomain.CustomerID(otherID)})
+		if numberErr != nil {
+			return numberErr
+		}
+		seen := map[string]bool{}
+		for id, number := range numbers {
+			if len(number) != 7 || seen[number] {
+				t.Fatalf("invalid or duplicate public number: %q", number)
+			}
+			seen[number] = true
+			reverse, found, e := store.CustomerForPublicNumber(txContext, number)
+			if e != nil || !found || reverse != id {
+				t.Fatalf("public number reverse mismatch: %v", e)
+			}
+		}
+		if len(seen) != 3 {
+			t.Fatal("missing public numbers")
+		}
+
 		detail, queryErr := store.Customer(txContext, customerdomain.CustomerID(mergedID))
 		if queryErr != nil {
 			return queryErr
@@ -254,6 +283,28 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 	if _, err = store.Conflicts(ctx, query.ListOptions{Status: "deleted", Limit: 1}); !errors.Is(err, query.ErrInvalidQuery) {
 		t.Fatalf("invalid status error=%v", err)
 	}
+	// Concurrent creates allocate persisted numbers without changing existing roots.
+	type allocation struct {
+		number int64
+		err    error
+	}
+	allocations := make(chan allocation, 16)
+	for range 16 {
+		go func() {
+			var number int64
+			err := native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING public_number`).Scan(&number)
+			allocations <- allocation{number, err}
+		}()
+	}
+	seen := map[int64]bool{}
+	for range 16 {
+		value := <-allocations
+		if value.err != nil || value.number < 1000003 || value.number > 9999999 || seen[value.number] {
+			t.Fatalf("invalid or duplicate allocation: %+v", value)
+		}
+		seen[value.number] = true
+	}
+
 }
 
 func environmentValue(key string) string {

@@ -247,14 +247,16 @@ try {
   // categories with one explicit V3 primary enable owner render a switch;
   // other categories must not gain a fabricated aggregate provider command.
   await cdp.call("Page.navigate", { url: `${baseURL}/admin/config` });
-  await waitFor(cdp, "document.querySelectorAll('[data-category-row]').length === 12 && Boolean(document.querySelector('[data-category-row=\"wecom_base\"] .cc-switch input'))", "Config Center did not render its legacy category list");
+  await waitFor(cdp, "document.querySelectorAll('[data-category-row]').length === 5 && Boolean(document.querySelector('[data-category-row=\"wecom_base\"] .cc-switch input'))", "Config Center did not render the operational category list");
   const centerLayout = await evaluate(cdp, `(() => ({
     headers: [...document.querySelectorAll('.cc-category-table thead th')].map((cell) => cell.textContent.trim()),
-    sidebarHasAggregateSwitch: Boolean(document.querySelector('[data-category-row="sidebar_identity"] .cc-switch')),
+    sidebarHasAggregateSwitch: Boolean(document.querySelector('[data-category-row="sidebar_identity"]')),
+    categories: [...document.querySelectorAll('[data-category-row]')].map(row => row.dataset.categoryRow).sort(),
+    hasModel: document.body.textContent.includes('大模型'),
     hasTechnicalHomepageColumn: document.body.textContent.includes('发布/应用状态')
   }))()`);
-  if (JSON.stringify(centerLayout?.headers) !== JSON.stringify(["类目", "是否生效", "生效开关", "配置"]) || centerLayout?.sidebarHasAggregateSwitch || centerLayout?.hasTechnicalHomepageColumn) {
-    throw new Error("Config Center no longer preserves the donor category-table contract");
+  if (JSON.stringify(centerLayout?.headers) !== JSON.stringify(["类目", "是否生效", "生效开关", "配置"]) || centerLayout?.sidebarHasAggregateSwitch || centerLayout?.hasTechnicalHomepageColumn || !centerLayout?.hasModel || JSON.stringify(centerLayout?.categories) !== JSON.stringify(["admin_access", "wechat_oauth", "wechat_pay", "wechat_shop", "wecom_base"])) {
+    throw new Error("Config Center operational category-table contract failed");
   }
 
   // Config Center receives native JSON strings from the runtime-catalog API.

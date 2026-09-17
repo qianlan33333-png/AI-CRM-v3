@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 )
 
 const (
@@ -59,6 +61,7 @@ type Query struct {
 }
 
 type Item struct {
+	CustomerNumber string                    `json:"customer_number,omitempty"`
 	CustomerID     customerdomain.CustomerID `json:"customer_id"`
 	CustomerStatus customerdomain.Status     `json:"status"`
 	DisplayName    string                    `json:"display_name"`
@@ -111,6 +114,7 @@ type TagCustomerMatcher interface {
 }
 
 type Directory struct {
+	Numbers    identityport.CustomerPublicNumbers
 	Store      Store
 	Now        func() time.Time
 	SigningKey []byte
@@ -182,6 +186,23 @@ func (directory Directory) List(ctx context.Context, request ListRequest) (Page,
 		}
 		query.AfterID = customerdomain.CustomerID(payload.AfterID)
 	}
+	if directory.Numbers != nil {
+		if number, err := strconv.ParseInt(query.Filters.Keyword, 10, 64); err == nil && number >= 1000000 && number <= 9999999 {
+			id, found, err := directory.Numbers.CustomerForPublicNumber(ctx, query.Filters.Keyword)
+			if err != nil {
+				return Page{}, err
+			}
+			if found {
+				query.Filters.Keyword = ""
+				if query.Filters.PhoneCustomerID > 0 && query.Filters.PhoneCustomerID != id {
+					query.Filters.PhoneMatchNone = true
+				}
+				query.Filters.PhoneCustomerID = id
+			} else {
+				query.Filters.PhoneMatchNone = true
+			}
+		}
+	}
 	data, err := directory.Store.List(ctx, query)
 	if err != nil {
 		return Page{}, err
@@ -193,6 +214,22 @@ func (directory Directory) List(ctx context.Context, request ListRequest) (Page,
 		page.NextCursor, err = encodeCursor(cursorPayload{Version: 1, Watermark: query.Watermark.Format(time.RFC3339Nano), AfterAt: last.UpdatedAt.Format(time.RFC3339Nano), AfterID: int64(last.CustomerID), FilterHash: hash}, directory.SigningKey)
 		if err != nil {
 			return Page{}, err
+		}
+	}
+	if directory.Numbers != nil {
+		ids := make([]customerdomain.CustomerID, len(page.Items))
+		for i, item := range page.Items {
+			ids[i] = item.CustomerID
+		}
+		numbers, err := directory.Numbers.CustomerPublicNumbers(ctx, ids)
+		if err != nil {
+			return Page{}, err
+		}
+		for i := range page.Items {
+			if numbers[page.Items[i].CustomerID] == "" {
+				return Page{}, ErrNotFound
+			}
+			page.Items[i].CustomerNumber = numbers[page.Items[i].CustomerID]
 		}
 	}
 	return page, nil

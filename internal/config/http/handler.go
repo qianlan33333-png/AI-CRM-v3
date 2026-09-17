@@ -30,6 +30,7 @@ type RequestSecurity interface {
 }
 
 type Handler struct {
+	models       configport.AIModelSettings
 	settings     settingsService
 	wizard       wizardService
 	config       configport.Service
@@ -83,6 +84,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.appSettings(w, r)
 	case "setup-wizard":
 		h.setupWizard(w, r)
+	case "ai-model":
+		h.aiModel(w, r)
 	case "categories":
 		h.categories(w, r)
 	case "push-capabilities":

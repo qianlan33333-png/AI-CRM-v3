@@ -21,13 +21,14 @@ assertIncludes(editor, [
   "if (type === 'textarea') return '文本题'",
   "if (type === 'mobile') return '手机号题'",
   'assessment_enabled',
-  'assessment_dimension_key',
-  'assessment_type_key',
-  'overall_levels',
-  'final_recommendation',
   'data-action="duplicate"',
   'data-action="toggle"',
 ], 'editor');
+
+for (const retired of ['function renderAssessment', 'function openAssessmentSettings', 'function buildDefaultAssessmentConfig']) {
+ if(editor.includes(retired)) throw new Error('retired assessment builder is still bundled: '+retired);
+}
+assertIncludes(editor, ['assessment_enabled: false'], 'ordinary questionnaire mode');
 
 assertIncludes(adapter, [
   '/api/admin/questionnaires',

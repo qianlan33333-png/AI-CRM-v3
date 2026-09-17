@@ -432,11 +432,12 @@ replaceRange("  function renderTop() {", "  function updateProfileField(key, val
     const workflow = workbench.workflow || {};
     const name = String(customer.display_name || "当前客户").trim();
     const oneID = /^CID-[1-9][0-9]*$/.test(String(customer.oneid || "").trim()) ? String(customer.oneid).trim() : "";
+    const publicNumber = /^[1-9][0-9]{6}$/.test(String(customer.customer_number || "")) ? String(customer.customer_number) : "";
     const mobile = String(customer.mobile || "").trim();
     const assurance = String(customer.phone_assurance || "").toLowerCase();
     const isVerified = assurance === "verified";
     document.getElementById("customer-name").textContent = name;
-    document.getElementById("customer-oneid").textContent = oneID ? "OneID " + oneID : "";
+    document.getElementById("customer-oneid").textContent = publicNumber ? "用户编号 " + publicNumber : oneID ? "OneID " + oneID : "";
     document.getElementById("customer-mobile").textContent = mobile ? "手机号 " + mobile : "";
     document.getElementById("workflow-title").textContent = String(workflow.title || "").trim();
     const bindingState = document.getElementById("binding-state");

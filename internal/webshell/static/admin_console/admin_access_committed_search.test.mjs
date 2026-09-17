@@ -51,6 +51,8 @@ let usersMode = 'normal';
 dom.window.fetch = (url, options = {}) => {
   const target = new URL(String(url), dom.window.location.href);
   calls.push(target.pathname + target.search);
+  if(target.pathname === '/api/admin/access/super-admin-transfer') return Promise.resolve(reply({error:'permission_denied'},403));
+  if(target.pathname === '/api/admin/access/users/refresh-names') return Promise.resolve(reply(usersMode === 'forbidden'?{error:'permission_denied'}:{refreshed:true}, usersMode === 'forbidden'?403:200));
   if (target.pathname === '/api/admin/access/users') {
     if (usersMode === 'late') return new Promise((resolve) => { resolveLateUsers = () => resolve(reply(usersPayload())); });
     if (usersMode === 'forbidden') return Promise.resolve(reply({ error: 'permission_denied' }, 403));
@@ -91,59 +93,14 @@ try {
   assert.equal(document.querySelectorAll('#admin-access-users-body tr').length, 1, 'refresh retains the committed user query while a different draft is present');
   assert.equal(userSearch.value, '管理员', 'refresh does not overwrite a newer user-search draft');
 
-  document.querySelector('#admin-access-provision').click(); await delay(20);
-  const employeeSearch = document.querySelector('#admin-access-employee-search');
-  assert.match(document.querySelector('#admin-access-employee-results').textContent, /CurrentCandidate/, 'initial authorized employee directory renders');
-  document.querySelector('#admin-access-employee-results button[data-wecom-userid]').click();
-  assert.equal(document.querySelector('#admin-access-provision-next').disabled, false, 'an actual directory choice is selected before a failed refresh');
-  const beforeDraftCalls = calls.filter((item) => item.includes('/enterprise-employees')).length;
-  employeeSearch.value = 'failure'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-  await delay(280);
-  assert.equal(calls.filter((item) => item.includes('/enterprise-employees')).length, beforeDraftCalls, 'raw employee input does not start a directory read');
-  employeeSearch.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }));
-  const employeeCandidate = enter(dom.window, employeeSearch, { keyCode: 229, isComposing: true });
-  assert.equal(employeeCandidate.defaultPrevented, false, 'employee IME candidate Enter remains browser-owned');
-  assert.equal(calls.filter((item) => item.includes('query=failure')).length, 0, 'employee IME candidate Enter does not read the directory');
-  employeeSearch.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true })); await delay(5);
-  enter(dom.window, employeeSearch); await delay(15);
-  assert.equal(calls.filter((item) => item.includes('query=failure')).length, 1, 'ordinary Enter starts the committed directory read without a debounce window');
-  assert.match(document.querySelector('#admin-access-employee-search-status').textContent, /仍显示上次查询全部员工/, 'transient employee directory failure reports cached authorized rows with their actual query');
-  assert.match(document.querySelector('#admin-access-employee-results').textContent, /CurrentCandidate/, 'transient employee directory failure preserves candidate rows');
-  assert.equal(document.querySelector('#admin-access-provision-next').disabled, false, 'transient employee directory failure preserves the selected candidate');
-
-  employeeSearch.value = 'lateA'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(10);
-  employeeSearch.value = 'lateB'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(15);
-  assert.match(document.querySelector('#admin-access-employee-results').textContent, /LateB/, 'newer committed directory request renders first');
-  resolveLate(); await delay(20);
-  assert.match(document.querySelector('#admin-access-employee-results').textContent, /LateB/, 'late aborted directory response cannot replace the newer committed query');
-
-  employeeSearch.value = ''; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(15);
-  document.querySelector('#admin-access-employee-results button[data-wecom-userid]').click();
-  employeeSearch.value = 'authorized-now'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(15);
-  assert.equal(document.querySelector('#admin-access-provision-next').disabled, true, 'a refreshed directory entry that is already provisioned invalidates the provisional choice');
-  assert.match(document.querySelector('#admin-access-provision-hint').textContent, /已开通后台权限/, 'the changed authorization state explains why the selected employee cannot proceed');
-  assert.equal(document.querySelector('#admin-access-employee-results button[data-wecom-userid]').disabled, true, 'the now-authorized employee stays visibly unavailable instead of being silently provisionable');
-
-  employeeSearch.value = 'pageA'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(15);
-  assert.match(document.querySelector('#admin-access-employee-results').textContent, /PageA1/, 'a paged directory displays its first authorized page');
-  assert.ok(document.querySelector('button[data-access-action="more-employees"]'), 'the matching displayed query can load its next page');
-  document.querySelector('#admin-access-employee-results button[data-wecom-userid]').click();
-  assert.equal(document.querySelector('#admin-access-provision-next').disabled, false, 'a new eligible selection can proceed after another employee became authorized');
-  assert.doesNotMatch(document.querySelector('#admin-access-provision-hint').textContent, /不能重复开通/, 'a new eligible selection clears the unrelated authorization warning');
-  employeeSearch.value = 'failure'; employeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, employeeSearch); await delay(15);
-  assert.match(document.querySelector('#admin-access-employee-search-status').textContent, /上次查询“pageA”/, 'a failed new query identifies the query that still owns the retained page cursor');
-  assert.match(document.querySelector('#admin-access-employee-search-status').textContent, /“failure”的新查询未成功/, 'a failed replacement does not present the previous page as results for the new query');
-  assert.equal(document.querySelector('button[data-access-action="more-employees"]'), null, 'retained results do not expose a cursor that belongs to a different or failed query');
-  assert.equal(calls.some((item) => item.includes('query=failure') && item.includes('cursor=page-a-next')), false, 'the old page cursor is never sent with the failed query');
-
+  assert.equal(document.querySelector('#admin-access-provision'),null,'grant-access entry is retired');
+  assert.ok(calls.includes('/api/admin/access/users/refresh-names'),'refresh must reread provider names');
   usersMode = 'late'; document.querySelector('#admin-access-refresh').click(); await delay(10);
   assert.equal(typeof resolveLateUsers, 'function', 'the test holds an older authorized user read in flight');
   document.querySelector('#admin-access-transfer').click();
   assert.equal(document.querySelector('#admin-access-transfer-dialog').hidden, false, 'the super-admin transfer dialog was open before access was revoked');
   assert.ok(document.querySelector('#admin-access-transfer-target').options.length, 'the transfer target belonged to the sensitive view before revocation');
-  document.querySelector('#admin-access-provision').click(); await delay(15);
-  const revokedEmployeeSearch = document.querySelector('#admin-access-employee-search');
-  revokedEmployeeSearch.value = 'forbidden'; revokedEmployeeSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true })); enter(dom.window, revokedEmployeeSearch); await delay(15);
+  usersMode='forbidden';document.querySelector('#admin-access-transfer-submit').click();await delay(20);
   assert.equal(document.querySelector('#admin-access-transfer-dialog').hidden, true, 'a 403 closes the transfer dialog');
   assert.equal(document.querySelector('#admin-access-transfer-target').options.length, 0, 'a 403 clears the sensitive transfer target');
   resolveLateUsers(); await delay(20);

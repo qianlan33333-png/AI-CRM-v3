@@ -38,8 +38,9 @@ type DirectoryDisplayNameReader interface {
 // that another domain may render after it already holds a canonical customer
 // ID. It cannot resolve an identity or expose an unmasked phone number.
 type DirectoryContactDisplay struct {
-	DisplayName string
-	PhoneMasked string
+	CustomerNumber string
+	DisplayName    string
+	PhoneMasked    string
 }
 
 type DirectoryContactDisplayReader interface {
