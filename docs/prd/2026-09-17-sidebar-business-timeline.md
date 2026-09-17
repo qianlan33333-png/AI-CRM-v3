@@ -24,3 +24,6 @@ External Effects：不涉及 Provider 读写，不恢复已暂停的备注全量
 ## 实现与验收
 复用 Survey.CustomerHistoryWindow、Order.CustomerActivities、Radar.CustomerActivities；在 Owner 内补充商品/雷达名称，Channel增加有界客户活动Port（含原生与已归属历史事实）。Composition聚合，沿用侧边栏现有timeline DTO及列表展示。
 验证：四类命名内容、噪声排除、身份隔离、跨源同时间分页、来源故障、匿名排除、历史渠道去重/人工归属、待支付不显示已购买、现有权限游标及真实PostgreSQL旅程。按 fast -> compile -> 专项 -> 完整CI验证，不将本地测试称为已上线。
+
+## CI 总时限修正
+run 35170713435 的 backend 在 `cmd/aicrm` 包累计 600.071 秒触发 Go 默认 10 分钟包级时限。当时 `TestTagCatalogDispatchPostgreSQLRecoveryAndProviderOutsideTransaction` 仅运行 1 秒，栈位于正常建库迁移；其独立 PostgreSQL 16 race 复跑通过，无断言失败或竞态报告。为容纳该包约 295 个用例的累计成本，canonical backend 命令显式设置每包 `-timeout=15m`，保留串行、race、count=1、全包集合及工作流 25 分钟上限。此为无状态验证配置，不涉及 OneID、持久化或 Provider 效果。已检查并行任务，未见其他任务修改此命令。修复后复跑完整后端阶段与当前 HEAD 的完整 CI。

@@ -160,7 +160,7 @@ def commands(lane: str, report_dir: Path | None) -> list[list[str]]:
         ], [venv + "/bin/pip", "install", "-r", "components/excel-batches/requirements.txt"], [
             venv + "/bin/python", "-m", "unittest", "discover", "-s", "components/excel-batches", "-v"
         ], ["bash", "scripts/run-go-with-donor-views.sh", "go", "vet", "./..."], [
-            "bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-race", "-count=1", "./..."
+            "bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-race", "-count=1", "-timeout=15m", "./..."
         ]]
     if lane == "frontend":
         return [["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/excel-batches-pagination-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
