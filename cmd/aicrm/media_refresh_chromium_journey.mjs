@@ -102,7 +102,7 @@ try {
  await wait(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return field instanceof HTMLInputElement&&field.value===''&&window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===2})()",'image-library reset did not restore the unfiltered list');
  // Operational screens omit technical diagnostics even when a source is missing.
  if(await value(cdp,"Boolean(document.querySelector('#material-refresh-panel'))||document.body.innerText.includes('刷新设置与明细')")) throw new Error('retired refresh diagnostics are visible');
- await value(cdp,"document.querySelector('[data-image-library-group]').value='__ungrouped__';document.querySelector('[data-image-library-group]').dispatchEvent(new Event('change',{bubbles:true}));true");
+ await value(cdp,"document.querySelector('[data-material-group-value=\"__ungrouped__\"]').click();true");
  await wait(cdp,"window.__mediaRefreshRequests.some(value=>value.startsWith('GET /api/admin/image-library')&&value.includes('only_ungrouped=true'))",'ungrouped filter must reach server');
  await value(cdp,"document.querySelector('button[data-image-library-reset]').click();true");
  await assertImageLibraryLayout(cdp,1280,800); await assertImageLibraryLayout(cdp,1440,900); await assertImageLibraryLayout(cdp,780,700); await assertImageLibraryLayout(cdp,390,420); await cdp.call("Emulation.clearDeviceMetricsOverride");
@@ -111,10 +111,10 @@ try {
  await value(cdp,`(()=>{const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII='),c=>c.charCodeAt(0));const input=document.querySelector('#fImgUpFile');const dt=new DataTransfer();dt.items.add(new File([png],'browser-source.png',{type:'image/png'}));input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#fImgUpName').value='浏览器刷新素材';document.querySelector('#fImgCategory').value='浏览器分组';[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='上传').click();return true})()`);
  await wait(cdp,"!document.querySelector('#fImgUpFile')&&document.querySelector('[data-image-library-cards]')?.textContent.includes('浏览器刷新素材')","image upload/readback");
  await value(cdp,"[...document.querySelectorAll('.admin-toolbar button')].find(b=>b.textContent==='刷新').click();true");
- await wait(cdp,"[...document.querySelectorAll('[data-image-library-group] option')].some(option=>option.value==='category:浏览器分组')",'saved group refresh');
- await value(cdp,"document.querySelector('[data-image-library-group]').value='category:浏览器分组';document.querySelector('[data-image-library-group]').dispatchEvent(new Event('change',{bubbles:true}));true");
+ await wait(cdp,"Boolean(document.querySelector('[data-material-group-value=\"category:浏览器分组\"]'))",'saved group refresh');
+ await value(cdp,"document.querySelector('[data-material-group-value=\"category:浏览器分组\"]').click();true");
  await wait(cdp,"document.querySelector('[data-image-library-cards]')?.textContent.includes('浏览器刷新素材')&&window.__mediaRefreshRequests.some(value=>value.startsWith('GET /api/admin/image-library')&&value.includes('category='))",'persisted group filter');
- await value(cdp,"document.querySelector('[data-image-library-group]').value='__ungrouped__';document.querySelector('[data-image-library-group]').dispatchEvent(new Event('change',{bubbles:true}));true");
+ await value(cdp,"document.querySelector('[data-material-group-value=\"__ungrouped__\"]').click();true");
  await wait(cdp,"!document.querySelector('[data-image-library-cards]')?.textContent.includes('浏览器刷新素材')",'grouped image excluded from ungrouped');
  await value(cdp,"document.querySelector('button[data-image-library-reset]').click();true");
  // Keep backend credential replacement coverage through the authenticated API,
@@ -129,6 +129,17 @@ try {
  await assertImageLibraryThumbnailStates(cdp);
  await captureImageLibraryViewport(cdp,1280,800); await captureImageLibraryViewport(cdp,1440,900); await cdp.call('Emulation.clearDeviceMetricsOverride');
  await cdp.call("Page.captureScreenshot",{format:"png",captureBeyondViewport:true}).then(async result=>fs.writeFile(screenshot,Buffer.from(result.data,"base64")));
+ // Real navigation must retain the selected material type (the former server redirect bug).
+ for (const [tab, page] of [['attachments','attach'],['miniprograms','mpLib']]) {
+   await cdp.call('Page.navigate',{url:`${baseURL}/admin/materials?tab=${tab}`});
+   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && Boolean(document.querySelector('[data-material-group-value="group:"]'))`, `${tab} group sidebar`);
+   await value(cdp, `document.querySelector('[data-material-group-value="group:"]').click();true`);
+   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped navigation`);
+   await cdp.call('Page.reload');
+   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped reload`);
+   await value(cdp, `document.querySelector('[data-material-group-value="all"]').click();true`);
+   await wait(cdp, `document.body.dataset.page===${JSON.stringify(page)} && !new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="all"]')?.getAttribute('aria-pressed')==='true'`, `${tab} all groups navigation`);
+ }
  await cdp.call("Page.navigate",{url:`${baseURL}/admin/operation-cycles`}); await wait(cdp,"Boolean([...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情'))","operation cycles");
  await value(cdp,"[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情').click();true"); await wait(cdp,"Boolean([...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次'))","strategy detail");
  await value(cdp,"[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次').click();true"); await wait(cdp,"Boolean(document.querySelector('dialog[open] input[type=file]'))","new Excel draft dialog");

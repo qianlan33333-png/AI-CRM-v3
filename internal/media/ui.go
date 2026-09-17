@@ -83,7 +83,13 @@ func mediaRequest(requestURL *url.URL) (page, canonical string, ok bool) {
 		if len(query) == 0 {
 			return "images", "", true
 		}
-		if len(query) != 1 || len(query["tab"]) != 1 {
+		valid := len(query["tab"]) == 1
+		for key, values := range query {
+			if (key != "tab" && key != "material_group") || len(values) != 1 {
+				valid = false
+			}
+		}
+		if !valid {
 			return "", canonicalMaterialPath("images"), true
 		}
 		switch query.Get("tab") {

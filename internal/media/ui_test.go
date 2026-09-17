@@ -3,6 +3,7 @@ package media
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,5 +121,24 @@ func TestExtractDonorTemplateRejectsMissingOrUnclosedOuterTemplate(t *testing.T)
 	}
 	if _, err := extractDonorTemplate(`<template id="tpl"><template data-sc-if="{{ enabled }}"></template>`); err == nil || err.Error() != "donor template incomplete" {
 		t.Fatalf("unclosed outer template error=%v", err)
+	}
+}
+
+func TestMediaGroupNavigationKeepsMaterialType(t *testing.T) {
+	for _, item := range []struct{ tab, page string }{{"images", "images"}, {"attachments", "attach"}, {"miniprograms", "mpLib"}} {
+		for _, group := range []string{"", "课程 A&B / 中文"} {
+			u, _ := url.Parse("/admin/materials?tab=" + item.tab + "&material_group=" + url.QueryEscape(group))
+			page, redirect, ok := mediaRequest(u)
+			if !ok || page != item.page || redirect != "" {
+				t.Fatalf("%s: page=%s redirect=%s", u, page, redirect)
+			}
+		}
+	}
+	for _, query := range []string{"tab=attachments&material_group=a&material_group=b", "tab=attachments&tab=images", "tab=attachments&unknown=1"} {
+		u, _ := url.Parse("/admin/materials?" + query)
+		_, redirect, _ := mediaRequest(u)
+		if redirect == "" {
+			t.Fatalf("invalid query accepted: %s", query)
+		}
 	}
 }
