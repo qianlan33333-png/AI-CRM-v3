@@ -225,6 +225,7 @@ func sidebarWorkbenchProfile(profile customerport.SidebarProfile, name string, c
 		// key instead of any provider identifier or a separate frontend format.
 		"customer_id":             int64(customerID),
 		"oneid":                   customerdomain.CanonicalOneIDLabel(customerID),
+		"customer_number":         profile.CustomerNumber,
 		"name":                    name,
 		"display_name":            name,
 		"avatar_url":              profile.AvatarURL,

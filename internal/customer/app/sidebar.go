@@ -39,6 +39,7 @@ type SidebarProfileStore interface {
 }
 
 type SidebarProfileApplication struct {
+	Numbers    identityport.CustomerPublicNumbers
 	uow        platformport.UnitOfWork
 	store      SidebarProfileStore
 	phones     identityport.DeclaredPhoneAttacher
@@ -67,7 +68,20 @@ func (service *SidebarProfileApplication) ReadSidebarProfile(ctx context.Context
 	err := service.uow.Within(ctx, func(txctx context.Context) error {
 		var err error
 		profile, err = service.store.ReadSidebarProfile(txctx, customerID)
-		return err
+		if err != nil {
+			return err
+		}
+		if service.Numbers != nil {
+			numbers, e := service.Numbers.CustomerPublicNumbers(txctx, []customerdomain.CustomerID{customerID})
+			if e != nil {
+				return e
+			}
+			profile.CustomerNumber = numbers[customerID]
+			if profile.CustomerNumber == "" {
+				return ErrNotFound
+			}
+		}
+		return nil
 	})
 	return profile, err
 }
@@ -99,61 +113,77 @@ func (service *SidebarProfileApplication) UpdateSidebarProfile(ctx context.Conte
 	var result customerport.SidebarProfile
 	conflicted := false
 	err = service.uow.Within(ctx, func(txctx context.Context) error {
-		receipt, found, findErr := service.store.FindSidebarProfileReceipt(txctx, keyDigest)
-		if findErr != nil {
-			return findErr
-		}
-		if found {
-			if receipt.PayloadDigest != payloadDigest {
-				return ErrSidebarProfileConflict
+		updateErr := func() error {
+			receipt, found, findErr := service.store.FindSidebarProfileReceipt(txctx, keyDigest)
+			if findErr != nil {
+				return findErr
 			}
-			result = receipt.Profile
-			if receipt.Outcome == "version_conflict" {
+			if found {
+				if receipt.PayloadDigest != payloadDigest {
+					return ErrSidebarProfileConflict
+				}
+				result = receipt.Profile
+				if receipt.Outcome == "version_conflict" {
+					conflicted = true
+				}
+				return nil
+			}
+			now := service.now().UTC()
+			result, findErr = service.store.UpdateSidebarProfile(txctx, command, keyDigest, payloadDigest, now)
+			if errors.Is(findErr, ErrSidebarProfileConflict) {
+				current, readErr := service.store.ReadSidebarProfile(txctx, command.CustomerID)
+				if readErr != nil {
+					return readErr
+				}
+				if receiptErr := service.store.RecordSidebarProfileReceipt(txctx, keyDigest, payloadDigest, command, "version_conflict", current); receiptErr != nil {
+					return receiptErr
+				}
+				result = current
 				conflicted = true
+				return nil
 			}
-			return nil
+			if findErr != nil {
+				return findErr
+			}
+			if err := service.store.RecordSidebarProfileReceipt(txctx, keyDigest, payloadDigest, command, "updated", result); err != nil {
+				return err
+			}
+			facts := map[string]any{"version": result.Version}
+			if annotationUpdate {
+				changed := make([]string, 0, 4)
+				if command.SourceSet {
+					changed = append(changed, "profile_source")
+				}
+				if command.IndustrySet {
+					changed = append(changed, "industry")
+				}
+				if command.IndustryDescriptionSet {
+					changed = append(changed, "industry_description")
+				}
+				if command.NeedsBlockersFollowupSet {
+					changed = append(changed, "needs_blockers_followup")
+				}
+				// Directory source_version intentionally stays fixed for operating
+				// annotations. Audit the independent profile revision and safe field
+				// categories so a same-directory-version update remains observable.
+				facts = map[string]any{"change_kind": "sidebar_profile_annotations", "changed_fields": changed, "profile_version": result.ProfileVersion}
+			}
+			return service.appendFacts(txctx, "profile_updated", command.CustomerID, command.EmployeeID, command.IdempotencyKey, now, facts)
+		}()
+		if updateErr != nil {
+			return updateErr
 		}
-		now := service.now().UTC()
-		result, findErr = service.store.UpdateSidebarProfile(txctx, command, keyDigest, payloadDigest, now)
-		if errors.Is(findErr, ErrSidebarProfileConflict) {
-			current, readErr := service.store.ReadSidebarProfile(txctx, command.CustomerID)
+		if service.Numbers != nil {
+			numbers, readErr := service.Numbers.CustomerPublicNumbers(txctx, []customerdomain.CustomerID{command.CustomerID})
 			if readErr != nil {
 				return readErr
 			}
-			if receiptErr := service.store.RecordSidebarProfileReceipt(txctx, keyDigest, payloadDigest, command, "version_conflict", current); receiptErr != nil {
-				return receiptErr
+			result.CustomerNumber = numbers[command.CustomerID]
+			if result.CustomerNumber == "" {
+				return ErrSidebarProfileInvalid
 			}
-			result = current
-			conflicted = true
-			return nil
 		}
-		if findErr != nil {
-			return findErr
-		}
-		if err := service.store.RecordSidebarProfileReceipt(txctx, keyDigest, payloadDigest, command, "updated", result); err != nil {
-			return err
-		}
-		facts := map[string]any{"version": result.Version}
-		if annotationUpdate {
-			changed := make([]string, 0, 4)
-			if command.SourceSet {
-				changed = append(changed, "profile_source")
-			}
-			if command.IndustrySet {
-				changed = append(changed, "industry")
-			}
-			if command.IndustryDescriptionSet {
-				changed = append(changed, "industry_description")
-			}
-			if command.NeedsBlockersFollowupSet {
-				changed = append(changed, "needs_blockers_followup")
-			}
-			// Directory source_version intentionally stays fixed for operating
-			// annotations. Audit the independent profile revision and safe field
-			// categories so a same-directory-version update remains observable.
-			facts = map[string]any{"change_kind": "sidebar_profile_annotations", "changed_fields": changed, "profile_version": result.ProfileVersion}
-		}
-		return service.appendFacts(txctx, "profile_updated", command.CustomerID, command.EmployeeID, command.IdempotencyKey, now, facts)
+		return nil
 	})
 	if err == nil && conflicted {
 		err = ErrSidebarProfileConflict

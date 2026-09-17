@@ -679,3 +679,23 @@ func (*PostgreSQL) ReserveGovernanceMutation(ctx context.Context, actorID int64,
 	}
 	return false, nil
 }
+
+// SetStaffDisplayName compares the binding so a concurrent rebind cannot apply
+// one employee's nickname to another. No login/session/role fields change.
+func (*PostgreSQL) SetStaffDisplayName(ctx context.Context, id int64, providerID, name string, now time.Time) error {
+	if strings.TrimSpace(name) == "" || len([]rune(name)) > 160 || strings.ContainsAny(name, "\x00\r\n") {
+		return domain.ErrInvalidInput
+	}
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := database.Exec(ctx, `UPDATE admin_users SET display_name=$3,updated_at=$4 WHERE id=$1 AND wecom_userid=$2`, id, providerID, name, now)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return domain.ErrConflict
+	}
+	return nil
+}

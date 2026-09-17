@@ -90,6 +90,7 @@ assert.equal(dom.window.document.body.textContent.includes('来源待核实'), f
 assert.equal(dom.window.document.body.textContent.includes('最近读取：'), false, 'normal dashboard cards must not repeat observation timestamps');
 assert.equal(dom.window.document.body.textContent.includes('数据读取：支付'), false, 'normal dashboard cards must not repeat the unified observation summary');
 assert.equal(dom.window.document.querySelectorAll('.overview-status[aria-label="数据待确认"]').length, 1, 'missing provenance must retain an accessible compact state marker');
+assert.ok(dom.window.document.querySelector('.overview-status[aria-label="数据待确认"]')?.title.length > 0, 'data gap marker must explain its reason on hover');
 assert.equal(dom.window.document.body.textContent.includes('支付客户'), false, 'overview-visible customer terminology must be renamed');
 assert.ok(dom.window.document.body.textContent.includes('支付用户'), 'overview-visible user terminology must render');
 assert.equal(dom.window.document.querySelector('a[href="/admin/distribution"]')?.textContent?.includes('分销异常待处理'), true, 'real todo route must stay usable');

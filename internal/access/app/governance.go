@@ -15,6 +15,7 @@ import (
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -710,4 +711,49 @@ func (service *Management) enterpriseQueryDigest(query string) string {
 	mac := hmac.New(sha256.New, service.enterpriseCursorKey)
 	_, _ = mac.Write([]byte("access-enterprise-query-v1\x00" + query))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// RefreshStaffNames reads the provider before opening the update transaction.
+// It updates existing bindings only and cannot grant login or create staff.
+func (service *Management) RefreshStaffNames(ctx context.Context, actor domain.Principal) error {
+	if err := service.authorizeGovernanceRead(ctx, actor); err != nil {
+		return err
+	}
+	if service.enterpriseDirectory == nil || !service.enterpriseDirectory.EnterpriseDirectoryReady() {
+		return ErrEnterpriseDirectoryUnavailable
+	}
+	writer, ok := service.repository.(accessport.StaffNameWriter)
+	if !ok {
+		return ErrEnterpriseDirectoryUnavailable
+	}
+	employees, err := service.completeEnterpriseDirectory(ctx)
+	if err != nil {
+		return err
+	}
+	names := make(map[string]string, len(employees))
+	for _, employee := range employees {
+		names[employee.UserID] = strings.TrimSpace(employee.DisplayName)
+	}
+	return service.uow.Within(ctx, func(tx context.Context) error {
+		if _, _, err := service.currentGovernanceActor(tx, actor); err != nil {
+			return err
+		}
+		users, err := service.repository.ListUsers(tx)
+		if err != nil {
+			return err
+		}
+		for _, user := range users {
+			name := names[user.WeComUserID]
+			if name == "" || name == user.DisplayName {
+				continue
+			}
+			if err := writer.SetStaffDisplayName(tx, user.ID, user.WeComUserID, name, service.now().UTC()); err != nil {
+				return err
+			}
+			if err := service.audit(tx, actor.InternalID, user.ID, "refresh_staff_name", nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

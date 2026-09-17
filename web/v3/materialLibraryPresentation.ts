@@ -10,6 +10,7 @@ import {
   installCommittedTextSearch,
   resetCommittedTextSearch,
 } from './shared/ui/committedTextSearch';
+import { mountMaterialGroups, mountMaterialGroupControl } from './materialGrouping';
 import { formatShanghaiDateTime } from './adminDateTime';
 import { listLegacyAttachments, listLegacyMiniPrograms } from '../src/api/generated/p4-media-compat/p4-media-compat';
 import { ApiError, apiRequestOptions, unwrapGenerated } from '../src/api/transport';
@@ -209,6 +210,7 @@ class FrozenMaterialPresentation {
 
   private ensureTabs(): void {
     mountMaterialLibraryTabs(this.stage, this.config.tab);
+    mountMaterialGroups(this.stage, this.page);
   }
 
   private installCommittedSearch(): void {
@@ -558,7 +560,7 @@ class FrozenMaterialPresentation {
       header.cells[0].textContent = '名称';
       header.cells[4].textContent = '创建时间';
       const status = document.createElement('th'); status.textContent = '启用状态';
-      const version = document.createElement('th'); version.textContent = '版本';
+      const version = document.createElement('th'); version.textContent = '组别';
       for (const cell of [status, version]) cell.style.cssText = header.cells[4].style.cssText;
       header.insertBefore(status, header.cells[5]);
       header.insertBefore(version, header.cells[6]);
@@ -578,7 +580,8 @@ class FrozenMaterialPresentation {
         row.insertBefore(version, row.cells[6]);
       }
       row.cells[5].textContent = item.enabled ? '启用' : '已停用';
-      row.cells[6].textContent = `v${item.version}`;
+      row.cells[6].replaceChildren();
+      mountMaterialGroupControl(row.cells[6],this.page,item);
       // The MIME type already has its own column. Leave the first cell for a
       // scannable display name instead of spending half the row on a second
       // long `application/pdf` badge.
@@ -671,7 +674,8 @@ class FrozenMaterialPresentation {
       thumbnailStatus.setAttribute('role', 'cell');
       thumbnailStatus.style.cssText = `grid-column:5;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${thumbnailText === '封面可用' ? '#237804' : '#B54708'}`;
       enabledNode.style.display = 'none';
-      const updated = document.createElement('span'); updated.setAttribute('role', 'cell'); updated.textContent = item ? `${formatTime(item.updated_at)} · v${item.version}` : '信息待确认'; updated.style.cssText = 'grid-column:6;min-width:0;color:#646A73;font-size:12px;line-height:18px';
+      const updated = document.createElement('span'); updated.setAttribute('role', 'cell'); updated.textContent = item ? formatTime(item.updated_at) : '信息待确认'; updated.style.cssText = 'grid-column:6;min-width:0;color:#646A73;font-size:12px;line-height:18px';
+      if(item) mountMaterialGroupControl(actions,this.page,item);
       actions.setAttribute('role', 'cell');
       actions.style.cssText = 'grid-column:7;display:flex;align-items:center;justify-content:flex-end;gap:2px;white-space:nowrap';
       // Keep the original elements in the row so the donor's direct event

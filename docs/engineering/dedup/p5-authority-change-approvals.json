@@ -1464,6 +1464,28 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "53fa0b1257e40a1a2fdf979351cabb36c4f067b92a379f37b931a6f212bb1e2e",
+          "head_sha256": "abddc4a6cc1a89cc365ff4e93ee3b4d310dcdd24ac6291588cf6382748240322"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "e9a6de8de9c81d4605b18c259bfec1b23a74c6502b0d29828fd29439b0839308",
+          "head_sha256": "bde0be83d6b04d5ef6fa65b25932f9f7e8d95f8e3eedf79ea2d956490a47eb22"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "670f173cd84c685fba478552bab573b7ca77407b604b2b9c1fb8e26633110f55",
+          "head_sha256": "34c9524c7ee6ff1d47d74f92e415aa751966d045f977ea6cb477ecaa0ed51cf0"
+        }
+      ],
+      "reason": "Extend the active V3 contract for the user-requested employee nickname refresh, encrypted model settings, material groups and stable public customer numbers. Frozen donor payloads and gate rules are unchanged.",
+      "review_reference": "https://github.com/qianlan33333-png/AI-CRM-v3/pull/379"
+    },
+    {
+      "base_commit": "b522c3f56953b96ce57efd91313c8bfb199d34ff",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "53fa0b1257e40a1a2fdf979351cabb36c4f067b92a379f37b931a6f212bb1e2e",
           "head_sha256": "82e2e8d219672d4368956928b56e24c347428224f4d4ae36d9bf0b34b11d7428"
         },
         {
@@ -1479,6 +1501,28 @@
       ],
       "reason": "Implement user-approved basic data workspace PRD: HXC saved views, owner-scoped readonly dashboard shares and aggregate query metadata. Only active V3 OpenAPI authority changes; frozen donors remain byte-identical.",
       "review_reference": "User explicitly requested implementation of the supplied PRD in this task on 2026-09-17. This records product authorization only; PR review and complete CI remain required. docs/prd/2026-09-17-basic-data-workspaces.md"
+    },
+    {
+      "base_commit": "f19440fbc749f15fe43ee2f5da3fa518c9366d86",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "abddc4a6cc1a89cc365ff4e93ee3b4d310dcdd24ac6291588cf6382748240322",
+          "head_sha256": "14ec89b1ceac5a6252b47a313f4525aa7b0524f3751faa34937dca7f88cadee1"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "bde0be83d6b04d5ef6fa65b25932f9f7e8d95f8e3eedf79ea2d956490a47eb22",
+          "head_sha256": "119e267346e511ac03d86b698334f96333b1b4b1aaa7a707902a348d68062209"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "34c9524c7ee6ff1d47d74f92e415aa751966d045f977ea6cb477ecaa0ed51cf0",
+          "head_sha256": "e4313ea905df2cd795b2ccdf75d99f58734e403aa0cd6adb91a0427d62c4dde8"
+        }
+      ],
+      "reason": "Reconcile the approved basic data workspace API with the merged operations and customer-number update. Preserve both contracts and frozen donor bytes.",
+      "review_reference": "User approved implementation of the supplied dashboard PRD and Feishu-style UI in this task on 2026-09-17. This records product authorization only; current PR review and full CI remain required."
     }
   ]
 }

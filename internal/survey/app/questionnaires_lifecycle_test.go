@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -105,5 +106,26 @@ func TestQuestionnaireArchiveIsTerminalAndIdempotent(t *testing.T) {
 	}
 	if _, err = service.Duplicate(context.Background(), 7, 3, "questionnaire-copy-after-archive-0003"); err != surveyport.ErrNotFound {
 		t.Fatalf("copy archived err=%v, want not found", err)
+	}
+}
+
+func TestAssessmentRetirementRejectsNewUseAndPreservesHistoricalRead(t *testing.T) {
+	store := &lifecycleStore{source: surveyport.Questionnaire{ID: 7, Name: "历史测评", Title: "历史测评", Slug: "historical-assessment", Status: surveyport.StatusDraft, Version: 1, Mode: surveyport.ModeAssessment, AnswerDisplayMode: surveyport.DisplayAllInOne}}
+	service := NewService(oauthUOW{}, store)
+	ctx := context.Background()
+	if _, err := service.Create(ctx, surveyport.CreateCommand{Questionnaire: store.source, ActorID: 3, IdempotencyKey: "retired-assessment-create"}); !errors.Is(err, surveyport.ErrInvalid) {
+		t.Fatalf("create error=%v", err)
+	}
+	if _, err := service.Duplicate(ctx, 7, 3, "retired-assessment-copy"); !errors.Is(err, surveyport.ErrNotFound) {
+		t.Fatalf("duplicate error=%v", err)
+	}
+	if _, err := service.Publish(ctx, 7, 1, 3, "retired-assessment-publish"); !errors.Is(err, surveyport.ErrInvalid) {
+		t.Fatalf("publish error=%v", err)
+	}
+	if len(store.created) != 0 || store.published != 0 {
+		t.Fatal("retired assessment wrote a definition")
+	}
+	if value, err := service.Get(ctx, 7); err != nil || value.ID != 7 {
+		t.Fatalf("historical read=%+v error=%v", value, err)
 	}
 }

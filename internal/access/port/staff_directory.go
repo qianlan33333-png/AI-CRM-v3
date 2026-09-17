@@ -1,6 +1,9 @@
 package port
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // MessageArchiveStaff is the narrow, read-only Access projection required to
 // render staff already referenced by archive-owned facts. Callers must provide
@@ -12,4 +15,9 @@ type MessageArchiveStaff struct {
 
 type MessageArchiveStaffDirectory interface {
 	MessageArchiveStaff(context.Context, []int64) ([]MessageArchiveStaff, error)
+}
+
+// StaffNameWriter updates only a provider-bound display name, never permissions.
+type StaffNameWriter interface {
+	SetStaffDisplayName(context.Context, int64, string, string, time.Time) error
 }

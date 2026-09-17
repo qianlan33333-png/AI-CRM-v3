@@ -337,6 +337,13 @@ func newHTTPIntegrationRepository(t *testing.T, url string) (*mediastore.Reposit
 	if _, err = native.Exec(ctx, string(sql)); err != nil {
 		t.Fatal(err)
 	}
+	groupSQL, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0180_material_groups.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(groupSQL)); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -423,3 +430,69 @@ func requireJSONArray(t *testing.T, value map[string]any, field string) {
 	}
 }
 func jsonID(value int64) string { return strconv.FormatInt(value, 10) }
+
+func TestMaterialGroupsPersistFilterAndRejectStaleWrites(t *testing.T) {
+	url, e := platformconfig.DatabaseURL()
+	if e != nil {
+		t.Skip("database URL not configured")
+	}
+	repo, cleanup, native := newHTTPIntegrationRepository(t, url)
+	defer cleanup()
+	service, e := mediaapp.NewHTTPFacade(repo)
+	if e != nil {
+		t.Fatal(e)
+	}
+	handler, e := NewHandler(service, handlerTestSecurity{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	call := func(method, path, body, key string, csrf bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		if csrf {
+			r.Header.Set("X-CSRF-Token", "test-csrf")
+		}
+		if key != "" {
+			r.Header.Set("Idempotency-Key", key)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	mini := responseJSON(t, call("POST", "/api/admin/miniprogram-library", `{"name":"Group card","appid":"wx-test","pagepath":"pages/a","title":"Group card"}`, "mini-group-create-0001", true), 200)
+	miniID := int64(mini["item_id"].(float64))
+	attachment, e := repo.CreateAttachment(context.Background(), 1, "group-attachment-create-0001", mediaapp.AttachmentInput{FileName: "test.pdf", Name: "Group PDF", Content: []byte("%PDF-test")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, item := range []struct {
+		path string
+		id   int64
+	}{{"miniprogram-library", miniID}, {"attachment-library", attachment["id"].(int64)}} {
+		base := "/api/admin/" + item.path
+		endpoint := base + "/" + jsonID(item.id) + "/group"
+		body := `{"category":"课程","expected_version":1}`
+		responseJSON(t, call("PUT", endpoint, body, "group-set-key-"+item.path, false), 403)
+		first := responseJSON(t, call("PUT", endpoint, body, "group-set-key-"+item.path, true), 200)
+		replay := responseJSON(t, call("PUT", endpoint, body, "group-set-key-"+item.path, true), 200)
+		if first["version"] != float64(2) || replay["version"] != first["version"] {
+			t.Fatal("group write replay changed version")
+		}
+		responseJSON(t, call("PUT", endpoint, `{"category":"另组","expected_version":1}`, "group-stale-key-"+item.path, true), 409)
+		grouped := responseJSON(t, call("GET", base+"?category=%E8%AF%BE%E7%A8%8B", "", "", false), 200)
+		if grouped["total"] != float64(1) || grouped["items"].([]any)[0].(map[string]any)["category"] != "课程" {
+			t.Fatal("group filter lost assignment")
+		}
+		ungrouped := responseJSON(t, call("GET", base+"?category=", "", "", false), 200)
+		if ungrouped["total"] != float64(0) {
+			t.Fatal("grouped material appeared in ungrouped")
+		}
+		facets := responseJSON(t, call("GET", base+"/groups", "", "", false), 200)
+		if len(facets["items"].([]any)) != 1 {
+			t.Fatal("group facets missing")
+		}
+	}
+	var audits int
+	if e = native.QueryRow(context.Background(), `SELECT count(*) FROM media_audit_events WHERE event_type='media.group_updated'`).Scan(&audits); e != nil || audits != 2 {
+		t.Fatalf("group audit count=%d err=%v", audits, e)
+	}
+}

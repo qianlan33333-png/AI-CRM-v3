@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=production-shell-layout-20260909">
   {{with presentationAssets}}{{if .AdminDateTimeScript}}<script type="module" src="{{.AdminDateTimeScript}}"></script>{{end}}{{end}}
   <script defer src="/static/admin_console/admin_console.js?v=production-shell-41f80a11-mime2"></script>
-  <script defer src="/static/admin_console/admin_shell.js?v=static-mime2"></script>
+  <script defer src="/static/admin_console/admin_shell.js?v=operations-heading-20260917"></script>
   {{if .AudienceList}}
   <link rel="stylesheet" href="/static/admin_console/admin_audience.css?v=production-shell-41f80a11-mime2">
   {{with presentationAssets}}{{if .ConfirmationDialogCSS}}<link rel="stylesheet" href="{{.ConfirmationDialogCSS}}">{{end}}{{if .ConfirmationDialogScript}}<script type="module" src="{{.ConfirmationDialogScript}}"></script>{{end}}{{end}}
@@ -58,7 +58,7 @@
   <link rel="stylesheet" href="/assets/standard-components/wecom_tag_picker.css">
   {{with presentationAssets}}{{if .SelectionDialogCSS}}<link rel="stylesheet" href="{{.SelectionDialogCSS}}">{{end}}{{end}}
   <script type="module" src="/assets/standard-components/standard_components_host.js"></script>
-  <script defer src="/static/admin_console/admin_customers.js?v=customer-profile-v3"></script>
+  <script defer src="/static/admin_console/admin_customers.js?v=operations-profile-20260917"></script>
   {{end}}
   {{if .MessageArchive}}
   <link rel="stylesheet" href="/static/admin_console/message_archive.css?v=message-archive-v1">
@@ -169,7 +169,7 @@
   {{if .RuntimeConfig}}
   <link rel="stylesheet" href="/static/admin_console/config_center.css?v=dd8d60d-config-center">
   <script defer src="/static/admin_console/runtime_config_releases_host.js?v=runtime-config-releases-v2"></script>
-  <script defer src="/static/admin_console/config_center_host.js?v=config-center-v3"></script>
+  <script defer src="/static/admin_console/config_center_host.js?v=operations-config-20260917"></script>
   {{end}}
   {{if .Channel}}
   <link rel="stylesheet" href="{{.ChannelAssets.TokensCSS}}">
@@ -255,11 +255,6 @@
       {{if .ShowPageHeader}}
       <header class="admin-topbar">
         <div class="admin-topbar-head">
-          <nav class="admin-breadcrumbs" aria-label="当前位置">
-            {{range .Breadcrumbs}}
-            {{if .Href}}<a href="{{.Href}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}
-            {{end}}
-          </nav>
           <div>
             <h1 class="admin-page-title">{{.PageTitle}}</h1>
             <p class="admin-page-summary">{{.PageSummary}}</p>

@@ -110,7 +110,7 @@ const hostRoot = document.querySelector('[data-v3-radar-visitor-host]');
 assert.ok(hostRoot, 'the source-owned Host mounts over the frozen event controls');
 assert.equal(document.querySelector('#dRows'), null, 'the frozen receipt/stage rows are removed');
 assert.equal(hostRoot.querySelectorAll('tbody tr').length, initialVisitors.length, 'each DTO session is one displayed row; the browser does not synthesize stage rows');
-assert.ok(hostRoot.textContent.includes('昵称外部联系人 IDOneID打开时间'));
+assert.ok(hostRoot.textContent.includes('昵称外部联系人 ID用户编号打开时间'));
 assert.ok(hostRoot.textContent.includes('陈访客'));
 assert.ok(hostRoot.textContent.includes('external-contact-001'));
 assert.ok(hostRoot.textContent.includes('CID-88'));

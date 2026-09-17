@@ -91,50 +91,23 @@ try {
   await login(cdp, "super");
   await openAccessFromConfig(cdp, "super");
   await openLegacyAccess(cdp, "super");
-  await waitFor(cdp, "document.querySelector('#admin-access-provision')?.hidden === false && document.querySelector('#admin-access-super')?.hidden === false && document.querySelector('#admin-access-super-title')?.textContent.includes('超级管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('SuperFixtureID')", "super controls or bound enterprise identity did not render");
+  await waitFor(cdp, "document.querySelector('#admin-access-provision') === null && document.querySelector('#admin-access-super')?.hidden === false && document.querySelector('#admin-access-super-title')?.textContent.includes('超级管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('SuperFixtureID')", "super controls or bound enterprise identity did not render");
   if (!await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('SuperFixtureID')); const value=row?.querySelector('td[data-label=\"最近登录\"]')?.textContent.trim() || ''; return /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(value); })()")) throw new Error("last login was not rendered as a Shanghai business time");
   await screenshot(cdp, 1440, "access-governance-1440.png");
   await screenshot(cdp, 1280, "access-governance-1280.png");
   await screenshot(cdp, 780, "access-governance-780.png");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision').click(); true");
-  await waitFor(cdp, "document.querySelectorAll('#admin-access-employee-results button[data-wecom-userid]').length > 0", "initial authorized employee directory did not render");
-  const employeeCandidate = await evaluate(cdp, "(() => { const input=document.querySelector('#admin-access-employee-search'); input.value='UnavailableID'; input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}); Object.defineProperty(event,'keyCode',{value:229}); input.dispatchEvent(event); return event.defaultPrevented; })()");
-  if (employeeCandidate) throw new Error('employee directory IME candidate Enter was consumed as a search');
-  await sleep(350);
-  if (await evaluate(cdp, "document.querySelector('#admin-access-employee-search-status')?.textContent.includes('暂时不可用')")) throw new Error('employee directory IME candidate Enter issued the unavailable directory read');
-  await evaluate(cdp, "(() => { const input=document.querySelector('#admin-access-employee-search'); const event=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}); input.dispatchEvent(event); return event.defaultPrevented; })()");
-  await waitFor(cdp, "document.querySelector('#admin-access-employee-search-status')?.textContent.includes('暂时不可用') && document.querySelector('#admin-access-employee-results')?.textContent.includes('CandidateCaseID')", "directory 503 did not preserve the previous authorized employee result");
-  await evaluate(cdp, "(() => { const input=document.querySelector('#admin-access-employee-search'); input.value='CandidateCaseID'; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); })()");
-  await waitFor(cdp, "document.querySelectorAll('#admin-access-employee-results button[data-wecom-userid]').length === 1", "enterprise employee candidate did not render");
-  await evaluate(cdp, "document.querySelector('#admin-access-employee-results button[data-wecom-userid]').click(); document.querySelector('#admin-access-provision-next').click(); true");
-  await waitFor(cdp, "document.querySelector('#admin-access-provision-role-step').hidden === false", "role step did not render");
-  await evaluate(cdp, "document.querySelector('input[name=\"provision-role\"][value=\"viewer\"]').click(); document.querySelector('#admin-access-provision-next').click(); true");
-  await waitFor(cdp, "document.querySelector('#admin-access-provision-confirm-step').hidden === false && document.querySelector('#admin-access-provision-confirm-step').textContent.includes('CandidateCaseID')", "provision confirmation did not retain exact enterprise account casing");
-  await screenshot(cdp, 780, "access-governance-provision-confirm.png");
-  await screenshot(cdp, 420, "access-governance-provision-420.png");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision-submit').click(); true");
-  await waitFor(cdp, "document.querySelector('#admin-access-alert')?.textContent.includes('员工已开通') && document.querySelector('#admin-access-users-body')?.textContent.includes('CandidateCaseID')", "provision was not persisted and rendered through the real page");
+  const originalRows = await evaluate(cdp, "document.querySelectorAll('#admin-access-users-body tr').length");
+  await evaluate(cdp, "document.querySelector('#admin-access-refresh').click(); true");
+  await waitFor(cdp, "document.querySelector('#admin-access-alert')?.textContent.includes('员工昵称已刷新') && document.querySelector('#admin-access-users-body')?.textContent.includes('只读乙')", 'provider nickname refresh did not complete');
+  if (await evaluate(cdp, "document.querySelectorAll('#admin-access-users-body tr').length") !== originalRows) throw new Error('nickname refresh provisioned an account');
+  if (await evaluate(cdp, "document.querySelector('#admin-access-users-body')?.textContent.includes('企微客服')")) throw new Error('placeholder nickname survived provider refresh');
+  await screenshot(cdp, 420, "access-governance-refresh-420.png");
   await screenshot(cdp, 390, "access-governance-390.png");
   const narrow = await evaluate(cdp, "(() => { const row=document.querySelector('#admin-access-users-body tr'); return row && getComputedStyle(row).display === 'grid' && document.querySelector('#admin-access-users-body td[data-label=\"员工\"]') !== null && document.documentElement.scrollWidth <= 390; })()");
   if (!narrow) throw new Error("390px Access UI did not use the narrow employee row layout");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision').click(); true");
-  await evaluate(cdp, "(() => { const input=document.querySelector('#admin-access-employee-search'); input.value='CandidateCaseID'; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); })()");
-  await waitFor(cdp, "(() => { const choice=document.querySelector('#admin-access-employee-results button[data-wecom-userid]'); return choice?.disabled === true && choice.textContent.includes('已开通'); })()", "already authorized enterprise employee was available for duplicate provisioning");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision-close').click(); true");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision').click(); true");
-  await evaluate(cdp, "(() => { const input=document.querySelector('#admin-access-employee-search'); input.value='CandidateCaseID'; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); input.value='SecondCandidateID'; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'})); })()");
-  await waitFor(cdp, "document.querySelector('#admin-access-employee-search-status')?.textContent.includes('已显示 1') && document.querySelector('#admin-access-employee-results')?.textContent.includes('SecondCandidateID') && !document.querySelector('#admin-access-employee-results')?.textContent.includes('CandidateCaseID') && document.querySelectorAll('#admin-access-employee-results button[data-wecom-userid]:not(:disabled)').length === 1", "rapid employee search did not retain the final query result");
-  await evaluate(cdp, "document.querySelector('#admin-access-employee-results button[data-wecom-userid]:not(:disabled)').click(); document.querySelector('#admin-access-provision-next').click(); true");
-  await sleep(100);
-  const secondSelection = await evaluate(cdp, "(() => ({nextDisabled:document.querySelector('#admin-access-provision-next')?.disabled, employeeHidden:document.querySelector('#admin-access-employee-step')?.hidden, roleHidden:document.querySelector('#admin-access-provision-role-step')?.hidden, results:document.querySelector('#admin-access-employee-results')?.textContent || ''}))()");
-  await waitFor(cdp, "document.querySelector('#admin-access-provision-role-step').hidden === false", `second provision role step did not render ${JSON.stringify(secondSelection)}`);
-  await evaluate(cdp, "document.querySelector('input[name=\"provision-role\"][value=\"viewer\"]').click(); document.querySelector('#admin-access-provision-next').click(); true");
-  await waitFor(cdp, "document.querySelector('#admin-access-provision-confirm-step').hidden === false && document.querySelector('#admin-access-provision-confirm-step').textContent.includes('SecondCandidateID')", "second provision confirmation did not retain exact enterprise account casing");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision-submit').click(); true");
-  await waitFor(cdp, "document.querySelector('#admin-access-alert')?.textContent.includes('员工已开通') && document.querySelector('#admin-access-users-body')?.textContent.includes('SecondCandidateID') && document.querySelector('#admin-access-provision-submit')?.disabled === false", "second continuous provisioning did not restore its submit control");
   await login(cdp, "admin");
   await openAccessFromConfig(cdp, "admin");
-  await waitFor(cdp, "document.querySelector('#admin-access-provision')?.hidden === false", "admin viewer-provision action was not rendered from server capability");
+  await waitFor(cdp, "document.querySelector('#admin-access-provision') === null", "retired provision entry remains");
   const opened = await evaluate(cdp, "(() => { const button=document.querySelector('#admin-access-users-body button[data-access-action=\"manage\"]'); if (!button) return false; button.click(); return true; })()");
   if (!opened) { const state = await evaluate(cdp, "({rows:document.querySelector('#admin-access-users-body')?.textContent || '',notice:document.querySelector('#admin-access-no-permission')?.hidden})"); throw new Error(`admin did not receive a server-authorized management row ${JSON.stringify(state)}`); }
   await sleep(100);
@@ -157,15 +130,11 @@ try {
   await screenshot(cdp, 780, "access-governance-transfer-complete.png");
 
   // The former owner must read back as a normal administrator after a new
-  // login. Its DOM may offer only viewer provisioning and viewer login state;
+  // login. Its DOM may offer only viewer login state;
   // it must never recover super-only controls from the prior page session.
   await login(cdp, "super");
   await openAccessFromConfig(cdp, "super");
-  await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === true && document.querySelector('#admin-access-provision')?.hidden === false", "former super did not read back as administrator after a fresh login");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision').click(); true");
-  await waitFor(cdp, "document.querySelector('#admin-access-provision-dialog')?.hidden === false && document.querySelector('#admin-access-employee-results')?.textContent.length > 0", "administrator provisioning dialog did not render");
-  if (!await evaluate(cdp, "document.querySelector('[data-role-option=\"admin\"]')?.hidden === true && document.querySelector('[data-role-option=\"viewer\"]')?.hidden === false")) throw new Error("administrator received an admin-provision role option");
-  await evaluate(cdp, "document.querySelector('#admin-access-provision-close').click(); true");
+  await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === true && document.querySelector('#admin-access-provision') === null", "former super did not read back as administrator after a fresh login");
   const formerOwnerManage = await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('ViewerFixtureID')); const button=row?.querySelector('button[data-access-action=\"manage\"]'); if (!button) return false; button.click(); return true; })()");
   if (!formerOwnerManage) throw new Error("administrator did not retain viewer-only management after the transfer");
   await waitFor(cdp, "document.querySelector('#admin-access-drawer')?.hidden === false && document.querySelector('#admin-access-role-panel')?.hidden === true && document.querySelector('#admin-access-advanced-panel')?.hidden === true && document.querySelector('#admin-access-drawer-actions button[data-access-action=\"toggle-login\"]') !== null", "administrator drawer exposed role or super-only controls after the transfer");
@@ -174,7 +143,7 @@ try {
   // session. Check the unique top card and the privileged drawer separately.
   await login(cdp, "admin");
   await openAccessFromConfig(cdp, "admin");
-  await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === false && document.querySelector('#admin-access-provision')?.hidden === false", "transfer target did not read back as the unique super administrator after a fresh login");
+  await waitFor(cdp, "document.querySelector('#admin-access-super-title')?.textContent.includes('管理员甲') && document.querySelector('#admin-access-super-detail')?.textContent.includes('AdminFixtureID') && document.querySelector('#admin-access-transfer')?.hidden === false && document.querySelector('#admin-access-provision') === null", "transfer target did not read back as the unique super administrator after a fresh login");
   const newOwnerManage = await evaluate(cdp, "(() => { const row=[...document.querySelectorAll('#admin-access-users-body tr')].find((item) => item.textContent.includes('SuperFixtureID')); const button=row?.querySelector('button[data-access-action=\"manage\"]'); if (!button) return false; button.click(); return true; })()");
   if (!newOwnerManage) throw new Error("new super administrator could not manage the former owner");
   await waitFor(cdp, "document.querySelector('#admin-access-drawer')?.hidden === false && document.querySelector('#admin-access-role-panel')?.hidden === false && document.querySelector('#admin-access-advanced-panel')?.hidden === false && document.querySelector('#admin-access-binding-form')?.hidden === false && document.querySelector('#admin-access-password-form')?.hidden === false", "new super administrator did not receive the expected privileged DOM controls");

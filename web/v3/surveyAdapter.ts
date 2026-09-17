@@ -12,6 +12,17 @@ import { listLegacyQuestionnaires } from '../src/api/generated/p4-survey-compat/
 import { confirmBox, toast } from '../src/shared/ui/feedback';
 import { renderTableReadState } from './shared/ui/tableReadState';
 
+// The immutable donor template is a source fixture only. V3 retires its
+// assessment entry before paint and never exposes its obsolete callback.
+function removeAssessmentEntry(): void {
+  if (document.body?.dataset.page !== 'questionnaires') return;
+  for (const button of document.querySelectorAll('button')) {
+    if (button.textContent?.trim() === '创建测评问卷模板') button.remove();
+  }
+}
+new MutationObserver(removeAssessmentEntry).observe(document.documentElement, {childList:true,subtree:true});
+removeAssessmentEntry();
+
 type QuestionnaireListRow = {
   resourceId?: number;
   id?: number;

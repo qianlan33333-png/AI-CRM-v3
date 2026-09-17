@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
@@ -16,6 +17,7 @@ import (
 // aggregation; this adapter only reads Customer and Identity presentation Ports
 // after CSRF/RBAC has been enforced by the Radar HTTP handler.
 type radarVisitorPresentationAdapter struct {
+	numbers    identityport.CustomerPublicNumbers
 	uow        platformport.UnitOfWork
 	directory  customerport.RadarVisitorDirectoryReader
 	identities identityport.AdminRadarVisitorIdentityReader
@@ -34,6 +36,17 @@ func (adapter radarVisitorPresentationAdapter) SearchRadarVisitors(ctx context.C
 		}
 		if len(directoryIDs) > radarport.MaximumVisitorCandidates {
 			return radarport.ErrVisitorSearchTooWide
+		}
+		if adapter.numbers != nil {
+			if n, e := strconv.ParseInt(search, 10, 64); e == nil && n >= 1000000 && n <= 9999999 {
+				id, found, e := adapter.numbers.CustomerForPublicNumber(tx, search)
+				if e != nil {
+					return e
+				}
+				if found {
+					directoryIDs = append(directoryIDs, id)
+				}
+			}
 		}
 		var searchErr error
 		result, searchErr = adapter.identities.SearchAdminRadarVisitorCustomers(tx, adapter.corpScope, search, directoryIDs, limit)
@@ -66,6 +79,7 @@ func (adapter radarVisitorPresentationAdapter) PresentRadarVisitors(ctx context.
 	}
 	identities := map[customerdomain.CustomerID]identityport.AdminRadarVisitorIdentity{}
 	displays := map[customerdomain.CustomerID]customerport.RadarVisitorDirectoryDisplay{}
+	numbers := map[customerdomain.CustomerID]string{}
 	if len(resolved) > 0 {
 		err := adapter.uow.Within(ctx, func(tx context.Context) error {
 			var err error
@@ -86,6 +100,12 @@ func (adapter radarVisitorPresentationAdapter) PresentRadarVisitors(ctx context.
 				roots = append(roots, projection.CanonicalCustomerID)
 			}
 			displays, err = adapter.directory.RadarVisitorDisplays(tx, roots)
+			if err != nil {
+				return err
+			}
+			if adapter.numbers != nil {
+				numbers, err = adapter.numbers.CustomerPublicNumbers(tx, roots)
+			}
 			return err
 		})
 		if err != nil {
@@ -112,6 +132,9 @@ func (adapter radarVisitorPresentationAdapter) PresentRadarVisitors(ctx context.
 			item.Nickname = pointer(display.DisplayName)
 		}
 		oneID := customerdomain.CanonicalOneIDLabel(identity.CanonicalCustomerID)
+		if adapter.numbers != nil {
+			oneID = numbers[identity.CanonicalCustomerID]
+		}
 		if oneID == "" {
 			return nil, fmt.Errorf("radar visitor canonical OneID unavailable: %w", radarport.ErrUnavailable)
 		}

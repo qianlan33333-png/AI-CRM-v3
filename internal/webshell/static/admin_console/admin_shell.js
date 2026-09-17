@@ -16,6 +16,20 @@
     return "";
   }
 
+  // Frozen fragments can mount after the shared shell. Remove only their
+  // short heading breadcrumbs, never the containing title/action workspace.
+  function removeHeadingBreadcrumbs() {
+    if (typeof document === "undefined" || !document.body) return;
+    document.querySelectorAll('.admin-topbar .admin-breadcrumbs, #stage div, #stage nav').forEach(function (node) {
+      const text = (node.textContent || '').trim();
+      const inlineOnly = Array.from(node.children).every(function (child) { return ['SPAN', 'A'].includes(child.tagName); });
+      if (inlineOnly && /^(用户|客户)管理后台(?:\s*\/[^\n]{0,80})?$/.test(text)) node.remove();
+    });
+  }
+  removeHeadingBreadcrumbs();
+  const observer = new MutationObserver(removeHeadingBreadcrumbs);
+  observer.observe(document.body, {childList: true, subtree: true});
+
   const form = document.querySelector("[data-admin-logout]");
   if (!form) return;
   form.addEventListener("submit", async function (event) {

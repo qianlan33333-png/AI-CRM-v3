@@ -436,6 +436,7 @@ func parseListQuery(values url.Values) (orderport.ListQuery, bool) {
 }
 
 type orderResponse struct {
+	PayerCustomerNumber   string           `json:"payer_customer_number,omitempty"`
 	ID                    int64            `json:"id"`
 	RecordOrigin          string           `json:"record_origin"`
 	CreatedAt             time.Time        `json:"created_at"`
@@ -544,6 +545,7 @@ func responseFrom(order domain.Snapshot, customers map[customerdomain.CustomerID
 	payer := ""
 	payerName := "未归属"
 	payerPhoneMasked := ""
+	payerNumber := ""
 	if order.PayerCustomerID != nil {
 		payer = "customer:" + strconv.FormatInt(*order.PayerCustomerID, 10)
 		payerName = "客户 #" + strconv.FormatInt(*order.PayerCustomerID, 10)
@@ -552,9 +554,10 @@ func responseFrom(order domain.Snapshot, customers map[customerdomain.CustomerID
 				payerName = display.DisplayName
 			}
 			payerPhoneMasked = display.PhoneMasked
+			payerNumber = display.CustomerNumber
 		}
 	}
-	return orderResponse{ID: order.ID, RecordOrigin: origin, CreatedAt: order.CreatedAt, MerchantOrderNo: order.MerchantOrderNo, OutTradeNo: order.MerchantOrderNo, OrderNo: order.SourceKey, PlatformTransactionNo: order.ProviderTransactionNo, TransactionID: order.ProviderTransactionNo, PayerName: payerName, PayerID: payer, PayerPhoneMasked: payerPhoneMasked, ProductCode: productCode, ProductName: productName, AmountYuan: fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100), Currency: order.Amount.Currency, Status: order.Status, StatusLabel: string(order.Status), Provider: provider, ProviderLabel: label, DetailURL: "/admin/orderDetail.html?" + url.Values{"id": {order.MerchantOrderNo}, "provider": {provider}}.Encode()}
+	return orderResponse{PayerCustomerNumber: payerNumber, ID: order.ID, RecordOrigin: origin, CreatedAt: order.CreatedAt, MerchantOrderNo: order.MerchantOrderNo, OutTradeNo: order.MerchantOrderNo, OrderNo: order.SourceKey, PlatformTransactionNo: order.ProviderTransactionNo, TransactionID: order.ProviderTransactionNo, PayerName: payerName, PayerID: payer, PayerPhoneMasked: payerPhoneMasked, ProductCode: productCode, ProductName: productName, AmountYuan: fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100), Currency: order.Amount.Currency, Status: order.Status, StatusLabel: string(order.Status), Provider: provider, ProviderLabel: label, DetailURL: "/admin/orderDetail.html?" + url.Values{"id": {order.MerchantOrderNo}, "provider": {provider}}.Encode()}
 }
 
 func (h *Handler) payerDisplays(ctx context.Context, orders []domain.Snapshot) map[customerdomain.CustomerID]customerport.DirectoryContactDisplay {

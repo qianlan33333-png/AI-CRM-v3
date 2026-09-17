@@ -92,6 +92,7 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("POST /logout", handler.logout)
 	mux.HandleFunc("GET /api/admin/access/users", handler.listUsers)
 	mux.HandleFunc("GET /api/admin/access/enterprise-employees", handler.listEnterpriseEmployees)
+	mux.HandleFunc("POST /api/admin/access/users/refresh-names", handler.refreshStaffNames)
 	mux.HandleFunc("POST /api/admin/access/super-admin-transfer", handler.transferSuperAdmin)
 	mux.HandleFunc("PUT /api/admin/access/users/{id}/login-access", handler.setLoginEnabled)
 	mux.HandleFunc("PUT /api/admin/access/users/{id}/role", handler.setRole)
@@ -751,4 +752,19 @@ func SafeNextPath(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func (handler *Handler) refreshStaffNames(response nethttp.ResponseWriter, request *nethttp.Request) {
+	actor, _, ok := handler.authorizedPayload(response, request)
+	if !ok {
+		return
+	}
+	service, ok := handler.management.(interface {
+		RefreshStaffNames(context.Context, domain.Principal) error
+	})
+	if !ok {
+		handler.writeMutationResult(response, request, app.ErrEnterpriseDirectoryUnavailable)
+		return
+	}
+	handler.writeMutationResult(response, request, service.RefreshStaffNames(request.Context(), actor))
 }

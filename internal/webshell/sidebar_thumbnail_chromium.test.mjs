@@ -293,6 +293,7 @@ try {
     const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), document: await evaluate(cdp, "document.body ? 'ready' : 'missing'"), tabs: await evaluate(cdp, "Boolean(document.querySelector('#tabs'))"), host: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarHost-/.test(path) && status === 200), overlay: [...resources.entries()].some(([path, status]) => /^\/sidebar-assets\/sidebarStandardOverlay-/.test(path) && status === 200), bootstrap: bootstrapCountSince(successStart), jssdk: jssdkCountSince(successStart), cspBlob: sidebarCSP.includes("img-src 'self' data: blob:"), exceptions });
     throw new Error(`sidebar standard overlay did not complete official JSSDK handshake: ${diagnostic}`);
   }
+  await waitFor(cdp, '/^用户编号 [1-9][0-9]{6}$/.test(document.querySelector("#customer-oneid")?.textContent || "")', "sidebar public number was dropped by the legacy renderer");
   const successCalls = await bridgeCalls();
   const successAgentAPIs = JSON.parse(await evaluate(cdp, "JSON.stringify(globalThis.__sidebarAgentAPIs || [])"));
   if (successCalls.join("|") !== "preVerifyJSAPI|agentConfig|getCurExternalContact" || JSON.stringify(successAgentAPIs) !== JSON.stringify(["getCurExternalContact", "sendChatMessage"]) || bootstrapCountSince(successStart) !== 1) throw new Error(`official JSSDK success order/API mismatch: ${JSON.stringify({ calls: successCalls, agentAPIs: successAgentAPIs })}`);

@@ -49,11 +49,11 @@ async function settle() { await sleep(); await sleep(); }
     assert.equal(topbarUpload, dom.window.document.querySelector('#upload'), 'the original attachment upload control is moved, not recreated');
     topbarUpload.click(); assert.equal(uploads, 1, 'the original attachment upload callback remains connected');
     assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector('#stage > div[style*="height"]')).display, 'none', 'the duplicate donor attachment title is not visible');
-    assert.deepEqual([...dom.window.document.querySelectorAll('thead th')].slice(0, 8).map((cell) => cell.textContent), ['名称', '标签', '类型', '大小', '创建时间', '启用状态', '版本', '操作'], 'attachment table exposes its actual workspace fields');
+    assert.deepEqual([...dom.window.document.querySelectorAll('thead th')].slice(0, 8).map((cell) => cell.textContent), ['名称', '标签', '类型', '大小', '创建时间', '启用状态', '组别', '操作'], 'attachment table exposes its actual workspace fields');
     const row = dom.window.document.querySelector('tbody tr');
     assert.equal(row.cells[3].textContent, '408 KB');
     assert.equal(row.cells[5].textContent, '启用');
-    assert.equal(row.cells[6].textContent, 'v3');
+    assert.equal(row.cells[6].textContent, '未分组');
     const input = dom.window.document.querySelector('input[placeholder="搜索附件名"]');
     const beforeDraft = reads;
     input.value = '课程';
@@ -92,7 +92,7 @@ async function settle() { await sleep(); await sleep(); }
     dom.window.document.querySelector('[data-page-header-actions="material-library-mpLib"] #create').click();
     assert.equal(searches, 10, 'the original mini-program create callback remains connected');
     const directory = dom.window.document.querySelector('[data-material-library-mini-directory]');
-    assert.ok(directory?.textContent.includes('wx-test') && directory.textContent.includes('已停用') && directory.textContent.includes('v2'), 'mini-program directory exposes actual AppID, state, and version fields');
+    assert.ok(directory?.textContent.includes('wx-test') && directory.textContent.includes('已停用') && directory.textContent.includes('未分组'), 'mini-program directory exposes actual AppID, state, and version fields');
     const input = dom.window.document.querySelector('#fMpQuery'); const before = reads;
     input.value = '报名'; input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     assert.equal(reads, before, 'ordinary mini-program typing is a draft');
@@ -174,7 +174,7 @@ console.log('material library presentation: PASS');
     const table = dom.window.document.querySelector('table');
     assert.equal(table.dataset.materialLibraryAttachmentTable, 'true', 'duplicate attachment names join by the stable donor resource ID');
     assert.deepEqual([...table.querySelectorAll('tbody tr')].map((row) => row.cells[3].textContent), ['100 B', '200 B'], 'duplicate attachment rows keep their own typed size despite the shared display name');
-    assert.deepEqual([...table.querySelectorAll('tbody tr')].map((row) => row.cells[6].textContent), ['v1', 'v4'], 'duplicate attachment rows keep their own typed version despite the shared display name');
+    assert.deepEqual([...table.querySelectorAll('tbody tr')].map((row) => row.cells[6].textContent), ['未分组', '未分组'], 'duplicate attachment rows expose their group without changing their resource identity');
   } finally { dom.window.close(); }
 }
 
@@ -359,7 +359,7 @@ console.log('material library presentation: PASS');
     dom.window.dispatchEvent(new dom.window.Event('aicrm:media-content-changed'));
     await settle(); await settle();
     const row = dom.window.document.querySelector('[data-material-library-mini-directory] [data-material-library-id="31"]');
-    assert.ok(row.textContent.includes('更新后卡片') && row.textContent.includes('wx-v2') && row.textContent.includes('第二标题') && row.textContent.includes('已停用') && row.textContent.includes('v2') && row.textContent.includes('2026-09-15 08:02'), 'a source-owned saved-content event refreshes name, title, state and updated time on the same physical row');
+    assert.ok(row.textContent.includes('更新后卡片') && row.textContent.includes('wx-v2') && row.textContent.includes('第二标题') && row.textContent.includes('已停用') && row.textContent.includes('2026-09-15 08:02'), 'a source-owned saved-content event refreshes name, title, state and updated time on the same physical row');
     row.querySelector('#revision-edit').click(); assert.equal(editCount, 1, 'the physical edit callback remains single and attached after a metadata update');
     phase = 3; input.value = '空结果'; input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
     await settle(); await settle();
@@ -389,5 +389,28 @@ console.log('material library presentation: PASS');
     assert.equal(retryCalls, 1, 'second-page retry invokes the frozen owner retry exactly once');
     assert.equal(requestURL.searchParams.get('offset'), '50', 'second-page retry retains the owner page offset instead of searching from page zero');
     assert.equal(requestURL.searchParams.get('q'), null, 'second-page retry ignores a newer uncommitted IME draft');
+  } finally { dom.window.close(); }
+}
+
+// Groups are real typed facets; loading them never triggers provider-refresh diagnostics.
+for (const page of ['attach', 'mpLib']) {
+  const library = page === 'attach' ? 'attachment-library' : 'miniprogram-library';
+  const calls = [];
+  const dom = domFor(page, '<section></section>', async input => {
+    const url = new URL(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url, 'https://test.invalid');
+    calls.push(url.pathname);
+    if (url.pathname.endsWith('/groups')) return response({items:[{name:'',count:2},{name:'课程',count:3}]});
+    return response({items:[],total:0,limit:100,offset:0});
+  });
+  try {
+    dom.window.eval(host);
+    dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
+    await settle(); await settle();
+    const select = dom.window.document.querySelector('[data-material-groups] select');
+    assert.ok(select && !select.disabled);
+    assert.deepEqual([...select.options].map(x=>x.textContent), ['全部分组','未分组 (2)','课程 (3)']);
+    assert.ok(calls.includes('/api/admin/'+library+'/groups'));
+    assert.ok(!calls.some(x=>x.includes('refresh')));
+    assert.ok(!dom.window.document.querySelector('[data-material-refresh-details]'));
   } finally { dom.window.close(); }
 }

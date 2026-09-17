@@ -204,3 +204,40 @@ func (f *httpFacade) PutAttachmentUploadPart(c context.Context, u int64, p int, 
 func (f *httpFacade) CompleteAttachmentUpload(c context.Context, u, a int64, k string) (int64, error) {
 	return f.store.CompleteAttachmentUpload(c, u, a, k)
 }
+
+// MaterialGrouping is V3-owned metadata; it does not upload provider material.
+type MaterialGrouping interface {
+	MaterialGroups(context.Context, string) ([]map[string]any, error)
+	SetMaterialGroup(context.Context, string, int64, int64, int64, string, string) (map[string]any, error)
+	ListAttachmentsInGroup(context.Context, int, int, bool, string, *string) ([]map[string]any, int, error)
+	ListMiniProgramsInGroup(context.Context, int, int, bool, string, *string) ([]map[string]any, int, error)
+}
+
+func (f *httpFacade) MaterialGroups(c context.Context, k string) ([]map[string]any, error) {
+	s, ok := f.store.(MaterialGrouping)
+	if !ok {
+		return nil, ErrHTTPInvalid
+	}
+	return s.MaterialGroups(c, k)
+}
+func (f *httpFacade) SetMaterialGroup(c context.Context, k string, id, a, v int64, key, g string) (map[string]any, error) {
+	s, ok := f.store.(MaterialGrouping)
+	if !ok {
+		return nil, ErrHTTPInvalid
+	}
+	return s.SetMaterialGroup(c, k, id, a, v, key, g)
+}
+func (f *httpFacade) ListAttachmentsInGroup(c context.Context, l, o int, e bool, q string, g *string) ([]map[string]any, int, error) {
+	s, ok := f.store.(MaterialGrouping)
+	if !ok {
+		return nil, 0, ErrHTTPInvalid
+	}
+	return s.ListAttachmentsInGroup(c, l, o, e, q, g)
+}
+func (f *httpFacade) ListMiniProgramsInGroup(c context.Context, l, o int, e bool, q string, g *string) ([]map[string]any, int, error) {
+	s, ok := f.store.(MaterialGrouping)
+	if !ok {
+		return nil, 0, ErrHTTPInvalid
+	}
+	return s.ListMiniProgramsInGroup(c, l, o, e, q, g)
+}

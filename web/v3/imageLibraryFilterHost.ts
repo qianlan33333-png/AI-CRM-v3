@@ -2,7 +2,7 @@
 // contract directly and leaves all mutations on the existing typed DTO and
 // MaterialSaveHost path; no donor controller or generated template is mounted.
 import { imagePageDto, saveImageItemDto } from "../src/api/admin";
-import { deleteLegacyImage, getLegacyImage, getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
+import { deleteLegacyImage, getLegacyImage, getLegacyImageList, getLegacyImageFacets } from "../src/api/generated/p4-media-compat/p4-media-compat";
 import { ApiError, apiRequestOptions, unwrapGenerated } from "../src/api/transport";
 import type { ImageItem } from "../src/shared/api/types";
 import { mountMaterialLibraryTabs } from "./materialLibraryPresentation";
@@ -164,6 +164,8 @@ class ImageLibraryHost {
   private includeInactiveInput!: HTMLInputElement;
   private items: ImageDirectoryItem[] = [];
   private query = "";
+  private group = "";
+  private groupSelect!: HTMLSelectElement;
   private includeInactive = false;
   // Offset always identifies the last successfully-read page. A requested
   // page stays separate until its response validates, so a failed next page
@@ -215,6 +217,7 @@ class ImageLibraryHost {
       }]);
     }
     this.render();
+    void this.loadGroups();
     void this.load(0);
   }
 
@@ -252,6 +255,7 @@ class ImageLibraryHost {
         offset: String(offset),
         enabled_only: includeInactive ? "false" : "true",
         ...(query ? { q: query } : {}),
+        ...(this.group === "__ungrouped__" ? { only_ungrouped: "true" } : this.group ? { category: this.group.slice("category:".length) } : {}),
       }, apiRequestOptions({ signal: abort.signal }))) as ImageListResponse;
       if (generation !== this.readGeneration) return "aborted";
       const rawItems = Array.isArray(payload.items) ? payload.items : [];
@@ -290,6 +294,19 @@ class ImageLibraryHost {
     this.renderPagination();
   }
 
+  private async loadGroups(): Promise<void> {
+    try {
+      const result = unwrapGenerated(await getLegacyImageFacets(apiRequestOptions())) as { categories?: string[] };
+      if (!Array.isArray(result.categories)) return;
+      const selected = this.group;
+      this.groupSelect.replaceChildren();
+      for (const [value, label] of [["", "全部分组"], ["__ungrouped__", "未分组"], ...result.categories.map((value) => ["category:" + value, value])]) {
+        const option = document.createElement("option"); option.value = value; option.textContent = label; this.groupSelect.append(option);
+      }
+      this.groupSelect.value = selected;
+    } catch { /* The directory remains readable; retry on Refresh. */ }
+  }
+
   private toolbar(): HTMLElement {
     const toolbar = document.createElement("section");
     toolbar.className = "admin-filter-bar admin-toolbar";
@@ -302,6 +319,15 @@ class ImageLibraryHost {
     input.style.cssText = "flex:1 1 240px";
     input.addEventListener("input", () => this.commitSearch(input.value));
     this.queryInput = input;
+    const group = document.createElement("select");
+    group.setAttribute("aria-label", "组别"); group.dataset.imageLibraryGroup = "true";
+    for (const [value, label] of [["", "全部分组"], ["__ungrouped__", "未分组"]]) {
+      const option = document.createElement("option"); option.value = value; option.textContent = label; group.append(option);
+    }
+    this.groupSelect = group;
+    group.addEventListener("change", () => { this.group = group.value; void this.load(0); });
+    const refresh = button("刷新");
+    refresh.addEventListener("click", () => { void this.loadGroups(); void this.load(this.offset); });
     const includeLabel = document.createElement("label");
     includeLabel.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;color:#646A73;margin-left:auto;cursor:pointer";
     const include = document.createElement("input");
@@ -315,12 +341,13 @@ class ImageLibraryHost {
     reset.dataset.imageLibraryReset = "true";
     reset.addEventListener("click", () => {
       this.query = "";
+      this.group = ""; this.groupSelect.value = "";
       this.includeInactive = false;
       this.queryInput.value = "";
       this.includeInactiveInput.checked = false;
       void this.load(0);
     });
-    toolbar.append(input, includeLabel, reset);
+    toolbar.append(group, input, includeLabel, reset, refresh);
     return toolbar;
   }
 
@@ -544,6 +571,11 @@ class ImageLibraryHost {
     fields.dataset.imageLibraryDialogFields = "true";
     fields.className = "admin-form-grid admin-form-grid--stacked";
     fields.style.cssText = "padding:18px;overflow:auto;flex:1 1 auto;align-content:start";
+    const category = document.createElement("input");
+    category.id = "fImgCategory";
+    category.placeholder = "留空为未分组";
+    category.value = dialog.kind === "edit" ? dialog.item.tag : "";
+    fields.append(field("组别", category));
     if (dialog.kind === "upload") {
       const file = document.createElement("input");
       file.id = "fImgUpFile";
@@ -653,13 +685,14 @@ class ImageLibraryHost {
         tags: this.formValue(form, "fImgUpTags"),
         desc: "",
         size: String(file.size),
-        tag: this.formValue(form, "fImgUpTags").split(/[,，]/)[0] || "未标记",
+        tag: this.formValue(form, "fImgCategory"),
         tone: "gray",
         bg: "#EFF4FF",
         enabled: true,
         uploadedAt: "刚刚",
       });
       await this.readbackAfterMutation(dialogID);
+      void this.loadGroups();
     } catch (error) {
       this.setDialogError(errorText(error, "save"), dialogID);
     }
@@ -679,9 +712,11 @@ class ImageLibraryHost {
         name,
         desc: this.formValue(form, "fImgDesc"),
         tags: this.formValue(form, "fImgTags"),
+        tag: this.formValue(form, "fImgCategory"),
         enabled: Boolean(form.querySelector<HTMLInputElement>("#fImgEnabled")?.checked),
       });
       await this.readbackAfterMutation(dialogID);
+      void this.loadGroups();
     } catch (error) {
       this.setDialogError(errorText(error, "save"), dialogID);
     }

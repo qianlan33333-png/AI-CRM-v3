@@ -25,6 +25,9 @@ assert.match(overlay, /customer-oneid/, "generated overlay must render the OneID
 assert.match(overlay, /\^CID-\[1-9\]\[0-9\]\*\$/, "generated overlay must reject non-canonical OneID values");
 assert.match(bridge, /const oneID = canonicalOneID\(profile\.oneid\)/, "Host must retain only a validated backend OneID from the ready workbench");
 assert.match(bridge, /oneid: this\.oneID/, "Host must pass the ready-context OneID to the overlay");
+assert.match(bridge, /customer_number: profile\.customer_number/, "Host must pass the persisted public number separately from identity validation");
+assert.match(overlay, /用户编号/, "overlay must display the persisted user number");
+assert.match(overlay, /customer\.customer_number/, "overlay must read the same public number supplied by the Host");
 assert.equal(overlay.includes("window.fetch ="), false, "overlay must not monkey-patch global fetch");
 assert.equal(overlay.includes("getCurExternalContact"), false, "overlay must not own WeCom identity lookup");
 assert.equal(overlay.includes("sendChatMessage"), false, "overlay must not invoke WeCom directly");

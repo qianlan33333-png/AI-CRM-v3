@@ -603,6 +603,8 @@ function applyOrderPresentation(): void {
       const normalized = formatShanghaiDateTime(created.dataset.orderCreatedAt);
       if (created.textContent !== normalized) created.textContent = normalized;
     }
+    const providerCaption = cells[1].querySelector<HTMLElement>('div:nth-child(2)');
+    if (providerCaption) providerCaption.hidden = true;
     const internal = cells[2].querySelector<HTMLElement>('div:nth-child(2)');
     if (internal && !internal.hidden) internal.hidden = true;
     const statusCell = cells[5];
@@ -628,6 +630,7 @@ function applyOrderPresentation(): void {
     else delete row.dataset.orderDetailUrl;
     const summary = distributionListSummary(listDistributionByOrderID.get(orderID));
     const host = cells[1];
+    if (!summary) host?.querySelector('[data-order-distribution-summary]')?.remove();
     if (host && summary) {
       let node = host.querySelector<HTMLElement>('[data-order-distribution-summary]');
       if (!node) { node = element('small'); node.dataset.orderDistributionSummary = ''; node.style.cssText = 'display:block;margin-top:4px;color:#69707A;font-size:12px'; host.appendChild(node); }
@@ -1200,7 +1203,7 @@ function distributionListSummary(order: DetailRecord | undefined): string | unde
   if (!order || !Object.prototype.hasOwnProperty.call(order, 'distribution_read_state')) return '分销信息暂不可读取';
   if (text(order.distribution_read_state, '') !== 'available') return '分销信息暂不可读取';
   const lines = arrayField(order, 'distribution').map(asRecord).filter((line): line is DetailRecord => Boolean(line));
-  if (lines.length === 0) return '非分销订单';
+  if (lines.length === 0) return undefined;
   const names = Array.from(new Set(lines.map((line) => text(line.distributor_display_name, '未设置昵称'))));
   const commissionLines = lines.filter((line) => line.has_commission === true);
   const unformedCount = lines.length - commissionLines.length;
@@ -1364,7 +1367,7 @@ function applyOrderDetailPresentation(): void {
   ]);
   appendDetailSection(card, '买家信息', [
     ['买家', text(order.payer_name, '未提供')],
-    ['用户编号', customerReference(order.payer_id)],
+    ['用户编号', text(order.payer_customer_number, customerReference(order.payer_id))],
     ['手机号', text(order.payer_phone_masked, '未提供')],
   ]);
   const items = detailContext.items || [];

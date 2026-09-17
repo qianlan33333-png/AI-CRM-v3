@@ -137,15 +137,8 @@ try {
   if (await evaluate(cdp, "Array.from(performance.getEntriesByType('resource')).some((entry)=>entry.name.includes('/api/v1/customer-tag-commands'))")) throw new Error('customer tag picker sent a command before the original preview form was submitted');
 
   await cdp.call('Page.navigate', { url: `${baseURL}/admin/customers/1` });
-  await waitFor(cdp, "Boolean(document.querySelector('#customer-tag-single [name=\"add_tag_ids\"]')) && Boolean(Array.from(document.querySelectorAll('#customer-tag-single button')).find((button)=>button.textContent.trim()==='选择标签'))", `customer detail tag draft entry did not mount: ${await diagnostic()}`);
-  await evaluate(cdp, "Array.from(document.querySelectorAll('#customer-tag-single button')).find((button)=>button.textContent.trim()==='选择标签').click(); true");
-  await waitFor(cdp, tagDialogPresent(), 'customer detail tag dialog did not open');
-  if (!await evaluate(cdp, pickFirst)) throw new Error('customer detail tag row was unavailable');
-  await waitFor(cdp, `!document.querySelector('[data-v3-selection-session="tag"]') && Array.from(document.querySelector('#customer-tag-single [name="add_tag_ids"]').selectedOptions).some((option)=>option.value === ${JSON.stringify(tagID)})`, 'customer detail tag confirmation did not update the existing command draft');
-  await evaluate(cdp, "Array.from(document.querySelectorAll('#customer-tag-single button')).find((button)=>button.textContent.trim()==='选择标签').click(); true");
-  await waitFor(cdp, tagDialogPresent(), 'customer detail tag dialog did not reopen');
-  await evaluate(cdp, "document.querySelector('[data-v3-selection-session=\"tag\"] [data-v3-tag-cancel]').click(); true");
-  await waitFor(cdp, `!document.querySelector('[data-v3-selection-session="tag"]') && Array.from(document.querySelector('#customer-tag-single [name="add_tag_ids"]').selectedOptions).some((option)=>option.value === ${JSON.stringify(tagID)})`, 'customer detail tag cancellation did not retain the prior draft');
+  await waitFor(cdp, "Boolean(document.querySelector('#customer-detail-fields')?.textContent.trim())", 'customer profile did not load');
+  if (await evaluate(cdp, "Boolean(document.querySelector('#customer-tag-single')) || document.querySelector('#customer-360-main')?.textContent.includes('风险摘要')")) throw new Error('retired profile controls remain');
 
   await cdp.call('Page.navigate', { url: `${baseURL}/admin/productForm.html?id=${productID}` });
   await waitFor(cdp, "Boolean(document.querySelector('[data-product-tag-open]'))", `product V3 tag caller did not mount: ${await diagnostic()}`);

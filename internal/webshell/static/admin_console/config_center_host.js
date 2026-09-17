@@ -11,6 +11,8 @@
   switchStyle.textContent = ".cc-switch{width:40px;height:22px;flex:0 0 40px;margin-right:12px}.cc-slider:before{width:16px;height:16px;left:3px;top:3px;transform:translateX(0)}.cc-switch input:checked + .cc-slider:before{transform:translateX(18px)}.cc-switch input:focus-visible + .cc-slider{outline:2px solid var(--cc-blue);outline-offset:2px}.cc-switch input:disabled + .cc-slider{opacity:.55;cursor:not-allowed}@media(max-width:560px){.cc-switch{margin-right:10px;vertical-align:top}}";
   document.head.append(switchStyle);
 
+  const operationalCategories = new Set(["wecom_base", "admin_access", "wechat_pay", "wechat_shop", "wechat_oauth"]);
+  const operationalField = (field) => !["deployment", "unsupported", "protected"].includes(field.input) && !/timeout|ttl|page_limit|page_budget|poll|worker|limit_per|retry|token_expir/i.test(field.key);
   const catalogAPI = "/api/admin/config/runtime-catalog";
   const releaseAPI = "/api/admin/config/runtime-releases";
   const text = (value, fallback = "-") => value === null || value === undefined || value === "" ? fallback : String(value);
@@ -135,7 +137,7 @@
       }),
     });
   };
-  const renderState = (state) => element("span", `cc-state${state.applied && state.enabled ? " is-on" : ""}`, state.label);
+  const renderState = (state) => element("span", `cc-state${state.applied && state.enabled ? " is-on" : ""}`, state.label === "—" ? "—" : state.applied ? (state.enabled ? "已启用" : "已关闭") : "待生效");
   const categoryURL = (key) => `/admin/configDetail.html?cat=${encodeURIComponent(key)}`;
   const releaseURL = (id) => `/admin/config/releases/${encodeURIComponent(String(id))}`;
   const categoryKey = () => new URL(location.href).searchParams.get("cat") || "";
@@ -158,8 +160,11 @@
     table.append(rows); wrap.append(table); card.append(wrap); root.append(card);
     try {
       const model = await catalog();
+      const modelRow = document.createElement("tr");
+      modelRow.innerHTML = '<td><span class="cc-cat-name">大模型</span></td><td>—</td><td>—</td><td><a class="cc-btn" href="/admin/configDetail.html?cat=ai_models">配置</a></td>';
+      rows.append(modelRow);
       const releaseModel = await releases();
-      for (const category of model.categories || []) {
+      for (const category of (model.categories || []).filter((item) => operationalCategories.has(item.key))) {
         const toggle = categoryToggle(category, model);
         const state = categoryState(category, model, toggle);
         const row = document.createElement("tr");
@@ -211,7 +216,7 @@
     row.append(element("th", "", field.label));
     const cell = document.createElement("td");
     if (field.input === "secret-reference") {
-      cell.append(element("code", "", field.secret_reference), element("small", "admin-muted", field.configured === true ? "已配置" : "未配置"));
+      cell.append(element("span", "", field.configured === true ? "••••••••" : "未填写"));
     } else if (["protected", "deployment", "unsupported"].includes(field.input)) {
       cell.append(element("span", "admin-muted", field.unsupported || "由对应管理页面维护。"));
     } else {
@@ -240,7 +245,7 @@
         input.setAttribute("aria-readonly", "true");
       }
       if (field.input === "scope-bound") cell.append(element("small", "admin-muted", field.unsupported));
-      else cell.append(element("small", "admin-muted", field.application === "immediate" ? "保存草稿后由受控服务读取。" : "保存草稿后等待受控服务读取。"));
+
     }
     row.append(cell);
     return row;
@@ -255,7 +260,7 @@
       const model = await catalog();
       const releaseModel = await releases();
       const category = (model.categories || []).find((item) => item?.key === categoryKey());
-      if (!category) throw new Error("配置分类不存在");
+      if (!category || !operationalCategories.has(category.key)) throw new Error("配置分类不存在");
       const toggle = categoryToggle(category, model);
       const state = categoryState(category, model, toggle);
       const top = element("div", "cc-detail-top");
@@ -287,7 +292,7 @@
       const values = effectiveValues(model);
       form = element("form", "cc-form"); form.dataset.configSettingsForm = "";
       const blocks = new Map();
-      for (const field of category.fields || []) {
+      for (const field of (category.fields || []).filter(operationalField)) {
         const group = field.group || "配置";
         const rows = blocks.get(group) || [];
         rows.push(field); blocks.set(group, rows);
@@ -321,5 +326,30 @@
       });
     } catch (error) { status(error instanceof Error ? error.message : "配置详情不可用", "error"); }
   };
-  if (page === "runtimeConfigCategory") void showCategory(); else void showCenter();
+  const showAIModels = async () => {
+    clear(); addStatus(root);
+    const card = element("section", "cc-card cc-block");
+    const head = element("div", "cc-card-h"); head.append(element("h2", "", "大模型")); card.append(head);
+    const form = element("form", "admin-form-grid admin-form-grid--stacked"); form.style.padding = "20px";
+    const provider = document.createElement("select"); provider.className = "cc-input";
+    for (const [value, label] of [["deepseek", "DeepSeek"], ["qwen", "通义千问"], ["glm", "智谱 GLM"], ["kimi", "Kimi"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; provider.append(option); }
+    const model = document.createElement("input"); model.className = "cc-input"; model.required = true; model.maxLength = 200; model.placeholder = "填写模型 ID";
+    const key = document.createElement("input"); key.className = "cc-input"; key.type = "password"; key.autocomplete = "new-password"; key.maxLength = 8192;
+    for (const [label, input] of [["服务商", provider], ["模型", model], ["API Key", key]]) { const field = document.createElement("label"); field.append(element("span", "", label), input); form.append(field); }
+    const save = button("保存", "primary"); save.type = "submit"; save.disabled = true;
+    const back = document.createElement("a"); back.className = "cc-btn"; back.href = "/admin/config"; back.textContent = "返回";
+    const actions = element("div", "cc-bottom-actions"); actions.append(back, save); form.append(actions); card.append(form); root.append(card);
+    let snapshot;
+    const readback = (value) => { snapshot = value; provider.value = value.provider || "deepseek"; model.value = value.model || ""; key.value = ""; key.required = !value.configured; key.placeholder = value.configured ? "已保存，留空保留" : "填写 API Key"; };
+    try { readback(await request("/api/admin/config/ai-model")); save.disabled = false; } catch { status("配置读取失败，请刷新重试。", "error"); }
+    provider.addEventListener("change", () => { key.value = ""; key.required = !snapshot?.configured || provider.value !== snapshot.provider; key.placeholder = key.required ? "填写 API Key" : "已保存，留空保留"; });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault(); if (!snapshot || save.disabled || !form.reportValidity()) return; save.disabled = true;
+      try { const result = await request("/api/admin/config/ai-model", {method: "PUT", headers: writeHeaders(), body: JSON.stringify({provider: provider.value, model: model.value.trim(), api_key: key.value.trim(), expected_version: snapshot.version})}); readback(result); status("已保存。", "success"); }
+      catch { key.value = ""; status("保存未确认，请刷新核对后重试。", "error"); }
+      finally { save.disabled = false; }
+    });
+  };
+  if (page === "runtimeConfigCategory" && categoryKey() === "ai_models") void showAIModels();
+  else if (page === "runtimeConfigCategory") void showCategory(); else void showCenter();
 })();

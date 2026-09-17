@@ -208,6 +208,19 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	aiModelSettings, err := configapp.NewAIModelService(uow, configRepository, []byte(cfg.Survey.DataKey))
+	if err != nil {
+		return fail(err)
+	}
+	storedModel, modelConfigured, err := aiModelSettings.ReadAIModelRuntime(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	if modelConfigured {
+		cfg.AIGeneration.BaseURL = storedModel.BaseURL
+		cfg.AIGeneration.APIKey = storedModel.APIKey
+		cfg.AIGeneration.Model = storedModel.Model
+	}
 	runtimeDefaults, err := runtimeConfigDefaults(cfg)
 	if err != nil {
 		return fail(err)
@@ -477,7 +490,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	aiCustomers := aiCustomerSnapshotAdapter{read: func(ctx context.Context, id customerdomain.CustomerID) (customerdomain.CustomerID, customerdomain.Status, string, string, error) {
 		detail, readErr := customerStore.Detail(ctx, id)
-		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
+		if readErr != nil {
+			return 0, "", "", "", readErr
+		}
+		numbers, numberErr := queries.CustomerPublicNumbers(ctx, []customerdomain.CustomerID{detail.CustomerID})
+		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, numbers[detail.CustomerID], numberErr
 	}}
 	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository, legacy: mediaRepository}, oneID, queries)
 	if err != nil {
@@ -516,7 +533,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = radarQuery.BindAdminVisitorPresentation(radarVisitorPresentationAdapter{uow: uow, directory: customerStore, identities: queries, corpScope: "wecom-corp:" + cfg.WeCom.CorpID}); err != nil {
+	if err = radarQuery.BindAdminVisitorPresentation(radarVisitorPresentationAdapter{numbers: queries, uow: uow, directory: customerStore, identities: queries, corpScope: "wecom-corp:" + cfg.WeCom.CorpID}); err != nil {
 		return fail(err)
 	}
 	radarOAuth, err := radarprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/public/radar/oauth/callback")
@@ -1002,6 +1019,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	configBindings, err := configModule.Bind(settingsService, setupWizard, configManager, adminOpsProjection, requestSecurity, runtimeReleaseService)
+	configBindings = configBindings.WithAIModels(aiModelSettings)
 	if err != nil {
 		return fail(err)
 	}
@@ -1113,6 +1131,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
+	sidebarProfiles.Numbers = queries
 	openPlatformTimeline := customerTimelineAdapter{uow: uow, reader: customerStore}
 	openPlatformScopes := configuredOpenPlatformScopes(cfg.WeCom.CorpID, []string{cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, []string{cfg.Survey.OAuthAppID, cfg.WeChatPay.AppID, cfg.WeChatPay.H5AppID, cfg.WeChatShop.AppID})
 	// Questionnaire history has one frozen donor Open Platform scope. Do not
@@ -1218,20 +1237,20 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	outboundCompletionSink.WithCustomerOwnerHandoff(ownerHandoffCompletion)
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
-		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey, Tags: customerDirectoryTagFilter{bindings: tagRepository, members: customerProfileStore}}, Store: customerStore, Identities: queries, Audit: auditService,
+		Directory: customerapp.Directory{Numbers: queries, Store: customerStore, SigningKey: cursorSigningKey, Tags: customerDirectoryTagFilter{bindings: tagRepository, members: customerProfileStore}}, Store: customerStore, Identities: queries, Audit: auditService,
 		Canonical:   canonicalCustomerAdapter{reader: queries},
 		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository, owners: ownerHandoffStore},
 		Tags:        customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
 		TagCommands: customerTagCommands,
 		TagHistory:  customerstore.TagCommandPostgreSQL{},
 		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
-		Timeline:    openPlatformTimeline, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
+		Timeline:    sidebarBusinessTimeline{surveys: surveySubmissions, orders: orderService, radar: radarQuery, channels: channelAcquisition, uow: uow}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
 		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore, OwnerHandoffTransfers: ownerHandoffService,
 		OwnerHandoffStaff: customerOwnerHandoffStaffDirectory{uow: uow, staff: accessRepository, profiles: groupOpsRepository}, OwnerHandoffCorpScope: "wecom-corp:" + cfg.WeCom.CorpID, OwnerHandoffIdentity: oneID, OwnerHandoffPresentation: customerOwnerHandoffPreviewPresenter{uow: uow, display: customerStore, identities: queries, staff: accessRepository}})
 	if err != nil {
 		return fail(err)
 	}
-	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerContactDisplayAdapter{uow: uow, reader: customerStore})
+	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerContactDisplayAdapter{numbers: queries, uow: uow, reader: customerStore})
 	if err != nil {
 		return fail(err)
 	}
@@ -1702,6 +1721,16 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	generationProvider, err := automationprovider.NewGenerationProvider(automationprovider.GenerationConfig{Enabled: cfg.AIGeneration.Enabled, BaseURL: cfg.AIGeneration.BaseURL, APIKey: cfg.AIGeneration.APIKey, Model: cfg.AIGeneration.Model, Timeout: cfg.AIGeneration.Timeout}, automationRuntime)
 	if err != nil {
 		return fail(err)
+	}
+	generationProvider.ConfigReader = func(ctx context.Context) (automationprovider.GenerationConfig, error) {
+		stored, found, err := aiModelSettings.ReadAIModelRuntime(ctx)
+		current := automationprovider.GenerationConfig{Enabled: cfg.AIGeneration.Enabled, BaseURL: cfg.AIGeneration.BaseURL, APIKey: cfg.AIGeneration.APIKey, Model: cfg.AIGeneration.Model, Timeout: cfg.AIGeneration.Timeout}
+		if found {
+			current.BaseURL = stored.BaseURL
+			current.APIKey = stored.APIKey
+			current.Model = stored.Model
+		}
+		return current, err
 	}
 	generationContext := dynamicGenerationContextAdapter{
 		questionnaires: surveySubmissions,

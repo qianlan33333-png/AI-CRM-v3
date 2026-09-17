@@ -285,6 +285,7 @@ type ImageQuery struct {
 	Tags            []string
 	TagGroups       [][]string
 	OnlyUnlabeled   bool
+	OnlyUngrouped   bool
 }
 
 func (r *Repository) ListImages(ctx context.Context, limit, offset int, enabledOnly bool, q, category string) ([]map[string]any, int, error) {
@@ -300,6 +301,9 @@ func (r *Repository) ListImagesFiltered(ctx context.Context, query ImageQuery) (
 		tx, _ := platformpostgres.RequireTransaction(txctx)
 		where := ` WHERE ($1='' OR name ILIKE '%'||$1||'%' OR file_name ILIKE '%'||$1||'%' OR description ILIKE '%'||$1||'%' OR category ILIKE '%'||$1||'%' OR tags ILIKE '%'||$1||'%') AND ($2='' OR category=$2) AND (NOT $3 OR enabled) AND (NOT $4 OR description='' OR category='' OR tags='')`
 		args := []any{strings.TrimSpace(query.Query), strings.TrimSpace(query.Category), query.EnabledOnly, query.OnlyUnlabeled}
+		if query.OnlyUngrouped {
+			where += ` AND category=''`
+		}
 		if len(query.Tags) > 0 {
 			args = append(args, query.Tags)
 			where += fmt.Sprintf(` AND string_to_array(tags, ',') && $%d::text[]`, len(args))
@@ -670,29 +674,37 @@ func (r *Repository) CreateAttachment(ctx context.Context, actor int64, key stri
 	return out, err
 }
 func (r *Repository) ListAttachments(ctx context.Context, limit, offset int, enabledOnly bool, q string) ([]map[string]any, int, error) {
+	return r.ListAttachmentsInGroup(ctx, limit, offset, enabledOnly, q, nil)
+}
+func (r *Repository) ListAttachmentsInGroup(ctx context.Context, limit, offset int, enabledOnly bool, q string, category *string) ([]map[string]any, int, error) {
 	if limit < 1 || limit > 500 || offset < 0 {
 		return nil, 0, ErrInvalid
+	}
+	groupSet, group := category != nil, ""
+	if category != nil {
+		group = *category
 	}
 	out := make([]map[string]any, 0)
 	var total int
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
-		where := ` WHERE ($1='' OR lower(name) LIKE '%'||lower($1)||'%') AND (NOT $2 OR enabled)`
-		if err := tx.QueryRow(txctx, `SELECT count(*) FROM media_attachments`+where, q, enabledOnly).Scan(&total); err != nil {
+		where := ` WHERE ($1='' OR lower(name) LIKE '%'||lower($1)||'%') AND (NOT $2 OR enabled) AND (NOT $3 OR category=$4)`
+		if err := tx.QueryRow(txctx, `SELECT count(*) FROM media_attachments`+where, q, enabledOnly, groupSet, group).Scan(&total); err != nil {
 			return err
 		}
-		rows, err := tx.Query(txctx, `SELECT id,file_name,name,description,tags,mime_type,byte_size,enabled,version,created_by,updated_by,created_at,updated_at FROM media_attachments`+where+` ORDER BY updated_at DESC,id DESC LIMIT $3 OFFSET $4`, q, enabledOnly, limit, offset)
+		rows, err := tx.Query(txctx, `SELECT category,id,file_name,name,description,tags,mime_type,byte_size,enabled,version,created_by,updated_by,created_at,updated_at FROM media_attachments`+where+` ORDER BY updated_at DESC,id DESC LIMIT $5 OFFSET $6`, q, enabledOnly, groupSet, group, limit, offset)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
+			var category string
 			var id, size, version, createdBy, updatedBy int64
 			var f, n, d, m string
 			var tagsBytes []byte
 			var enabled bool
 			var c, u time.Time
-			if err = rows.Scan(&id, &f, &n, &d, &tagsBytes, &m, &size, &enabled, &version, &createdBy, &updatedBy, &c, &u); err != nil {
+			if err = rows.Scan(&category, &id, &f, &n, &d, &tagsBytes, &m, &size, &enabled, &version, &createdBy, &updatedBy, &c, &u); err != nil {
 				return err
 			}
 			var tags []string
@@ -700,6 +712,7 @@ func (r *Repository) ListAttachments(ctx context.Context, limit, offset int, ena
 				return ErrInvalid
 			}
 			item := attachmentMap(id, f, n, d, m, tags, size, enabled, version, c, u)
+			item["category"] = category
 			item["created_by"], item["updated_by"] = createdBy, updatedBy
 			out = append(out, item)
 		}
@@ -844,32 +857,42 @@ func sameOptionalID(left, right *int64) bool {
 	return *left == *right
 }
 func (r *Repository) ListMiniPrograms(ctx context.Context, limit, offset int, enabledOnly bool, q string) ([]map[string]any, int, error) {
+	return r.ListMiniProgramsInGroup(ctx, limit, offset, enabledOnly, q, nil)
+}
+func (r *Repository) ListMiniProgramsInGroup(ctx context.Context, limit, offset int, enabledOnly bool, q string, category *string) ([]map[string]any, int, error) {
 	if limit < 1 || limit > 100 || offset < 0 {
 		return nil, 0, ErrInvalid
+	}
+	groupSet, group := category != nil, ""
+	if category != nil {
+		group = *category
 	}
 	out := make([]map[string]any, 0)
 	var total int
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
-		where := ` WHERE ($1='' OR lower(name) LIKE '%'||lower($1)||'%') AND (NOT $2 OR enabled)`
-		if err := tx.QueryRow(txctx, `SELECT count(*) FROM media_miniprograms`+where, q, enabledOnly).Scan(&total); err != nil {
+		where := ` WHERE ($1='' OR lower(name) LIKE '%'||lower($1)||'%') AND (NOT $2 OR enabled) AND (NOT $3 OR category=$4)`
+		if err := tx.QueryRow(txctx, `SELECT count(*) FROM media_miniprograms`+where, q, enabledOnly, groupSet, group).Scan(&total); err != nil {
 			return err
 		}
-		rows, err := tx.Query(txctx, `SELECT id,name,app_id,page_path,title,thumb_image_id,enabled,version,created_by,updated_by,created_at,updated_at FROM media_miniprograms`+where+` ORDER BY updated_at DESC,id DESC LIMIT $3 OFFSET $4`, q, enabledOnly, limit, offset)
+		rows, err := tx.Query(txctx, `SELECT category,id,name,app_id,page_path,title,thumb_image_id,enabled,version,created_by,updated_by,created_at,updated_at FROM media_miniprograms`+where+` ORDER BY updated_at DESC,id DESC LIMIT $5 OFFSET $6`, q, enabledOnly, groupSet, group, limit, offset)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
+			var category string
 			var id, v, createdBy, updatedBy int64
 			var n, a, p, t string
 			var thumb *int64
 			var enabled bool
 			var c, u time.Time
-			if err = rows.Scan(&id, &n, &a, &p, &t, &thumb, &enabled, &v, &createdBy, &updatedBy, &c, &u); err != nil {
+			if err = rows.Scan(&category, &id, &n, &a, &p, &t, &thumb, &enabled, &v, &createdBy, &updatedBy, &c, &u); err != nil {
 				return err
 			}
-			out = append(out, miniMap(id, n, a, p, t, thumb, enabled, v, createdBy, updatedBy, c, u))
+			item := miniMap(id, n, a, p, t, thumb, enabled, v, createdBy, updatedBy, c, u)
+			item["category"] = category
+			out = append(out, item)
 		}
 		return rows.Err()
 	})

@@ -184,6 +184,9 @@ func (s *SubmissionService) ReadPublic(ctx context.Context, slug string) (survey
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var e error
 		result, e = s.store.GetPublishedBySlug(tx, slug)
+		if e == nil && result.Mode != surveyport.ModeSurvey {
+			return surveyport.ErrNotFound
+		}
 		return e
 	})
 	return result, classify(err)
@@ -203,6 +206,9 @@ func (s *SubmissionService) PublicSubmissionStatus(ctx context.Context, slug str
 		questionnaire, err := s.store.GetBySlug(tx, slug)
 		if err != nil {
 			return err
+		}
+		if questionnaire.Mode != surveyport.ModeSurvey {
+			return surveyport.ErrNotFound
 		}
 		claimed, err := s.store.HasSubmissionClaim(tx, questionnaire.ID, *identity.CustomerID)
 		if err != nil {
@@ -302,12 +308,8 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 			return surveyport.ErrInvalid
 		}
 		result := surveyport.AssessmentResult{Dimensions: []surveyport.AssessmentDimensionResult{}, StrengthDimensionKeys: []string{}, WeaknessDimensionKeys: []string{}, TagCodes: []string{}}
-		if questionnaire.Mode == surveyport.ModeAssessment {
-			result, e = surveydomain.EvaluateAssessment(questionnaire, command.Answers)
-			if e != nil {
-				return surveyport.ErrInvalid
-			}
-			total = result.TotalScore
+		if questionnaire.Mode != surveyport.ModeSurvey {
+			return surveyport.ErrNotFound
 		}
 		var created bool
 		stored, created, e = s.store.CreateSubmission(tx, PersistSubmission{Questionnaire: questionnaire, Command: command, SubmissionKeyDigest: submissionKeyDigest, PayloadDigest: payloadDigest, TokenDigest: tokenDigest, Token: token, TotalScore: total, Result: result, Answers: answers, Now: now})

@@ -84,7 +84,7 @@ try {
   const renderedValues = controller.renderVals();
   assert.equal(renderedValues.rows.orders[0].pay, '微信支付', 'the exact loadDb association survives the frozen controller object-spread path');
   document.querySelector('tbody tr').append(document.createElement('span')); await pause();
-  assert.match(document.querySelector('tbody td:nth-child(2)').textContent, /非分销订单/, 'the actual loadDb-to-renderVals path activates the matching distribution summary');
+  assert.doesNotMatch(document.querySelector('tbody td:nth-child(2)').textContent, /非分销订单|分销：/, 'the actual loadDb-to-renderVals path activates the matching distribution summary');
   assert.ok(!document.body.textContent.includes('aicrm-order-v3:'), 'the full renderer path never exposes a correlation marker');
 
   document.getElementById('orderMobile').value = 'external-contact-fixture';
@@ -127,7 +127,7 @@ try {
   await pause();
   const rows = Array.from(collisionDom.window.document.querySelectorAll('tbody tr'));
   assert.match(rows[0].textContent, /分销：分销员成功 · 佣金总额 ¥1\.00/, 'provider-scoped successful row labels the preserved commission total rather than an unpaid balance');
-  assert.match(rows[1].textContent, /非分销订单/, 'same merchant reference from another provider cannot borrow a distribution summary');
+  assert.doesNotMatch(rows[1].textContent, /非分销订单|分销：/, 'same merchant reference from another provider cannot borrow a distribution summary');
   assert.equal(new URL(rows[0].dataset.orderDetailUrl).searchParams.get('provider'), 'wechat', 'row detail URL preserves server-owned WeChat provider');
   assert.equal(new URL(rows[1].dataset.orderDetailUrl).searchParams.get('provider'), 'alipay', 'row detail URL preserves server-owned Alipay provider');
 } finally {
@@ -203,7 +203,7 @@ try {
   assert.ok(!JSON.stringify(laterDb.rows.orders).includes('aicrm-order-v3:'), 'the later DTO has no serialised opaque correlation data');
   listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
   await pause();
-  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'the later provider response activates its own rendered row');
+  assert.doesNotMatch(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单|分销：/, 'the later provider response activates its own rendered row');
   assert.ok(!listRaceDom.window.document.body.textContent.includes('aicrm-order-v3:'), 'the opaque association never reaches DOM text');
   resolveEarlierList();
   const earlierDb = await earlier;
@@ -211,7 +211,7 @@ try {
   controller.renderVals();
   listRaceDom.window.document.querySelector('tbody tr').append(listRaceDom.window.document.createElement('span'));
   await pause();
-  assert.match(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单/, 'a delayed response cannot replace the later rendered provider row');
+  assert.doesNotMatch(listRaceDom.window.document.querySelector('tbody tr').textContent, /非分销订单|分销：/, 'a delayed response cannot replace the later rendered provider row');
   assert.ok(!listRaceDom.window.document.body.textContent.includes('分销员成功'), 'a delayed WeChat response never leaks into the rendered Alipay row');
   controller.db.rows.orders = [{ time: '2026-09-15T00:01:00Z', no: collisionReference, plat: '支付宝', payer: '买家乙', uid: 'customer:2', product: '待核验商品', amount: '1.00', status: 'paid', pay: '支付宝', tone: 'ok' }];
   controller.renderVals();

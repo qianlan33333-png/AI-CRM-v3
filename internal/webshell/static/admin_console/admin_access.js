@@ -113,7 +113,7 @@
     accessRevoked = true; users = []; actor = {}; capabilities = {}; selectedUserID = ""; usersCommittedQuery = ""; clearEmployeeDirectory(); closeDrawer(); closeTransfer();
     setLoading(false);
     elements.search.disabled = true; elements.refresh.disabled = true; elements.provisionDialog.hidden = true;
-    elements.usersBody.replaceChildren(); elements.tableWrap.hidden = true; elements.superCard.hidden = true; elements.provision.hidden = true; elements.transfer.hidden = true; elements.noPermission.hidden = true;
+    elements.usersBody.replaceChildren(); elements.tableWrap.hidden = true; elements.superCard.hidden = true; if (elements.provision) elements.provision.hidden = true; elements.transfer.hidden = true; elements.noPermission.hidden = true;
     elements.empty.hidden = true; elements.filterEmpty.hidden = true; elements.searchStatus.textContent = ""; elements.listStatus.textContent = "请重新登录后继续查看员工权限。";
   }
   function filteredUsers() {
@@ -168,7 +168,7 @@
       users = Array.isArray(payload.users) ? payload.users : [];
       actor = payload.actor && typeof payload.actor === "object" ? payload.actor : {};
       capabilities = payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : {};
-      elements.provision.hidden = !canProvision();
+      if (elements.provision) elements.provision.hidden = true;
       renderUsers(); elements.listError.hidden = true; elements.listStatus.textContent = `${users.length} 名员工`;
       return true;
     } catch (error) {
@@ -285,9 +285,9 @@
   }
   function closeTransfer() { elements.transferDialog.hidden = true; elements.transferTarget.replaceChildren(); }
 
-  elements.refresh.addEventListener("click", () => { setAlert("", ""); void loadUsers(); });
+  elements.refresh.addEventListener("click", () => { setAlert("", ""); elements.refresh.disabled = true; void mutate(api.users + "/refresh-names", "POST", {}, "员工昵称已刷新。").finally(() => { elements.refresh.disabled = accessRevoked; }); });
   elements.search.addEventListener("input", () => { usersCommittedQuery = String(elements.search.value || "").trim(); renderUsers(); });
-  elements.provision.addEventListener("click", openProvision); elements.provisionClose.addEventListener("click", closeProvision); elements.transfer.addEventListener("click", openTransfer); elements.transferClose.addEventListener("click", closeTransfer);
+  elements.provision?.addEventListener("click", openProvision); elements.provisionClose.addEventListener("click", closeProvision); elements.transfer.addEventListener("click", openTransfer); elements.transferClose.addEventListener("click", closeTransfer);
   elements.drawerClose.addEventListener("click", closeDrawer); elements.drawerBackdrop.addEventListener("click", closeDrawer);
   elements.usersBody.addEventListener("click", (event) => { const button = event.target.closest("button[data-access-action]"); if (!button || button.dataset.accessAction !== "manage") return; openDrawer(users.find((user) => String(user.admin_user_id) === String(button.dataset.userId))); });
   elements.drawerActions.addEventListener("click", (event) => { const button = event.target.closest("button[data-access-action]"); const user = selectedUser(); if (!button || !user || button.dataset.accessAction !== "toggle-login") return; button.disabled = true; void mutate(api.loginAccess(user.admin_user_id), "PUT", { login_enabled: !user.login_enabled }, user.login_enabled ? "员工登录已停用。" : "员工登录已启用。").then((ok) => { if (ok) openDrawer(selectedUser()); }).finally(() => { button.disabled = false; }); });

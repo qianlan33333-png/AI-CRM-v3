@@ -24,7 +24,10 @@ import (
 func TestPostgreSQLRadarVisitorCompositionKeepsHistoricalSessionsReadable(t *testing.T) {
 	fixture := newProductExternalPushChromiumFixture(t)
 	radarID, rootID := seedComposedRadarVisitorHistory(t, fixture.ctx, fixture.application)
-	rootOneID := "CID-" + strconv.FormatInt(rootID, 10)
+	var rootOneID string
+	if err := fixture.application.pool.Native().QueryRow(fixture.ctx, `SELECT public_number::text FROM customers WHERE id=$1`, rootID).Scan(&rootOneID); err != nil {
+		t.Fatal(err)
+	}
 	session, csrf := adminAccessLogin(t, fixture.application.handler, "product-browser-owner", "product-browser-owner-password")
 
 	read := func(path string) *httptest.ResponseRecorder {
@@ -36,6 +39,18 @@ func TestPostgreSQLRadarVisitorCompositionKeepsHistoricalSessionsReadable(t *tes
 		response := httptest.NewRecorder()
 		fixture.application.handler.ServeHTTP(response, request)
 		return response
+	}
+	// The directory, profile and 360 view expose the same persisted number,
+	// while URLs retain the canonical root used by historical links.
+	for _, path := range []string{
+		"/api/admin/customers?keyword=" + rootOneID,
+		"/api/admin/customers/" + strconv.FormatInt(rootID, 10),
+		"/api/admin/customers/" + strconv.FormatInt(rootID, 10) + "/360",
+	} {
+		response := read(path)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"customer_number":"`+rootOneID+`"`) {
+			t.Fatalf("public number inconsistent for %s: status=%d", path, response.Code)
+		}
 	}
 	assertPage := func(search string) {
 		t.Helper()
@@ -68,7 +83,7 @@ func TestPostgreSQLRadarVisitorCompositionKeepsHistoricalSessionsReadable(t *tes
 			t.Fatalf("visitor search=%q merged multiple sessions into one row", search)
 		}
 	}
-	for _, search := range []string{"历史根访客", rootOneID, "external-radar-composed-001"} {
+	for _, search := range []string{"历史根访客", rootOneID, "CID-" + strconv.FormatInt(rootID, 10), "external-radar-composed-001"} {
 		assertPage(search)
 	}
 

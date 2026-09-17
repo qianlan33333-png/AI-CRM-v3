@@ -128,3 +128,32 @@ func TestGenerationProviderRejectsChangedEndpointAndPayloadWithoutCallingModel(t
 		t.Fatalf("payload mismatch result=%+v err=%v called=%t", result, err, called)
 	}
 }
+
+func TestGenerationProviderReadsStoredSelectionAndRejectsFrozenPolicyDrift(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer configured-key" {
+			t.Error("configured key not used")
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"新回复"}}]}`))
+	}))
+	defer server.Close()
+	dispatch := testDispatch()
+	dispatch.ModelPolicy.Endpoint = server.URL + "/chat/completions"
+	provider, e := NewGenerationProvider(GenerationConfig{Timeout: time.Second}, generationDispatchStub{dispatch: dispatch, found: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	selected := GenerationConfig{Enabled: true, BaseURL: server.URL, Model: "unit-model", APIKey: "configured-key", Timeout: time.Second}
+	provider.ConfigReader = func(context.Context) (GenerationConfig, error) { return selected, nil }
+	result, e := provider.Execute(context.Background(), testEnvelope(), effectport.Attempt{EffectID: "eer_1", Number: 1})
+	if e != nil || result.Completion != effectport.StateExecuted || calls != 1 {
+		t.Fatalf("stored selection result=%+v err=%v", result, e)
+	}
+	selected.Model = "changed-model"
+	result, e = provider.Execute(context.Background(), testEnvelope(), effectport.Attempt{EffectID: "eer_1", Number: 2})
+	if e != nil || result.CallAttempted || calls != 1 {
+		t.Fatal("frozen task silently switched models")
+	}
+}
