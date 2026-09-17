@@ -165,7 +165,8 @@ func agentAssets(dist string, editor bool) (AgentAssets, error) {
 	}
 	assets := AgentAssets{TokensCSS: t, LabsCSS: l, AdminJS: a}
 	if !editor {
-		return assets, nil
+		assets.AdminJS, e = get("automationLifecycleHost")
+		return assets, e
 	}
 	for name, target := range map[string]*string{
 		"presentationStyles":      &assets.PresentationCSS,
