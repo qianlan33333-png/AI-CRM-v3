@@ -227,6 +227,7 @@ type CustomerActivityQuery struct {
 }
 
 type CustomerActivity struct {
+	ProductNames  []string            `json:"product_names,omitempty"`
 	OrderID       int64               `json:"order_id"`
 	Relationship  string              `json:"relationship"`
 	Provider      domain.Provider     `json:"provider"`

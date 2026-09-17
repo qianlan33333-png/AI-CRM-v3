@@ -219,14 +219,17 @@ type QueryService interface {
 // or provider payload data. The Host supplies a signed aggregate cursor while
 // Radar owns the per-type descending keyset.
 type CustomerActivityQuery struct {
-	CustomerID customerdomain.CustomerID
-	Limit      int32
-	Watermark  time.Time
-	AfterAt    time.Time
-	AfterID    int64
+	// BusinessOnly excludes OAuth/identity bookkeeping before pagination.
+	BusinessOnly bool
+	CustomerID   customerdomain.CustomerID
+	Limit        int32
+	Watermark    time.Time
+	AfterAt      time.Time
+	AfterID      int64
 }
 
 type CustomerActivity struct {
+	Title      string        `json:"title,omitempty"`
 	EventID    int64         `json:"event_id"`
 	RadarID    radar.RadarID `json:"radar_id"`
 	Stage      EventStage    `json:"stage"`

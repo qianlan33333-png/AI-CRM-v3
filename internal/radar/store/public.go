@@ -143,11 +143,12 @@ func (store *Postgres) CustomerActivities(ctx context.Context, query radarport.C
 	if afterAt.IsZero() {
 		afterAt, afterID = query.Watermark.UTC(), math.MaxInt64
 	}
-	rows, err := tx.Query(ctx, `SELECT id,radar_id,stage,occurred_at
-		FROM radar_events
-		WHERE customer_id=$1 AND attribution_status='resolved' AND occurred_at <= $2
-		AND (occurred_at,id) < ($3,$4)
-		ORDER BY occurred_at DESC,id DESC LIMIT $5`, int64(query.CustomerID), query.Watermark.UTC(), afterAt.UTC(), afterID, query.Limit)
+	rows, err := tx.Query(ctx, `SELECT e.id,e.radar_id,e.stage,e.occurred_at,l.title
+		FROM radar_events e JOIN radar_links l ON l.id=e.radar_id
+		WHERE e.customer_id=$1 AND e.attribution_status='resolved' AND e.occurred_at <= $2
+		AND (e.occurred_at,e.id) < ($3,$4)
+		AND (NOT $6::boolean OR e.stage IN ('landing','content_opened','redirected','image_loaded','pdf_opened'))
+		ORDER BY e.occurred_at DESC,e.id DESC LIMIT $5`, int64(query.CustomerID), query.Watermark.UTC(), afterAt.UTC(), afterID, query.Limit, query.BusinessOnly)
 	if err != nil {
 		return radarport.CustomerActivityPage{}, mapError(err)
 	}
@@ -155,7 +156,7 @@ func (store *Postgres) CustomerActivities(ctx context.Context, query radarport.C
 	page := radarport.CustomerActivityPage{Items: []radarport.CustomerActivity{}}
 	for rows.Next() {
 		var item radarport.CustomerActivity
-		if err = rows.Scan(&item.EventID, &item.RadarID, &item.Stage, &item.OccurredAt); err != nil {
+		if err = rows.Scan(&item.EventID, &item.RadarID, &item.Stage, &item.OccurredAt, &item.Title); err != nil {
 			return radarport.CustomerActivityPage{}, mapError(err)
 		}
 		page.Items = append(page.Items, item)

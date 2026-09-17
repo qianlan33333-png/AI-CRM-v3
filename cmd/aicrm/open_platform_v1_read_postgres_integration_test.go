@@ -154,6 +154,22 @@ func TestOpenPlatformV1ReadPortsPostgreSQLJourney(t *testing.T) {
 	if page, readErr := orders.CustomerActivities(ctx, orderport.CustomerActivityQuery{CustomerID: int64(customerID), Limit: 2, Watermark: watermark}); readErr != nil {
 		t.Fatalf("order owner read: %v page=%+v", readErr, page)
 	}
+	// The sidebar must read real owner facts, not the sparse generic sync projection.
+	businessTimeline := sidebarBusinessTimeline{surveys: survey, orders: orders, radar: radar,
+		channels: timelineChannelFixture{businessTimelineFixture{at: watermark.Add(-time.Minute)}}, uow: uow}
+	businessPage, businessErr := businessTimeline.CustomerTimeline(ctx, customerID, customerport.PageQuery{Limit: 20, Watermark: watermark})
+	if businessErr != nil {
+		t.Fatal(businessErr)
+	}
+	businessTitles := ""
+	for _, item := range businessPage.Items {
+		businessTitles += item.Title + "|"
+	}
+	for _, want := range []string{"提交问卷：V1 Read Survey", "创建订单（待支付）：V1 read", "打开雷达内容：V1 Read Radar"} {
+		if !strings.Contains(businessTitles, want) {
+			t.Fatalf("sidebar missing %q in %q", want, businessTitles)
+		}
+	}
 	if err = executor.BindV1OperationAudit(accessRepository, uow); err != nil {
 		t.Fatal(err)
 	}

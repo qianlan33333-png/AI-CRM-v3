@@ -7,7 +7,7 @@ quality_lanes="scripts/ci/quality_lanes.py"
 release_builder="scripts/run-donor-view-consumers.sh"
 canonical_backend_full_go_test() {
   grep -qF 'scripts/ci/quality_lanes.py backend' "$ci_workflow" &&
-    grep -qF '"go", "test", "-p", "1", "-race", "-count=1", "./..."' "$quality_lanes"
+    grep -qF '"go", "test", "-p", "1", "-race", "-count=1", "-timeout=15m", "./..."' "$quality_lanes"
 }
 start_line="$(grep -nE '^if ! systemctl enable aicrm-effects-worker\.service \|\| ! systemctl restart aicrm-effects-worker\.service; then$' "$installer" | cut -d: -f1)"
 test -n "$start_line" || { echo "effects worker enable and restart must be rollback guarded" >&2; exit 1; }

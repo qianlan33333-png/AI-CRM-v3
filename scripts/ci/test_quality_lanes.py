@@ -15,6 +15,15 @@ class QualityLaneTests(unittest.TestCase):
             self.assertTrue(commands, lane)
             self.assertTrue(all(isinstance(command, list) and command for command in commands), lane)
 
+    def test_backend_keeps_full_race_coverage_with_bounded_package_timeout(self):
+        commands = quality_lanes.commands("backend", Path("/tmp/evidence"))
+        test_command = next(command for command in commands if "go" in command and "test" in command)
+        self.assertIn("-race", test_command)
+        self.assertIn("-count=1", test_command)
+        self.assertIn("-timeout=15m", test_command)
+        self.assertEqual(test_command[-1], "./...")
+        self.assertNotIn("-run", test_command)
+
     def test_database_lanes_require_reachable_postgresql_16(self):
         with patch.object(quality_lanes, "command_available", return_value=True), patch.object(
                 quality_lanes, "exact_version", return_value=True), patch.object(

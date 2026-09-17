@@ -632,4 +632,15 @@ func TestPostgreSQLCustomerActivitiesAreCustomerScopedAndUseDescendingKeyset(t *
 	if len(second.Items) != 1 || second.Items[0].EventID != oldID || second.Items[0].Stage != radarport.EventOAuthVerified {
 		t.Fatalf("second page=%+v", second)
 	}
+	var business radarport.CustomerActivityPage
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		business, e = store.CustomerActivities(tx, radarport.CustomerActivityQuery{BusinessOnly: true, CustomerID: customerdomain.CustomerID(customerID), Limit: 10, Watermark: now})
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(business.Items) != 1 || business.Items[0].EventID != latestID || business.Items[0].Title == "" {
+		t.Fatalf("business projection=%+v", business)
+	}
 }
