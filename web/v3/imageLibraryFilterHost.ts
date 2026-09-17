@@ -10,6 +10,8 @@ import { mountPageHeaderActions } from "./shared/ui/pageHeaderActions";
 import { installCommittedTextSearch } from "./shared/ui/committedTextSearch";
 import { renderMaterialThumbnail } from "./shared/ui/materialThumbnailPresentation";
 
+import { MaterialGroupSidebar, materialGroupLayout, type MaterialGroupOption } from "./materialGroupSidebar";
+
 installCommittedTextSearch();
 
 const PAGE_SIZE = 20;
@@ -165,7 +167,8 @@ class ImageLibraryHost {
   private items: ImageDirectoryItem[] = [];
   private query = "";
   private group = "";
-  private groupSelect!: HTMLSelectElement;
+  private groupSidebar!: MaterialGroupSidebar;
+  private groupOptions: MaterialGroupOption[] = [{ value: "", label: "全部分组" }, { value: "__ungrouped__", label: "未分组" }];
   private includeInactive = false;
   // Offset always identifies the last successfully-read page. A requested
   // page stays separate until its response validates, so a failed next page
@@ -194,6 +197,12 @@ class ImageLibraryHost {
     this.workspace = document.createElement("section");
     this.workspace.dataset.imageLibraryWorkspace = "true";
     this.workspace.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-content:start";
+    const initial = new URL(location.href).searchParams;
+    if (initial.has('material_group')) this.group = initial.get('material_group') ? 'category:' + initial.get('material_group') : '__ungrouped__';
+    this.groupSidebar = new MaterialGroupSidebar(value => {
+      this.group = value; this.groupSidebar.select(value); this.updateGroupURL(); void this.load(0);
+    });
+    this.groupSidebar.render(this.groupOptions, this.group);
     this.toolbarNode = this.toolbar();
     this.stateNode = document.createElement("section");
     this.cardsNode = document.createElement("section");
@@ -203,7 +212,10 @@ class ImageLibraryHost {
     this.dialogLayer = document.createElement("section");
     this.dialogLayer.dataset.imageLibraryDialogLayer = "true";
     this.workspace.append(this.toolbarNode, this.stateNode, this.cardsNode, this.paginationNode);
-    this.scroll.append(this.workspace);
+    const layout = materialGroupLayout();
+    layout.style.padding = '0'; layout.style.overflow = 'visible';
+    layout.append(this.groupSidebar.element, this.workspace);
+    this.scroll.append(layout);
     this.stage.replaceChildren(this.scroll, this.dialogLayer);
     if (this.stage.dataset.materialLibraryWorkspace === "true") {
       mountMaterialLibraryTabs(this.stage, "images");
@@ -298,13 +310,18 @@ class ImageLibraryHost {
     try {
       const result = unwrapGenerated(await getLegacyImageFacets(apiRequestOptions())) as { categories?: string[] };
       if (!Array.isArray(result.categories)) return;
-      const selected = this.group;
-      this.groupSelect.replaceChildren();
-      for (const [value, label] of [["", "全部分组"], ["__ungrouped__", "未分组"], ...result.categories.map((value) => ["category:" + value, value])]) {
-        const option = document.createElement("option"); option.value = value; option.textContent = label; this.groupSelect.append(option);
-      }
-      this.groupSelect.value = selected;
-    } catch { /* The directory remains readable; retry on Refresh. */ }
+      this.groupOptions = [{ value: "", label: "全部分组" }, { value: "__ungrouped__", label: "未分组" }, ...result.categories.map(value => ({ value: "category:" + value, label: value }))];
+      if (this.group && !this.groupOptions.some(x => x.value === this.group)) this.groupOptions.push({ value: this.group, label: this.group.slice('category:'.length) });
+      this.groupSidebar.render(this.groupOptions, this.group); this.groupSidebar.message('');
+    } catch { this.groupSidebar.message('分组加载失败，请刷新重试。'); }
+  }
+
+  private updateGroupURL(): void {
+    const url = new URL(location.href);
+    url.searchParams.set("tab", "images");
+    if (this.group) url.searchParams.set('material_group', this.group === '__ungrouped__' ? '' : this.group.slice('category:'.length));
+    else url.searchParams.delete('material_group');
+    history.replaceState(history.state, '', url.href);
   }
 
   private toolbar(): HTMLElement {
@@ -316,16 +333,9 @@ class ImageLibraryHost {
     input.placeholder = "搜索素材名或标签";
     input.dataset.imageLibraryQuery = "true";
     input.setAttribute("aria-label", "搜索图片素材");
-    input.style.cssText = "flex:1 1 240px";
+    input.style.cssText = "flex:1 1 240px;min-width:0";
     input.addEventListener("input", () => this.commitSearch(input.value));
     this.queryInput = input;
-    const group = document.createElement("select");
-    group.setAttribute("aria-label", "组别"); group.dataset.imageLibraryGroup = "true";
-    for (const [value, label] of [["", "全部分组"], ["__ungrouped__", "未分组"]]) {
-      const option = document.createElement("option"); option.value = value; option.textContent = label; group.append(option);
-    }
-    this.groupSelect = group;
-    group.addEventListener("change", () => { this.group = group.value; void this.load(0); });
     const refresh = button("刷新");
     refresh.addEventListener("click", () => { void this.loadGroups(); void this.load(this.offset); });
     const includeLabel = document.createElement("label");
@@ -341,13 +351,13 @@ class ImageLibraryHost {
     reset.dataset.imageLibraryReset = "true";
     reset.addEventListener("click", () => {
       this.query = "";
-      this.group = ""; this.groupSelect.value = "";
+      this.group = ""; this.groupSidebar.select(""); this.updateGroupURL();
       this.includeInactive = false;
       this.queryInput.value = "";
       this.includeInactiveInput.checked = false;
       void this.load(0);
     });
-    toolbar.append(group, input, includeLabel, reset, refresh);
+    toolbar.append(input, includeLabel, reset, refresh);
     return toolbar;
   }
 

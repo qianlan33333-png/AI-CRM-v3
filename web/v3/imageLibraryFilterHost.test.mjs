@@ -537,5 +537,15 @@ for (const call of calls.filter((call) => call.path === "/api/admin/image-librar
   assert.ok(call.query.includes("limit=20") && call.query.includes("offset=") && call.query.includes("enabled_only="), `image read escaped bounded pagination/filter contract: ${JSON.stringify(call)}`);
 }
 
+// A bare materials URL must become a durable images+group URL, not a server redirect.
+dom.window.history.replaceState(null, '', '/admin/materials');
+dom.window.document.querySelector('[data-material-group-value="__ungrouped__"]').click();
+await waitFor(() => calls.some(call => call.query.includes('only_ungrouped=true')), 'sidebar ungrouped read');
+assert.equal(new URL(dom.window.location.href).searchParams.get('tab'), 'images');
+assert.equal(new URL(dom.window.location.href).searchParams.get('material_group'), '');
+assert.equal(dom.window.document.querySelector('[data-material-group-value="__ungrouped__"]').getAttribute('aria-pressed'), 'true');
+dom.window.document.querySelector('[data-material-group-value=""]').click();
+await sleep(30);
+assert.equal(new URL(dom.window.location.href).searchParams.has('material_group'), false);
 dom.window.close();
 console.log("image-library V3 Host DOM: PASS");

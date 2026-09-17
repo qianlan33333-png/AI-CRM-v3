@@ -1,4 +1,5 @@
 import { request } from '../src/api/transport';
+import { MaterialGroupSidebar, materialGroupLayout } from './materialGroupSidebar';
 
 type Page = 'attach' | 'mpLib';
 const paths: Record<Page, string> = {
@@ -30,66 +31,48 @@ export function materialGroupRequest(
 }
 export function mountMaterialGroups(stage: HTMLElement, page: Page): void {
   if (stage.querySelector('[data-material-groups]')) return;
-  const bar = document.createElement('div');
-  bar.dataset.materialGroups = 'true';
-  bar.style.cssText =
-    'display:flex;gap:12px;align-items:center;padding:12px 20px;background:white';
-  const label = document.createElement('label');
-  label.textContent = '组别 ';
-  const select = document.createElement('select');
-  select.setAttribute('aria-label', '组别');
-  select.disabled = true;
-  const all = new Option('全部分组', 'all');
-  select.add(all);
-  const refresh = document.createElement('button');
-  refresh.type = 'button';
-  refresh.textContent = '刷新';
-  refresh.className = 'admin-button';
-  const status = document.createElement('span');
-  status.setAttribute('role', 'status');
-  label.append(select);
-  bar.append(label, refresh, status);
-  const tabs = stage.querySelector('[data-material-library-tabs]');
-  if (tabs) tabs.after(bar);
-  else stage.prepend(bar);
+  const sidebar = new MaterialGroupSidebar((value) => {
+    const url = new URL(location.href);
+    url.pathname = '/admin/materials';
+    url.searchParams.set('tab', page === 'attach' ? 'attachments' : 'miniprograms');
+    if (value === 'all') url.searchParams.delete('material_group');
+    else url.searchParams.set('material_group', value.slice(6));
+    url.searchParams.delete('offset');
+    location.assign(url.href);
+  });
+  const current = new URL(location.href);
+  const selected = current.searchParams.has('material_group') ? 'group:' + current.searchParams.get('material_group') : 'all';
+  const base = [{ value: 'all', label: '全部分组' }, { value: 'group:', label: '未分组' }];
+  sidebar.render(base, selected);
+  const layout = materialGroupLayout();
+  const content = document.createElement('div'); content.className = 'material-group-content';
+  for (const child of Array.from(stage.childNodes)) {
+    if (!(child instanceof HTMLElement && child.hasAttribute('data-material-library-tabs'))) content.append(child);
+  }
+  layout.append(sidebar.element, content); stage.append(layout);
+  const refresh = document.createElement('button'); refresh.type = 'button';
+  refresh.textContent = '刷新'; refresh.className = 'admin-button';
+  refresh.addEventListener('click', () => location.reload());
+  sidebar.element.append(refresh);
+  sidebar.message('加载分组…');
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 10000);
   void request(paths[page] + '/groups', { signal: controller.signal })
     .then(async (response) => {
-      if (!response.ok) throw new Error('read failed');
       const data = await response.json();
       if (!Array.isArray(data.items)) throw new Error('invalid groups');
       const entries = data.items as { name: string; count: number }[];
-      select.add(
-        new Option(
-          `未分组 (${entries.find((x) => x.name === '')?.count || 0})`,
-          'group:',
-        ),
-      );
-      for (const item of entries) {
-        if (item.name)
-          select.add(
-            new Option(`${item.name} (${item.count})`, 'group:' + item.name),
-          );
-      }
-      const url = new URL(location.href);
-      if (url.searchParams.has('material_group'))
-        select.value =
-          'group:' + (url.searchParams.get('material_group') || '');
-      select.disabled = false;
+      const options = [
+        { value: 'all', label: '全部分组', count: entries.reduce((sum, x) => sum + x.count, 0) },
+        { value: 'group:', label: '未分组', count: entries.find(x => x.name === '')?.count || 0 },
+        ...entries.filter(x => x.name).map(x => ({ value: 'group:' + x.name, label: x.name, count: x.count })),
+      ];
+      // Keep a bookmarked group visible even when it currently has no items.
+      if (!options.some(x => x.value === selected)) options.push({ value: selected, label: selected.slice(6), count: 0 });
+      sidebar.render(options, selected); sidebar.message('');
     })
-    .catch(() => {
-      status.textContent = '分组加载失败，请刷新重试。';
-    })
+    .catch(() => sidebar.message('分组加载失败，请刷新重试。'))
     .finally(() => clearTimeout(timer));
-  select.addEventListener('change', () => {
-    const url = new URL(location.href);
-    if (select.value === 'all') url.searchParams.delete('material_group');
-    else url.searchParams.set('material_group', select.value.slice(6));
-    url.searchParams.delete('offset');
-    location.assign(url.href);
-  });
-  refresh.addEventListener('click', () => location.reload());
 }
 export function mountMaterialGroupControl(
   container: HTMLElement,
