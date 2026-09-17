@@ -412,7 +412,7 @@ try {
   );
   // Exercise the actual anonymous route and its server field projection.
   const issued = await evaluate(
-    `(async()=>{const r=await fetch('/api/admin/hxc-dashboard/shares',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':${JSON.stringify(csrf)},'Idempotency-Key':'browser-hxc-share-1'},body:JSON.stringify({mode:'details',fields:['stage'],config:{query:{filters:{stage:['registered_no_active_membership']}}}})});return {status:r.status,value:await r.json()};})()`,
+    `(async()=>{const r=await fetch('/api/admin/hxc-dashboard/shares',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':${JSON.stringify(csrf)},'Idempotency-Key':'browser-hxc-share-1'},body:JSON.stringify({mode:'details',fields:['stage','subscription_tier'],config:{query:{filters:{stage:['registered_no_active_membership']}}}})});return {status:r.status,value:await r.json()};})()`,
   );
   assert.equal(issued.status, 200, "issue authenticated share");
   const token = issued.value.token;
@@ -446,6 +446,16 @@ try {
     ),
     false,
     "group collapses",
+  );
+  await evaluate(
+    `document.querySelector('select[aria-label="分组"]').value='subscription_tier';[...document.querySelectorAll('button')].find(b=>b.textContent==='应用').click();`,
+  );
+  await poll(
+    () =>
+      evaluate(
+        `document.querySelector('.tabulator-group')?.textContent.includes('未填写') && document.querySelector('.tabulator-group')?.textContent.includes('30 人')`,
+      ),
+    "empty tier has full group count",
   );
   const pubshot = await call("Page.captureScreenshot", { format: "png" });
   await fs.writeFile(

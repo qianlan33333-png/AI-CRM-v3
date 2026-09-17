@@ -241,13 +241,14 @@ async function load() {
         stage: stages[String(row.stage)] || row.stage,
         __groupValues:
           row.__groupValues ||
-          (group.value ? { [group.value]: row[group.value] ?? "(empty)" } : {}),
+          (group.value ? { [group.value]: row[group.value] || "(empty)" } : {}),
         __groupCounts:
           row.__groupCounts ||
           (group.value
             ? {
                 [group.value]: data.groups?.find(
-                  (g: { key: string }) => g.key === String(row[group.value]),
+                  (g: { key: string }) =>
+                    g.key === String(row[group.value] || "(empty)"),
                 )?.count,
               }
             : {}),

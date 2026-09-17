@@ -321,7 +321,7 @@ export async function mountFunnelGrid(
           __groupValues: groupField
             ? {
                 [groupField]:
-                  (row as unknown as Record<string, unknown>)[groupField] ??
+                  (row as unknown as Record<string, unknown>)[groupField] ||
                   "(empty)",
               }
             : {},
@@ -331,7 +331,7 @@ export async function mountFunnelGrid(
                   (g) =>
                     g.key ===
                     String(
-                      (row as unknown as Record<string, unknown>)[groupField] ??
+                      (row as unknown as Record<string, unknown>)[groupField] ||
                         "(empty)",
                     ),
                 )?.count,

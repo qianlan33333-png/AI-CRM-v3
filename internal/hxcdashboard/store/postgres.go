@@ -378,7 +378,7 @@ func queryWorkspaceRows(ctx context.Context, reader workspaceReader, q Query) ([
 		order = "last_used_at DESC NULLS LAST,subject_digest"
 	}
 	if column := map[string]string{"stage": "stage", "subscription_tier": "subscription_tier", "last_capability": "last_capability", "business_stage": "business_stage", "user_segment": "user_segment", "identity_state": "identity_state", "matched_by": "matched_by", "identity_reason_code": "identity_reason_code"}[q.GroupBy]; column != "" {
-		order = column + " ASC NULLS LAST," + order
+		order = "COALESCE(NULLIF(" + column + ",''),'(empty)') ASC," + order
 	}
 	args = append(args, q.Limit+1, q.Offset)
 	sqlText := `SELECT user_ref,stage,subscription_tier,subscription_expires_at,monthly_chat_quota,current_period_used,consultation_limit,consultation_used,membership_attribution,sessions_7d,sessions_30d,sessions_total,user_messages_7d,user_messages_30d,user_messages_total,capability_usage,last_used_at,COALESCE(last_capability,''),COALESCE(business_stage,''),COALESCE(main_line_type,''),COALESCE(user_segment,''),focus_topics,COALESCE(pain_tag,''),identity_state,matched_by,identity_reason_code,COALESCE(identity_case_id,0),COALESCE(merge_candidate_id,0),source_updated_at FROM hxc_dashboard_rows WHERE ` + strings.Join(where, " AND ") + " ORDER BY " + order + fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
@@ -406,7 +406,7 @@ func queryWorkspaceRows(ctx context.Context, reader workspaceReader, q Query) ([
 	groupColumn := map[string]string{"stage": "stage", "subscription_tier": "subscription_tier", "last_capability": "last_capability", "business_stage": "business_stage", "user_segment": "user_segment", "identity_state": "identity_state", "matched_by": "matched_by", "identity_reason_code": "identity_reason_code"}[q.GroupBy]
 	if groupColumn != "" {
 		groupArgs := args[:len(args)-2]
-		groupRows, groupErr := reader.Query(ctx, `SELECT COALESCE(`+groupColumn+`,'(empty)'),COUNT(*) FROM hxc_dashboard_rows WHERE `+strings.Join(where, " AND ")+` GROUP BY `+groupColumn+` ORDER BY COUNT(*) DESC,1`, groupArgs...)
+		groupRows, groupErr := reader.Query(ctx, `SELECT COALESCE(NULLIF(`+groupColumn+`,''),'(empty)'),COUNT(*) FROM hxc_dashboard_rows WHERE `+strings.Join(where, " AND ")+` GROUP BY COALESCE(NULLIF(`+groupColumn+`,''),'(empty)') ORDER BY COUNT(*) DESC,1`, groupArgs...)
 		if groupErr != nil {
 			return nil, nil, false, groupErr
 		}
