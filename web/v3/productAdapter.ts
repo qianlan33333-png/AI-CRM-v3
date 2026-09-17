@@ -490,6 +490,12 @@ api.saveProduct = (input) => {
   // The frozen controller does not disable its save button.  Deduplicate every
   // in-page click until the current operation has reached a known result.
   if (productSaveInFlight) return productSaveInFlight;
+  if (input.id == null) {
+    const code = input.code.trim();
+    if (loadedProducts.some((product) => product.code.trim() === code)) {
+      return Promise.reject(new Error(`商品编码「${code}」已存在，请更换商品编码。`));
+    }
+  }
   const recovered = pendingExternalPush;
   if (recovered && input.id === recovered.productID && subjectFingerprint(input) === recovered.subjectFingerprint) {
     productSaveInFlight = recoverExternalPush(input, recovered);
@@ -542,6 +548,10 @@ api.saveProduct = (input) => {
           externalPushKey: context.externalPushKey,
         };
         throw new Error(`商品主体已保存（ID ${context.createdProductID}）；外推配置保存失败，可直接重试。`);
+      }
+      const failure = object(error);
+      if (input.id == null && failure.status === 409) {
+        throw new Error(`商品编码「${input.code.trim()}」已存在，请更换商品编码。`);
       }
       throw error;
     } finally {
@@ -639,8 +649,15 @@ api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
   }
 
   const db = await donorLoadDb(context);
-  if (context?.page === 'spProductForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
+  if (context?.page === 'productForm' || context?.page === 'spProductForm') {
     loadedLeadChannels.splice(0, loadedLeadChannels.length, ...list(db.rows.channels).map(object));
+  }
+  if (context?.page === 'productForm') {
+    loadedProducts = db.rows.products
+      .filter((product): product is ProductProjection => Number.isSafeInteger(product.resourceId) && Number(product.resourceId) > 0)
+      .map((product) => ({ ...product, resourceId: Number(product.resourceId) }));
+  }
+  if (context?.page === 'spProductForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
     const productID = Number(context.id);
     const current = db.rows.spProducts[0];
     if (archivedProductEditor(current, { id: productID, prefix: 'spf' })) {
@@ -1538,6 +1555,7 @@ function purchaseActionControls(prefix: string): HTMLElement | null {
   const linkKey = host.querySelector<HTMLInputElement>('[data-product-purchase-url-link-key]')!;
   const selectedChannel = projection.lead_channel_id == null ? '' : String(projection.lead_channel_id);
   for (const channel of loadedLeadChannels) {
+    if (channel.status !== 'active') continue;
     const id = Number(channel.id ?? channel.channel_id ?? channel.resourceId);
     if (!Number.isSafeInteger(id) || id < 1) continue;
     const option = document.createElement('option'); option.value = String(id); option.textContent = String(channel.name ?? channel.channel_name ?? `渠道 ${id}`); leadChannel.append(option);
@@ -1618,6 +1636,7 @@ function adaptPurchaseActionWrite(init: RequestInit | undefined): RequestInit | 
     projection.lead_qr_subtitle = '';
   } else {
     const channelID = Number(leadChannel);
+    if (!Number.isSafeInteger(channelID) || channelID < 1) throw new Error('请选择引流渠道码后再保存。');
     projection.lead_channel_id = Number.isSafeInteger(channelID) && channelID > 0 ? channelID : null;
     projection.lead_qr_title = leadTitle;
     projection.lead_qr_subtitle = leadSubtitle;
