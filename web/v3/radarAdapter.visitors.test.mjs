@@ -151,7 +151,7 @@ assert.equal(exportRequest.headers.get('X-CSRF-Token'), 'visitor-csrf', 'CSV exp
 assert.equal(exportRequest.cache, 'no-store', 'CSV export is not browser-cached');
 await waitFor(() => hostRoot.textContent.includes('已导出 CSV。'), 'CSV completion is visible');
 assert.equal(downloads, 1, 'only a verified CSV response downloads');
-assert.deepEqual(exportedCSV.trimEnd().split('\n')[0].split(','), ['昵称', '外部联系人ID', '外部联系人ID状态', '用户编号', '打开时间', '身份状态'], 'the mocked CSV shape matches the six-column visitor export contract');
+assert.deepEqual(exportedCSV.trimEnd().split('\n')[0].split(','), ['昵称', '外部联系人ID', '外部联系人ID状态', 'OneID', '打开时间', '身份状态'], 'the mocked CSV shape matches the six-column visitor export contract');
 
 invalidCSVResponse = true;
 document.querySelector('#dExport').click();

@@ -192,7 +192,7 @@ if (!Number.isSafeInteger(copyID) || copyID <= normalID) {
 }
 // A duplicate response precedes the controller's list refresh and copy hydration.
 // Keep the realm alive until its final success UI has rendered.
-await waitFor("duplicate editor hydration", () => normal.dom.window.location.search === `?id=${copyID}` && normalDocument.querySelector('#toast')?.textContent.includes('问卷已复制'));
+await waitFor("duplicate editor hydration", () => normal.calls.some(call => call.path === `/api/admin/questionnaires/${copyID}` && call.status === 200) && normalDocument.querySelector('#toast')?.textContent.includes('问卷已复制')).catch(error=>{throw new Error(error.message+'; search='+normal.dom.window.location.search+'; toast='+normalDocument.querySelector('#toast')?.textContent+'; calls='+summarizeCalls(normal.calls));});
 normal.dom.window.close();
 
 // The frozen management page owns the actual enable/disable controls. A saved
@@ -245,7 +245,8 @@ if (!csv.includes("submission_id") || !csv.includes("customer_id")) throw new Er
 normalPublished.dom.window.close();
 
 // Legacy assessment URLs cannot restore the retired builder or create it through the API.
-const retired = await openEditor('?mode=assessment');
+const retired = await openEditor('?mode=assessment', {requestDelayMs: 100});
+await waitFor('retired editor boot settled', () => retired.calls.length >= 2 && retired.calls.every(call => call.status > 0) && retired.dom.window.document.querySelector('#tag-catalog-message')?.className.includes('error'));
 if (retired.dom.window.document.querySelector('[data-assessment-step], #open-assessment-settings') || !retired.dom.window.document.querySelector('#field-name')) throw new Error('retired assessment builder is available');
 const rejectedPayload = JSON.parse(normal.calls.find(call=>call.path === '/api/admin/questionnaires' && call.method === 'POST').body);
 rejectedPayload.assessment_enabled = true;
