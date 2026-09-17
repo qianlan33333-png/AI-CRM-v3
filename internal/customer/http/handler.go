@@ -155,6 +155,9 @@ func (handler *Handler) customer360(response nethttp.ResponseWriter, request *ne
 		if err != nil {
 			return err
 		}
+		if err = handler.attachPublicNumber(txctx, &detail); err != nil {
+			return err
+		}
 		identities, phones, err = handler.identities.DirectoryIdentities(txctx, canonicalID)
 		return err
 	}); err == nil {
@@ -317,6 +320,9 @@ func (handler *Handler) detail(response nethttp.ResponseWriter, request *nethttp
 		if queryErr != nil {
 			return queryErr
 		}
+		if queryErr = handler.attachPublicNumber(txContext, &detail); queryErr != nil {
+			return queryErr
+		}
 		identities, phones, queryErr = handler.identities.DirectoryIdentities(txContext, canonical.CustomerID)
 		return queryErr
 	})
@@ -346,7 +352,7 @@ func (handler *Handler) detail(response nethttp.ResponseWriter, request *nethttp
 
 func safeDirectoryDetail(detail customerapp.Detail) map[string]any {
 	return map[string]any{"customer_id": detail.CustomerID, "status": detail.CustomerStatus, "display_name": detail.DisplayName,
-		"oneid": detail.OneIDLabel, "last_synced_at": detail.LastSyncedAt, "updated_at": detail.UpdatedAt, "gender": detail.Gender,
+		"oneid": detail.OneIDLabel, "customer_number": detail.CustomerNumber, "last_synced_at": detail.LastSyncedAt, "updated_at": detail.UpdatedAt, "gender": detail.Gender,
 		"contact_type": detail.ContactType, "corp_name": detail.CorpName, "source": detail.Source}
 }
 
@@ -918,3 +924,18 @@ func (handler *Handler) resolveCanonical(ctx context.Context, id customerdomain.
 	return result.CustomerID, err
 }
 func mustPathCustomerID(raw string) int64 { value, _ := strconv.ParseInt(raw, 10, 64); return value }
+
+func (handler *Handler) attachPublicNumber(ctx context.Context, detail *customerapp.Detail) error {
+	if handler.directory.Numbers == nil {
+		return nil
+	}
+	numbers, err := handler.directory.Numbers.CustomerPublicNumbers(ctx, []customerdomain.CustomerID{detail.CustomerID})
+	if err != nil {
+		return err
+	}
+	detail.CustomerNumber = numbers[detail.CustomerID]
+	if detail.CustomerNumber == "" {
+		return customerapp.ErrNotFound
+	}
+	return nil
+}

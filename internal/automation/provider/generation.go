@@ -40,8 +40,9 @@ func (c GenerationConfig) Policy() (automationport.GenerationModelPolicy, error)
 }
 
 type GenerationProvider struct {
-	config   GenerationConfig
-	dispatch automationport.GenerationDispatchReader
+	ConfigReader func(context.Context) (GenerationConfig, error)
+	config       GenerationConfig
+	dispatch     automationport.GenerationDispatchReader
 }
 
 func NewGenerationProvider(config GenerationConfig, dispatch automationport.GenerationDispatchReader) (*GenerationProvider, error) {
@@ -68,7 +69,11 @@ func (p *GenerationProvider) GenerationModelPolicy(ctx context.Context) (automat
 	if p == nil {
 		return automationport.GenerationModelPolicy{}, errors.New("AI generation provider unavailable")
 	}
-	return p.config.Policy()
+	config, err := p.currentConfig(ctx)
+	if err != nil {
+		return automationport.GenerationModelPolicy{}, err
+	}
+	return config.Policy()
 }
 
 func normalizeCompletionsURL(raw string) string {
@@ -98,10 +103,14 @@ func (p *GenerationProvider) Execute(ctx context.Context, envelope effectport.En
 	if p == nil || envelope.Owner != effectport.OwnerAutomation || envelope.Kind != effectport.KindAIAgentGenerate || attempt.EffectID == "" {
 		return generationFailure("generation_dispatch_invalid", false), nil
 	}
-	if !p.config.Enabled {
+	config, configErr := p.currentConfig(ctx)
+	if configErr != nil {
+		return generationFailure("generation_provider_config_unavailable", false), nil
+	}
+	if !config.Enabled {
 		return generationFailure("generation_provider_disabled", false), nil
 	}
-	policy, err := p.config.Policy()
+	policy, err := config.Policy()
 	if err != nil {
 		return generationFailure("generation_provider_config_invalid", false), nil
 	}
@@ -119,11 +128,11 @@ func (p *GenerationProvider) Execute(ctx context.Context, envelope effectport.En
 	if err != nil {
 		return generationFailure("generation_request_invalid", false), nil
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, normalizeCompletionsURL(p.config.BaseURL), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, normalizeCompletionsURL(config.BaseURL), bytes.NewReader(body))
 	if err != nil {
 		return generationFailure("generation_request_invalid", false), nil
 	}
-	request.Header.Set("Authorization", "Bearer "+p.config.APIKey)
+	request.Header.Set("Authorization", "Bearer "+config.APIKey)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := p.config.Client.Do(request)
 	if err != nil {
@@ -157,3 +166,14 @@ func (p *GenerationProvider) Execute(ctx context.Context, envelope effectport.En
 
 var _ effectport.ProviderAdapter = (*GenerationProvider)(nil)
 var _ automationport.GenerationModelPolicyReader = (*GenerationProvider)(nil)
+
+func (p *GenerationProvider) currentConfig(ctx context.Context) (GenerationConfig, error) {
+	if p.ConfigReader == nil {
+		return p.config, nil
+	}
+	config, err := p.ConfigReader(ctx)
+	if err != nil {
+		return GenerationConfig{}, err
+	}
+	return config, nil
+}

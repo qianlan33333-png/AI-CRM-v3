@@ -499,7 +499,7 @@
     customer.append(cell);
     row.append(customer);
 
-    for (const value of [item.oneid, item.phone_masked ? localPhone(item.phone_masked) : "未填写", date(item.last_synced_at)]) {
+    for (const value of [item.customer_number || item.oneid, item.phone_masked ? localPhone(item.phone_masked) : "未填写", date(item.last_synced_at)]) {
       const td = document.createElement("td");
       td.textContent = value || "—";
       row.append(td);
@@ -677,33 +677,6 @@
     return card;
   }
 
-  function riskReason(reason) {
-    const labels = {
-      identity_section_unavailable: "身份信息暂时不可用，当前风险无法完整判定。",
-      order_section_unavailable: "订单信息暂时不可用，当前风险无法完整判定。",
-      payment_failures_present: "已发现支付失败订单。",
-      refunds_present: "已发现退款相关订单。",
-    };
-    return labels[reason] || "存在尚未确认的风险信息。";
-  }
-
-  function riskLevel(level) {
-    const labels = { low: "低", medium: "中", unknown: "未知" };
-    return labels[level] || "未知";
-  }
-
-  function riskCard(section) {
-    const renderRisk = function (target, value, degraded) {
-      line(target, "风险等级：" + (degraded ? "未知（必要信息暂时不可用）" : riskLevel(value.level)));
-      (Array.isArray(value.reasons) ? value.reasons : []).forEach(function (reason) { line(target, riskReason(reason)); });
-    };
-    return sectionCard("风险摘要", section, function (target, value) {
-      renderRisk(target, value, false);
-    }, function (target, value) {
-      renderRisk(target, value, true);
-    });
-  }
-
   function line(target, value) {
     const node = document.createElement("div");
     node.className = "admin-profile-message";
@@ -745,7 +718,7 @@
     const body = document.createElement("tbody");
     rows.forEach(function (row) {
       const item = document.createElement("tr");
-      row.forEach(function (value) { const cell = document.createElement("td"); cell.textContent = displayValue(value); item.append(cell); });
+      row.forEach(function (value) { const cell = document.createElement("td"); if (value instanceof Node) cell.append(value); else cell.textContent = displayValue(value); item.append(cell); });
       body.append(item);
     });
     table.append(head, body);
@@ -779,9 +752,17 @@
     note.className = "customer-section-note";
     note.textContent = "最多显示最近 10 条订单。";
     target.append(note);
-    recordTable(target, ["订单号", "状态", "创建时间"], summary.recent.slice(0, 10).map(function (order) {
+    recordTable(target, ["订单号", "商品", "状态", "创建时间", "操作"], summary.recent.slice(0, 10).map(function (order) {
       const item = object(order) || {};
-      return [recentOrderReference(item), typeof item.status === "string" && item.status ? orderStatusLabel(item.status) : "订单状态待确认", timeValue(item.created_at)];
+      const productNames = (Array.isArray(item.items) ? item.items : []).map(function (line) { return object(line) && displayValue(line.product_name, ""); }).filter(Boolean).join("、");
+      let action = "—";
+      if (typeof item.merchant_order_no === "string" && item.merchant_order_no && ["wechat_pay", "wechat_shop"].includes(item.provider)) {
+        action = document.createElement("a");
+        action.className = "admin-button admin-button--ghost";
+        action.textContent = "查看详情";
+        action.href = "/admin/orderDetail.html?id=" + encodeURIComponent(item.merchant_order_no) + "&provider=" + encodeURIComponent(item.provider === "wechat_pay" ? "wechat" : item.provider);
+      }
+      return [recentOrderReference(item), productNames || "商品名称待确认", typeof item.status === "string" && item.status ? orderStatusLabel(item.status) : "订单状态待确认", timeValue(item.created_at), action];
     }));
   }
 
@@ -837,15 +818,8 @@
       el.detailFields.replaceChildren(
         profileField("姓名", profileReady ? item.display_name : "待确认"),
         profileField("手机号", phoneField(maskedPhone ? localPhone(maskedPhone) : "", Boolean(identity))),
-        profileField("Customer ID", profileReady ? item.customer_id : "待确认"),
-        profileField("OneID", profileReady ? [displayValue(item.oneid, ""), ...identities].filter(Boolean).join(" · ") || "待确认" : "待确认"),
-      );
-      el.profileMeta.replaceChildren(
-        metaItem("用户状态", profileReady ? customerStatusLabel(item.status) : "待确认"),
-        metaItem("企业", profileReady ? item.corp_name : "待确认"),
-        metaItem("用户类型", profileReady ? contactTypeLabel(item.contact_type) : "待确认"),
-        metaItem("数据来源", profileReady ? item.source : "待确认"),
-        metaItem("最后同步", profileReady ? timeValue(item.last_synced_at) : "待确认"),
+        profileField("用户编号", profileReady ? (item.customer_number || item.customer_id) : "待确认"),
+        profileField("已关联身份", profileReady ? identities.filter(Boolean).join(" · ") || "待确认" : "待确认"),
       );
       if (profileReady) {
         el.detailState.hidden = true;
@@ -865,7 +839,6 @@
         sectionCard("问卷记录", data.questionnaire_summary, renderQuestionnaireRecords)
       );
       el.sidebar360.replaceChildren(
-		riskCard(data.risk),
 		sectionCard("最近触点", data.recent_touchpoints, renderTouchpointRecords)
       );
 	  el.sections360.hidden = false;

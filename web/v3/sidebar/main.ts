@@ -782,7 +782,7 @@ export class SidebarBridge {
     return {
       customer: {
         display_name: profile.display_name || profile.name || "当前客户",
-        oneid: this.oneID,
+        oneid: this.profile.customer_number || this.oneID,
         mobile: profile.phone_masked || "",
         // Declared phone data never upgrades the UI to provider-verified.
         phone_assurance: phoneAssurance,

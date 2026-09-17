@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=production-shell-layout-20260909">
   {{with presentationAssets}}{{if .AdminDateTimeScript}}<script type="module" src="{{.AdminDateTimeScript}}"></script>{{end}}{{end}}
   <script defer src="/static/admin_console/admin_console.js?v=production-shell-41f80a11-mime2"></script>
-  <script defer src="/static/admin_console/admin_shell.js?v=static-mime2"></script>
+  <script defer src="/static/admin_console/admin_shell.js?v=operations-heading-20260917"></script>
   {{if .AudienceList}}
   <link rel="stylesheet" href="/static/admin_console/admin_audience.css?v=production-shell-41f80a11-mime2">
   {{with presentationAssets}}{{if .ConfirmationDialogCSS}}<link rel="stylesheet" href="{{.ConfirmationDialogCSS}}">{{end}}{{if .ConfirmationDialogScript}}<script type="module" src="{{.ConfirmationDialogScript}}"></script>{{end}}{{end}}
@@ -255,11 +255,6 @@
       {{if .ShowPageHeader}}
       <header class="admin-topbar">
         <div class="admin-topbar-head">
-          <nav class="admin-breadcrumbs" aria-label="当前位置">
-            {{range .Breadcrumbs}}
-            {{if .Href}}<a href="{{.Href}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}
-            {{end}}
-          </nav>
           <div>
             <h1 class="admin-page-title">{{.PageTitle}}</h1>
             <p class="admin-page-summary">{{.PageSummary}}</p>

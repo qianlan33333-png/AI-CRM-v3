@@ -8,7 +8,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(here, "../../../..");
 const script = fs.readFileSync(path.join(here, "admin_customers.js"), "utf8");
 const customerDetailTemplate = fs.readFileSync(path.join(repository, "internal", "webshell", "templates", "admin_customers.html"), "utf8");
-if (!customerDetailTemplate.includes('class="customer-tag-draft-selectors"') || !customerDetailTemplate.includes('class="customer-tag-draft-actions"')) throw new Error("customer tag confirmation must remain on its own form action row");
+if (customerDetailTemplate.includes('class="customer-tag-draft-selectors"') || customerDetailTemplate.includes('class="customer-tag-draft-actions"')) throw new Error("profile must not expose retired tag draft controls");
 if (script.includes("企业微信机器人")) throw new Error("unverified customer contact type must remain pending rather than receiving an invented label");
 if (!script.includes('cache: "no-store"') || !script.includes('}, 30000);')) throw new Error("authorized phone display must remain no-store and clear after 30 seconds");
 const standardHost = await buildTestBrowserBundle(path.join(repository, "web", "v3", "standardComponentsHost.ts"));
@@ -394,7 +394,7 @@ const detailDom = new JSDOM(`<!doctype html>
   <div id="customer-detail-state"></div><div id="customer-detail-content" hidden></div>
   <div id="customer-detail-fields"></div><div id="customer-profile-meta"></div>
   <div id="customer-phone-ephemeral" hidden></div>
-  <form id="customer-tag-single"><label>加标签 <select name="add_tag_ids" multiple disabled></select></label><label>移除标签 <select name="remove_tag_ids" multiple disabled></select></label><button type="submit">preview</button></form><span id="customer-tag-single-result"></span>
+
   <div id="customer-360-sections" hidden><div id="customer-360-main"></div><div id="customer-360-sidebar"></div></div>
 </div>`, { url: "https://test.invalid/admin/customers/42", runScripts: "outside-only" });
 detailDom.window.Headers = Headers;
@@ -417,9 +417,9 @@ detailDom.window.fetch = async (input) => {
   if (url.pathname === "/api/admin/wecom/tags") return { ok: true, status: 200, json: async () => ({ read_model_status: "ready", groups: [{ group_id: 1, group_name: "分组" }], items: [{ id: 9, group_id: 1, group_name: "分组", tag_name: "标签九" }], count: 1, total_tags: 1, tag_limit: 1000 }) };
   if (url.pathname !== "/api/admin/customers/42/360") throw new Error("unexpected detail request: " + url.pathname);
   return { ok: true, status: 200, json: async () => ({
-    profile: { status: "ready", data: { customer_id: 42, display_name: "测试客户", oneid: "cus_42", status: "active", contact_type: 1, last_synced_at: "2026-09-05T00:00:00Z" } },
+    profile: { status: "ready", data: { customer_id: 42, customer_number: "1000042", display_name: "测试客户", oneid: "cus_42", status: "active", contact_type: 1, last_synced_at: "2026-09-05T00:00:00Z" } },
     identity_summary: { status: "ready", data: { identities: [], phones: [] } },
-    order_summary: { status: "ready", data: { total: 1, paid: 1, refunded: 0, failed: 0, recent: [{ id: 71, merchant_order_no: "MO-71", status: "paid" }] } },
+    order_summary: { status: "ready", data: { total: 1, paid: 1, refunded: 0, failed: 0, recent: [{ id: 71, merchant_order_no: "MO-71", status: "paid", provider:"wechat_pay", items:[{product_name:"课程商品"}] }] } },
     questionnaire_summary: { status: "ready", data: { total: 2, recent: [{ id: 81, title: "首份问卷", assessment_label: "已完成", submitted_at: "2026-09-05T00:00:00Z" }, { id: 82, title: "后续问卷", score: 0, submitted_at: "2026-09-05T00:00:00Z" }] } },
     risk: { status: "ready", data: { level: "low", reasons: [] } },
     recent_touchpoints: { status: "ready", data: [{ id: 91, title: "首次触达", source_domain: "customer", occurred_at: "2026-09-05T00:00:00Z" }, { id: 92, title: "后续触达", source_domain: "order", occurred_at: "2026-09-05T00:00:00Z" }, { id: 93, title: "历史触点", source_domain: "legacy_import", occurred_at: "2026-09-05T00:00:00Z" }] },
@@ -429,19 +429,23 @@ detailDom.window.eval(script);
 await new Promise((resolve) => setTimeout(resolve, 20));
 const detailText = detailDom.window.document.getElementById("customer-360-main")?.textContent || "";
 if (!detailText.includes("订单总数1") || !detailText.includes("退款相关0") || !detailText.includes("MO-71") || !detailText.includes("已支付") || detailText.includes("paid")) throw new Error(`customer record table did not retain known facts without a machine status: ${detailText}`);
+if (!detailDom.window.document.body.textContent.includes("1000042") || !detailText.includes("课程商品") || !detailDom.window.document.querySelector('a[href="/admin/orderDetail.html?id=MO-71&provider=wechat"]')) throw new Error("profile numbering/product/order link missing");
 const detailMetaText = detailDom.window.document.getElementById("customer-profile-meta")?.textContent || "";
-if (!detailMetaText.includes("用户类型微信用户") || detailMetaText.includes("用户类型1")) throw new Error(`customer contact type was not rendered as an Owner-defined business label: ${detailMetaText}`);
+if (detailMetaText !== "") throw new Error(`customer contact type was not rendered as an Owner-defined business label: ${detailMetaText}`);
 if (!detailText.includes("待确认")) throw new Error(`missing order time was presented as a known value: ${detailText}`);
 if (!detailText.includes("首份问卷") || !detailText.includes("后续问卷") || !detailText.includes("评分 0")) throw new Error(`questionnaire records were truncated or an actual zero score was hidden: ${detailText}`);
 const touchpointText = detailDom.window.document.getElementById("customer-360-sidebar")?.textContent || "";
 if (!touchpointText.includes("首次触达") || !touchpointText.includes("后续触达") || !touchpointText.includes("历史触点") || !touchpointText.includes("用户档案") || !touchpointText.includes("交易") || !touchpointText.includes("其他（legacy_import）")) throw new Error(`approved touchpoint records were truncated or source labels leaked: ${touchpointText}`);
-const detailTagForm = detailDom.window.document.getElementById("customer-tag-single");
-const detailTagButton = [...detailTagForm.querySelectorAll("button")].find((button) => button.textContent === "选择标签");
-if (!detailTagButton) throw new Error("customer detail did not mount the V3 tag picker entry");
-detailTagButton.click();
-await new Promise((resolve) => setTimeout(resolve, 0));
-if (detailPickerCalls.length !== 1 || detailPickerCalls[0].scope !== "customer.tag_draft" || [...detailTagForm.querySelector('[name="add_tag_ids"]').selectedOptions].length !== 0) throw new Error("customer detail picker did not preserve its draft on open/cancel");
-detailPickerCalls[0].onCommit({ selected: [{ source: "local_tag_catalog", tag_id: "9", group_id: "1", tag_name: "标签九", group_name: "分组" }] });
-if ([...detailTagForm.querySelector('[name="add_tag_ids"]').selectedOptions].map((option) => option.value).join(",") !== "9") throw new Error("customer detail V3 picker did not update the existing add-tag draft");
+if (touchpointText.includes("风险摘要")) throw new Error("profile retained the retired risk card");
 detailDom.window.close();
 console.log("admin-customers-browser: PASS");
+
+{
+  const shellDOM = new JSDOM('<body><aside>用户管理后台</aside><header class="admin-topbar"><h1>交易管理</h1></header><main id="stage"><div><div><span>客户管理后台</span><span>/</span><span>交易</span></div><div>交易管理</div><button>刷新</button></div></main></body>', {runScripts:'outside-only', url:'https://example.test/admin/orders'});
+  const shell = fs.readFileSync(new URL('./admin_shell.js', import.meta.url), 'utf8');
+  shellDOM.window.eval(shell);
+  await new Promise(resolve=>setTimeout(resolve,0));
+  if (shellDOM.window.document.querySelector('#stage').textContent !== '交易管理刷新') throw new Error('donor breadcrumb remains or title/actions removed');
+  if (!shellDOM.window.document.querySelector('aside').textContent.includes('用户管理后台')) throw new Error('sidebar brand changed');
+  shellDOM.window.close();
+}

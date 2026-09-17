@@ -159,7 +159,10 @@ function timestamp(value: string): string {
 }
 function statusBadge(section: Section): string {
   if (section.status === 'ready' || section.status === 'zero') return '';
-  if (section.status === 'data_missing') return '<span class="overview-status overview-status--data_missing" role="img" aria-label="数据待确认">?</span>';
+  if (section.status === 'data_missing') {
+    const hint = reasonMessages[section.reason_code || ''] || '部分数据待确认。';
+    return `<span class="overview-status overview-status--data_missing" tabindex="0" role="img" aria-label="数据待确认" aria-description="${escapeHTML(hint)}" title="${escapeHTML(hint)}">?</span>`;
+  }
   return '<span class="overview-status overview-status--failed">读取失败</span>';
 }
 function failureHint(section: Section): string {

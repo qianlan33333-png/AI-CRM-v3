@@ -38,3 +38,10 @@ func (m *Registration) Readiness(ctx context.Context, pool *pgxpool.Pool) error 
 	}
 	return nil
 }
+
+func (b HTTPBindings) WithAIModels(service configport.AIModelSettings) HTTPBindings {
+	if h, ok := b.Config.(*confighttp.Handler); ok {
+		h.WithAIModels(service)
+	}
+	return b
+}

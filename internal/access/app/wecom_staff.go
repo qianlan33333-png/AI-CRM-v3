@@ -67,7 +67,7 @@ func (service *WeComStaffProjector) ProjectWeComStaffWithin(ctx context.Context,
 		seen[providerID] = struct{}{}
 		displayName := strings.TrimSpace(item.DisplayName)
 		if displayName == "" {
-			displayName = "企微客服 " + providerID
+			displayName = providerID
 		}
 		if len([]rune(displayName)) > 160 || strings.ContainsAny(displayName, "\x00\r\n") {
 			return accessport.WeComStaffProjectionResult{}, domain.ErrInvalidInput

@@ -241,127 +241,13 @@ const csv = await normalPublished.dom.window.__surveyRuntimeDownloads[0].blob.te
 if (!csv.includes("submission_id") || !csv.includes("customer_id")) throw new Error(`downloaded CSV did not contain the Survey export contract: ${csv.slice(0, 160)}`);
 normalPublished.dom.window.close();
 
-// A local validation failure never reaches questionnaireEditorV3. Its pending
-// publish gesture must be gone before a later ordinary draft save, otherwise a
-// failed “保存并发布” could publish that unrelated save.
-const validation = await openEditor("?mode=assessment");
-const validationDocument = validation.dom.window.document;
-input(validation.dom.window, validationDocument.querySelector("#v2-basic-name"), "冻结校验草稿");
-input(validation.dom.window, validationDocument.querySelector("#v2-basic-title"), "冻结校验草稿标题");
-input(validation.dom.window, validationDocument.querySelector("#v2-basic-slug"), "frozen-admin-validation-draft");
-click(validationDocument.querySelector('[data-assessment-step="results"]'));
-await waitFor("assessment result tabs", () => validationDocument.querySelector('[data-result-tab="overall"]') !== null);
-click(validationDocument.querySelector('[data-result-tab="overall"]'));
-await waitFor("assessment overall course URL", () => validationDocument.querySelector('[data-overall-field="course_url"]') !== null);
-input(validation.dom.window, validationDocument.querySelector('[data-overall-field="course_url"]'), "not a URL");
-click(validationDocument.querySelector('[data-assessment-step="preview"]'));
-await waitFor("assessment validation publish control", () => validationDocument.querySelector("#v2-publish-save") !== null);
-click(validationDocument.querySelector("#v2-publish-save"));
-await waitFor("assessment validation failure", () => /课程链接格式不正确/.test(validationDocument.querySelector("#toast")?.textContent || ""));
-if (validation.calls.some((call) => /^\/api\/admin\/questionnaires(?:\/\d+)?$/.test(call.path) && ["POST", "PUT"].includes(call.method))) {
-  throw new Error(`local assessment validation unexpectedly started a save: ${summarizeCalls(validation.calls)}`);
-}
-click(validationDocument.querySelector('[data-assessment-step="results"]'));
-await waitFor("assessment validation reset tabs", () => validationDocument.querySelector('[data-result-tab="overall"]') !== null);
-click(validationDocument.querySelector('[data-result-tab="overall"]'));
-await waitFor("assessment validation reset URL", () => validationDocument.querySelector('[data-overall-field="course_url"]') !== null);
-input(validation.dom.window, validationDocument.querySelector('[data-overall-field="course_url"]'), "");
-click(validationDocument.querySelector('[data-assessment-step="preview"]'));
-await waitFor("assessment ordinary draft control", () => validationDocument.querySelector("#v2-save-draft") !== null);
-click(validationDocument.querySelector("#v2-save-draft"));
-await waitFor("assessment ordinary draft save", () => validation.calls.some((call) => call.path === "/api/admin/questionnaires" && call.method === "POST" && call.status === 200));
-await new Promise((resolve) => setTimeout(resolve, 600));
-if (validation.calls.some((call) => /\/public-publish$/.test(call.path))) {
-  throw new Error(`ordinary draft save was incorrectly published after validation failure: ${summarizeCalls(validation.calls)}`);
-}
-validation.dom.window.close();
-
-const assessment = await openEditor("?mode=assessment", { requestDelayMs: 550 });
-const assessmentDocument = assessment.dom.window.document;
-const assessmentTitle = "冻结排序与预览";
-input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-name"), "冻结排序测评");
-input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-title"), assessmentTitle);
-input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-slug"), "frozen-admin-assessment");
-click(assessmentDocument.querySelector('[data-assessment-step="dimensions"]'));
-await waitFor("assessment question cards", () => assessmentDocument.querySelectorAll("[data-question-key]").length >= 2);
-const before = [...assessmentDocument.querySelectorAll("[data-question-key]")].map((item) => item.querySelector(".question-title-input")?.value || "");
-click(assessmentDocument.querySelectorAll('[data-move-question][data-direction="-1"]')[1]);
-await waitFor("assessment reorder", () => assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value === before[1]);
-let firstTitle = assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value;
-click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
-await waitFor("assessment preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
-const publishButton = assessmentDocument.querySelector("#v2-publish-save");
-const publishEventOrder = [];
-assessmentDocument.addEventListener("click", (event) => { if (event.target === publishButton) publishEventOrder.push("capture"); }, { capture: true, once: true });
-publishButton.addEventListener("click", () => publishEventOrder.push("target"), { once: true });
-assessmentDocument.addEventListener("click", (event) => { if (event.target === publishButton) publishEventOrder.push("bubble"); }, { once: true });
-click(publishButton);
-if (publishEventOrder.join(",") !== "capture,target,bubble") throw new Error(`frozen publish click order=${publishEventOrder.join(",")}`);
-await waitFor("assessment publish", () => assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment").catch((error) => {
-  const toast = assessmentDocument.querySelector("#toast")?.textContent || "";
-  const publishState = assessmentDocument.querySelector('[data-survey-host-publish-status]')?.textContent || "";
-  throw new Error(`${error.message}; toast=${toast}; publish_state=${publishState}; calls=${summarizeCalls(assessment.calls)}`);
-});
-const publishedPath = assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") || "";
-if (publishedPath !== "/q/frozen-admin-assessment") throw new Error(`published Host share path=${publishedPath}`);
-await waitFor("assessment save", () => /\?id=[1-9]\d*$/.test(assessment.dom.window.location.search));
-const assessmentID = Number(new URLSearchParams(assessment.dom.window.location.search).get("id"));
-if (!assessment.calls.some((call) => call.path === "/api/admin/questionnaires" && call.method === "POST")) {
-  throw new Error("frozen assessment save did not use the actual create endpoint");
-}
-const frozenAssessmentPayload = JSON.parse(assessment.calls.find((call) => call.path === "/api/admin/questionnaires" && call.method === "POST")?.body || "{}");
-const frozenDimension = frozenAssessmentPayload.assessment_config?.dimensions?.find((dimension) => dimension.key === "用户维护");
-const frozenQuestion = frozenAssessmentPayload.questions?.find((question) => question.assessment_dimension_key === "用户维护");
-if (!frozenDimension || !frozenDimension.type_priority?.includes("暖男/女型")
-  || !frozenDimension.types?.some((type) => type.key === "暖男/女型")
-  || !frozenQuestion?.options?.some((option) => option.assessment_type_key === "暖男/女型")) {
-  throw new Error(`frozen assessment did not preserve its legacy Chinese/slash association keys: ${JSON.stringify(frozenAssessmentPayload)}`);
-}
-const firstAssessmentPublish = assessment.calls.find((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200);
-if (!firstAssessmentPublish
-  || !Number.isSafeInteger(Number(JSON.parse(firstAssessmentPublish.body || "{}").expected_questionnaire_version))
-  || Number(JSON.parse(firstAssessmentPublish.body || "{}").expected_questionnaire_version) < 1
-  || assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/enable`)) {
-  throw new Error(`Host publish bridge did not use the versioned V3 publish contract: ${summarizeCalls(assessment.calls)}`);
-}
-// Publishing updates the Owner version. Re-enter the frozen editor and save a
-// changed title to prove the bridge reads the fresh save response instead of
-// replaying the original version into the next public-publish request.
-click(assessmentDocument.querySelector('[data-assessment-step="dimensions"]'));
-await waitFor("assessment edit after publish", () => assessmentDocument.querySelectorAll("[data-question-key]").length >= 2);
-firstTitle = `${assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value || ""} 修订`;
-input(assessment.dom.window, assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input"), firstTitle);
-click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
-await waitFor("assessment revised preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
-const priorPublishConfirmations = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200);
-const priorPublishConfirmationCount = priorPublishConfirmations.length;
-const priorPublishedVersion = Number((priorPublishConfirmations.at(-1)?.response?.questionnaire || priorPublishConfirmations.at(-1)?.response?.data?.questionnaire)?.version);
-click(assessmentDocument.querySelector("#v2-publish-save"));
-await waitFor("assessment republish", () => assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200).length === 2);
-const revisedSave = assessment.calls.findLast((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "PUT" && call.status === 200);
-await waitFor("revised Owner save response", () => Array.isArray(revisedSave?.response?.questions));
-const revisedQuestionID = Number(revisedSave.response.questions.find((question) => question.title === firstTitle)?.id);
-if (!Number.isSafeInteger(revisedQuestionID) || revisedQuestionID < 1) throw new Error(`revised frozen question did not retain an Owner id: ${summarizeCalls(assessment.calls)}`);
-await waitFor("assessment republish Owner confirmation", () => {
-  const confirmations = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200);
-  const latestResponse = confirmations.at(-1)?.response;
-  const latest = latestResponse?.questionnaire || latestResponse?.data?.questionnaire;
-  const latestQuestions = latestResponse?.questions || latest?.questions || [];
-  const latestQuestion = latestQuestions.find((question) => Number(question.id) === revisedQuestionID);
-  return confirmations.length === priorPublishConfirmationCount + 1
-    && latest?.status === "active" && latest?.enabled === true
-    && latest?.title === assessmentTitle && Number(latest?.version) > priorPublishedVersion
-    && latestQuestion?.title === firstTitle
-    && assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment"
-    && Number(assessmentDocument.querySelector('[data-survey-host-publish-status]')?.dataset.surveyHostPublishedVersion) === Number(latest?.version);
-}).catch((error) => {
-  throw new Error(`${error.message}; calls=${summarizeCalls(assessment.calls)}`);
-});
-if (!assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "PUT" && call.status === 200)) {
-  throw new Error(`frozen assessment edit did not save through the current Owner version: ${summarizeCalls(assessment.calls)}`);
-}
-assessment.dom.window.close();
-
-const h5 = await fetch(`${origin}/h5/all.html?slug=frozen-admin-assessment`);
-if (!h5.ok || !h5.headers.get("content-type")?.includes("text/html") || (await h5.text()).length < 100) throw new Error("actual public H5 Host was unavailable after publish");
-console.log(JSON.stringify({ normalID, copyID, assessmentID, firstTitle, publishedPath }));
+// Legacy assessment URLs cannot restore the retired builder or create it through the API.
+const retired = await openEditor('?mode=assessment');
+if (retired.dom.window.document.querySelector('[data-assessment-step], #open-assessment-settings') || !retired.dom.window.document.querySelector('#field-name')) throw new Error('retired assessment builder is available');
+const rejectedPayload = JSON.parse(normal.calls.find(call=>call.path === '/api/admin/questionnaires' && call.method === 'POST').body);
+rejectedPayload.assessment_enabled = true;
+rejectedPayload.slug = 'retired-assessment-attempt';
+const rejected = await fetch(`${origin}/api/admin/questionnaires`, {method:'POST', headers:{'Content-Type':'application/json','Idempotency-Key':'retired-assessment-runtime'}, body:JSON.stringify(rejectedPayload)});
+if (rejected.status !== 400) throw new Error(`assessment create status=${rejected.status}`);
+retired.dom.window.close();
+console.log(JSON.stringify({normalID, copyID, assessmentRetired:true}));

@@ -100,7 +100,7 @@ func isRuntimeConfigHostPage(page string) bool {
 
 func runtimeConfigCategory(value string) bool {
 	switch value {
-	case "wecom_base", "admin_access", "sidebar_identity", "ai_automation", "open_api_key", "api_token", "webhooks_push", "reliability", "wechat_pay", "alipay", "wechat_shop", "wechat_oauth":
+	case "ai_models", "wecom_base", "admin_access", "sidebar_identity", "ai_automation", "open_api_key", "api_token", "webhooks_push", "reliability", "wechat_pay", "alipay", "wechat_shop", "wechat_oauth":
 		return true
 	default:
 		return false

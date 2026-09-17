@@ -213,7 +213,7 @@ func (s *publicLeadQRReaderStub) ReadPublicLeadQRCode(context.Context, int64) (c
 }
 
 func TestPublicSubmissionStatusUsesPostCutoverClaimAndResolvesAfterCommit(t *testing.T) {
-	questionnaire := surveyport.Questionnaire{ID: 4, Slug: "growth", Status: surveyport.StatusPublished}
+	questionnaire := surveyport.Questionnaire{ID: 4, Slug: "growth", Mode: surveyport.ModeSurvey, Status: surveyport.StatusPublished}
 	store := &completionStore{questionnaire: questionnaire, configuration: surveyport.OperationConfiguration{QuestionnaireID: questionnaire.ID, CompletionNavigationRef: "survey-complete"}}
 	uow := &completionStatusUOW{}
 	service := NewSubmissionService(uow, store, nil)
@@ -360,7 +360,7 @@ func TestPublicSubmissionStatusRetainsClaimAfterQuestionnaireStops(t *testing.T)
 	identity := surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer}
 	for _, state := range []surveyport.QuestionnaireStatus{surveyport.StatusDisabled, surveyport.StatusArchived} {
 		t.Run(string(state), func(t *testing.T) {
-			store := &completionStore{questionnaire: surveyport.Questionnaire{ID: 4, Slug: "growth", Status: state}, claimed: true}
+			store := &completionStore{questionnaire: surveyport.Questionnaire{ID: 4, Slug: "growth", Mode: surveyport.ModeSurvey, Status: state}, claimed: true}
 			service := NewSubmissionService(oauthUOW{}, store, nil)
 			status, err := service.PublicSubmissionStatus(context.Background(), "growth", identity)
 			if err != nil || !status.Submitted || status.CompletionAction.Type != surveyport.CompletionActionDefault || store.publishedReads != 0 {
