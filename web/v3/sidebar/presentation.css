@@ -54,6 +54,11 @@ body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presenta
 }
 
 body[data-ui-surface="sidebar"] #sidebar-workbench-root[data-v3-sidebar-presentation] .name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   color: var(--v3-ui-text);
   font-size: 16px;
   font-weight: 600;

@@ -161,13 +161,13 @@ func seedSidebarThumbnailChromiumJourney(ctx context.Context, application *compo
 	if err := pool.QueryRow(ctx, `SELECT id FROM wecom_customer_sync_runs WHERE run_key='sidebar-thumbnail-chromium-seed'`).Scan(&runID); err != nil {
 		return err
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO wecom_external_contact_profiles(customer_id,corp_scope,external_identity_id,display_name,activation_status,profile_digest,last_seen_run_id,fetched_at,primary_owner_userid,primary_owner_run_id) VALUES(1,'wecom-corp:fixture-corp',(SELECT id FROM customer_identities WHERE customer_id=1),'sidebar thumbnail customer','active',decode(repeat('00',32),'hex'),$1,clock_timestamp(),'fixture-staff',$1)`, runID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO wecom_external_contact_profiles(customer_id,corp_scope,external_identity_id,display_name,activation_status,profile_digest,last_seen_run_id,fetched_at,primary_owner_userid,primary_owner_run_id) VALUES(1,'wecom-corp:fixture-corp',(SELECT id FROM customer_identities WHERE customer_id=1),'sidebar thumbnail customer with a deliberately long display name','active',decode(repeat('00',32),'hex'),$1,clock_timestamp(),'fixture-staff',$1)`, runID); err != nil {
 		return err
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active) VALUES('fixture-corp','fixture-staff',1,true)`); err != nil {
 		return err
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,last_synced_at,updated_at) VALUES(1,'active','sidebar thumbnail customer','customer #1','active','sidebar_thumbnail_chromium_fixture',clock_timestamp(),clock_timestamp())`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,last_synced_at,updated_at) VALUES(1,'active','sidebar thumbnail customer with a deliberately long display name','customer #1','active','sidebar_thumbnail_chromium_fixture',clock_timestamp(),clock_timestamp())`); err != nil {
 		return err
 	}
 	content, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
