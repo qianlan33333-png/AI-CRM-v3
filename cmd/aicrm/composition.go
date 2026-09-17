@@ -2371,6 +2371,7 @@ func mountOwnerHandoffUI(next, ui http.Handler) http.Handler {
 // prefixes to this mux; neither layer has a generic Payment fallback.
 func mountPaymentAdminAPIs(mux *http.ServeMux, orderHandler, paymentHandler http.Handler) {
 	mux.Handle("/api/admin/refunds", paymentHandler)
+	mux.Handle("/api/admin/refunds/recovery", paymentHandler)
 	mux.Handle("/api/admin/wechat-pay/orders", orderHandler)
 	mux.Handle("/api/admin/wechat-pay/orders/", paymentHandler)
 	mux.Handle("/api/admin/wechat-pay/payments/", paymentHandler)
@@ -2487,6 +2488,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/orders/", identity)
 	mux.Handle("/api/admin/order-imports/", identity)
 	mux.Handle("/api/admin/refunds", identity)
+	mux.Handle("/api/admin/refunds/recovery", identity)
 	mux.Handle("/api/admin/exports", identity)
 	mux.Handle("/api/admin/exports/", identity)
 	mux.Handle("/api/admin/alipay/transactions", identity)
