@@ -54,6 +54,7 @@ async function runPage(storage, cookie, bridge, path = "/pay/course-7") {
       Object.defineProperty(window.navigator, "userAgent", { configurable: true, value: "MicroMessenger test" });
       Object.defineProperty(window, "sessionStorage", { configurable: true, value: storage });
       Object.defineProperty(window, "crypto", { configurable: true, value: { randomUUID: () => `checkout-journey-${++keySequence}` } });
+      Object.defineProperty(window, "AbortController", { configurable: true, value: globalThis.AbortController });
       window.WeixinJSBridge = {
         invoke(_method, _handoff, callback) {
           callback({ err_msg: bridge.next() });
@@ -65,11 +66,12 @@ async function runPage(storage, cookie, bridge, path = "/pay/course-7") {
         headers.set("Cookie", cookie);
         return fetch(requestURL, { ...init, headers });
       };
-      window.setTimeout = (callback) => {
+      window.setTimeout = (callback, milliseconds = 0) => {
+        if (milliseconds >= 12000) return globalThis.setTimeout(callback, milliseconds);
         queueMicrotask(callback);
         return 1;
       };
-      window.clearTimeout = () => {};
+      window.clearTimeout = (handle) => { if (handle !== 1) globalThis.clearTimeout(handle); };
     },
   });
   for (let attempt=0; attempt<240 && !dom.window.document.getElementById("identityGate").hidden; attempt++) await sleep(5);

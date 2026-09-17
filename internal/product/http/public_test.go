@@ -240,6 +240,44 @@ func TestPublicProductWithoutPageMaterialRedirectsDirectlyToPayment(t *testing.T
 	}
 }
 
+func TestPublicProductDetailIsImmersiveAndPrioritizesOnlyTheFirstImage(t *testing.T) {
+	product := enabledPublicProduct(7, "course-7")
+	product.Name = "不应出现在详情素材上方"
+	product.Description = "不应渲染摘要卡片"
+	product.Images = []string{"https://cdn.example.test/first.png", "https://cdn.example.test/second.png"}
+	handler, err := NewPublicHandler(&testCatalog{product: product})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/p/course-7", nil))
+	body := response.Body.String()
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, body)
+	}
+	for _, forbidden := range []string{
+		`id="detailContent" hidden><div class="panel">`,
+		`<p class="desc">不应渲染摘要卡片</p>`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("immersive detail retained summary chrome %q: %s", forbidden, body)
+		}
+	}
+	for _, required := range []string{
+		`id="detailContent" hidden><img class="detail-image"`,
+		`data-src="https://cdn.example.test/first.png" data-detail-index="0" alt="商品详情" decoding="async" loading="eager" fetchpriority="high"`,
+		`data-src="https://cdn.example.test/second.png" data-detail-index="1" alt="商品详情" decoding="async" loading="lazy"`,
+		`new IntersectionObserver`,
+		`rootMargin:'900px 0px'`,
+		`controller.abort(),12000`,
+		`网络连接超时，请刷新重试`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("immersive detail missing %q: %s", required, body)
+		}
+	}
+}
+
 func TestPublicPaymentCompletionRefreshJourney(t *testing.T) {
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {

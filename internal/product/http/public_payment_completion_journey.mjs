@@ -34,7 +34,7 @@ async function settle() {
 function boot(store, completion, redirectFailure = false, sessionAuthorized = true, setup = '', purchase = {purchase_state:'available',can_purchase:true}, userAgent='MicroMessenger', renewal=false, details=false) {
   const calls = [], elements = new Map();
   const setGlobal = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
-  const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', href: '', children: [], attributes: new Map(), addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }, replaceChildren(...children) {this.children=children;this.textContent="";}, setAttribute(name, value) { this.attributes.set(name, String(value)); }, removeAttribute(name) { this.attributes.delete(name); }});
+  const element = () => ({hidden: false, disabled: false, dataset: {}, value: '0', checked: true, textContent: '', href: '', children: [], attributes: new Map(), addEventListener(type, listener) { this.listener ??= {}; this.listener[type] = listener; }, appendChild(child) { this.children.push(child); }, replaceChildren(...children) {this.children=children;this.textContent="";}, setAttribute(name, value) { this.attributes.set(name, String(value)); }, removeAttribute(name) { this.attributes.delete(name); }, set src(value) { this.source = value; queueMicrotask(() => this.listener?.load?.({target: this})); }, get src() { return this.source; }});
   for (const id of ['price', 'buy', 'status', 'coupon', 'wechatNotice', 'mobile', 'payableAmount', 'footerAmount', 'discountAmount', 'identityGate', 'identityTitle', 'identityMessage', 'authContinue', 'checkoutContent','paymentDetails','mobilePanel','paymentMethod','product','footer','productName']) elements.set(id, element());
   elements.get('checkoutContent').querySelector=selector=>elements.get(({'.product':'product','.checkout-footer':'footer','.product h1':'productName'})[selector]||selector.slice(1));
   if(renewal)elements.set('renew',element());
@@ -151,6 +151,28 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
   listener();
   assert.equal(timers.size, 0);
   assert.equal(invoked, 0);
+}
+
+// A stalled public read has a bounded deadline and returns a recoverable
+// loading failure instead of leaving the identity gate pending forever.
+{
+  const requestSource = script.slice(script.indexOf('function requestFailure'), script.indexOf('\nfunction showCompletionAction'));
+  let cleared = false;
+  class FakeAbortController {
+    constructor() { this.signal = {aborted: false}; }
+    abort() { this.signal.aborted = true; }
+  }
+  const request = Function('fetch', 'AbortController', 'setTimeout', 'clearTimeout', requestSource + ';return requestJSON;')(
+    async (_, options) => {
+      if (options.signal.aborted) throw Object.assign(new Error('aborted'), {name: 'AbortError'});
+      return new Promise(() => {});
+    },
+    FakeAbortController,
+    (fn, ms) => { assert.equal(ms, 12000); fn(); return 1; },
+    id => { assert.equal(id, 1); cleared = true; },
+  );
+  await assert.rejects(request('/slow'), error => error.code === 'request_timeout' && /网络连接超时/.test(error.message));
+  assert.equal(cleared, true);
 }
 
 // A manually abandoned legacy flow retains its original idempotency evidence.
