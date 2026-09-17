@@ -665,7 +665,11 @@ func (s *Service) CustomerActivities(ctx context.Context, query orderport.Custom
 		if relationship == "" { // Store predicates must remain defense in depth.
 			return orderport.CustomerActivityPage{}, orderport.ErrUnavailable
 		}
-		page.Items = append(page.Items, orderport.CustomerActivity{OrderID: snapshot.ID, Relationship: relationship,
+		names := make([]string, 0, len(snapshot.Items))
+		for _, item := range snapshot.Items {
+			names = append(names, item.ProductName)
+		}
+		page.Items = append(page.Items, orderport.CustomerActivity{OrderID: snapshot.ID, Relationship: relationship, ProductNames: names,
 			Provider: snapshot.Provider, Status: snapshot.Status, Amount: snapshot.Amount, RefundedMinor: snapshot.RefundedMinor,
 			RecordOrigin: snapshot.RecordOrigin, OccurredAt: snapshot.CreatedAt})
 	}

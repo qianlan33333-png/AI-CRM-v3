@@ -298,6 +298,20 @@ try {
   for(let n=0;n<140&&requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile").length<2;n++) await delay(50);
   writes=requestRecords.slice(profileStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/profile");body=JSON.parse(writes[1]?.postData||"{}");
   if(writes.length!==2||body.expected_profile_version!==1||body.industry!=="教育") throw new Error("profile CAS 1 "+JSON.stringify(writes));
+  const timelineStart=requestRecords.length;
+  await evaluate(cdp, 'document.querySelector("[data-profile-view=timeline]").click();true');
+  await waitFor(cdp, 'document.querySelectorAll(".timeline-event").length===20', "business timeline first page");
+  while(await evaluate(cdp, 'Boolean(document.querySelector("[data-load-more-timeline]"))')) {
+    const before=await evaluate(cdp, 'document.querySelectorAll(".timeline-event").length');
+    await evaluate(cdp, 'document.querySelector("[data-load-more-timeline]").click();true');
+    await waitFor(cdp, 'document.querySelectorAll(".timeline-event").length>'+before, "business timeline cursor append");
+  }
+  const timeline=JSON.parse(await evaluate(cdp, 'JSON.stringify([...document.querySelectorAll(".timeline-event h3")].map(x=>x.textContent))'));
+  for(const title of ["提交问卷：Sidebar bootstrap count", "创建订单（已退款）：浏览器外推商品", "历史渠道进入：Chromium渠道活动", "打开雷达内容：Chromium雷达介绍"]) {
+    if(!timeline.includes(title)) throw new Error("missing business timeline title "+title);
+  }
+  const timelineReads=requestRecords.slice(timelineStart).filter(r=>new URL(r.url).pathname==="/api/sidebar/v2/timeline");
+  if(timeline.length!==105||timeline.some(t=>t.includes("资料已同步"))||timelineReads.length!==6||timelineReads.slice(1).some(r=>!new URL(r.url).searchParams.get("cursor"))) throw new Error("business timeline pagination or sync noise "+JSON.stringify({count:timeline.length,reads:timelineReads.length}));
   const surveyStart=requestRecords.length;
   await evaluate(cdp, 'document.querySelector("#tabs [data-tab=questionnaires]").click();true');
   await waitFor(cdp, 'document.querySelectorAll("[data-questionnaire-card]").length===20', "survey page 1");

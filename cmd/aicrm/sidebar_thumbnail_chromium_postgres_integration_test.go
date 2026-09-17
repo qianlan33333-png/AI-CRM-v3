@@ -101,6 +101,9 @@ func TestPostgreSQLSidebarThumbnailChromiumJourney(t *testing.T) {
 	if err = seedSidebarStandardParityChromiumFacts(ctx, application, productID, serviceProductID); err != nil {
 		t.Fatal(err)
 	}
+	if err = seedSidebarBusinessTimelineChromium(ctx, application); err != nil {
+		t.Fatal(err)
+	}
 	assertSidebarSendHTTPReplayOmitsGrant(t, ctx, application, productID, serviceProductID)
 	// Assert the same outer route Chromium will open. This makes a missing
 	// repository-relative release artifact a deterministic test failure instead
@@ -338,4 +341,47 @@ func assertSidebarSendHTTPReplayOmitsGrant(t *testing.T, ctx context.Context, ap
 	if !reloadedExpiry.Replayed || reloadedExpiry.IntentID != expiring.IntentID || reloadedExpiry.State != "outcome_unknown" || reloadedExpiry.Grant != "" {
 		t.Fatalf("sidebar expiry reload must replay unresolved intent result=%+v", reloadedExpiry)
 	}
+}
+
+// Only local owner facts are seeded. No customer Provider write is needed to
+// prove the rendered business feed, and sync audit rows remain stored.
+func seedSidebarBusinessTimelineChromium(ctx context.Context, app *composedApplication) error {
+	tx, err := app.pool.Native().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var channelID, runID, radarID, identityID, sessionID int64
+	now := time.Now().UTC().Add(-10 * time.Second)
+	if err = tx.QueryRow(ctx, `INSERT INTO channels(code,status,created_at,updated_at) VALUES('chromium.timeline','active',$1,$1) RETURNING id`, now).Scan(&channelID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode','Chromium渠道活动','single_owner','ratio',decode(repeat('08',32),'hex'),1,$2)`, channelID, now); err != nil {
+		return err
+	}
+	if err = tx.QueryRow(ctx, `INSERT INTO channel_history_import_runs(snapshot_id,source_host_digest,snapshot_timestamp,manifest_digest,state,completed_at) VALUES('chromium-timeline-history',decode(repeat('09',32),'hex'),$1,decode(repeat('10',32),'hex'),'completed',$1) RETURNING id`, now).Scan(&runID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO channel_history_contacts(import_run_id,channel_id,source_contact_id,customer_id,first_entered_at,last_entered_at,enter_count) VALUES($1,$2,1,1,$3,$3,1)`, runID, channelID, now); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO customer_timeline_projection(customer_id,source_domain,source_event_id,event_type,title,occurred_at) VALUES(1,'wecom','chromium-sync-noise','customer.profile_synced','企微客户资料已同步',$1)`, now); err != nil {
+		return err
+	}
+	if err = tx.QueryRow(ctx, `SELECT id FROM customer_identities WHERE customer_id=1 AND assurance='verified' ORDER BY id LIMIT 1`).Scan(&identityID); err != nil {
+		return err
+	}
+	if err = tx.QueryRow(ctx, `INSERT INTO radar_links(public_code,name,title,content_type,destination_url,auth_policy,status,created_by,updated_by,created_at,updated_at) VALUES('rd_timeline12345678','Chromium雷达介绍','Chromium雷达介绍','link','https://example.test/timeline','unionid_required','enabled',1,1,$1,$1) RETURNING id`, now).Scan(&radarID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO radar_link_versions(radar_id,version,snapshot,actor_id,created_at) VALUES($1,1,'{}',1,$2)`, radarID, now); err != nil {
+		return err
+	}
+	if err = tx.QueryRow(ctx, `INSERT INTO radar_view_sessions(session_digest,radar_id,radar_version,identity_id,customer_id,attribution_status,evidence_digest,expires_at,created_at) VALUES(decode(repeat('11',32),'hex'),$1,1,$2,1,'resolved',decode(repeat('12',32),'hex'),$3,$4) RETURNING id`, radarID, identityID, now.Add(time.Hour), now).Scan(&sessionID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO radar_events(receipt_id,radar_id,radar_version,session_id,stage,attribution_status,identity_id,customer_id,key_digest,payload_digest,occurred_at,created_at) VALUES('chromium-timeline-radar',$1,1,$2,'content_opened','resolved',$3,1,decode(repeat('13',32),'hex'),decode(repeat('14',32),'hex'),$4,$4)`, radarID, sessionID, identityID, now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

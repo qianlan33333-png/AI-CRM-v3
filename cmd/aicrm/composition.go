@@ -1811,7 +1811,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			identity:   existingWeComIdentityResolver{service: oneID, uow: uow, corpID: cfg.WeCom.CorpID},
 			tokens:     sidebarContextTokens,
 		},
-		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
+		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: sidebarBusinessTimeline{surveys: surveySubmissions, orders: orderService, radar: radarQuery, channels: channelAcquisition, uow: uow},
 		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
 		Coupons: sidebarCouponCatalog, Materials: mediaLibrary, MaterialSend: sidebarImagePreparation{sources: mediaRepository, preparer: materialPreparation, scopeDigest: materialScopeDigest, enabled: cfg.WeCom.Enabled && cfg.Effects.ProviderEnabled}, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin, CursorSigningKey: cursorSigningKey,
 	})

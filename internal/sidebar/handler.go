@@ -366,7 +366,7 @@ func (h *Handler) timeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	query, limit, ok := h.sidebarPageQuery(w, r, "timeline", customerID)
+	query, limit, ok := h.sidebarPageQuery(w, r, "business-timeline", customerID)
 	if !ok {
 		return
 	}
@@ -894,7 +894,7 @@ func (h *Handler) pageTimeline(items []customerport.TimelineItem, limit int, cus
 	}
 	items = items[:limit]
 	last := items[len(items)-1]
-	next, err := encodeSidebarPageCursor(sidebarPageCursor{Version: 1, Section: "timeline", CustomerID: int64(customerID), Watermark: query.Watermark.UTC().Format(time.RFC3339Nano), AfterAt: last.OccurredAt.UTC().Format(time.RFC3339Nano), AfterID: last.ID}, h.config.CursorSigningKey)
+	next, err := encodeSidebarPageCursor(sidebarPageCursor{Version: 1, Section: "business-timeline", CustomerID: int64(customerID), Watermark: query.Watermark.UTC().Format(time.RFC3339Nano), AfterAt: last.OccurredAt.UTC().Format(time.RFC3339Nano), AfterID: last.ID}, h.config.CursorSigningKey)
 	return items, next, true, err
 }
 
