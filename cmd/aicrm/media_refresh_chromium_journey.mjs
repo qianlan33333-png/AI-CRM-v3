@@ -30,6 +30,17 @@ async function wait(cdp, expression, label) {
  }
  throw new Error(`${label}: ${await value(cdp,"JSON.stringify({path:location.pathname,title:document.title,body:document.body.innerText.slice(-2400),requests:window.__mediaRefreshRequests||[]})")}`);
 }
+// Toolbars can rerender between two CDP round trips. Resolve and click in one
+// synchronous page evaluation, like a locator click. A false result performed
+// no action; any error after a possible click propagates without retrying it.
+async function clickGroupButton(cdp, label) {
+ for (let i=0;i<150;i++) {
+  const clicked=await value(cdp, `(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent===${JSON.stringify(label)}&&!b.disabled&&b.getClientRects().length);if(!b)return false;b.click();return true})()`);
+  if(clicked) return;
+  await sleep(100);
+ }
+ throw new Error(`group button never became actionable: ${label}`);
+}
 async function waitForNewDocument(cdp, previous) {
  let committed=false;
  for(let i=0;i<150;i++) {
@@ -116,7 +127,7 @@ async function exerciseGroupManagement(cdp) {
   const api=`/api/admin/${kind}-library`;
   await navigate(cdp,`${baseURL}/admin/materials?tab=${tab}`);
   await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组'&&!b.disabled))",`${kind} group controls`);
-  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组').click();true");
+  await clickGroupButton(cdp,"新增分组");
   await submitAndNavigate(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix)};document.querySelector('dialog[open] form').requestSubmit();true`);
   await wait(cdp,`new URL(location.href).searchParams.get('material_group')===${JSON.stringify(prefix)} && Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名'))`,`${kind} empty group retained`);
   const groupID=await value(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.find(g=>g.name===${JSON.stringify(prefix)}).id)`);
@@ -161,10 +172,10 @@ async function exerciseGroupManagement(cdp) {
   await submitAndNavigate(cdp,"document.querySelector('dialog[open] select').value='';document.querySelector('dialog[open] form').requestSubmit();true");
   await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.some(g=>g.id===${groupID}&&g.count===0))`,`${kind} batch ungroup persisted`);
   await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名'))",`${kind} empty group edit`);
-  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名').click();true");
+  await clickGroupButton(cdp,"编辑组名");
   await submitAndNavigate(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix+'-改名')};document.querySelector('dialog[open] form').requestSubmit();true`);
   await wait(cdp,`new URL(location.href).searchParams.get('material_group')===${JSON.stringify(prefix+'-改名')} && Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='删除分组'))`,`${kind} renamed group selected`);
-  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='删除分组').click();true");
+  await clickGroupButton(cdp,"删除分组");
   await submitAndNavigate(cdp,"document.querySelector('dialog[open] form').requestSubmit();true");
   await wait(cdp,`new URL(location.href).searchParams.get('tab')===${JSON.stringify(tab)} && new URL(location.href).searchParams.get('material_group')==='' && !document.querySelector('dialog[open]')`,`${kind} deletion returns to same tab ungrouped`);
   await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>!b.items.some(g=>g.id===${groupID}))`,`${kind} group deleted readback`);
@@ -180,7 +191,7 @@ try {
  await wait(cdp,"location.pathname==='/admin/materials'&&document.body?.dataset.page==='images'&&document.title.includes('素材库')","material workspace title");
  await wait(cdp,"Boolean(document.querySelector('[data-image-library-query]')&&document.querySelector('[data-image-library-cards]'))",'V3 image library controls');
  await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组'&&!b.disabled))",'group create ready');
- await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组').click();true");
+ await clickGroupButton(cdp,"新增分组");
  await wait(cdp,"Boolean(document.querySelector('dialog[open] input'))",'group name dialog');
  await submitAndNavigate(cdp,"document.querySelector('dialog[open] input').value='浏览器分组';document.querySelector('dialog[open] form').requestSubmit();true");
  await wait(cdp,"new URL(location.href).searchParams.get('material_group')==='浏览器分组'&&Boolean(document.querySelector('[data-material-group-value=\"category:浏览器分组\"]'))",'empty group creation persists');

@@ -17,3 +17,5 @@ GitHub reference: [existing V1 Operation Catalog](https://github.com/qianlan3333
 回归稳定性修复：CI 的素材刷新旅程复现导航期间 CDP 错误及旧 DOM 按钮误判。提交分组变更后等待新 loader 和文档就绪；只读轮询兼容导航瞬时错误，写动作不重试，原断言全部保留。本地修复前 8 次重复中复现两类错误，修复后完整旅程连续 8 次通过（`/tmp/core-api-media-repro-repeat.log`、`/tmp/core-api-media-fixed.log`）。仅测试同步，不涉及 OneID 或生产持久化。
 
 API 兼容：保留产品列表顶层 `items`（与 `data.items` 相同）。沿用发布文档中可选的 Idempotency-Key：建议显式稳定键，缺省按 push_id/customer_id/package_id/status_version 确定性生成既有 Segment 收据键，短键确定性规范化；不引入随机键或新的防重内核。真实 OAuth 数据库旅程同时验证缺省键及短键重复不增次、同键变载荷冲突、无头状态更新仍为一次推送。
+
+Linux 全量回归进一步发现工具栏异步重绘可发生在按钮检查与点击之间（run 35345088101）。分组按钮改为同一次页面求值中定位并点击，仅未找到按钮时等待；任何可能已点击后的错误直接失败，不重试提交。原读回断言保留。完整素材旅程修复后连续 4 次通过，证据 `/tmp/core-api-toolbar-fixed.log`。
