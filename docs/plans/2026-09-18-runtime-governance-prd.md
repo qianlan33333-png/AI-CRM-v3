@@ -15,13 +15,15 @@
 2. 每 5 分钟轻量检查、每小时完整检查，每小时 05 分向原飞书群提交一个唯一报告窗口。报告分开呈现上一完整小时流量和当前积压；未来预约任务不算积压。
 3. 排查编号关联请求、版本、领域操作、任务、效果与收据；不记录 Token、Cookie、身份原文、手机号和原始请求。
 4. 纯过程数据滚动保留 720 小时，在下一轮小时清理删除；业务数据及幂等、身份、资金、正式发送和对账依据永久保留。未解决问题也不延期保存原始日志。
-5. 发布包保留当前版本和两个经产物校验且与当前 schema 兼容的回滚版本，额外保护运行中、发布中和固定版本。备份完全不在本次范围。
+5. 发布包保留当前版本和两个有成功发布凭证、经产物校验且与当前 schema 兼容的回滚版本，额外保护运行中、发布中和固定版本。备份完全不在本次范围。
 6. 变更识别 Owner、消费者及旅程；保持性测试覆盖 B 覆盖 A、乱序、重放、并发和重启；完整 CI 仍是合并门禁。
+7. 超级管理员可在治理页面显式采集 API 进程 5 秒 CPU 样本，显示版本、结果及到期时间。全局并发 1、每小时全局 6 次/每人 3 次、单份 2 MiB/合计 64 MiB；Worker 进程仍标未覆盖。详细判断及 GitHub 参考见[受控采样规则](2026-09-18-runtime-cpu-profiling.md)。
 
 ## 接口与权限
 
 - `/api/admin/ops-inspections`：摘要、检查、运行、小时报告、问题、心跳。
 - `/api/admin/ops-diagnostics`：错误聚合与关联链，仅暴露脱敏必要信息。
+- `/api/admin/ops-diagnostics/cpu-profiles`：固定参数的 API CPU 采样、720 小时内列表/详情/下载；原键重查不会重新采样。
 - `/api/admin/ops-retention`：固定策略、预览、执行记录、容量。不得接受任意 SQL、表名或文件路径。
 - 复用现有管理员会话、权限、CSRF 与审计；普通用户不能读取明细或启动清理。
 - `POST /api/admin/ops-inspections/runs` 返回 `202 Accepted`，表示已接受幂等持久任务，运行结果需读取详情；达到小时限额返回 `429` 与 `Retry-After: 3600`。接受、执行完成、报告提交与飞书送达是四项不同事实。
@@ -46,18 +48,17 @@
 
 ### 2026-09-18 实际证据与交付边界
 
-本节记录已取得的证据，而非统一“验收通过”。编辑时集成 HEAD 为 `061a16d23cfaf468d409276357850e5a70b7ade6`、提交树为 `fc811df721826105f5040a0960328db2a7e4dde9`，另有进行中的未提交修正。下面各项只对其记载的源版本或输入摘要有效；之后的集成改动必须重新验证，不能继承早先分支的绿灯。临时证据路径位于本次执行机器；最终 CI artifact 需另行归档对应记录，不能假定这些本地路径可供所有维护者长期访问。
+本节按证据范围记录进度，后续源码变更必须重新验证，不能继承旧版本绿灯。
 
-| 项目 | 已有证据 | 尚不能据此认定 |
+| 项目 | 已有证据 | 交付边界 |
 | --- | --- | --- |
-| 变更治理脚本 | `94a0bf73fb83ad68ad76d59b9f2dd65728876c63` / tree `15f94ef6679a2e68a1f1e66343a524c5d3969cee` 的干净树 fast 通过，证据 `/private/tmp/aicrm-governance-94a0bf7-fast/summary.json`。能力注册、真实消费者、保持性测试和错误规则回归已接入既有完整 lane | fast 不是全量回归；最终集成 HEAD 的完整 CI 尚需单独取得 |
-| 诊断中间件 | `7d4a04f49a9dc5efadd4c15020d06a58a365fbdd` / tree `41c156ff383e9eb7bd4bc8483ef051eaf00c00ca` 的干净树 fast 通过，证据 `/private/tmp/aicrm-diagnostics-7d4a04f-fast/summary.json`；后续关联链集成和修正仍以最终版本专项为准 | 本地中间件验证不等于线上请求、River、EER 的完整关联链已经启用 |
-| 前端执行工具升级 | `7acbed6453c7c10ebd236c97975137f70049768a` / tree `3ec31ad2cc7fc980254129dedaeb57e179af6165` 的干净树 fast 通过，证据 `/private/tmp/aicrm-npm-7acbed6-fast/summary.json`。正式 Orval 生成、生成物校验、根与 V3 typecheck、DOM 测试和构建已作本地专项；当前活跃工具与原冻结供体分开归属 | 本地 DOM、编译、构建和固定字节检查不是 Linux Host Chromium 或完整 CI；本次无旧供体外部 checkout 的验证不能写成 donor 全验证 |
-| Go 安全修复 | x/net 已固定 v0.55.0；真实 govulncheck 原件 `/tmp/aicrm-governance-upgraded-vulns.json` 完整可解析且 `reachable={}`，SHA-256 `0026bca6d4c5f2bdeb0bc924984be5e70a40fe3480732f911179cd56162655a4` | 扫描原件没有内嵌精确 Git HEAD/tree，不证明最终集成源码、未知漏洞或生产二进制安全；最终 CI 需重新扫描 |
-| npm 安全修复 | 上述 `7acbed6` 提交的增量和每周模式真实扫描：根项目 16 个受影响 package 条目归零，`web/v3` 为 0；随后显式增加 Swagger Parser 13.0.0 以保持 OpenAPI 校验入口可运行；该锁文件变更需最终集成扫描，不继承早先 hash 结论。原件 `/private/tmp/aicrm-npm-7acbed6-incremental/npm-security.json`、`/private/tmp/aicrm-npm-7acbed6-weekly/npm-security.json`，摘要见安全台账 | 每周模式本地运行不等于 GitHub 定时工作流已经在 main 运行；audit 不提供可达性或零未知漏洞保证 |
-| 密钥扫描 | 对上述工具链提交实际运行固定 Gitleaks，新增 1 个 commit 无发现，原件 `/private/tmp/aicrm-npm-7acbed6-gitleaks.json` | 不是最终全部 commits 或完整 Git 历史的扫描；不能据此证明没有秘密 |
-| 生产发布包盘点 | 仅在新CRM生产机运行只读 inventory，systemd 模板及 drop-in 已真实核验；本地证据 `/private/tmp/aicrm-release-inventory.zE7KA0/README.md`，远端临时证据 `/tmp/aicrm-release-inventory.OUmpQ0` | 没有 apply、删除、切换链接或重启；没有释放磁盘容量的成功 claim |
-| 独立审核 | 2026-09-18 只读查询 main：严格 required `check` 已存在，但 required approving review count 为 0，CODEOWNERS/last-push review 均未要求 | 作者的当前 HEAD 声明不是独立批准。`independent_review=unverified`；按风险强制独立审核仍有仓库规则配置缺口 |
+| 初次完整集成 | 公开提交 `bb6b21891281477b2d781cac4a4054344ac5fefa` 的 [GitHub CI 35334414417](https://github.com/qianlan33333-png/AI-CRM-v3/actions/runs/35334414417) 全部 required lanes 和 check 通过 | 并行 PR #385 先合入 main；后续已同步并补 CPU 采样及发布成功凭证，必须在最终 HEAD 重跑完整 CI |
+| CPU 采样 | 真实五秒采样、标签净化、数据库互斥、配额、取消、未知重放和 TTL 专项通过；API 与前端已集成。真实 Host 旅程覆盖服务端完成后丢响应，原键重查仍只有一次采样 | 专项与本地编译不是最终 Linux CI 或生产启用证明；Worker 采样不在首期覆盖 |
+| 安全门禁 | 固定 Gitleaks、npm audit、govulncheck 和 oasdiff 在 `c25ced7a3fbb0d9ad019e2e74f53c183c875d938` 均通过，证据 `/private/tmp/aicrm-profile-integrated-security/security.json` | 后续最终提交仍须通过完整 CI；不宣称零未知漏洞 |
+| 生产发布包盘点 | 只读 inventory、服务与进程引用已核验；本地证据 `/private/tmp/aicrm-release-inventory.zE7KA0/README.md` | 未删除历史包；没有两份真实成功且兼容的回滚证据时保持阻断，不能用目录时间或完整包校验冒充成功发布 |
+| 独立审核 | 代码和高风险维护脚本已有独立代理审查；main 目前要求严格 required check | GitHub required approving review count 为 0，CODEOWNERS/last-push review 未强制；作者声明及代理审查不等于受保护分支独立批准 |
+
+临时证据位于执行机器；CI artifacts 与最终生产验收分别留证。生产部署、清理、Provider 接受、原群可见和连续 24 小时验收不能由这些本地结果替代。
 
 真实生产 inventory 的拒绝是安全保护结果，不能改写为“无异常”：当时 current 为 `cb274776148b8b300e05ff0ae4fb18bd57e6885c`，数据库 migration 178 条、最高 `0184`，当前 SQL 文件的 version/name/checksum 与只读快照逐项一致。但 current 含 480 个未登记的 macOS `._*` sidecar，严格产物所有权校验失败；165 个 release 条目中，独立保守盘点得到 79 个完整包通过校验，却没有任何一个同时满足已安装 schema 一致的回滚候选。inventory 因 `current_package_or_installed_schema_unverified` 拒绝。`plan-v2.json` 是失败后空文件，禁止作为 apply 计划；`blocked-plan.json` 只是所有条目受保护、候选 0、候选字节 0 的诊断记录。通过完整包校验的 14,099,388,641 字节并非可删除量。备份始终未进入候选。
 

@@ -6,7 +6,7 @@ OneID：不涉及身份匹配、建客、关联或归属变更。持久化：Med
 
 ## 资源分类及自动化边界
 
-机器清单为 [retention-registry.json](retention-registry.json)。本次合并清单覆盖 **448 张表**。389项补充审定的字段、引用与Owner存取证据见 [逐表分类报告](retention-classification-review.md)。目前1项仍为 `protected_unclassified`、19项为 `protected_mixed_payload`，两类均禁止自动删除；未知来源不能伪装成已完成分类。永久事实、当前投影、协调状态与安全TTL分别登记。只有已实现并验证的Owner清理入口才能进入运行白名单；分类本身不会启用删除。数量以校验器输出为准。
+机器清单为 [retention-registry.json](retention-registry.json)。本次合并清单覆盖 **449 张表**。389项补充审定的字段、引用与Owner存取证据见 [逐表分类报告](retention-classification-review.md)。目前1项仍为 `protected_unclassified`、19项为 `protected_mixed_payload`，两类均禁止自动删除；未知来源不能伪装成已完成分类。永久事实、当前投影、协调状态与安全TTL分别登记。只有已实现并验证的Owner清理入口才能进入运行白名单；分类本身不会启用删除。数量以校验器输出为准。
 
 `python3 scripts/check-retention-registry.py` 检查所有迁移声明、平台迁移账本和固定 River 表；新增表未登记、来源不匹配、业务表被套用具名可删策略都会失败。`--live-tables table-names.json` 接受只读取得的 public 表名 JSON 列表，额外的生产表拒绝放行。`cleanup` 表明是禁用、Owner Port 已有还是仍待平台配置，不能将“已登记”当作“清理已启用”。
 
@@ -108,7 +108,7 @@ python3 deploy/cleanup-releases.py inventory --root /opt/aicrm --schema-evidence
 python3 deploy/cleanup-releases.py apply --root /opt/aicrm --schema-evidence /run/aicrm-schema.json --plan /run/aicrm-cleanup-plan.json
 ```
 
-两种模式都持有与安装器相同的 `install-release.lock`。保留当前包及两个所有文件校验通过、迁移账本与当前真实 schema 完全相同的回滚包；没有两份证据就阻断所有删除。schema 相同是本脚本采用的保守兼容条件，不代表执行了旧程序的完整业务回归。
+两种模式都持有与安装器相同的 `install-release.lock`。保留当前包及两个具备受控成功发布凭证、所有文件校验通过、迁移账本与当前真实 schema 完全相同的回滚包；没有两份证据就阻断所有删除。schema 相同是本脚本采用的保守兼容条件，不代表执行了旧程序的完整业务回归。
 
 成功发布末尾已有自动 hook `post-release-retention.py --sha "$release_sha"`。安装器先拒绝 symlink 控制目录，将 `/opt/aicrm` 及 `releases` 父目录收紧为 root:root 0755；只封发布控制目录，不递归改变应用运行数据。发布包在最终 checksum 复核之前收紧为 root 所有且组/其他用户不可写；应用保留读取与执行权限，不能替换 root 即将执行的维护代码。它核对继承的 fd 9 与 installer lock 同 inode，并保持同一锁，避免递归抢锁；在 root 进程中仅解析数据库配置键，以 PG 环境变量和只读连接查询真实迁移账本，不把 DSN/密码放进参数、输出或日志。清理成功才记录回收数量；不足两个验证回滚版本时产生 `two_verified_schema_compatible_rollbacks_missing` gap，不删除目录，也不回滚已经成功启动的版本。失败原因和确认的局部进度进入 `/var/lib/aicrm-maintenance/release-cleanup.json`，未知数量为 null。
 
