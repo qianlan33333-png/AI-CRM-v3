@@ -13,7 +13,7 @@ let serial = 0;
 let diagnosticQuery = new URLSearchParams(location.search).get('correlation') || '';
 if (diagnosticQuery) tab = 'diagnostics';
 let overview: Overview | null = null;
-let acceptedScan: {job: number; previousRun: number} | null = null;
+let acceptedScan: {job: number} | null = null;
 let profilesEnabled = false;
 let profileBusy = false;
 let profileRequestKey: string | null = null;
@@ -71,11 +71,20 @@ async function refresh(): Promise<void> {
   if (selected === 'profiles') profilesEnabled = false;
   layout('<p class="governance-empty" role="status">正在读取治理数据…</p>');
   try {
+    if (acceptedScan) {
+      const job = acceptedScan.job;
+      const command = await request(`/api/admin/ops-inspections/commands/${job}`);
+      if (id !== serial) return;
+      if (!record(command) || command.job_id !== job || !['accepted', 'completed'].includes(String(command.state))
+        || (command.state === 'completed' && (!Number.isSafeInteger(command.run_id) || Number(command.run_id) < 1 || typeof command.completed_at !== 'string' || Number.isNaN(Date.parse(command.completed_at))))) {
+        throw new Error('本次巡查的完成状态尚未确认，请刷新后查看。');
+      }
+      if (command.state === 'completed') acceptedScan = null;
+    }
     if (['overview', 'checks', 'issues'].includes(selected)) {
       const data = await request('/api/admin/ops-inspections');
       if (id !== serial) return;
       if (!isOverview(data)) throw new Error('巡查数据格式不完整，暂时无法确认状态。');
-      if (acceptedScan && data.latest && data.latest.id > acceptedScan.previousRun) acceptedScan = null;
       overview = data;
       if (selected === 'overview') layout(overviewContent(data));
       if (selected === 'checks') {
@@ -132,6 +141,6 @@ function renderHeader(): void {
       if (current === serial) await refresh();
     } catch (error) { if (current === serial) showError(error); }
     finally { profileBusy = false; renderHeader(); }
-  } } : { label: '立即巡查', variant: 'primary', onClick: async () => { const current = serial; try { const result = await request('/api/admin/ops-inspections/runs', 'POST', {}); if (current === serial) { if (record(result) && result.state === 'accepted' && typeof result.job_id === 'number') acceptedScan = {job: result.job_id, previousRun: overview?.latest?.id || 0}; await refresh(); } } catch (error) { if (current === serial) showError(error); } } }]);
+  } } : { label: '立即巡查', variant: 'primary', onClick: async () => { const current = serial; try { const result = await request('/api/admin/ops-inspections/runs', 'POST', {}); if (current === serial) { if (record(result) && result.state === 'accepted' && Number.isSafeInteger(result.job_id) && Number(result.job_id) > 0) acceptedScan = {job: Number(result.job_id)}; await refresh(); } } catch (error) { if (current === serial) showError(error); } } }]);
 }
 if (root) void refresh();

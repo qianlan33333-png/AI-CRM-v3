@@ -75,22 +75,64 @@ for (const lateStatus of [202, 500]) {
   h.dom.window.close();
 }
 
-{
-  const h = setup(); h.pending.shift().respond(overview()); await flush();
-  const action = (label) => [...h.dom.window.document.querySelectorAll('[data-page-header-actions="governance"] button')].find((button) => button.textContent === label);
-  action('立即巡查').click();
+const acceptedCommand = { state: 'accepted', job_id: 71, accepted_at: at };
+const completedCommand = { ...acceptedCommand, state: 'completed', run_id: 12, completed_at: at };
+const headerAction = (h, label) => [...h.dom.window.document.querySelectorAll('[data-page-header-actions="governance"] button')].find((button) => button.textContent === label);
+async function acceptManual(h) {
+  headerAction(h, '立即巡查').click();
   const command = h.pending.shift();
   assert.equal(command.init.headers.get('X-CSRF-Token'), 'fixture-csrf');
   assert.ok(command.init.headers.get('Idempotency-Key'));
-  command.respond({ state: 'accepted', job_id: 71, accepted_at: at, replay: false }, 202); await flush();
+  command.respond({ ...acceptedCommand, replay: false }, 202); await flush();
+  assert.equal(h.pending[0].url, '/api/admin/ops-inspections/commands/71');
+  assert.equal(h.pending[0].init.method, 'GET');
+  h.pending.shift().respond(acceptedCommand); await flush();
   h.pending.shift().respond(overview()); await flush();
+}
+{
+  const h = setup(); h.pending.shift().respond(overview()); await flush();
+  await acceptManual(h);
   assert.match(h.root.textContent, /巡查已受理，任务 71，等待执行结果/);
   assert.ok(h.root.querySelector('[data-status="unknown"]'), 'acceptance does not create a healthy result');
-  action('刷新').click();
-  const completed = overview('执行后结果', 'warning'); completed.latest.id = 12; completed.fresh = true;
-  h.pending.shift().respond(completed); await flush();
-  assert.doesNotMatch(h.root.textContent, /等待执行结果/);
-  assert.ok(h.root.querySelector('[data-status="warning"]'), 'fresh persisted observation replaces prior evidence');
+  headerAction(h, '刷新').click();
+  h.pending.shift().respond(acceptedCommand); await flush();
+  const newerScheduled = overview('另一定期巡查', 'warning'); newerScheduled.latest.id = 14; newerScheduled.fresh = true;
+  h.pending.shift().respond(newerScheduled); await flush();
+  assert.match(h.root.textContent, /等待执行结果/, 'a newer unrelated run must not complete this manual command');
+  assert.ok(h.root.querySelector('[data-status="warning"]'), 'latest overview remains independently readable while the command waits');
+  headerAction(h, '刷新').click();
+  h.pending.shift().respond(completedCommand); await flush();
+  h.pending.shift().respond(newerScheduled); await flush();
+  assert.doesNotMatch(h.root.textContent, /等待执行结果/, 'the matching permanent command receipt, not an increase in latest run, proves completion');
+  h.dom.window.close();
+}
+for (const response of [
+  { body: {}, status: 503 },
+  { body: { ...completedCommand, job_id: 72 }, status: 200 },
+  { body: { ...acceptedCommand, state: 'completed' }, status: 200 },
+  { body: { ...completedCommand, completed_at: 'invalid' }, status: 200 },
+]) {
+  const h = setup(); h.pending.shift().respond(overview()); await flush(); await acceptManual(h);
+  headerAction(h, '刷新').click();
+  h.pending.shift().respond(response.body, response.status); await flush();
+  assert.match(h.root.textContent, /等待执行结果/, 'unavailable, mismatched or incomplete evidence cannot clear the accepted command');
+  assert.ok(h.root.querySelector('[role="alert"]'));
+  assert.equal(h.pending.length, 0, 'uncertain completion cannot silently refresh into a finished claim');
+  h.dom.window.close();
+}
+{
+  const h = setup(); h.pending.shift().respond(overview()); await flush(); await acceptManual(h);
+  headerAction(h, '刷新').click(); const oldCommand = h.pending.shift();
+  h.tab('reports'); const latestCommand = h.pending.shift();
+  latestCommand.respond(acceptedCommand); await flush();
+  assert.equal(h.pending[0].url, '/api/admin/ops-inspections/reports');
+  h.pending.shift().respond({ items: [] }); await flush();
+  const rendered = h.root.textContent;
+  oldCommand.respond(completedCommand); await flush();
+  assert.equal(h.root.textContent, rendered, 'late command response cannot overwrite newer navigation');
+  h.tab('overview'); h.pending.shift().respond(acceptedCommand); await flush();
+  h.pending.shift().respond(overview()); await flush();
+  assert.match(h.root.textContent, /等待执行结果/, 'late response also cannot mutate the remembered command behind a newer view');
   h.dom.window.close();
 }
 

@@ -16,7 +16,9 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/adminops"
 	opsport "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	"github.com/riverqueue/river"
 )
 
 // OneID: diagnostics only; no identity resolution or assignment. Persistence:
@@ -71,6 +73,60 @@ func TestPostgreSQLOpsGovernanceChromiumJourney(t *testing.T) {
 	if err = json.Unmarshal(read.Body.Bytes(), &snapshot); err != nil || read.Code != http.StatusOK || snapshot.Fresh {
 		t.Fatalf("stale composed overview status=%d fresh=%t err=%v", read.Code, snapshot.Fresh, err)
 	}
+	// Hold only this fixture's real River inspection queue. A different real
+	// scheduled scan will complete while the browser's own command still waits.
+	workers := river.NewWorkers()
+	river.AddWorker(workers, adminops.NewInspectionWorker())
+	queue, err := platformjobqueue.NewInsertClient(f.application.pool.Native(), workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pauseDeadline := time.Now().Add(5 * time.Second)
+	for {
+		err = queue.QueuePause(f.ctx, adminops.InspectionQueue, nil)
+		if err == nil {
+			break
+		}
+		if time.Now().After(pauseDeadline) {
+			t.Fatalf("pause fixture inspection queue: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = queue.QueueResume(ctx, adminops.InspectionQueue, nil)
+	})
+	unrelated, err := adminops.NewInspectionService(f.application.pool.Native(), uow, nil, nil, adminops.InspectionOptions{ReleaseSHA: "unrelated-scheduled-fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This loopback test control only coordinates Owner/River execution. All
+	// user-facing acceptance, completion, overview and Host reads remain real.
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		switch r.URL.Path {
+		case "/complete-unrelated":
+			run, e := unrelated.Scan(r.Context(), time.Now())
+			if e != nil {
+				http.Error(w, "fixture scan failed", http.StatusInternalServerError)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]int64{"run_id": run.ID})
+		case "/resume":
+			if e := queue.QueueResume(r.Context(), adminops.InspectionQueue, nil); e != nil {
+				http.Error(w, "fixture resume failed", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(control.Close)
 	screenshots := t.TempDir()
 	if configured := platformconfig.AdminLayoutScreenshotDirectory(); configured != "" {
 		screenshots = configured
@@ -80,7 +136,7 @@ func TestPostgreSQLOpsGovernanceChromiumJourney(t *testing.T) {
 	}
 	command := exec.CommandContext(f.ctx, "node", "--input-type=module", "-")
 	command.Stdin = strings.NewReader(opsGovernanceChromiumScript)
-	command.Env = append(os.Environ(), "AICRM_OPS_BROWSER_URL="+f.server.URL, "AICRM_OPS_BROWSER_SESSION="+session, "AICRM_OPS_BROWSER_CSRF="+csrf, "AICRM_OPS_BROWSER_SCREENSHOTS="+screenshots)
+	command.Env = append(os.Environ(), "AICRM_OPS_BROWSER_URL="+f.server.URL, "AICRM_OPS_BROWSER_SESSION="+session, "AICRM_OPS_BROWSER_CSRF="+csrf, "AICRM_OPS_BROWSER_SCREENSHOTS="+screenshots, "AICRM_OPS_BROWSER_CONTROL="+control.URL)
 	output, err := command.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "ops_governance_chromium: PASS") {
 		t.Fatalf("ops governance Chromium=%v\n%s", err, output)
@@ -123,7 +179,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chromiumStartupTimeoutMS,chromiumStartupDiagnostic } from './internal/webshell/chromium_launch.mjs';
-const origin=process.env.AICRM_OPS_BROWSER_URL,session=process.env.AICRM_OPS_BROWSER_SESSION,csrf=process.env.AICRM_OPS_BROWSER_CSRF,output=process.env.AICRM_OPS_BROWSER_SCREENSHOTS;
+const origin=process.env.AICRM_OPS_BROWSER_URL,session=process.env.AICRM_OPS_BROWSER_SESSION,csrf=process.env.AICRM_OPS_BROWSER_CSRF,output=process.env.AICRM_OPS_BROWSER_SCREENSHOTS,control=process.env.AICRM_OPS_BROWSER_CONTROL;
 const profile=await fs.mkdtemp(path.join(os.tmpdir(),'aicrm-ops-browser-'));
 const executable=process.env.AICRM_CHROMIUM_BINARY||(process.platform==='darwin'?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':'chromium');
 const child=spawn(executable,['--headless=new','--no-sandbox','--disable-gpu','--disable-background-networking','--no-first-run','--ignore-certificate-errors','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']});
@@ -150,6 +206,7 @@ try{
  assert.equal(await evaluate("document.querySelectorAll('.admin-topbar').length"),1);
  assert.equal(await evaluate("document.querySelectorAll('.admin-topbar [data-page-header-actions=governance] button').length"),2);
  assert.equal(await evaluate("fetch('/api/admin/ops-inspections',{credentials:'omit'}).then(r=>r.status)"),403);
+ assert.equal(await evaluate("fetch('/api/admin/ops-inspections/commands/1',{credentials:'omit'}).then(r=>r.status)"),403);
  for(const width of [1440,390]){
   await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<600});await delay(100);
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth+2'),true,'overview must remain within '+width+'px viewport');
@@ -185,7 +242,16 @@ try{
  await poll(()=>evaluate("!!window.__opsManualAccepted"),'manual request receives durable acceptance');
  const accepted=await evaluate("window.__opsManualAccepted");assert.equal(accepted.status,202);assert.equal(accepted.body.state,'accepted');assert.ok(accepted.body.job_id>0);assert.equal(accepted.body.results,undefined);
  await evaluate("window.fetch=window.__opsOriginalFetch");
- await poll(()=>evaluate("fetch('/api/admin/ops-inspections').then(r=>r.json()).then(v=>v.latest.id>"+before+" && v.fresh)"),'manual scan durable readback');
+ const otherResponse=await fetch(control+'/complete-unrelated',{method:'POST'});assert.equal(otherResponse.status,200);const other=await otherResponse.json();assert.ok(other.run_id>before);
+ const commandPath='/api/admin/ops-inspections/commands/'+accepted.body.job_id;
+ const pendingCommand=await evaluate("fetch("+JSON.stringify(commandPath)+").then(r=>r.json())");assert.equal(pendingCommand.state,'accepted');assert.equal(pendingCommand.run_id,undefined);
+ await evaluate("[...document.querySelectorAll('[data-page-header-actions=governance] button')].find(b=>b.textContent==='刷新').click()");
+ await poll(()=>evaluate("document.querySelector('.governance-freshness')?.textContent.includes('unrelated-sc')"),'unrelated completed scan appears in latest overview');
+ assert.match(await evaluate("document.querySelector('.governance-content').textContent"),/巡查已受理.*等待执行结果/,'another completed scan must not finish this manual command');
+ const resume=await fetch(control+'/resume',{method:'POST'});assert.equal(resume.status,204);
+ await poll(()=>evaluate("fetch("+JSON.stringify(commandPath)+").then(r=>r.json()).then(v=>v.state==='completed' && v.job_id==="+accepted.body.job_id+" && v.run_id>0 && !!v.completed_at)"),'matching manual command durable completion');
+ await evaluate("[...document.querySelectorAll('[data-page-header-actions=governance] button')].find(b=>b.textContent==='刷新').click()");
+ await poll(()=>evaluate("!!document.querySelector('.governance-freshness') && !document.querySelector('.governance-content').textContent.includes('等待执行结果')"),'only the completed command receipt clears its waiting indicator');
  assert.deepEqual(exceptions,[],'actual Host has no runtime exceptions');
  console.log('ops_governance_chromium: PASS — real Host, stale/unknown, authorization, CAS, drawer, manual scan, 1440/390px');
 }finally{

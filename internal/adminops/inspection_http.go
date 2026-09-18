@@ -95,6 +95,14 @@ func (h *InspectionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		inspectionJSON(w, http.StatusAccepted, out)
+	case strings.HasPrefix(path, "/api/admin/ops-inspections/commands/") && r.Method == "GET":
+		jobID, e := strconv.ParseInt(strings.TrimPrefix(path, "/api/admin/ops-inspections/commands/"), 10, 64)
+		if e != nil || jobID < 1 {
+			inspectionResponse(w, nil, ErrInspectionInvalid)
+			return
+		}
+		out, e := h.service.ManualInspectionCommand(r.Context(), p.InternalID, jobID)
+		inspectionResponse(w, out, e)
 	case strings.HasPrefix(path, "/api/admin/ops-inspections/runs/") && r.Method == "GET":
 		id, e := strconv.ParseInt(strings.TrimPrefix(path, "/api/admin/ops-inspections/runs/"), 10, 64)
 		if e != nil || id < 1 {

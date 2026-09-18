@@ -103,7 +103,7 @@ paths:
               additionalProperties: false
       responses:
         '202':
-          description: 已接受幂等巡查任务；接受不代表巡查完成，通过运行详情读取结果
+          description: 已接受幂等巡查任务；接受不代表巡查完成，通过 commands/{job_id} 读取本人的完成收据
           headers:
             X-AICRM-Diagnostic-ID:
               description: 不透明的排查编号
@@ -125,6 +125,46 @@ paths:
               schema: {type: integer, enum: [3600]}
         '503':
           description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-inspections/commands/{job_id}:
+    get:
+      operationId: opsInspectionCommandDetail
+      summary: 读取本人手动巡查命令的完成依据
+      description: 仅超级管理员可读取本人接受的命令。永久收据绑定任务及完成运行，不以其他巡查或排队成功推断完成；完成不代表检查正常，运行明细仍受30天保留期限制。
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 本人命令的最小接受或完成证据，不包含原始幂等键、摘要、操作者或错误内容
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [state, job_id, accepted_at]
+                properties:
+                  state: {type: string, enum: [accepted, completed]}
+                  job_id: {type: integer, format: int64, minimum: 1}
+                  accepted_at: {type: string, format: date-time}
+                  run_id: {type: integer, format: int64, minimum: 1}
+                  completed_at: {type: string, format: date-time}
+                oneOf:
+                  - properties: {state: {const: accepted}}
+                  - required: [run_id, completed_at]
+                    properties: {state: {const: completed}}
+        '400':
+          description: 任务编号无效
+        '403':
+          description: 未登录或不是超级管理员
+        '404':
+          description: 命令不存在或不属于当前操作者
+        '503':
+          description: 完成依据暂不可读取，不能认定完成
   /api/admin/ops-inspections/runs/{id}:
     get:
       operationId: opsInspectionRunDetail
