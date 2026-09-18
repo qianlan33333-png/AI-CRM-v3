@@ -46,9 +46,14 @@ func (executor *openPlatformExecutor) Available(_ context.Context, principal acc
 	// value is an uncomposed Owner Port and therefore absent from the catalog.
 	_, chatRecordsAvailable := executor.archive.(archiveport.V1ChatRecordReader)
 	available := map[openplatformport.OperationID]bool{
-		openplatformport.OperationCapabilitiesList: true,
-		openplatformport.OperationCustomerResolve:  executor.identity != nil,
-		openplatformport.OperationCustomerContext:  executor.profiles != nil,
+		openplatformport.OperationCapabilitiesList:     true,
+		openplatformport.OperationCoreProducts:         executor.coreAudience != nil,
+		openplatformport.OperationCoreMembers:          executor.coreAudience != nil,
+		openplatformport.OperationCoreMemberOperations: executor.coreAudience != nil,
+		openplatformport.OperationCoreMemberHistory:    executor.coreAudience != nil,
+		openplatformport.OperationCorePushRecord:       executor.coreAudience != nil,
+		openplatformport.OperationCustomerResolve:      executor.identity != nil,
+		openplatformport.OperationCustomerContext:      executor.profiles != nil,
 		// Activities and AI are enabled only by their explicit V1 binders. The
 		// legacy compatibility readers are deliberately not a substitute.
 		openplatformport.OperationCustomerActivities:       executor.activities != nil,
@@ -93,6 +98,11 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 	}
 	var result openplatformport.Result
 	switch invocation.Operation {
+	case openplatformport.OperationCoreProducts, openplatformport.OperationCoreMembers, openplatformport.OperationCoreMemberOperations, openplatformport.OperationCoreMemberHistory, openplatformport.OperationCorePushRecord:
+		result, err = executor.v1CoreAudience(ctx, invocation)
+		if invocation.Operation == openplatformport.OperationCorePushRecord && err == nil {
+			return result, nil
+		} // Segment commits receipt and audit with the record.
 	case openplatformport.OperationCapabilitiesList:
 		result, err = executor.v1Capabilities(ctx, invocation.Principal)
 	case openplatformport.OperationCustomerResolve:

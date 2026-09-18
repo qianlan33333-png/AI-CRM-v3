@@ -378,7 +378,7 @@ function staticDocumentation(onClients: () => void): HTMLElement {
   const layout = element('div'); layout.className = 'open-platform-docs-grid';
   const toc = element('nav'); toc.className = 'open-platform-docs-toc'; toc.setAttribute('aria-label', 'API 文档目录');
   const main = element('main'); main.className = 'open-platform-docs-main';
-  const links: Array<[string, string]> = [['quickstart', '快速接入'], ['operations', '只读接口'], ['oneid', 'OneID'], ['pagination', '分页'], ['orders', '订单与退款'], ['errors', '错误码'], ['testing', '调用前验证']];
+  const links: Array<[string, string]> = [['quickstart', '快速接入'], ['operations', '只读接口'], ['audience', '人群包接口'], ['oneid', 'OneID'], ['pagination', '分页'], ['orders', '订单与退款'], ['errors', '错误码'], ['testing', '调用前验证']];
   for (const [id, label] of links) {
     const anchor = element('a', label); anchor.href = `#${id}`; toc.append(anchor);
   }
@@ -456,7 +456,17 @@ function staticDocumentation(onClients: () => void): HTMLElement {
   testing.append(element('p', '在测试环境依次确认当前 Token 的 capabilities、OneID 解析、已授权的业务查询和 cursor 续页行为。下载完整 API 合同后，以返回的 request_id 关联问题排查；不要记录 Token、身份值或原始用户响应。'));
   const contractDownload = element('a', '下载完整 API 合同'); contractDownload.href = '/api/admin/config/openapi.yaml'; contractDownload.className = 'open-platform-button'; contractDownload.download = 'aicrm-openapi.yaml'; testing.append(contractDownload);
   const testingNote = element('p', '此页面提供调用合同与占位示例，不提供在线试调，也不回传真实用户、订单、身份或凭据。'); testingNote.className = 'open-platform-doc-note'; testing.append(testingNote);
-  main.append(quickstart, operations, oneid, pagination, orders, errors, testing);
+  const audience = docSection('audience', '人群包与推送记录接口');
+  audience.append(element('p', '以下能力需在密钥管理中单独授权。前四项使用 read scope；推送上报使用 write scope 和 Idempotency-Key，仅记录监督节点报告，不执行发送。所有响应使用 data / error / request_id 标准结构。'));
+  audience.append(docTable(['REST', 'Capability'], [
+    ['GET /open/v1/audience/core-products', 'audience.product.read'],
+    ['GET /open/v1/audience/packages/{package_id}/members', 'audience.member.read'],
+    ['GET /open/v1/audience/packages/{package_id}/members/{customer_id}/operations', 'audience.member.operations.read'],
+    ['GET /open/v1/audience/packages/{package_id}/members/{customer_id}/history', 'audience.member.history.read'],
+    ['POST /open/v1/audience/push-records', 'audience.push.write'],
+  ]));
+  audience.append(element('p', '沿用 CRM 客户编号，读取及上报均校验调用方的数据范围。成员、明细和历史支持 limit 与 cursor；过滤后某页可能为空，仍应继续使用 next_cursor。相同业务推送不重复计数，状态更新提高 status_version 并使用新的请求幂等键；网络重试保持原键和原请求。'));
+  main.append(quickstart, operations, audience, oneid, pagination, orders, errors, testing);
   const operationRows = [...operationTable.querySelectorAll<HTMLTableRowElement>('tbody tr')];
   operationRows.forEach((row, index) => { row.dataset.apiDocOperation = operationExamples[index][0]; });
   const applySearch = (): void => {
