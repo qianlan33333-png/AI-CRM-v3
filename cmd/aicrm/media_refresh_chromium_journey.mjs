@@ -75,6 +75,55 @@ const removeProfile = async (profile) => {
  }
  return new Error(`Chromium test profile cleanup did not complete after 40 attempts: ${lastError?.code || lastError?.message || "unknown error"}`);
 };
+async function exerciseGroupManagement(cdp) {
+ for(const [kind,tab] of [['image','images'],['attachment','attachments'],['miniprogram','miniprograms']]) {
+  const prefix=`分组旅程-${kind}`;
+  const api=`/api/admin/${kind}-library`;
+  await cdp.call('Page.navigate',{url:`${baseURL}/admin/materials?tab=${tab}`});
+  await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组'&&!b.disabled))",`${kind} group controls`);
+  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组').click();true");
+  await value(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix)};document.querySelector('dialog[open] form').requestSubmit();true`);
+  await wait(cdp,`new URL(location.href).searchParams.get('material_group')===${JSON.stringify(prefix)} && Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名'))`,`${kind} empty group retained`);
+  const groupID=await value(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.find(g=>g.name===${JSON.stringify(prefix)}).id)`);
+  for(let n=0;n<2;n++) {
+   const action={image:'上传图片',attachment:'上传附件',miniprogram:'新增小程序'}[kind];
+   // The existing mini-program title may use 创建 instead of 新增.
+   await value(cdp,`(()=>{const b=[...document.querySelectorAll('.admin-topbar button')].find(b=>b.textContent.trim()===${JSON.stringify(action)}||(${JSON.stringify(kind)}==='miniprogram'&&/小程序/.test(b.textContent)));if(!b)throw Error('missing create');b.click();return true})()`);
+   await wait(cdp,"Boolean(document.querySelector('[data-material-group-select]'))",`${kind} create group selector`);
+   const selected=await value(cdp,"document.querySelector('[data-material-group-select]').value");if(Number(selected)!==groupID)throw Error(`${kind} upload default group mismatch ${selected}`);
+   if(kind==='miniprogram') {
+    await value(cdp,`(()=>{document.querySelector('#fMpName').value=${JSON.stringify(prefix+'-'+n)};document.querySelector('#fMpAppid').value='wxgroupfixture';document.querySelector('#fMpPath').value='pages/group';document.querySelector('#fMpTitle').value='分组验收';[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='创建').click();return true})()`);
+   } else {
+    await value(cdp,`(()=>{const kind=${JSON.stringify(kind)};const bytes=kind==='image'?Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII='),c=>c.charCodeAt(0)):new TextEncoder().encode('%PDF-1.4\\nfixture');const input=document.querySelector(kind==='image'?'#fImgUpFile':'#fAttUpFile');const dt=new DataTransfer();dt.items.add(new File([bytes],kind==='image'?'group.png':'group.pdf',{type:kind==='image'?'image/png':'application/pdf'}));input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector(kind==='image'?'#fImgUpName':'#fAttUpName').value=${JSON.stringify(prefix+'-'+n)};[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='上传').click();return true})()`);
+   }
+   await wait(cdp,"!document.querySelector('[data-material-group-select]')",`${kind} create saved`);
+   await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.some(g=>g.id===${groupID}&&g.count===${n+1}))`,`${kind} upload group readback`);
+  }
+  // Reload to exercise persisted memberships and select only the current page.
+  await cdp.call('Page.reload');
+  await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2 && !document.querySelector('input[aria-label=\"选择当前页全部素材\"]')?.disabled",`${kind} selectable rows`);
+  await value(cdp,"(()=>{const checkbox=document.querySelector('input[aria-label^=\"选择素材 \"]');const row=checkbox.closest('tr,[data-material-library-id]');[...row.querySelectorAll('button')].find(b=>b.textContent.trim()==='编辑').click();return true})()");
+  await wait(cdp,"Boolean(document.querySelector('[data-material-group-select]'))",`${kind} edit group selector`);
+  if(Number(await value(cdp,"document.querySelector('[data-material-group-select]').value"))!==groupID)throw Error(`${kind} edit lost existing group`);
+  await value(cdp,"[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='保存').click();true");
+  await wait(cdp,"!document.querySelector('[data-material-group-select]')",`${kind} edit saved with group`);
+  await cdp.call('Page.reload');
+  await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2",`${kind} edited group readback`);
+  await value(cdp,"document.querySelector('input[aria-label=\"选择当前页全部素材\"]').click();[...document.querySelectorAll('button')].find(b=>b.textContent==='移动到分组'&&!b.hidden).click();true");
+  await wait(cdp,"Boolean(document.querySelector('dialog[open] select'))",`${kind} batch move dialog`);
+  await value(cdp,"document.querySelector('dialog[open] select').value='';document.querySelector('dialog[open] form').requestSubmit();true");
+  await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.some(g=>g.id===${groupID}&&g.count===0))`,`${kind} batch ungroup persisted`);
+  await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名'))",`${kind} empty group edit`);
+  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名').click();true");
+  await value(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix+'-改名')};document.querySelector('dialog[open] form').requestSubmit();true`);
+  await wait(cdp,`new URL(location.href).searchParams.get('material_group')===${JSON.stringify(prefix+'-改名')} && Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='删除分组'))`,`${kind} renamed group selected`);
+  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='删除分组').click();true");
+  await value(cdp,"document.querySelector('dialog[open] form').requestSubmit();true");
+  await wait(cdp,`new URL(location.href).searchParams.get('tab')===${JSON.stringify(tab)} && new URL(location.href).searchParams.get('material_group')==='' && !document.querySelector('dialog[open]')`,`${kind} deletion returns to same tab ungrouped`);
+  await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>!b.items.some(g=>g.id===${groupID}))`,`${kind} group deleted readback`);
+ }
+}
+
 const profile=await fs.mkdtemp(path.join(os.tmpdir(),"aicrm-media-refresh-chromium-")); let cdp; let journeyError;
 try {
  browser=spawn(binary(),["--headless=new","--no-sandbox","--remote-debugging-port=0",`--user-data-dir=${profile}`,"--no-first-run","--no-default-browser-check","--disable-background-networking","--ignore-certificate-errors","--allow-insecure-localhost","about:blank"],{stdio:["ignore","ignore","pipe"]}); browser.stderr.on("data",c=>{stderr=(stderr+c).slice(-2048);});
@@ -83,37 +132,43 @@ try {
  await value(cdp,`(()=>{document.querySelector('input[name=username]').value=${JSON.stringify(username)};document.querySelector('input[name=password]').value=${JSON.stringify(password)};document.querySelector('form[action="/login"]').requestSubmit();return true})()`);
  await wait(cdp,"location.pathname==='/admin/materials'&&document.body?.dataset.page==='images'&&document.title.includes('素材库')","material workspace title");
  await wait(cdp,"Boolean(document.querySelector('[data-image-library-query]')&&document.querySelector('[data-image-library-cards]'))",'V3 image library controls');
+ await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组'&&!b.disabled))",'group create ready');
+ await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组').click();true");
+ await wait(cdp,"Boolean(document.querySelector('dialog[open] input'))",'group name dialog');
+ await value(cdp,"document.querySelector('dialog[open] input').value='浏览器分组';document.querySelector('dialog[open] form').requestSubmit();true");
+ await wait(cdp,"new URL(location.href).searchParams.get('material_group')==='浏览器分组'&&Boolean(document.querySelector('[data-material-group-value=\"category:浏览器分组\"]'))",'empty group creation persists');
+ await value(cdp,"document.querySelector('[data-material-group-value=\"\"]').click();true");
  await value(cdp,"(()=>{const fetcher=window.fetch.bind(window);window.__mediaRefreshRequests=[];window.fetch=async(...args)=>{const response=await fetcher(...args);window.__mediaRefreshRequests.push(`${args[1]?.method||'GET'} ${typeof args[0]==='string'?args[0]:args[0].url} ${response.status} ${await response.clone().text()}`);return response};return true})()");
  // The V3 image Host keeps this query as a draft until a deliberate Enter.
  // Its existing debounce/read handler remains the authoritative loader.
  const imageCandidatePrevented=await value(cdp,`(()=>{const field=document.querySelector('[data-image-library-query]');if(!(field instanceof HTMLInputElement))return null;field.focus();field.value='Chromium素材';field.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));field.dispatchEvent(new FocusEvent('blur',{bubbles:true}));field.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));field.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));const candidate=new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter',isComposing:true});Object.defineProperty(candidate,'keyCode',{value:229});field.dispatchEvent(candidate);return candidate.defaultPrevented})()`);
  if(imageCandidatePrevented!==false)throw new Error('image-library IME candidate Enter was prevented');
  await sleep(320);
- const readsAfterImageCandidate=await value(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length");
+ const readsAfterImageCandidate=await value(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library?')).length");
  if(readsAfterImageCandidate!==0)throw new Error(`image-library typing, blur, or IME candidate Enter read ${readsAfterImageCandidate} times`);
  await value(cdp,"document.querySelector('[data-image-library-query]').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Enter',code:'Enter'}));true");
- await wait(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===1",'image-library ordinary Enter did not issue exactly one existing list read');
+ await wait(cdp,"window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library?')).length===1",'image-library ordinary Enter did not issue exactly one existing list read');
  const imageSearchFocus=await value(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return Boolean(field&&document.activeElement===field&&field.value==='Chromium素材')})()");
  if(!imageSearchFocus)throw new Error('image-library ordinary Enter did not retain focused draft query');
  // The Enter check intentionally leaves a committed search active. Reset through
  // the existing Host control before asserting page-wide refresh facts so the
  // fixture's historical source is visible again.
  await value(cdp,"document.querySelector('button[data-image-library-reset=\"true\"]')?.click();true");
- await wait(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return field instanceof HTMLInputElement&&field.value===''&&window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library')).length===2})()",'image-library reset did not restore the unfiltered list');
+ await wait(cdp,"(()=>{const field=document.querySelector('[data-image-library-query]');return field instanceof HTMLInputElement&&field.value===''&&window.__mediaRefreshRequests.filter(value=>value.startsWith('GET /api/admin/image-library?')).length===2})()",'image-library reset did not restore the unfiltered list');
  // Operational screens omit technical diagnostics even when a source is missing.
  if(await value(cdp,"Boolean(document.querySelector('#material-refresh-panel'))||document.body.innerText.includes('刷新设置与明细')")) throw new Error('retired refresh diagnostics are visible');
  await value(cdp,"document.querySelector('[data-material-group-value=\"__ungrouped__\"]').click();true");
- await wait(cdp,"window.__mediaRefreshRequests.some(value=>value.startsWith('GET /api/admin/image-library')&&value.includes('only_ungrouped=true'))",'ungrouped filter must reach server');
+ await wait(cdp,"window.__mediaRefreshRequests.some(value=>value.startsWith('GET /api/admin/image-library?')&&value.includes('only_ungrouped=true'))",'ungrouped filter must reach server');
  await value(cdp,"document.querySelector('button[data-image-library-reset]').click();true");
  await assertImageLibraryLayout(cdp,1280,800); await assertImageLibraryLayout(cdp,1440,900); await assertImageLibraryLayout(cdp,780,700); await assertImageLibraryLayout(cdp,390,420); await cdp.call("Emulation.clearDeviceMetricsOverride");
  await value(cdp,"(()=>{const region=[...document.querySelectorAll('main#stage div')].find(n=>n.style.overflow==='auto');if(!region)return false;region.scrollTop=180;return region.scrollTop>=0})()");
  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='上传图片').click();true"); await wait(cdp,"Boolean(document.querySelector('#fImgUpFile'))","image upload dialog");
- await value(cdp,`(()=>{const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII='),c=>c.charCodeAt(0));const input=document.querySelector('#fImgUpFile');const dt=new DataTransfer();dt.items.add(new File([png],'browser-source.png',{type:'image/png'}));input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#fImgUpName').value='浏览器刷新素材';document.querySelector('#fImgCategory').value='浏览器分组';[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='上传').click();return true})()`);
+ await value(cdp,`(()=>{const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII='),c=>c.charCodeAt(0));const input=document.querySelector('#fImgUpFile');const dt=new DataTransfer();dt.items.add(new File([png],'browser-source.png',{type:'image/png'}));input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#fImgUpName').value='浏览器刷新素材';document.querySelector('#fImgCategory').value=[...document.querySelector('#fImgCategory').options].find(o=>o.textContent==='浏览器分组').value;[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='上传').click();return true})()`);
  await wait(cdp,"!document.querySelector('#fImgUpFile')&&document.querySelector('[data-image-library-cards]')?.textContent.includes('浏览器刷新素材')","image upload/readback");
  await value(cdp,"[...document.querySelectorAll('.admin-toolbar button')].find(b=>b.textContent==='刷新').click();true");
  await wait(cdp,"Boolean(document.querySelector('[data-material-group-value=\"category:浏览器分组\"]'))",'saved group refresh');
  await value(cdp,"document.querySelector('[data-material-group-value=\"category:浏览器分组\"]').click();true");
- await wait(cdp,"document.querySelector('[data-image-library-cards]')?.textContent.includes('浏览器刷新素材')&&window.__mediaRefreshRequests.some(value=>value.startsWith('GET /api/admin/image-library')&&value.includes('category='))",'persisted group filter');
+ await wait(cdp,"document.querySelector('[data-image-library-cards]')?.textContent.includes('浏览器刷新素材')&&window.__mediaRefreshRequests.some(value=>value.startsWith('GET /api/admin/image-library?')&&value.includes('category='))",'persisted group filter');
  await value(cdp,"document.querySelector('[data-material-group-value=\"__ungrouped__\"]').click();true");
  await wait(cdp,"!document.querySelector('[data-image-library-cards]')?.textContent.includes('浏览器刷新素材')",'grouped image excluded from ungrouped');
  await value(cdp,"document.querySelector('button[data-image-library-reset]').click();true");
@@ -149,6 +204,7 @@ try {
  await value(cdp,`(()=>{const input=document.querySelector('input[aria-label="统一封面图片"]');const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGL6z8DwnwEZAAIAAP//HxcCAa7PZcoAAAAASUVORK5CYII='),c=>c.charCodeAt(0));const dt=new DataTransfer();dt.items.add(new File([png],'excel-cover.png',{type:'image/png'}));input.files=dt.files;[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='上传统一封面').click();return true})()`);
  await wait(cdp,"document.querySelector('.xeb-detail-main')?.textContent.includes('统一封面已更新')","Excel cover upload");
  if(await value(cdp,"document.querySelector('.xeb-detail-main')?.textContent.includes('企微任务意图已创建')")) throw new Error("draft created a message without approval");
+ await exerciseGroupManagement(cdp);
  console.log(`media_refresh_chromium: PASS screenshot=${screenshot}`);
 } catch(error) { journeyError=asError(error); } finally {
  const cleanupErrors=[];

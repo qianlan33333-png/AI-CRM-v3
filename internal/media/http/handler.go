@@ -510,6 +510,9 @@ func invalidQuery(w http.ResponseWriter) {
 }
 
 func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
+	if h.materialGroupRoute(w, r, "image", tail) {
+		return
+	}
 	if tail == "" {
 		if r.Method == http.MethodGet {
 			if !h.read(w, r) {
@@ -748,7 +751,12 @@ func (h *Handler) imageCreate(w http.ResponseWriter, r *http.Request, source str
 	if raw := r.FormValue("enabled"); raw != "" {
 		enabled = raw == "true"
 	}
-	out, err := h.service.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediaapp.ImageInput{FileName: header.Filename, MIME: inspection.MediaType, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: r.FormValue("tags"), Category: r.FormValue("category"), Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
+	groupID, groupErr := optionalGroupID(r.FormValue("group_id"))
+	if groupErr != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	out, err := h.service.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediaapp.ImageInput{FileName: header.Filename, MIME: inspection.MediaType, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: r.FormValue("tags"), Category: r.FormValue("category"), GroupID: groupID, Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
 	if err != nil {
 		resultError(w, err)
 		return
@@ -767,6 +775,7 @@ func (h *Handler) imageCreateJSON(w http.ResponseWriter, r *http.Request, actor 
 		Description string   `json:"description"`
 		Tags        []string `json:"tags"`
 		Category    string   `json:"category"`
+		GroupID     *int64   `json:"group_id"`
 		Enabled     *bool    `json:"enabled"`
 	}
 	if decodeLimit(r, &body, (domain.MaxImageBytes*4)/3+(1<<20)) != nil || strings.TrimSpace(body.FileName) == "" {
@@ -787,7 +796,7 @@ func (h *Handler) imageCreateJSON(w http.ResponseWriter, r *http.Request, actor 
 	if body.Enabled != nil {
 		enabled = *body.Enabled
 	}
-	out, err := h.service.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediaapp.ImageInput{FileName: body.FileName, MIME: inspection.MediaType, Name: nonempty(body.Name, body.FileName), Description: body.Description, Tags: strings.Join(body.Tags, ","), Category: body.Category, Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
+	out, err := h.service.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediaapp.ImageInput{FileName: body.FileName, MIME: inspection.MediaType, Name: nonempty(body.Name, body.FileName), Description: body.Description, Tags: strings.Join(body.Tags, ","), Category: body.Category, GroupID: body.GroupID, Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
 	if err != nil {
 		resultError(w, err)
 		return
@@ -831,7 +840,7 @@ func (h *Handler) imageUpdate(w http.ResponseWriter, r *http.Request, imageID in
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	if !allowedFields(patch, "name", "description", "tags", "category", "enabled") {
+	if !allowedFields(patch, "name", "description", "tags", "category", "enabled", "group_id", "expected_version") {
 		writeError(w, 400, "invalid_request")
 		return
 	}
@@ -974,7 +983,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		if !allowedFields(patch, "name", "description", "tags", "enabled", "expected_version") {
+		if !allowedFields(patch, "name", "description", "tags", "enabled", "expected_version", "group_id") {
 			writeError(w, 400, "invalid_request")
 			return
 		}
@@ -1035,7 +1044,12 @@ func (h *Handler) attachmentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tags := splitCSV(r.FormValue("tags"))
-	out, e := h.service.CreateAttachment(r.Context(), actor.InternalID, mutationKey(r), mediaapp.AttachmentInput{FileName: header.Filename, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: tags, Content: content, Enabled: r.FormValue("enabled") != "false"})
+	groupID, groupErr := optionalGroupID(r.FormValue("group_id"))
+	if groupErr != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	out, e := h.service.CreateAttachment(r.Context(), actor.InternalID, mutationKey(r), mediaapp.AttachmentInput{FileName: header.Filename, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: tags, GroupID: groupID, Content: content, Enabled: r.FormValue("enabled") != "false"})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -1061,6 +1075,7 @@ func (h *Handler) attachmentUpload(w http.ResponseWriter, r *http.Request, tail 
 			Description string `json:"description"`
 			Size        int64  `json:"size"`
 			SHA256      string `json:"sha256"`
+			GroupID     *int64 `json:"group_id"`
 			Enabled     *bool  `json:"enabled"`
 		}
 		if decode(r, &body) != nil {
@@ -1071,7 +1086,7 @@ func (h *Handler) attachmentUpload(w http.ResponseWriter, r *http.Request, tail 
 		if body.Enabled != nil {
 			enabled = *body.Enabled
 		}
-		uploadID, err := h.service.InitiateAttachmentUpload(r.Context(), actor.InternalID, mutationKey(r), mediaapp.AttachmentUploadInput{FileName: body.FileName, Name: body.Name, Description: body.Description, Size: body.Size, Digest: body.SHA256, Enabled: enabled})
+		uploadID, err := h.service.InitiateAttachmentUpload(r.Context(), actor.InternalID, mutationKey(r), mediaapp.AttachmentUploadInput{FileName: body.FileName, Name: body.Name, Description: body.Description, Size: body.Size, Digest: body.SHA256, Enabled: enabled, GroupID: body.GroupID})
 		if err != nil {
 			resultError(w, err)
 			return
@@ -1192,7 +1207,7 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			if !allowedFields(body, "name", "appid", "app_id", "pagepath", "page_path", "title", "thumb_image_id", "enabled") {
+			if !allowedFields(body, "name", "appid", "app_id", "pagepath", "page_path", "title", "thumb_image_id", "enabled", "group_id", "expected_version") {
 				writeError(w, 400, "invalid_request")
 				return
 			}
@@ -1260,7 +1275,7 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		if !allowedFields(body, "name", "appid", "app_id", "pagepath", "page_path", "title", "thumb_image_id", "enabled") {
+		if !allowedFields(body, "name", "appid", "app_id", "pagepath", "page_path", "title", "thumb_image_id", "enabled", "group_id", "expected_version") {
 			writeError(w, 400, "invalid_request")
 			return
 		}

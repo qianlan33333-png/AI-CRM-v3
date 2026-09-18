@@ -71,6 +71,8 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="images"><header cla
       const url = new URL(raw, window.location.origin);
       const method = String(init.method || (typeof input === "string" || input instanceof URL ? "GET" : input.method)).toUpperCase();
       calls.push({ path: url.pathname, query: url.searchParams.toString(), method, body: init.body, headers: Object.fromEntries(new Headers(init.headers).entries()) });
+      if(url.pathname==='/api/admin/image-library/groups')return json({can_write:true,items:[{id:0,name:'',version:0,count:0},{id:1,name:'海报',version:1,count:1}]});
+      if(url.pathname==='/api/admin/image-library/group-members')return json({items:url.searchParams.get('ids').split(',').map(id=>({id:Number(id),version:1,group_id:1,category:'海报'}))});
       if (url.pathname === "/api/admin/media-preparations") {
         materialRefreshReads += 1;
         return json({ items: [], failures: [], done: true, next_cursor: "" });
@@ -190,7 +192,7 @@ assert.ok(dom.window.document.body.textContent.includes("已启用"), "enabled i
 assert.ok(dom.window.document.body.textContent.includes("2026-09-12 08:00:00"), "image time did not render in Asia/Shanghai YYYY-MM-DD HH:mm:ss form");
 assert.ok(!dom.window.document.body.textContent.includes("2026-09-12T00:00:00Z"), "raw ISO time leaked into the image workspace");
 const directoryHeaders = [...dom.window.document.querySelectorAll('[data-image-library-directory] th')].map((node) => node.textContent?.trim());
-assert.deepEqual(directoryHeaders, ["图片 / 名称", "大小", "上传时间", "状态", "操作"], "image directory keeps dimensions and tags with the compact image identity");
+assert.deepEqual(directoryHeaders, ["图片 / 名称", "所属分组", "大小", "上传时间", "状态", "操作"], "image directory keeps dimensions and tags with the compact image identity");
 assert.match(dom.window.document.body.textContent || "", /160 × 90 · 默认启用素材\.png · 海报 · 回归/, "image dimensions, filename, and existing tags render beneath the name");
 const initialThumbnail = dom.window.document.querySelector('[data-image-library-thumbnail="true"]');
 const initialImage = initialThumbnail?.querySelector('img');

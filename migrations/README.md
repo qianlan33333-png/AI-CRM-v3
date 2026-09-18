@@ -27,3 +27,5 @@ v3 从新的 Schema 基线开始，不复制 production 或 V2 的完整 migrati
 - `0175_customer_minimum_directory_projection.sql`：Customer 为所有既有 OneID 根补齐可搜索的最小目录投影；forward-only，不猜昵称、不读取 Provider、不改变身份归属或合并关系。
 - `0176_survey_single_submission_claims.sql`：Survey 所有的问卷—canonical Customer 单次提交 claim；仅约束安装后新接受的提交，future-only，不回填、合并或删除历史答卷/claim。forward-only；如需修复只能新增迁移，不能通过回滚破坏已提交的答卷、审计、Outbox 或效果接受事实。
 - `0177_survey_operation_legacy_parity.sql`：Survey 所有完成页文案/目标配置，Outbound 所有完成推送 endpoint；既有 `survey_operation_configurations` 行保留 opaque reference 并以安全默认值扩展，不回填或删除配置，新的 endpoint 表也不迁移历史 Provider 目标。forward-only；配置结构修复必须以追加迁移完成，不回滚或重写既有效果与运营配置事实。
+
+- `0182_media_group_management.sql`：Media 独立分组、稳定归属 ID；回填三类素材旧 category，兼容写投影同事务同步，空组可保留。删除分组归零素材而不删除内容或引用。

@@ -195,3 +195,7 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 `web/v3/shared/ui/dataWorkspace.ts` 由 `/admin/spProductData.html` 的 `productWorkspace`、`/admin/hxc-dashboard` 的 `funnelGrid.ts` 和 `/shared/data-dashboard` 的 `dashboardShare` 调用。Tabulator 仅处理展示、列及折叠，Go Owner 在分页前计算范围、指标和组人数；共享组件不访问领域存储。后台复用既有 transport、单页头，匿名入口只加载独立 manifest 闭包。`dashboardShareDialog.ts` 复用分享交互，Product/HXC 各自授权、持久化、审计。公开字段只读白名单与不可扩大的基础范围在服务端执行。真实 Chromium 覆盖范围/撤销及移动端，证据状态见 PRD 验证记录；不代表生产部署。
 
 页面层级修订：同一 DataWorkspace 提供顶部总览／明细导航、按需挂载 Tabulator、分别配置指标与列的右侧面板、可撤回范围条件、未保存切换提示。样式集中在 `dataWorkspaceStyle.ts`，三个调用方共享；HXC Host 明确允许 `tab=overview|details`。当前改造验证独立记录，不沿用旧布局 CI。
+
+### 素材分组管理
+
+`web/v3/materialGroupManagement.ts`：三个素材工作台共用分组目录、分组表单、单个/当前页批量移动与所属分组选择；组合 `MaterialGroupSidebar`、`pageHeaderActions` 和 `selectionDialog`。Media API 独占领域写入。不得把元数据分组操作当作 Provider 素材刷新。

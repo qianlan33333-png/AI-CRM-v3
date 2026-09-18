@@ -1,3 +1,4 @@
+import { installGroupSelects, withGroupSelection } from './materialGroupManagement';
 // V3 feedback overlay for byte-frozen media forms.  The adapter does not own
 // media writes; it makes the existing request/result boundary observable and
 // prevents a second click while that write or its mandatory readback is live.
@@ -116,6 +117,7 @@ function installMiniProgramThumbnailFeedback(): void {
 }
 
 function installMaterialFeedback(): void {
+  installGroupSelects();
   installFileFeedback();
   installMiniProgramThumbnailFeedback();
 }
@@ -307,6 +309,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   const request = input instanceof Request ? input : undefined;
   const method = (init?.method || request?.method || 'GET').toUpperCase();
   const url = new URL(request?.url || String(input), location.origin);
+  init=withGroupSelection(url,method,init);
   const state = activeSave;
   const mutation = Boolean(state && isMediaMutation(url, method));
   const readback = Boolean(state && state.mutationAccepted && isMediaReadback(url, method));
@@ -377,6 +380,9 @@ document.addEventListener('click', (event) => {
     return;
   }
   if (!button || !['保存', '创建', '上传'].includes(button.textContent?.trim() || '')) return;
+  const groupControl=document.querySelector<HTMLSelectElement>('[data-material-group-select]');
+  if(groupControl?.disabled){event.preventDefault();event.stopImmediatePropagation();message('分组信息尚未加载或当前账号没有编辑权限，请刷新核对。');return;}
+
   if (miniProgramPreflight(button)) {
     event.preventDefault();
     event.stopImmediatePropagation();

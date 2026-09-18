@@ -1,3 +1,4 @@
+import { bindMaterialGroup, management } from './materialGroupManagement';
 // The unified material workspace is presentation-only. It joins the three
 // existing Media pages through one shell route without taking ownership of
 // their HTTP reads, mutations, private URLs, or frozen donor callbacks.
@@ -278,7 +279,7 @@ class FrozenMaterialPresentation {
       // Retry belongs to the frozen owner and must retain its page offset.
       // Do not replay Enter here: doing so would turn a retry into a new
       // search (offset zero) and invoke both owner callbacks.
-      this.listSignature = '';
+      this.listSignature = ''; management()?.clear();
       this.metadataQuery = '';
       this.metadataLoaded = false;
       queueMicrotask(() => this.readVisibleMiniProgramPage());
@@ -286,13 +287,13 @@ class FrozenMaterialPresentation {
     for (const control of this.stage.querySelectorAll<HTMLButtonElement>('#mpPrevious, #mpNext')) {
       if (control.dataset.materialLibraryPagination === 'true') continue;
       control.dataset.materialLibraryPagination = 'true';
-      control.addEventListener('click', () => { this.listSignature = ''; });
+      control.addEventListener('click', () => { this.listSignature = ''; management()?.clear(); });
     }
   }
 
   private commitMiniProgramQuery(value: string): void {
     this.committedMiniProgramQuery = value.trim();
-    this.listSignature = '';
+    this.listSignature = ''; management()?.clear();
     this.metadataQuery = '';
     this.metadataLoaded = false;
     // Let the donor query handler redraw first. Its subsequent DOM mutation
@@ -398,7 +399,7 @@ class FrozenMaterialPresentation {
     this.metadataQuery = '';
     this.metadataLoaded = false;
     this.metadataReadFailed = false;
-    this.listSignature = '';
+    this.listSignature = ''; management()?.clear();
     if (this.page === 'mpLib') {
       this.readVisibleMiniProgramPage();
       return;
@@ -560,7 +561,7 @@ class FrozenMaterialPresentation {
       header.cells[0].textContent = '名称';
       header.cells[4].textContent = '创建时间';
       const status = document.createElement('th'); status.textContent = '启用状态';
-      const version = document.createElement('th'); version.textContent = '组别';
+      const version = document.createElement('th'); version.textContent = '所属分组';
       for (const cell of [status, version]) cell.style.cssText = header.cells[4].style.cssText;
       header.insertBefore(status, header.cells[5]);
       header.insertBefore(version, header.cells[6]);
@@ -607,8 +608,8 @@ class FrozenMaterialPresentation {
       header = document.createElement('div');
       header.dataset.materialLibraryMiniHeader = 'true';
       header.setAttribute('role', 'row');
-      header.style.cssText = 'display:grid;grid-template-columns:72px minmax(150px,1.2fr) minmax(112px,1fr) minmax(128px,1.2fr) minmax(122px,1fr) minmax(110px,1fr) 88px;gap:10px;align-items:center;padding:9px 12px;background:#FAFAFB;border-bottom:1px solid #DEE0E3;color:#8F959E;font-size:12px;font-weight:500';
-      ['封面', '名称 / 标题', 'AppID', '页面', '状态 / 封面', '更新时间', '操作'].forEach((label) => {
+      header.style.cssText = 'display:grid;grid-template-columns:72px minmax(150px,1.2fr) minmax(112px,1fr) minmax(128px,1.2fr) minmax(122px,1fr) minmax(110px,1fr) minmax(150px,1fr) 88px;gap:10px;align-items:center;padding:9px 12px;background:#FAFAFB;border-bottom:1px solid #DEE0E3;color:#8F959E;font-size:12px;font-weight:500';
+      ['封面', '名称 / 标题', 'AppID', '页面', '状态 / 封面', '更新时间', '所属分组', '操作'].forEach((label) => {
         const cell = document.createElement('span'); cell.setAttribute('role', 'columnheader'); cell.textContent = label; header!.append(cell);
       });
       grid.prepend(header);
@@ -649,7 +650,7 @@ class FrozenMaterialPresentation {
       }
       const { coverNode: cover, nameNode, thumbnailNode: thumbnailStatus, enabledNode, actionsNode: actions } = source;
       card.setAttribute('role', 'row');
-      card.style.cssText = 'display:grid;grid-template-columns:72px minmax(150px,1.2fr) minmax(112px,1fr) minmax(128px,1.2fr) minmax(122px,1fr) minmax(110px,1fr) 88px;gap:10px;align-items:center;min-width:0;padding:9px 12px;border:0;border-bottom:1px solid #F2F3F5;border-radius:0;overflow:visible;background:#fff';
+      card.style.cssText = 'display:grid;grid-template-columns:72px minmax(150px,1.2fr) minmax(112px,1fr) minmax(128px,1.2fr) minmax(122px,1fr) minmax(110px,1fr) minmax(150px,1fr) 88px;gap:10px;align-items:center;min-width:0;padding:9px 12px;border:0;border-bottom:1px solid #F2F3F5;border-radius:0;overflow:visible;background:#fff';
       cover.setAttribute('role', 'cell');
       // The frozen cover itself opens edit. Keep that identity explicit so a
       // permission loss blocks the direct div handler as well as row buttons.
@@ -675,12 +676,13 @@ class FrozenMaterialPresentation {
       thumbnailStatus.style.cssText = `grid-column:5;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${thumbnailText === '封面可用' ? '#237804' : '#B54708'}`;
       enabledNode.style.display = 'none';
       const updated = document.createElement('span'); updated.setAttribute('role', 'cell'); updated.textContent = item ? formatTime(item.updated_at) : '信息待确认'; updated.style.cssText = 'grid-column:6;min-width:0;color:#646A73;font-size:12px;line-height:18px';
-      if(item) mountMaterialGroupControl(actions,this.page,item);
+      const groupCell=document.createElement('span');groupCell.setAttribute('role','cell');groupCell.style.cssText='grid-column:7;display:flex;gap:6px;align-items:center;flex-wrap:wrap';
+      if(item) bindMaterialGroup(card,item.id,groupCell);
       actions.setAttribute('role', 'cell');
-      actions.style.cssText = 'grid-column:7;display:flex;align-items:center;justify-content:flex-end;gap:2px;white-space:nowrap';
+      actions.style.cssText = 'grid-column:8;display:flex;align-items:center;justify-content:flex-end;gap:2px;white-space:nowrap';
       // Keep the original elements in the row so the donor's direct event
       // handlers continue to target their own entity, including duplicates.
-      card.replaceChildren(cover, nameNode, appid, page, thumbnailStatus, updated, actions);
+      card.replaceChildren(cover, nameNode, appid, page, thumbnailStatus, updated, groupCell, actions);
       card.dataset.materialLibraryMetadataVersion = metadataVersion;
     });
   }

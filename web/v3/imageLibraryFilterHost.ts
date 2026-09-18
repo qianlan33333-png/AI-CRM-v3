@@ -1,8 +1,9 @@
+import { GroupManagement, bindMaterialGroup } from './materialGroupManagement';
 // The image library is a V3-owned workspace. It reads the existing Media
 // contract directly and leaves all mutations on the existing typed DTO and
 // MaterialSaveHost path; no donor controller or generated template is mounted.
 import { imagePageDto, saveImageItemDto } from "../src/api/admin";
-import { deleteLegacyImage, getLegacyImage, getLegacyImageList, getLegacyImageFacets } from "../src/api/generated/p4-media-compat/p4-media-compat";
+import { deleteLegacyImage, getLegacyImage, getLegacyImageList } from "../src/api/generated/p4-media-compat/p4-media-compat";
 import { ApiError, apiRequestOptions, unwrapGenerated } from "../src/api/transport";
 import type { ImageItem } from "../src/shared/api/types";
 import { mountMaterialLibraryTabs } from "./materialLibraryPresentation";
@@ -154,6 +155,7 @@ function imageDeleteMutationKey(): string {
 }
 
 class ImageLibraryHost {
+  private groupManager!: GroupManagement;
   private readonly stage: HTMLElement;
   private readonly scroll: HTMLElement;
   private readonly workspace: HTMLElement;
@@ -200,7 +202,7 @@ class ImageLibraryHost {
     const initial = new URL(location.href).searchParams;
     if (initial.has('material_group')) this.group = initial.get('material_group') ? 'category:' + initial.get('material_group') : '__ungrouped__';
     this.groupSidebar = new MaterialGroupSidebar(value => {
-      this.group = value; this.groupSidebar.select(value); this.updateGroupURL(); void this.load(0);
+      this.group = value; this.groupSidebar.select(value); this.updateGroupURL(); this.groupManager.clear(); void this.load(0);
     });
     this.groupSidebar.render(this.groupOptions, this.group);
     this.toolbarNode = this.toolbar();
@@ -212,6 +214,7 @@ class ImageLibraryHost {
     this.dialogLayer = document.createElement("section");
     this.dialogLayer.dataset.imageLibraryDialogLayer = "true";
     this.workspace.append(this.toolbarNode, this.stateNode, this.cardsNode, this.paginationNode);
+ this.groupManager=new GroupManagement("image",this.workspace);
     const layout = materialGroupLayout();
     layout.style.padding = '0'; layout.style.overflow = 'visible';
     layout.append(this.groupSidebar.element, this.workspace);
@@ -250,6 +253,7 @@ class ImageLibraryHost {
   }
 
   private async load(offset = this.offset): Promise<LoadResult> {
+    this.groupManager.clear();
     this.readAbort?.abort();
     const abort = new AbortController();
     this.readAbort = abort;
@@ -308,11 +312,13 @@ class ImageLibraryHost {
 
   private async loadGroups(): Promise<void> {
     try {
-      const result = unwrapGenerated(await getLegacyImageFacets(apiRequestOptions())) as { categories?: string[] };
+      const groups=await this.groupManager.load();
+ const result={categories:groups.filter(g=>g.id>0).map(g=>g.name)};
       if (!Array.isArray(result.categories)) return;
       this.groupOptions = [{ value: "", label: "全部分组" }, { value: "__ungrouped__", label: "未分组" }, ...result.categories.map(value => ({ value: "category:" + value, label: value }))];
       if (this.group && !this.groupOptions.some(x => x.value === this.group)) this.groupOptions.push({ value: this.group, label: this.group.slice('category:'.length) });
-      this.groupSidebar.render(this.groupOptions, this.group); this.groupSidebar.message('');
+      this.groupOptions=this.groupOptions.map(o=>({...o,count:o.value===''?groups.reduce((n,g)=>n+g.count,0):groups.find(g=>g.name===(o.value==='__ungrouped__'?'':o.value.slice(9)))?.count||0}));
+ this.groupSidebar.render(this.groupOptions, this.group); this.groupSidebar.message('');
     } catch { this.groupSidebar.message('分组加载失败，请刷新重试。'); }
   }
 
@@ -409,7 +415,7 @@ class ImageLibraryHost {
     table.style.cssText = "width:100%;border-collapse:collapse;table-layout:fixed";
     const header = document.createElement("thead");
     const heading = document.createElement("tr");
-    for (const [label, width] of [["图片 / 名称", "52%"], ["大小", "12%"], ["上传时间", "19%"], ["状态", "9%"], ["操作", "8%"]] as const) {
+    for (const [label, width] of [["图片 / 名称", "40%"], ["所属分组", "20%"], ["大小", "12%"], ["上传时间", "19%"], ["状态", "9%"], ["操作", "8%"]] as const) {
       const cell = document.createElement("th");
       cell.textContent = label;
       cell.style.cssText = `padding:10px 12px;width:${width};font-size:12px;font-weight:500;color:#8F959E;text-align:left;background:#FAFAFB;border-bottom:1px solid #DEE0E3;white-space:nowrap`;
@@ -496,6 +502,8 @@ class ImageLibraryHost {
     edit.addEventListener("click", () => this.openDialog(this.newEditDialog(item)));
     actions.append(edit);
     row.append(identity, size, time, state, actions);
+    const groupCell=cell();row.insertBefore(groupCell,row.children[1]||null);
+    const numericID=Number(String(item.resourceId||'').replace(/^image:/,''));if(numericID>0)bindMaterialGroup(row,numericID,groupCell);
     return row;
   }
 
@@ -581,11 +589,10 @@ class ImageLibraryHost {
     fields.dataset.imageLibraryDialogFields = "true";
     fields.className = "admin-form-grid admin-form-grid--stacked";
     fields.style.cssText = "padding:18px;overflow:auto;flex:1 1 auto;align-content:start";
-    const category = document.createElement("input");
-    category.id = "fImgCategory";
-    category.placeholder = "留空为未分组";
-    category.value = dialog.kind === "edit" ? dialog.item.tag : "";
-    fields.append(field("组别", category));
+    const category=this.groupManager.select(dialog.kind==='edit'?(this.groupManager.groups.find(g=>g.name===dialog.item.tag)?.id||null):(this.groupManager.current()?.id||null));
+ category.id="fImgCategory";category.dataset.materialGroupSelect="true";
+ if(dialog.kind==='edit'){const version=this.groupManager.versionFor(Number(dialog.item.resourceId));if(version)category.dataset.expectedVersion=String(version);}
+ fields.append(field("所属分组",category));
     if (dialog.kind === "upload") {
       const file = document.createElement("input");
       file.id = "fImgUpFile";

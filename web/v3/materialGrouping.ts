@@ -1,3 +1,4 @@
+import { GroupManagement, bindMaterialGroup } from './materialGroupManagement';
 import { request } from '../src/api/transport';
 import { MaterialGroupSidebar, materialGroupLayout } from './materialGroupSidebar';
 
@@ -50,6 +51,7 @@ export function mountMaterialGroups(stage: HTMLElement, page: Page): void {
     if (!(child instanceof HTMLElement && child.hasAttribute('data-material-library-tabs'))) content.append(child);
   }
   layout.append(sidebar.element, content); stage.append(layout);
+ const manager=new GroupManagement(page==='attach'?'attachment':'miniprogram',content);
   const refresh = document.createElement('button'); refresh.type = 'button';
   refresh.textContent = '刷新'; refresh.className = 'admin-button';
   refresh.addEventListener('click', () => location.reload());
@@ -57,9 +59,9 @@ export function mountMaterialGroups(stage: HTMLElement, page: Page): void {
   sidebar.message('加载分组…');
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 10000);
-  void request(paths[page] + '/groups', { signal: controller.signal })
-    .then(async (response) => {
-      const data = await response.json();
+  void manager.load()
+    .then(async (items) => {
+      const data = {items};
       if (!Array.isArray(data.items)) throw new Error('invalid groups');
       const entries = data.items as { name: string; count: number }[];
       const options = [
@@ -79,71 +81,6 @@ export function mountMaterialGroupControl(
   page: Page,
   item: { id: number; version: number; category?: unknown },
 ): void {
-  container.querySelector('[data-material-group-edit]')?.remove();
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.dataset.materialGroupEdit = 'true';
-  button.className = 'admin-button admin-button--ghost';
-  const category = typeof item.category === 'string' ? item.category : '';
-  button.textContent = category || '未分组';
-  button.title = '修改组别';
-  button.setAttribute('aria-label', '修改组别：' + (category || '未分组'));
-  button.addEventListener('click', () => {
-    const dialog = document.createElement('dialog');
-    dialog.style.cssText =
-      'border:1px solid #DEE0E3;border-radius:10px;padding:24px;min-width:300px';
-    const form = document.createElement('form');
-    const title = document.createElement('h3');
-    title.textContent = '素材组别';
-    const label = document.createElement('label');
-    label.textContent = '组别';
-    const field = document.createElement('input');
-    field.value = category;
-    field.maxLength = 100;
-    field.placeholder = '留空为未分组';
-    label.append(field);
-    const error = document.createElement('p');
-    error.setAttribute('role', 'alert');
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.textContent = '取消';
-    const save = document.createElement('button');
-    save.type = 'submit';
-    save.textContent = '保存';
-    save.className = 'admin-button admin-button--primary';
-    const key = crypto.randomUUID();
-    form.append(title, label, error, cancel, save);
-    dialog.append(form);
-    document.body.append(dialog);
-    dialog.addEventListener('close', () => dialog.remove());
-    cancel.addEventListener('click', () => dialog.close());
-    dialog.showModal();
-    field.focus();
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (save.disabled) return;
-      save.disabled = true;
-      field.disabled = true;
-      error.textContent = '';
-      try {
-        await request(paths[page] + '/' + item.id + '/group', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Idempotency-Key': key,
-          },
-          body: JSON.stringify({
-            category: field.value.trim(),
-            expected_version: item.version,
-          }),
-        });
-        location.reload();
-      } catch {
-        error.textContent = '保存未完成，请刷新核对后重试。';
-      } finally {
-        save.disabled = false; /* Freeze the command after an uncertain outcome; same key retries only the same data. */
-      }
-    });
-  });
-  container.append(button);
+  const node=container.closest<HTMLElement>('tr,[data-material-library-id]')||container;
+  bindMaterialGroup(node,item.id,container);
 }

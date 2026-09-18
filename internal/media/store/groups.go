@@ -11,6 +11,8 @@ import (
 
 func groupTable(kind string) string {
 	switch kind {
+	case "image":
+		return "media_images"
 	case "attachment":
 		return "media_attachments"
 	case "miniprogram":
@@ -26,18 +28,18 @@ func (r *Repository) MaterialGroups(ctx context.Context, kind string) ([]map[str
 	out := []map[string]any{}
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
-		rows, e := tx.Query(txctx, `SELECT category,count(*) FROM `+table+` GROUP BY category ORDER BY category`)
+		rows, e := tx.Query(txctx, `SELECT g.id,g.name,g.version,count(m.id) FROM media_material_groups g LEFT JOIN `+table+` m ON m.group_id=g.id WHERE g.kind=$1 GROUP BY g.id UNION ALL SELECT 0,'',0,count(*) FROM `+table+` WHERE group_id IS NULL ORDER BY 2`, kind)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var name string
-			var count int64
-			if e = rows.Scan(&name, &count); e != nil {
+			var count, id, version int64
+			if e = rows.Scan(&id, &name, &version, &count); e != nil {
 				return e
 			}
-			out = append(out, map[string]any{"name": name, "count": count})
+			out = append(out, map[string]any{"id": id, "name": name, "version": version, "count": count})
 		}
 		return rows.Err()
 	})
