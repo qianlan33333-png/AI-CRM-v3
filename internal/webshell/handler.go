@@ -86,6 +86,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.serveLogin(writer, request)
 	case requestPath == WeComAuthStartPath:
 		handler.serveWeComAuthStart(writer, request)
+	case requestPath == "/referral" || requestPath == "/referral/":
+		handler.serveReferral(writer, request)
 	case requestPath == "/distribution" || requestPath == "/distribution/":
 		handler.serveDistribution(writer, request)
 	case requestPath == AdminRootPath || strings.HasPrefix(requestPath, AdminRootPath+"/"):
@@ -169,6 +171,22 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 	// Distribution has employee-only facts but used to be served as a separate
 	// built document. Capture both old and canonical paths before the generic
 	// dist document fallback so it always retains the single admin_base shell.
+	if request.URL.Path == "/admin/referral.html" {
+		http.Redirect(writer, request, "/admin/referral", http.StatusSeeOther)
+		return
+	}
+	if request.URL.Path == "/admin/referral" {
+		assets, ok := DistReferralAdminAssets(handler.distDir)
+		if !ok {
+			http.Error(writer, "referral page unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		spec := adminSpecForPath(request.URL.Path)
+		if err := handler.renderer.RenderReferral(writer, AdminPageForRequest(request, spec.title, spec.summary, spec.activeEndpoint), assets); err != nil {
+			http.Error(writer, "unable to render referral shell", http.StatusInternalServerError)
+		}
+		return
+	}
 	if request.URL.Path == "/admin/distribution.html" {
 		http.Redirect(writer, request, "/admin/distribution", http.StatusSeeOther)
 		return
@@ -345,6 +363,11 @@ var adminSpecs = map[string]adminSpec{
 		title:          "周期商品管理",
 		summary:        "周期商品管理入口已预留。",
 		activeEndpoint: "api.admin_service_period_products_page",
+	},
+	"/admin/referral": {
+		title:          "裂变活动",
+		summary:        "管理邀请活动、战队、排行榜和奖励。",
+		activeEndpoint: "api.admin_referral_page",
 	},
 	"/admin/distribution": {
 		title:          "分销管理",

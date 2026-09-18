@@ -44,6 +44,14 @@ type CanonicalCustomerRootsReader interface {
 	CanonicalCustomerRoots(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerdomain.CustomerID, error)
 }
 
+// TrustedCanonicalCustomerReader verifies only whether an already-selected
+// canonical Customer root has active provider-verified identity evidence. It
+// reveals no identity value, kind, scope, or provider metadata and cannot be
+// used to resolve or provision a customer.
+type TrustedCanonicalCustomerReader interface {
+	HasActiveVerifiedIdentity(context.Context, customerdomain.CustomerID) (bool, error)
+}
+
 // LockedCanonicalLineageReader pins roots against concurrent merge for the caller UoW.
 type LockedCanonicalLineageReader interface {
 	LockedCanonicalLineage(context.Context, customerdomain.CustomerID) ([]customerdomain.CustomerID, error)

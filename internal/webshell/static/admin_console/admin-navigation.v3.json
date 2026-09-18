@@ -200,6 +200,14 @@
             "/admin/distribution"
           ],
           "required_permission": ""
+        },
+        {
+          "key": "referral",
+          "label": "裂变活动",
+          "endpoint": "api.admin_referral_page",
+          "href": "/admin/referral",
+          "active_prefixes": ["/admin/referral"],
+          "required_permission": ""
         }
       ]
     },

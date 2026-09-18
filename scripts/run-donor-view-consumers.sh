@@ -71,6 +71,8 @@ run_frontend_and_stage_checks() {
   node scripts/groupops-host-adapter-e2e.mjs
   node web/v3/pageHeaderActions.test.mjs
   node web/v3/distributionAdmin.test.mjs
+  node web/v3/referralCenter.test.mjs
+  node web/v3/referralAdmin.test.mjs
   node web/v3/shared/ui/selectionSession.test.mjs
   node web/v3/shared/ui/selectionDialog.test.mjs
   node web/v3/shared/ui/confirmationDialog.test.mjs

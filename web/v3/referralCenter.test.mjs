@@ -1,0 +1,56 @@
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { JSDOM } from 'jsdom';
+import { buildTestBrowserBundle } from '../scripts/test-browser-bundle.mjs';
+
+const bundle = await buildTestBrowserBundle(fileURLToPath(new URL('./referralCenter.ts', import.meta.url)));
+const delay = (ms = 8) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(check, description) { for (let index = 0; index < 150; index++) { if (check()) return; await delay(); } throw new Error(description); }
+const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const campaign = { id: 7, name: '秋日组队赛', state: 'active', effective_state: 'active', starts_at: '2026-09-01T00:00:00Z', ends_at: '2026-10-01T00:00:00Z', description: '邀请好友，一起冲榜。', reward_rules: '奖励以总榜为准。', participant_count: 12, invitation_count: 10, team_count: 1, teams: [{ id: 9, name: '向阳队', logo_url: '' }] };
+const calls = [];
+let joined = false;
+const dom = new JSDOM('<!doctype html><main id="referral-root"></main>', { url: 'https://crm.example/referral?campaign=7&invite=rfi_abcdefghijklmnop', runScripts: 'outside-only', pretendToBeVisual: true, beforeParse(window) {
+  window.Response = Response; window.Headers = Headers; window.URL = URL;
+  window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  window.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); this.dispatchEvent(new window.Event('close')); };
+  Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async () => undefined } });
+  window.fetch = async (input, init = {}) => { const url = new URL(String(input), window.location.href); calls.push({ path: url.pathname, query: url.search, method: String(init.method || 'GET'), body: String(init.body || ''), key: new Headers(init.headers).get('Idempotency-Key') || '' });
+    if (url.pathname === '/api/v1/referral/campaigns/7') return json(campaign);
+    if (url.pathname === '/api/v1/referral/campaigns/7/me') return json(joined ? { participation: { joined_at: '2026-09-18T00:00:00Z' }, team: { id: 9, name: '向阳队' }, direct_invitation_count: 0, personal_total_score: 0, personal_rank: 0, invitation_available: true } : { participation: null, team: null, direct_invitation_count: 0, personal_total_score: 0, personal_rank: 0, invitation_available: false });
+    if (url.pathname === '/api/v1/referral/invitations/rfi_abcdefghijklmnop') return json({ campaign, inviter_display_name: '林晓', inviter_avatar_url: '', inviter_team: { id: 9, name: '向阳队' } });
+    if (url.pathname === '/api/v1/referral/campaigns/7/leaderboard') return json({ kind: url.searchParams.get('kind'), period: url.searchParams.get('period'), items: [{ rank: 1, display_name: '小周', team_name: '向阳队', score: 5, mine: false }], my_entry: { rank: 31, display_name: '我', team_name: '向阳队', score: 2, mine: true } });
+    if (url.pathname === '/api/v1/referral/campaigns/7/participations') { joined = true; return json({ participation: { joined_at: '2026-09-18T00:00:00Z' }, team: { id: 9, name: '向阳队' }, direct_invitation_count: 0, personal_total_score: 0, personal_rank: 0, invitation_available: true }); }
+    if (url.pathname === '/api/v1/referral/campaigns/7/invite') return json({ url: 'https://crm.example/r/rfi_abcdefghijklmnopqrstuvwxyz' });
+    return json({ error: 'not_found' }, 404);
+  };
+} });
+dom.window.eval(bundle);
+await waitFor(() => dom.window.document.body.textContent.includes('林晓'), `invite preview must render the safe inviter display name: ${dom.window.document.body.textContent}`);
+assert.doesNotMatch(dom.window.document.body.textContent, /customer_id|OpenID|手机号/i, 'public campaign must not expose identity identifiers');
+const board = dom.window.document.querySelector('[data-testid="referral-leaderboard-board"]'); board.value = 'personal'; board.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => calls.some((call) => call.path.endsWith('/leaderboard') && /kind=personal/.test(call.query)), 'leaderboard selector must issue the safe kind query');
+assert.match(dom.window.document.querySelector('[data-testid="referral-my-rank"]')?.textContent || '', /第 31 名 · 2 人/, 'fixed ranking must use the current API my_entry, including ranks outside the visible page');
+const period = dom.window.document.querySelector('[data-testid="referral-leaderboard-period"]'); period.value = 'day'; period.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => calls.some((call) => call.path.endsWith('/leaderboard') && /period=day/.test(call.query) && /(?:\?|&)date=\d{4}-\d{2}-\d{2}(?:&|$)/.test(call.query)), 'day leaderboard must supply a Beijing calendar date');
+period.value = 'week'; period.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => dom.window.document.querySelector('input[aria-label="历史日期"]'), 'week leaderboard must render an anchor date control');
+const history = dom.window.document.querySelector('input[aria-label="历史日期"]'); history.value = '2026-09-16'; history.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => calls.some((call) => call.path.endsWith('/leaderboard') && /period=week/.test(call.query) && /(?:\?|&)week=2026-09-14(?:&|$)/.test(call.query)), 'week leaderboard must normalize any selected day to its Beijing Monday');
+dom.window.document.querySelector('[data-testid="referral-join-team"]').click();
+await waitFor(() => dom.window.document.querySelector('[data-testid="referral-accept-dialog"]'), 'accept action must open a confirmation dialog');
+assert.match(dom.window.document.querySelector('[data-testid="referral-accept-dialog"]').textContent, /更新为 林晓/, 'confirmation must name the actual inviter');
+const check = dom.window.document.querySelector('#referral-rule-check'); check.checked = true;
+const confirm = dom.window.document.querySelector('[data-testid="referral-confirm-join"]'); confirm.click(); confirm.click();
+await waitFor(() => calls.filter((call) => call.path.endsWith('/participations')).length === 1, 'repeat acceptance must send one idempotent write');
+const join = calls.find((call) => call.path.endsWith('/participations'));
+assert.deepEqual(JSON.parse(join.body), { invitation_token: 'rfi_abcdefghijklmnop' }, 'invite acceptance must not send a user-selected team');
+assert.ok(join.key.length >= 16, 'acceptance needs an idempotency key');
+await waitFor(() => dom.window.document.querySelector('[data-testid="referral-invite"]')?.disabled === false, 'successful participation must enable the invitation entry');
+dom.window.document.querySelector('[data-testid="referral-invite"]').click();
+await waitFor(() => dom.window.document.querySelector('[data-testid="referral-invite-dialog"]'), 'invite dialog did not render');
+const inviteURL = dom.window.document.querySelector('[data-testid="referral-invite-url"]').value;
+assert.match(inviteURL, /^https:\/\/crm\.example\/r\/rfi_[A-Za-z0-9_-]+$/, 'invite output must remain same-origin and opaque');
+assert.match(dom.window.document.querySelector('[data-testid="referral-download-poster"]').getAttribute('href'), /^data:image\/svg\+xml/, 'fixed poster must be downloadable without an editor');
+dom.window.close();
+console.log('referralCenter behavior passed');

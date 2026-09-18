@@ -104,6 +104,9 @@ import (
 	radarmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/module"
 	radarprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/provider"
 	radarstore "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/store"
+	referralapp "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/app"
+	referralhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/http"
+	referralstore "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/store"
 	releaseapp "github.com/qianlan33333-png/AI-CRM-v3/internal/release/app"
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	segment "github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
@@ -313,6 +316,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	referralRepository, err := referralstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
 	customerOverview, err := customerapp.NewOverviewReader(uow, identityRepository)
 	if err != nil {
 		return fail(err)
@@ -372,6 +379,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = river.AddWorkerSafely[segment.CoreSubmissionArgs](effectWorkers, coreSubmissionWorker); err != nil {
 		return fail(err)
 	}
+	referralCampaignCloseWorker := referralapp.NewCampaignCloseWorker()
+	if err = river.AddWorkerSafely[referralapp.CampaignCloseJobArgs](effectWorkers, referralCampaignCloseWorker); err != nil {
+		return fail(err)
+	}
 	audienceRefreshWorker := segment.NewAudienceRefreshWorker()
 	if err = river.AddWorkerSafely[segment.AudienceRefreshJobArgs](effectWorkers, audienceRefreshWorker); err != nil {
 		return fail(err)
@@ -429,6 +440,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	referralCampaignCloseEnqueuer, err := referralapp.NewRiverCampaignCloseEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
 	customerSyncEnqueuer, err := wecom.NewRiverCustomerSyncEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
@@ -479,7 +494,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, distributionapp.DistributionSettlementQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, distributionapp.DistributionSettlementQueue, referralapp.ReferralCampaignQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -1428,6 +1443,27 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = paymentHandler.SetH5OAuth(h5OAuthService); err != nil {
 		return fail(err)
 	}
+	// Referral has its own campaign state and durable close work, but its member
+	// actor is the existing trusted WeChat browser session. A missing dedicated
+	// invite-token key leaves only Referral unavailable; it must not weaken the
+	// existing host's startup configuration or expose an unauthenticated route.
+	var referralPublic http.Handler = referralUnavailableHandler{}
+	var referralAdmin http.Handler = referralUnavailableHandler{}
+	var referralService *referralapp.Service
+	var referralAdminService *referralapp.AdminService
+	if cfg.Referral.TokenDataKey != "" {
+		referralService, err = referralapp.NewService(uow, referralRepository, cfg.PublicOrigin, cfg.Referral.TokenDataKey, referralCampaignCloseEnqueuer, auditService, platformoutbox.NewPostgreSQL())
+		if err != nil {
+			return fail(err)
+		}
+		referralAdminService, err = referralapp.NewAdminService(uow, referralRepository, referralCanonicalCustomerVerifier{resolver: canonicalCustomerAdapter{reader: queries}, identities: queries}, referralCampaignCloseEnqueuer, auditService, platformoutbox.NewPostgreSQL())
+		if err != nil {
+			return fail(err)
+		}
+		if err = referralCampaignCloseWorker.BindService(referralAdminService); err != nil {
+			return fail(err)
+		}
+	}
 	// Distribution is a separate external-customer capability. It is composed
 	// only when the configured Payment channel can provide the exact scoped
 	// WeChat identity and provider boundary it needs; otherwise every public
@@ -1501,6 +1537,27 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		distributionPublic, distributionErr = distributionhttp.NewHandler(distributionhttp.Config{Registration: registration, Promotion: promotion, Earnings: readModelService, Sessions: browserSessions, Bridge: bridge, CookieSecure: true, AllowedOrigins: []string{cfg.PublicOrigin, h5PublicOrigin(cfg)}})
 		if distributionErr != nil {
 			return fail(distributionErr)
+		}
+		if referralService != nil && referralAdminService != nil {
+			referralHandler, referralErr := referralhttp.NewHandler(referralhttp.Config{
+				Public:            referralService,
+				Admin:             referralAdminService,
+				Sessions:          browserSessions,
+				Bridge:            bridge,
+				Names:             orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore},
+				Profiles:          referralCustomerProfileAdapter{uow: uow, reader: customerStore},
+				Security:          requestSecurity,
+				CookieSecure:      true,
+				AllowedOrigins:    []string{cfg.PublicOrigin, h5PublicOrigin(cfg)},
+				SessionCookieName: distributionhttp.DistributionSessionCookieName,
+				CSRFCookieName:    distributionhttp.DistributionCSRFCookieName,
+				CSRFHeader:        distributionhttp.DistributionCSRFHeader,
+			})
+			if referralErr != nil {
+				return fail(referralErr)
+			}
+			referralPublic = http.HandlerFunc(referralHandler.ServePublicHTTP)
+			referralAdmin = http.HandlerFunc(referralHandler.ServeAdminHTTP)
 		}
 		adminService, distributionErr := distributionapp.NewAdminService(uow, distributionRepository, paymentService)
 		if distributionErr != nil {
@@ -2152,6 +2209,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	handler = mountAIAssistant(handler, aiReviewAPIs, aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountPublicCoupon(mountPublicServicePeriod(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler), publicServicePeriodHandler), couponPublicHandler))
 	handler = mountDistribution(handler, distributionPublic, distributionAdmin)
+	// Referral is independently authenticated by a trusted WeChat browser
+	// session, never a distributor registration or employee Access cookie. The
+	// concrete handlers replace these fail-closed defaults when all Referral
+	// dependencies have been composed.
+	handler = mountReferral(handler, referralPublic, referralAdmin)
 	handler = redirectH5EntryOrigin(handler, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
 	if err != nil {
@@ -2694,6 +2756,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	// The distributor center has its own Payment-derived browser session. It is
 	// a public shell document; its Distribution API independently authorizes
 	// every read and mutation and must never require an employee Access cookie.
+	mux.Handle("/referral", shell)
+	mux.Handle("/referral/", shell)
 	mux.Handle("/distribution", shell)
 	mux.Handle("/distribution/", shell)
 	mux.Handle("/admin", requireAdminSession(authentication, shell))

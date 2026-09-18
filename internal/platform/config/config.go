@@ -53,6 +53,7 @@ type Runtime struct {
 	Effects                    Effects
 	TagCatalog                 TagCatalogProvider
 	Survey                     Survey
+	Referral                   Referral
 	CommercePush               CommercePush
 	WeChatPay                  WeChatPay
 	WeChatShop                 WeChatShop
@@ -179,6 +180,10 @@ type CommercePush struct {
 	TargetsJSON     string
 	PayloadDataKey  string
 }
+
+// Referral keeps the independent secret used to bind opaque invitation
+// capabilities. It must never reuse a Survey, payment, or Provider key.
+type Referral struct{ TokenDataKey string }
 
 type HXCDashboard struct {
 	Enabled                     bool
@@ -390,6 +395,7 @@ func Load() (Runtime, error) {
 			MaxRecipientsPerRun: DefaultAutomationMaxRecipientsPerRun,
 		},
 		Survey:       Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), CompletionNavigationTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_NAVIGATION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
+		Referral:     Referral{TokenDataKey: os.Getenv("AICRM_REFERRAL_TOKEN_DATA_KEY")},
 		CommercePush: CommercePush{TargetsJSON: os.Getenv("AICRM_COMMERCE_PUSH_TARGETS_JSON"), PayloadDataKey: os.Getenv("AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
@@ -800,6 +806,11 @@ func Load() (Runtime, error) {
 	if cfg.Survey.DataKey != "" {
 		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.DataKey); decodeErr != nil || len(decoded) != 32 {
 			return Runtime{}, errors.New("invalid AICRM_SURVEY_DATA_KEY")
+		}
+	}
+	if cfg.Referral.TokenDataKey != "" {
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Referral.TokenDataKey); decodeErr != nil || len(decoded) != 32 {
+			return Runtime{}, errors.New("invalid AICRM_REFERRAL_TOKEN_DATA_KEY")
 		}
 	}
 	if cfg.OpenPlatform.JWTSigningKey != "" && (len(cfg.OpenPlatform.JWTSigningKey) < 32 || strings.TrimSpace(cfg.OpenPlatform.JWTSigningKey) != cfg.OpenPlatform.JWTSigningKey || strings.ContainsAny(cfg.OpenPlatform.JWTSigningKey, "\r\n\x00")) {

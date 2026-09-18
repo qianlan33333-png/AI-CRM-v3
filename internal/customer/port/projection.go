@@ -34,6 +34,18 @@ type DirectoryDisplayNameReader interface {
 	DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error)
 }
 
+// DirectoryPublicProfile is the smallest public-facing identity presentation
+// projection. It is used only after a domain already holds a canonical
+// Customer ID; it cannot search, resolve, provision, or reveal contact data.
+type DirectoryPublicProfile struct {
+	DisplayName string
+	AvatarURL   string
+}
+
+type DirectoryPublicProfileReader interface {
+	PublicProfiles(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]DirectoryPublicProfile, error)
+}
+
 // DirectoryContactDisplay is the minimum already-masked Customer projection
 // that another domain may render after it already holds a canonical customer
 // ID. It cannot resolve an identity or expose an unmasked phone number.

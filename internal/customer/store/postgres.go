@@ -27,6 +27,7 @@ var _ customerport.ProviderProfileWriter = PostgreSQL{}
 var _ customerport.AudienceReader = PostgreSQL{}
 var _ customerport.AudienceRegistrationReader = PostgreSQL{}
 var _ customerport.DirectoryDisplayNameReader = PostgreSQL{}
+var _ customerport.DirectoryPublicProfileReader = PostgreSQL{}
 var _ customerport.DirectoryContactDisplayReader = PostgreSQL{}
 var _ customerport.RadarVisitorDirectoryReader = PostgreSQL{}
 
@@ -155,6 +156,51 @@ func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain
 		}
 	}
 	return result, rows.Err()
+}
+
+func (PostgreSQL) PublicProfiles(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.DirectoryPublicProfile, error) {
+	result := make(map[customerdomain.CustomerID]customerport.DirectoryPublicProfile)
+	if len(customerIDs) == 0 {
+		return result, nil
+	}
+	if len(customerIDs) > 200 {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	ids := make([]int64, 0, len(customerIDs))
+	seen := make(map[customerdomain.CustomerID]struct{}, len(customerIDs))
+	for _, id := range customerIDs {
+		if id < 1 {
+			return nil, customerapp.ErrInvalidQuery
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, int64(id))
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id,display_name,avatar_url FROM customer_directory_projection WHERE customer_id=ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		var value customerport.DirectoryPublicProfile
+		if err = rows.Scan(&id, &value.DisplayName, &value.AvatarURL); err != nil {
+			return nil, err
+		}
+		if value.DisplayName != "" {
+			result[id] = value
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (PostgreSQL) ContactDisplays(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.DirectoryContactDisplay, error) {

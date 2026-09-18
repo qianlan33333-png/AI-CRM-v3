@@ -74,7 +74,7 @@ func distributionRuntimeAssets(next http.Handler, dist string) http.Handler {
 			include(dependency.Path)
 		}
 	}
-	for _, entry := range []string{"distributionCenter", "distributionAdmin", "distributionStyles", "sharedDetailDrawerStyles"} {
+	for _, entry := range []string{"distributionCenter", "distributionAdmin", "distributionStyles", "sharedDetailDrawerStyles", "referralCenter", "referralStyles"} {
 		include(manifest.Entries[entry])
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

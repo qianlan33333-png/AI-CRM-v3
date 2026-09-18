@@ -49,7 +49,7 @@ const entryKeys = [
   'admin', 'adminSessionHost', 'standardComponentsHost', 'adminDateTimeHost', 'standardComponentsStableHost', 'tokens', 'labs',
   'operationCyclesHost', 'materialSaveHost', 'imageLibraryFilterHost', 'materialLibraryHost', 'orderHost', 'productHost', 'couponHost', 'channelCenterHost', 'aiAssistantHost', 'pageHeaderActionHost', 'radarHost',
   'customerHost', 'sidebarHost', 'sidebarStandardOverlay', 'sidebarImageResourceLoader', 'sidebarStandardStyles', 'sidebarPresentationStyles', 'openPlatformHost', 'sidebarStyles', 'groupopsHost', 'groupopsStyles', 'channelAdmissionStyles', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost', 'productWorkspace', 'dashboardShare',
-  'distributionCenter', 'distributionAdmin', 'distributionStyles',
+  'distributionCenter', 'distributionAdmin', 'distributionStyles', 'referralCenter', 'referralAdmin', 'referralStyles',
   'automationLifecycleHost', 'automationContentHost', 'automationContentStyles',
   'publicCommerceHost', 'publicCommerceStyles',
   'navigationHost', 'overviewAdmin', 'overviewStyles',
@@ -143,6 +143,8 @@ assert.equal(stagedManifest.entries?.h5, sourceManifest.entries?.h5, 'previous S
 assert.ok(fs.existsSync(path.join(stage, 'h5', 'index.html')), 'previous Survey public stage was removed');
 assert.deepEqual(stagedManifest.release_files?.['distribution/index.html'], sourceManifest.release_files?.['distribution/index.html'], 'staged release metadata omits distribution/index.html');
 assert.ok(fs.readFileSync(path.join(stage, 'distribution', 'index.html')).equals(fs.readFileSync(path.join(source, 'distribution', 'index.html'))), 'staged distribution document drifted');
+assert.deepEqual(stagedManifest.release_files?.['referral/index.html'], sourceManifest.release_files?.['referral/index.html'], 'staged release metadata omits referral/index.html');
+assert.ok(fs.readFileSync(path.join(stage, 'referral', 'index.html')).equals(fs.readFileSync(path.join(source, 'referral', 'index.html'))), 'staged referral document drifted');
 
 // validate-release treats files and release_files as a single immutable
 // closure. Walk the actual stage after all three staging steps so no copied
