@@ -180,10 +180,6 @@
     return ({ definition_unsupported: "人群筛选定义暂不支持", configuration_drift: "配置版本已变化", refresh_unavailable: "刷新服务暂不可用" })[value] || "刷新原因待确认";
   }
 
-  function membershipLabel(item) {
-    return ({ empty: "等待绑定核心产品", core_ai: "AI 推荐入包", rule: "规则筛选入包" })[item?.membership_mode] || "入包方式待核实";
-  }
-
   async function bootList() {
     if (!byID("audRows")) return;
     const state = { groups: [], packages: [], templates: [], groupID: null, page: 1, pageSize: 20, busy: false };
@@ -213,9 +209,9 @@
       byID("selectedGroupMeta").textContent = `${rows.length} 个人群包 · 每页 ${state.pageSize} 个`;
       byID("groupActions").hidden = state.groupID === null;
       byID("audRows").innerHTML = visible.length ? visible.map((item) => `<tr>
-        <td><div class="aud-name-cell"><a class="aud-name" href="/admin/automation-conversion/packages/${item.id}"><span class="aud-dot${item.lifecycle === "active" ? "" : " muted"}"></span>${escapeHTML(item.name)}</a><span class="aud-template-tag">人群包编号 ${Number(item.id)}</span></div></td>
-        <td class="aud-strong">${Number(item.member_count || 0)}</td><td>${formatTime(item.published_at)}</td><td><div>${membershipLabel(item)}</div><span class="aud-pill${item.lifecycle === "active" ? "" : " gray"}">${lifecycleLabel(item.lifecycle)}</span></td>
-        <td><div class="aud-actions" style="justify-content:flex-end"><button class="aud-btn" data-action="edit" data-package-id="${item.id}">编辑</button>${item.membership_mode === "empty" ? "" : `<button class="aud-btn" data-action="${item.lifecycle === "active" ? "pause" : "activate"}" data-package-id="${item.id}">${item.lifecycle === "active" ? "暂停" : "激活"}</button>`}${item.membership_mode === "core_ai" ? "" : `<button class="aud-btn" data-action="copy" data-package-id="${item.id}">复制</button>`}<button class="aud-btn danger" data-action="archive" data-package-id="${item.id}">归档</button></div></td>
+        <td><div class="aud-name-cell"><a class="aud-name" href="/admin/automation-conversion/packages/${item.id}"><span class="aud-dot${item.lifecycle === "active" ? "" : " muted"}"></span>${escapeHTML(item.name)}</a><span class="aud-template-tag">${escapeHTML(item.code)}</span></div></td>
+        <td class="aud-strong">${Number(item.member_count || 0)}</td><td>${formatTime(item.published_at)}</td><td><span class="aud-pill${item.lifecycle === "active" ? "" : " gray"}">${lifecycleLabel(item.lifecycle)}</span></td>
+        <td><div class="aud-actions" style="justify-content:flex-end"><button class="aud-btn" data-action="${item.lifecycle === "active" ? "pause" : "activate"}" data-package-id="${item.id}">${item.lifecycle === "active" ? "暂停" : "激活"}</button><button class="aud-btn" data-action="copy" data-package-id="${item.id}">复制</button><button class="aud-btn danger" data-action="archive" data-package-id="${item.id}">归档</button></div></td>
       </tr>`).join("") : `<tr><td class="aud-empty" colspan="5">当前分组暂无人群包</td></tr>`;
       byID("pageMeta").textContent = `第 ${state.page} / ${pages} 页，共 ${rows.length} 个`;
       byID("prevBtn").disabled = state.page <= 1;
@@ -226,17 +222,17 @@
     async function load() {
       showNotice("正在读取真实人群配置…");
       try {
-        const [groups, packages] = await Promise.all([
+        const [groups, packages, templates] = await Promise.all([
           request(`${API}/ai-audience/package-groups`),
           request(`${API}/ai-audience/packages?limit=100&offset=0`),
+          request(`${API}/ai-audience/templates`),
         ]);
         state.groups = groups.items || [];
         state.packages = packages.items || [];
-        // Only enable controls owned by this list. Product dialogs keep their
-        // own disabled states, including the immutable package binding.
-        ["audiencePackagePanel", "groupModal", "packageModal"].forEach(id => enable(byID(id)));
+        state.templates = (templates.items || []).filter((item) => item.available);
+        enable();
         render();
-        showNotice(state.packages.length ? "" : "尚未创建人群包。创建空包后，可在核心产品配置中绑定并由 AI 推荐成员。", false);
+        showNotice(state.packages.length ? "" : "尚未创建人群包。创建后仍需配置快照、话术智能体和发送人。", false);
       } catch (error) {
         const detail = errorState(error);
         showNotice(detail.message, true);
@@ -244,7 +240,6 @@
     }
 
     async function mutatePackage(id, action) {
-      if (action === "edit" && !state.busy) { openPackage(state.packages.find(item => item.id === id)); return; }
       if (state.busy || !["activate", "pause", "copy", "archive"].includes(action)) return;
       const item = state.packages.find((value) => value.id === id);
       if (!item) return;
@@ -326,45 +321,23 @@
     byID("nextBtn").addEventListener("click", () => { state.page++; render(); });
 
     const packageModal = byID("packageModal");
-    let editingPackage = null;
-    function openPackage(item = null) {
-      editingPackage = item ? { ...item } : null;
-      byID("packageModalTitle").textContent = item ? "编辑人群包" : "新建人群包";
-      byID("packageSubmitBtn").textContent = item ? "保存" : "创建";
-      byID("packageCreateName").value = item?.name || "";
-      byID("packageCreateGroup").innerHTML = `<option value="">未分组</option>${state.groups.map(g => `<option value="${g.id}">${escapeHTML(g.name)}</option>`).join("")}`;
-      byID("packageCreateGroup").value = String((item ? item.group_id : state.groupID) || "");
-      byID("packageFormHelp").textContent = item ? "仅修改名称和分组，不改变成员、入包方式或历史记录。" : "创建后为空人群包，绑定核心产品后由 AI 推荐成员。";
-      byID("packageFormNotice").hidden = true;
+    byID("createPackageBtn").addEventListener("click", () => {
+      byID("packageCreateName").value = "";
+      byID("packageCreateTemplate").innerHTML = state.templates.map((item) => `<option value="${escapeHTML(item.key)}">${escapeHTML(item.key)}</option>`).join("");
       packageModal.hidden = false;
       byID("packageCreateName").focus();
-    }
-    byID("createPackageBtn").addEventListener("click", () => openPackage());
-    byID("cancelPackageBtn").addEventListener("click", () => { if (!state.busy) packageModal.hidden = true; });
+    });
+    byID("cancelPackageBtn").addEventListener("click", () => { packageModal.hidden = true; });
     byID("packageForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (state.busy) return;
       const name = byID("packageCreateName").value.trim();
-      if (!name) return;
-      const group = byID("packageCreateGroup").value;
-      const group_id = group ? Number(group) : null;
-      state.busy = true;
-      byID("packageSubmitBtn").disabled = true;
-      const item = editingPackage;
+      const templateKey = byID("packageCreateTemplate").value;
+      if (!name || !templateKey) return;
       try {
-        await request(`${API}/ai-audience/packages${item ? "/" + item.id : ""}`, { method: item ? "PATCH" : "POST", mutate: true, scope: item ? "audience-package-update" : "audience-package-create", body: { name, group_id, ...(item ? { expected_version: item.version } : { creation_mode: "empty" }) } });
-        packageModal.hidden = true;
-        state.groupID = group_id;
-        await load();
-        window.dispatchEvent(new Event("audience-packages-changed"));
-      } catch (error) {
-        const detail = errorState(error);
-        byID("packageFormNotice").hidden = false;
-        byID("packageFormNotice").textContent = error instanceof APIError && error.status === 409 ? "此人群包已被修改，请取消后重新打开编辑。" : detail.message;
-        if (error instanceof APIError && error.status === 409) await load();
-      } finally { state.busy = false; byID("packageSubmitBtn").disabled = false; }
+        const result = await request(`${API}/ai-audience/packages`, { method: "POST", mutate: true, scope: "audience-package-create", body: { name, group_id: state.groupID, template_key: templateKey } });
+        window.location.href = `/admin/automation-conversion/packages/${result.package.id}`;
+      } catch (error) { const detail = errorState(error); showNotice(detail.message, true); }
     });
-    window.addEventListener("core-products-changed", () => { void load(); });
     await load();
   }
 
@@ -393,7 +366,7 @@
       panelButtons.forEach((button) => button.classList.toggle("active", button.dataset.panel === key));
       document.querySelectorAll(".ai-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `panel-${key}`));
       byID("saveCurrentDimensionBtn").textContent = ["members", "records", "policies"].includes(key) ? "刷新列表" : "保存当前维度";
-      byID("manualRefreshBtn").hidden = key === "records" || state.pkg?.membership_mode !== "rule";
+      byID("manualRefreshBtn").hidden = key === "records";
       if (key === "members") void loadMembers();
       if (key === "records") void loadRuns();
       if (key === "policies") void loadPolicies();
@@ -407,10 +380,6 @@
       const publishedAt = state.snapshot?.published_at || state.snapshot?.reference_time || pkg?.published_at || pkg?.reference_time;
       byID("summaryCount").textContent = memberCount === null || memberCount === undefined ? "尚无快照" : Number(memberCount).toLocaleString("zh-CN");
       byID("summaryRefresh").textContent = formatTime(publishedAt);
-      byID("membershipModeNotice").textContent = membershipLabel(pkg);
-      byID("coreProductConfigLink").hidden = pkg?.membership_mode === "rule";
-      document.querySelectorAll("[data-rule-config]").forEach(node => { node.hidden = pkg?.membership_mode !== "rule"; });
-      byID("manualRefreshBtn").hidden = pkg?.membership_mode !== "rule";
       byID("summaryMode").textContent = state.config?.refresh_cron_utc ? `计划 ${state.config.refresh_cron_utc}` : "手动";
       byID("summaryStatus").textContent = lifecycleLabel(pkg?.lifecycle);
       byID("packageNameInput").value = pkg?.name || "";
@@ -420,7 +389,6 @@
       const immutable = pkg?.lifecycle === "archived" || pkg?.lifecycle === "active";
       document.querySelectorAll("#panel-basic input,#panel-basic textarea,#panel-basic select,#panel-basic button,#panel-automation button,#panel-automation select,#panel-senders input,#panel-senders button").forEach((node) => { node.disabled = immutable; });
       byID("manualRefreshBtn").disabled = pkg?.lifecycle === "archived";
-      for (const id of ["packageNameInput", "packageGroupSelect", "savePackageBtn"]) byID(id).disabled = pkg?.lifecycle === "archived";
     }
 
     function renderGroups(groups) {
@@ -497,7 +465,6 @@
       try {
         const groupValue = byID("packageGroupSelect").value;
         const changed = await request(`${API}/ai-audience/packages/${packageID}`, { method: "PATCH", mutate: true, scope: "audience-package-update", body: { name: byID("packageNameInput").value.trim(), group_id: groupValue ? Number(groupValue) : null, expected_version: state.pkg.version } });
-        if (state.pkg.membership_mode !== "rule") { await load(); setStatus(byID("packageStatusLine"), "已保存名称和分组。", "success"); return; }
         const definition = JSON.parse(byID("packageDefinitionInput").value);
         await request(`${API}/ai-audience/packages/${packageID}/configuration`, { method: "PUT", mutate: true, scope: "audience-configuration", body: { expected_package_version: changed.package.version, refresh_cron_utc: byID("dailySelect").value === "daily_0200" ? "0 2 * * *" : "", definition } });
         setStatus(byID("packageStatusLine"), "配置已作为新不可变版本提交。", "success");

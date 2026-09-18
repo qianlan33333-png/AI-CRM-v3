@@ -280,7 +280,6 @@
       state.initialDateTimes = initialDateTimes;
     }
     async function render() {
-      if (state.package?.membership_mode === "empty") return;
       if (state.configuration?.definition?.template_key === "core_ai_product") {
         select.disabled = true; previewButton.disabled = true; saveButton.disabled = true;
         const refresh=byID("manualRefreshBtn");if(refresh){refresh.disabled=true;refresh.title="成员随 AI 分配或人工调整更新"}
@@ -300,9 +299,8 @@
       byID("templateHistoryNote").hidden = Boolean(template);
     }
     async function load() {
-      const pkg = await request(`${api}/packages/${id}`);
-      const [templates, configuration] = await Promise.all([
-        request(`${api}/templates`), pkg.package.membership_mode === "empty" ? Promise.resolve({ configuration: null }) : request(`${api}/packages/${id}/configuration`),
+      const [pkg, templates, configuration] = await Promise.all([
+        request(`${api}/packages/${id}`), request(`${api}/templates`), request(`${api}/packages/${id}/configuration`),
       ]);
       state.package = pkg.package;
       state.templates = templates.items || [];
@@ -388,7 +386,6 @@
       }
       if (target !== saveButton && target !== byID("savePackageBtn") && target !== byID("saveCurrentDimensionBtn")) return;
 	  if (target === byID("saveCurrentDimensionBtn") && !byID("panel-basic")?.classList.contains("active")) return;
-      if (["empty", "core_ai"].includes(state.package?.membership_mode)) return;
       try {
         prepareDetailSave();
         event.preventDefault();

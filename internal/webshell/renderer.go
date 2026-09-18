@@ -116,8 +116,6 @@ type AdminShellView struct {
 	DistributionAssets    DistributionAssets
 	ComponentStates       bool
 	ComponentStatesAssets ComponentStatesAssets
-	Governance            bool
-	GovernanceAssets      OverviewAssets
 	Overview              bool
 	OverviewAssets        OverviewAssets
 }
@@ -260,7 +258,9 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 	audienceDetail := strings.HasPrefix(data.RequestPath, "/admin/automation-conversion/packages/")
 	customers := data.RequestPath == "/admin/customers" || strings.HasPrefix(data.RequestPath, "/admin/customers/")
 	archive := data.RequestPath == "/admin/message-archive" || strings.HasPrefix(data.RequestPath, "/admin/message-archive/customers/")
-	if audienceList {
+	if data.RequestPath == "/admin/group-invitations" {
+		contentTemplate = "admin_invitations"
+	} else if audienceList {
 		contentTemplate = "admin_audience"
 	} else if audienceDetail {
 		contentTemplate = "admin_audience_detail"
@@ -341,20 +341,6 @@ func (renderer *Renderer) RenderOverview(writer http.ResponseWriter, data AdminP
 		Overview:       true,
 		OverviewAssets: assets,
 	})
-	if err != nil {
-		return err
-	}
-	return writeHTML(writer, http.StatusOK, body)
-}
-
-// RenderGovernance reuses the existing single admin shell and shared controls.
-func (renderer *Renderer) RenderGovernance(writer http.ResponseWriter, data AdminPageData, assets OverviewAssets) error {
-	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" || assets.DetailDrawerCSS == "" {
-		return errors.New("governance assets required")
-	}
-	normalizeAdminPage(&data)
-	data.ShowPageHeader = true
-	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<section id="governance-admin-root" aria-live="polite"><p>正在读取治理数据…</p></section>`), Governance: true, GovernanceAssets: assets})
 	if err != nil {
 		return err
 	}
@@ -511,7 +497,7 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 	// Product list pages use the shared V3 shell title and action slot; form
 	// pages use the same shell header for their existing editor actions. The
 	// Product adapter retains original controls while removing duplicate donor headings.
-	data.ShowPageHeader = page == "products" || page == "spProducts" || page == "productForm" || page == "spProductForm" || page == "spProductData"
+	data.ShowPageHeader = page == "products" || page == "spProducts" || page == "productForm" || page == "spProductForm"
 	content := `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
 	if err != nil {

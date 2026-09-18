@@ -68,6 +68,7 @@ import (
 	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
+	mediahttp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/http"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	archiveapp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/app"
 	archivehttp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/http"
@@ -135,6 +136,8 @@ import (
 )
 
 type composedApplication struct {
+	invitationService     *mediaapp.InvitationService
+	catalogService        *groupopsapp.CatalogService
 	pool                  *platformpostgres.Pool
 	handler               http.Handler
 	authentication        accessAuthentication
@@ -433,6 +436,22 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = river.AddWorkerSafely[outbound.MaterialRefreshJobArgs](effectWorkers, materialRefreshWorker); err != nil {
 		return fail(err)
 	}
+	catalogWorker := &groupops.CatalogWorker{}
+	if err = river.AddWorkerSafely[groupops.CatalogArgs](effectWorkers, catalogWorker); err != nil {
+		return fail(err)
+	}
+	catalogDetailWorker := &groupops.CatalogDetailWorker{}
+	if err = river.AddWorkerSafely[groupops.CatalogDetailArgs](effectWorkers, catalogDetailWorker); err != nil {
+		return fail(err)
+	}
+	catalogScheduleWorker := &groupops.CatalogScheduleWorker{}
+	if err = river.AddWorkerSafely[groupops.CatalogScheduleArgs](effectWorkers, catalogScheduleWorker); err != nil {
+		return fail(err)
+	}
+	invitationWorker := &media.InvitationRefreshWorker{}
+	if err = river.AddWorkerSafely[media.InvitationRefreshArgs](effectWorkers, invitationWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
@@ -441,6 +460,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	catalogEnqueuer := groupops.CatalogEnqueuer{Client: effectClient, UoW: uow}
 	ownerHandoffBatchEnqueuer, err := customer.NewRiverOwnerHandoffEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
@@ -493,7 +513,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = bindOpsOwnerRetention(opsRetention, configRepository, archivestore.NewPostgreSQL()); err != nil {
 		return fail(err)
 	}
-	effectsQueues := []string{platformjobqueue.OpsInspectionQueue, platformjobqueue.OpsNotificationQueue, platformjobqueue.OpsRetentionQueue, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, distributionapp.DistributionSettlementQueue, referralapp.ReferralCampaignQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue}
+	effectsQueues := []string{platformjobqueue.OpsInspectionQueue, platformjobqueue.OpsNotificationQueue, platformjobqueue.OpsRetentionQueue, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, distributionapp.DistributionSettlementQueue, referralapp.ReferralCampaignQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue, groupops.CatalogQueue}
 	opsHostMaintenance := hostmaintenance.New()
 	if err = opsRetention.BindHostReader(opsHostMaintenance); err != nil {
 		return fail(err)
@@ -580,7 +600,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if cfg.Ops.RetentionEnabled {
 		periodicJobs = append(periodicJobs, adminops.RetentionPeriodicJob())
 	}
-	periodicJobs = append(periodicJobs, outbound.MaterialRefreshPeriodicJob())
+	periodicJobs = append(periodicJobs, outbound.MaterialRefreshPeriodicJob(), groupops.CatalogPeriodicJob(), media.InvitationPeriodicJob())
 	if excelClient != nil {
 		periodicJobs = append(periodicJobs, aiexcel.Periodic())
 	}
@@ -832,6 +852,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	catalogService := &groupopsapp.CatalogService{Store: groupOpsRepository, Enabled: cfg.GroupOps.ProviderReadEnabled, Enqueue: catalogEnqueuer.Enqueue, RetryDetail: catalogEnqueuer.EnqueueDetail}
+	catalogWorker.Service = catalogService
+	catalogDetailWorker.Service = catalogService
+	catalogScheduleWorker.Service = catalogService
+	invitationService := &mediaapp.InvitationService{Store: mediaRepository, Catalog: catalogService, Effects: effectRepository, Origin: h5PublicOrigin(cfg), WriteEnabled: cfg.Effects.ProviderEnabled && cfg.WeCom.ChannelQRProviderEnabled}
+	invitationWorker.Service = invitationService
+	invitationHandler := mediahttp.InvitationHandler{Service: invitationService, Security: requestSecurity}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
 	// Directory reads have their own explicitly published capability gate. A
 	// dispatch grant cannot silently authorize a new provider-read path.
@@ -841,6 +868,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
 	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
 	groupOpsRuntime.SetDispatchEnabled(cfg.GroupOps.ProviderEnabled)
+	groupOpsRuntime.SetCatalog(catalogService)
 	if err = groupOpsContinuationWorker.Bind(groupOpsRuntime); err != nil {
 		return fail(err)
 	}
@@ -871,6 +899,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	outboundCompletionSink.WithTagCatalogMutation(tagMutationCompletionSink)
 	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
+	outboundCompletionSink.WithInvitationCode(outbound.InvitationCodeCompletionSink{Store: mediaRepository})
 	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
 	outboundCompletionSink.WithSidebarJSSDK(sidebarExpiry)
 	sidebarMediaPreparation, err := outbound.NewSidebarMediaPreparationService(uow, effectRepository, pool.Native())
@@ -1715,6 +1744,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	catalogService.Provider = providerClient
 	// Enterprise employee selection is a separate, read-only application
 	// directory capability. It never reuses the external-contact follow-user
 	// subset and remains unavailable when the scoped provider/key is absent.
@@ -1941,7 +1971,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 	}
 	materialProviderMux := outbound.MaterialEffectMux{GenericProvider: materialProvider, LegacyProvider: sidebarMediaProvider}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithContactDescription(contactDescriptionProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(materialProviderMux).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithContactDescription(contactDescriptionProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(materialProviderMux).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider).WithInvitationCode(&outbound.InvitationCodeProvider{Store: mediaRepository, Provider: providerClient, Enabled: invitationService.WriteEnabled})
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{adminops: opsProvider, outbound: providerRouter, payment: paymentAdapter, automation: generationProvider, segment: coreRecommendationProvider}); err != nil {
 		return fail(err)
 	}
@@ -2301,6 +2331,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	handler = mountOpsGovernance(handler, opsInspectionHTTP, opsRetentionHTTP, opsCPUProfileHTTP)
+	handler = mountInvitations(handler, invitationHandler)
 	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountOpenPlatformUI(handler, shellHandler, authentication)
 	handler = mountMemberGridUI(handler, memberGridUI)
@@ -2380,7 +2411,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if cfg.Ops.Enabled {
 		handler = platformdiagnostics.Middleware(handler, cfg.ReleaseSHA, opsRecord)
 	}
-	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, paymentReconciliation: paymentService, paymentSession: paymentSession, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{invitationService: invitationService, catalogService: catalogService, pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, paymentReconciliation: paymentService, paymentSession: paymentSession, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {

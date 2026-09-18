@@ -790,7 +790,7 @@ func (r *Repository) ListDirectoryGroups(ctx context.Context, owner int64, query
 		return nil, 0, err
 	}
 	pageArgs := append(args, limit, offset)
-	rows, err := tx.Query(ctx, `SELECT chat_reference,owner_staff_id,display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups`+where+` ORDER BY refreshed_at DESC,chat_reference LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2), pageArgs...)
+	rows, err := tx.Query(ctx, `SELECT chat_reference,COALESCE(owner_staff_id,0),display_name,member_count,refreshed_at,external_member_count FROM group_ops_directory_groups`+where+` ORDER BY refreshed_at DESC,chat_reference LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2), pageArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -837,17 +837,14 @@ func (r *Repository) ReplaceDirectoryGroups(ctx context.Context, owner int64, it
 			return ErrInvalid
 		}
 		digest := groupDirectoryDigest(item)
-		if _, err = tx.Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(chat_reference) DO UPDATE SET owner_staff_id=EXCLUDED.owner_staff_id,display_name=EXCLUDED.display_name,member_count=EXCLUDED.member_count,source_digest=EXCLUDED.source_digest,refreshed_at=EXCLUDED.refreshed_at,external_member_count=EXCLUDED.external_member_count`, item.ChatReference, owner, item.DisplayName, item.MemberCount, digest, now, item.ExternalMemberCount); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at,external_member_count) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(chat_reference) DO UPDATE SET owner_staff_id=EXCLUDED.owner_staff_id,display_name=EXCLUDED.display_name,member_count=EXCLUDED.member_count,source_digest=EXCLUDED.source_digest,refreshed_at=EXCLUDED.refreshed_at,external_member_count=EXCLUDED.external_member_count WHERE group_ops_directory_groups.refreshed_at<=EXCLUDED.refreshed_at`, item.ChatReference, owner, item.DisplayName, item.MemberCount, digest, now, item.ExternalMemberCount); err != nil {
 			return err
 		}
 		refs = append(refs, item.ChatReference)
 	}
-	if len(refs) == 0 {
-		_, err = tx.Exec(ctx, `DELETE FROM group_ops_directory_groups WHERE owner_staff_id=$1`, owner)
-		return err
-	}
-	_, err = tx.Exec(ctx, `DELETE FROM group_ops_directory_groups WHERE owner_staff_id=$1 AND NOT (chat_reference = ANY($2::text[]))`, owner, refs)
-	return err
+	// The shared catalog retains absent groups; a scoped refresh cannot delete
+	// records discovered by another scope or referenced by an invitation.
+	return nil
 }
 
 func groupDirectoryDigest(item groupopsport.GroupDirectoryItem) string {

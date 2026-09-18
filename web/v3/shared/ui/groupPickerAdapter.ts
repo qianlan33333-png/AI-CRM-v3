@@ -34,7 +34,7 @@ function item(record: GroupPickerRecord, source: string): SelectionItem<GroupPic
     kind: 'group.chat_reference',
     source,
     id: record.chat_reference,
-    label: record.display_name || record.chat_reference,
+    label: record.display_name || '未命名群',
     value: record,
     disabledReason: record.unavailable_reason || undefined,
   };
@@ -132,13 +132,13 @@ export function openGroupPicker(options: GroupPickerOptions): void {
         || (snapshot.loading ? '正在读取群目录…' : `已暂选 ${snapshot.draft.length} 个群`);
     selected.innerHTML = snapshot.draft.map((record) => {
       const key = selectionKey(record.kind, record.source, record.id);
-      return `<button class="group-ops__group-item" type="button" data-v3-group-remove="${escape(key)}"${saving || snapshot.readonlyReason ? ' disabled' : ''}><strong>${escape(record.value.display_name || record.value.chat_reference)}</strong><span>${record.disabledReason ? `${escape(record.disabledReason)} · ` : ''}移除</span></button>`;
+      return `<button class="group-ops__group-item" type="button" data-v3-group-remove="${escape(key)}"${saving || snapshot.readonlyReason ? ' disabled' : ''}><strong>${escape(record.value.display_name || '未命名群')}</strong><code>${escape(record.value.chat_reference)}</code><span>${record.disabledReason ? `${escape(record.disabledReason)} · ` : ''}移除</span></button>`;
     }).join('') || '<div class="group-ops__empty">尚未选择群</div>';
     list.innerHTML = snapshot.items.map((record) => {
       const key = selectionKey(record.kind, record.source, record.id);
       const selectedNow = session.isDraftSelected(key);
       const disabled = Boolean(saving || snapshot.readonlyReason || (!selectedNow && record.disabledReason));
-      return `<button class="group-ops__group-item${selectedNow ? ' is-selected' : ''}" type="button" data-v3-group-key="${escape(key)}" aria-pressed="${selectedNow ? 'true' : 'false'}"${disabled ? ' disabled' : ''}><strong>${escape(record.value.display_name || record.value.chat_reference)}</strong><span>${escape(record.value.chat_reference)}${record.disabledReason ? ` · ${escape(record.disabledReason)}` : ''}</span></button>`;
+      return `<button class="group-ops__group-item${selectedNow ? ' is-selected' : ''}" type="button" data-v3-group-key="${escape(key)}" aria-pressed="${selectedNow ? 'true' : 'false'}"${disabled ? ' disabled' : ''}><strong>${escape(record.value.display_name || '未命名群')}</strong><span>${escape(record.value.chat_reference)}${record.disabledReason ? ` · ${escape(record.disabledReason)}` : ''}</span></button>`;
     }).join('') || '<div class="group-ops__empty">暂无可选群</div>';
     more.hidden = !snapshot.nextCursor;
     more.disabled = Boolean(saving || snapshot.loading);
