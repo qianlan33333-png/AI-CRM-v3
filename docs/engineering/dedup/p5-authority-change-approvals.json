@@ -1655,6 +1655,28 @@
       ],
       "reason": "Integrate the approved runtime governance and controlled CPU profile interfaces after the concurrent audience empty-package release; preserve latest main behavior and frozen donor bytes.",
       "review_reference": "User authorized the complete runtime governance implementation and continued work on 2026-09-18. docs/plans/2026-09-18-runtime-governance-prd.md records the business scope. This source-change declaration is not independent approval; exact-head complete CI remains required."
+    },
+    {
+      "base_commit": "90a26fe786e5df275a9d7bee7ab5ad8f25a4e18f",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04",
+          "head_sha256": "d3a6797bea30149f0af898bf15a6997a0bca0bcbb05eb5e63e91530f0e2826d0"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4",
+          "head_sha256": "1d7c6453b7d460daf21b4f5f69a33af23e1581ce348587e638386916f73304f8"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12",
+          "head_sha256": "096e3cf45da203032615cd3358225b9b45ca2122f804540e4166499b9e8e8d5d"
+        }
+      ],
+      "reason": "Implement actor-bound manual inspection completion receipts and explicit resource retention coverage after production acceptance. Preserve existing API and frozen donor behavior.",
+      "review_reference": "User explicitly authorized complete runtime governance implementation and continued work. docs/plans/2026-09-18-governance-acceptance-corrections.md and docs/plans/2026-09-18-retention-coverage-design.md define scope. This exact-source declaration is not independent approval; current-head CI and review remain required."
     }
   ]
 }
