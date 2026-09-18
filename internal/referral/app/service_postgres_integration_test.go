@@ -594,7 +594,7 @@ func (h *referralPostgreSQLHarness) issue(t *testing.T, campaignID, customerID i
 		t.Fatalf("issue invitation customer=%d: %v", customerID, err)
 	}
 	h.clock = h.clock.Add(time.Minute)
-	return link.URL[len("https://referral.test/r/"):]
+	return link.URL[len("https://referral.test/referral/invite/"):]
 }
 
 func (h *referralPostgreSQLHarness) joinInvite(t *testing.T, campaignID, customerID int64, token, key string) referralport.MyCampaign {

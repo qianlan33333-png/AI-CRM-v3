@@ -381,7 +381,7 @@ func (s *Service) IssueInvitation(ctx context.Context, command referralport.Issu
 	if err != nil {
 		return referralport.InvitationLink{}, err
 	}
-	return referralport.InvitationLink{URL: s.origin + "/r/" + token, ExpiresAt: expiresAt}, nil
+	return referralport.InvitationLink{URL: s.origin + "/referral/invite/" + token, ExpiresAt: expiresAt}, nil
 }
 
 func (s *Service) MyCampaign(ctx context.Context, actor referralport.TrustedSessionActor, campaignID int64) (referralport.MyCampaign, error) {

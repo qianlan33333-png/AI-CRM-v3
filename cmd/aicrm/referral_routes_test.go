@@ -13,11 +13,15 @@ func TestMountReferralSeparatesPublicAndAdminPrefixes(t *testing.T) {
 	handler := mountReferral(fallback, public, admin)
 
 	for path, expected := range map[string]int{
-		"/r/rfi_" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": http.StatusNoContent,
-		"/api/v1/referral/campaigns":                              http.StatusNoContent,
-		"/api/admin/referral/campaigns":                           http.StatusAccepted,
-		"/referral":                                               http.StatusTeapot,
-		"/api/v1/referrals":                                       http.StatusTeapot,
+		"/referral/invite/rfi_" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": http.StatusNoContent,
+		"/api/v1/referral/campaigns":             http.StatusNoContent,
+		"/api/admin/referral/campaigns":          http.StatusAccepted,
+		"/referral":                              http.StatusTeapot,
+		"/api/v1/referrals":                      http.StatusTeapot,
+		"/r/rd_remaining_pages123":               http.StatusTeapot,
+		"/r/not-a-referral-token":                http.StatusTeapot,
+		"/referral/invite/rfi_not-a-valid-token": http.StatusNoContent,
+		"/r/rfi_not-a-valid-token":               http.StatusTeapot,
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))

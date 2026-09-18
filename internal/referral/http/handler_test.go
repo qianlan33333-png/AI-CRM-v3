@@ -130,7 +130,7 @@ func TestInvitationHandoffIsReadOnlyAndCanonical(t *testing.T) {
 	handler := referralTestHandler(t, public)
 	token := "rfi_" + strings.Repeat("A", 43)
 	response := httptest.NewRecorder()
-	handler.ServePublicHTTP(response, httptest.NewRequest(http.MethodGet, "/r/"+token, nil))
+	handler.ServePublicHTTP(response, httptest.NewRequest(http.MethodGet, "/referral/invite/"+token, nil))
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/referral?campaign=7&invite="+token || public.previewCalls != 1 || public.joinCalls != 0 {
 		t.Fatalf("status=%d location=%q preview=%d join=%d", response.Code, response.Header().Get("Location"), public.previewCalls, public.joinCalls)
 	}

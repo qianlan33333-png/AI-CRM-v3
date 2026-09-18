@@ -98,8 +98,8 @@ func (h *Handler) ServePublicHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	switch {
-	case strings.HasPrefix(path, "/r/"):
-		h.invitationHandoff(w, r, strings.TrimPrefix(path, "/r/"))
+	case strings.HasPrefix(path, "/referral/invite/"):
+		h.invitationHandoff(w, r, strings.TrimPrefix(path, "/referral/invite/"))
 	case path == publicPrefix+"/session/bridge":
 		h.bridgeSession(w, r)
 	case path == publicPrefix+"/campaigns":

@@ -21,7 +21,7 @@ const dom = new JSDOM('<!doctype html><main id="referral-root"></main>', { url: 
     if (url.pathname === '/api/v1/referral/invitations/rfi_abcdefghijklmnop') return json({ campaign, inviter_display_name: '林晓', inviter_avatar_url: '', inviter_team: { id: 9, name: '向阳队' } });
     if (url.pathname === '/api/v1/referral/campaigns/7/leaderboard') return json({ kind: url.searchParams.get('kind'), period: url.searchParams.get('period'), items: [{ rank: 1, display_name: '小周', team_name: '向阳队', score: 5, mine: false }], my_entry: { rank: 31, display_name: '我', team_name: '向阳队', score: 2, mine: true } });
     if (url.pathname === '/api/v1/referral/campaigns/7/participations') { joined = true; return json({ participation: { joined_at: '2026-09-18T00:00:00Z' }, team: { id: 9, name: '向阳队' }, direct_invitation_count: 0, personal_total_score: 0, personal_rank: 0, invitation_available: true }); }
-    if (url.pathname === '/api/v1/referral/campaigns/7/invite') return json({ url: 'https://crm.example/r/rfi_abcdefghijklmnopqrstuvwxyz' });
+    if (url.pathname === '/api/v1/referral/campaigns/7/invite') return json({ url: 'https://crm.example/referral/invite/rfi_abcdefghijklmnopqrstuvwxyz12345678901234567' });
     return json({ error: 'not_found' }, 404);
   };
 } });
@@ -50,7 +50,7 @@ await waitFor(() => dom.window.document.querySelector('[data-testid="referral-in
 dom.window.document.querySelector('[data-testid="referral-invite"]').click();
 await waitFor(() => dom.window.document.querySelector('[data-testid="referral-invite-dialog"]'), 'invite dialog did not render');
 const inviteURL = dom.window.document.querySelector('[data-testid="referral-invite-url"]').value;
-assert.match(inviteURL, /^https:\/\/crm\.example\/r\/rfi_[A-Za-z0-9_-]+$/, 'invite output must remain same-origin and opaque');
+assert.match(inviteURL, /^https:\/\/crm\.example\/referral\/invite\/rfi_[A-Za-z0-9_-]+$/, 'invite output must remain same-origin and opaque');
 assert.match(dom.window.document.querySelector('[data-testid="referral-download-poster"]').getAttribute('href'), /^data:image\/svg\+xml/, 'fixed poster must be downloadable without an editor');
 dom.window.close();
 console.log('referralCenter behavior passed');

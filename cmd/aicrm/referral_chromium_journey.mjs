@@ -75,7 +75,7 @@ try {
     await evaluate("document.querySelector('[data-testid=referral-copy-invite]').click()");
     await wait("typeof window.__referralCopied === 'string'");
     const copied = new URL(await evaluate('window.__referralCopied'));
-    assert.equal(copied.origin,base);assert.match(copied.pathname,/^\/r\/rfi_[A-Za-z0-9_-]{43}$/);
+    assert.equal(copied.origin,base);assert.match(copied.pathname,/^\/referral\/invite\/rfi_[A-Za-z0-9_-]{43}$/);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'),true,'mobile does not horizontally overflow');
     const image=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(screenshots,`mobile-${index?430:375}.png`),Buffer.from(image.data,'base64'));
   }
