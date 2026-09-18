@@ -72,6 +72,22 @@ func cpuProfileFixture(t *testing.T) (*CPUProfileService, *pgxpool.Pool, *cpuPro
 	return s, pool, profiler
 }
 
+func TestCPUProfileConstructorNormalizesUntrustedReleaseEvenWhenDisabled(t *testing.T) {
+	for _, release := range []string{"", "test", "unknown", "release-token-secret", strings.Repeat("a", 64)} {
+		for _, enabled := range []bool{false, true} {
+			s, err := NewCPUProfileService(&pgxpool.Pool{}, &cpuProfileTestSampler{}, release, enabled)
+			if err != nil || s.release != "unknown" || s.enabled != enabled {
+				t.Fatalf("release normalization failed: %v", err)
+			}
+		}
+	}
+	valid := strings.Repeat("a", 40)
+	s, err := NewCPUProfileService(&pgxpool.Pool{}, &cpuProfileTestSampler{}, valid, false)
+	if err != nil || s.release != valid {
+		t.Fatalf("valid release discarded=%v", err)
+	}
+}
+
 type cpuProfileSecurity struct {
 	principal accessdomain.Principal
 	csrfDeny  bool

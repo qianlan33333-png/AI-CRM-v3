@@ -52,8 +52,13 @@ type CPUProfileService struct {
 }
 
 func NewCPUProfileService(pool *pgxpool.Pool, profiler platformport.CPUProfiler, release string, enabled bool) (*CPUProfileService, error) {
-	if pool == nil || profiler == nil || (release != "unknown" && !cpuProfileRelease.MatchString(release)) {
+	if pool == nil || profiler == nil {
 		return nil, ErrInspectionInvalid
+	}
+	// Keep optional diagnostics from breaking existing startup/test roles, and
+	// never put arbitrary release metadata into the profile receipt or response.
+	if !cpuProfileRelease.MatchString(release) {
+		release = "unknown"
 	}
 	return &CPUProfileService{pool: pool, profiler: profiler, release: release, enabled: enabled}, nil
 }
