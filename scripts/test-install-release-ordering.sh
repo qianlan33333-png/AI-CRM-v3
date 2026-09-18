@@ -59,6 +59,7 @@ sha_missing_0186=f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4
 sha_missing_0187=f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5
 sha_missing_0188=f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6
 sha_missing_0189=f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7
+sha_missing_0190=f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -243,6 +244,7 @@ make_release() {
     0187_adminops_notification_effect.sql \
     0188_adminops_retention.sql \
     0189_owner_process_retention.sql \
+    0190_adminops_cpu_profiles.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -447,6 +449,7 @@ for missing_release in \
   "$sha_missing_0187:migrations/0187_adminops_notification_effect.sql" \
   "$sha_missing_0188:migrations/0188_adminops_retention.sql" \
   "$sha_missing_0189:migrations/0189_owner_process_retention.sql" \
+  "$sha_missing_0190:migrations/0190_adminops_cpu_profiles.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \
