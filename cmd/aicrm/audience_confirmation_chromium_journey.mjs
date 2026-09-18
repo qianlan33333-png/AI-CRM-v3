@@ -160,6 +160,8 @@ try {
   await waitFor(cdp, 'Boolean(document.querySelector(\'form[action="/login"] input[name="login_csrf_token"]\'))', "login shell did not render");
   await evaluate(cdp, "(() => { document.querySelector('input[name=\"username\"]').value=" + JSON.stringify(username) + "; document.querySelector('input[name=\"password\"]').value=" + JSON.stringify(password) + "; document.querySelector('form[action=\"/login\"]').requestSubmit(); return true; })()");
   await waitFor(cdp, "Boolean(window.AICRMConfirmation?.confirm) && Boolean(document.querySelector('[data-action=\"archive\"][data-package-id=\"" + packageID + "\"]'))", "authenticated Audience shell did not mount its real confirmation asset and package row");
+  if (!await click('[data-audience-workspace-tab="packages"]')) throw new Error("audience management tab was unavailable");
+  await waitFor(cdp, "!document.querySelector('#audiencePackagePanel').hidden && document.querySelector('#coreProductPanel').hidden", "audience management tab did not select its exclusive panel");
   const closure = await evaluate(cdp, "(() => ({css:[...document.styleSheets].some(sheet=>String(sheet.href||'').includes('confirmationDialogStyles-')),script:[...document.scripts].some(script=>String(script.src||'').includes('confirmationDialogHost-')),route:location.pathname}))()");
   if (!closure.css || !closure.script || closure.route !== "/admin/automation-conversion") throw new Error("Audience shell did not load the real confirmation asset closure: " + JSON.stringify(closure));
 
