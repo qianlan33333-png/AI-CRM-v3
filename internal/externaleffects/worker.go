@@ -13,6 +13,8 @@ type EffectJobArgs struct {
 	Generation int64 `json:"generation"`
 }
 
+func (args EffectJobArgs) DiagnosticEffectRef() string { return effectID(args.EffectID) }
+
 func (EffectJobArgs) Kind() string { return "external_effect.execute.v1" }
 
 type Worker struct {
@@ -50,18 +52,22 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[EffectJobArgs]) error 
 	}
 	if preflight, ok := w.adapter.(port.ProviderPreflighter); ok {
 		envelope, queued, err := w.repository.QueuedEnvelope(ctx, job.Args.EffectID, job.Args.Generation, job.ID)
-		if err != nil || !queued {
-			return err
-		}
-		ready, retryAfter, err := preflight.Preflight(ctx, envelope, effectID(job.Args.EffectID))
 		if err != nil {
 			return err
 		}
-		if !ready {
-			if retryAfter < time.Second {
-				retryAfter = time.Second
+		// Non-queued replay must still reach RunAttempt: it owns active lease
+		// deferral and expired attempted -> unknown recovery, including projection.
+		if queued {
+			ready, retryAfter, err := preflight.Preflight(ctx, envelope, effectID(job.Args.EffectID))
+			if err != nil {
+				return err
 			}
-			return river.JobSnooze(retryAfter)
+			if !ready {
+				if retryAfter < time.Second {
+					retryAfter = time.Second
+				}
+				return river.JobSnooze(retryAfter)
+			}
 		}
 	}
 	return w.repository.RunAttempt(ctx, job.Args.EffectID, job.Args.Generation, job.ID, w.adapter)

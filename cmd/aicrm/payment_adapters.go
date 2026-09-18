@@ -21,6 +21,7 @@ type composedProviderRouter struct {
 	outbound   effectport.ProviderAdapter
 	payment    effectport.ProviderAdapter
 	automation effectport.ProviderAdapter
+	adminops   effectport.ProviderAdapter
 	segment    effectport.ProviderAdapter
 }
 
@@ -47,6 +48,12 @@ func (router paymentProviderRouter) Execute(ctx context.Context, envelope effect
 }
 
 func (router composedProviderRouter) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
+	if envelope.Owner == effectport.OwnerAdminOps {
+		if router.adminops == nil {
+			return effectport.AdapterResult{}, errors.New("ops provider unavailable")
+		}
+		return router.adminops.Execute(ctx, envelope, attempt)
+	}
 	if envelope.Owner == effectport.OwnerSegment {
 		if router.segment == nil {
 			return effectport.AdapterResult{}, errors.New("segment provider unavailable")
@@ -76,10 +83,17 @@ type composedCompletionRouter struct {
 	payment             effectport.CompletionSink
 	paymentDistribution effectport.CompletionSink
 	automation          effectport.CompletionSink
+	adminops            effectport.CompletionSink
 	segment             effectport.CompletionSink
 }
 
 func (router composedCompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
+	if envelope.Owner == effectport.OwnerAdminOps {
+		if router.adminops == nil {
+			return errors.New("ops completion unavailable")
+		}
+		return router.adminops.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	}
 	if envelope.Owner == effectport.OwnerSegment {
 		if router.segment == nil {
 			return errors.New("segment completion unavailable")

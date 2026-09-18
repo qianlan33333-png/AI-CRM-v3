@@ -95,6 +95,8 @@ run_frontend_and_stage_checks() {
   node web/v3/hxcPresentation.test.mjs
   node web/v3/customerAdapter.test.mjs
   node web/v3/overviewAdmin.test.mjs
+  node web/v3/governanceAdmin.test.mjs
+  node web/v3/diagnosticFeedbackHost.test.mjs
   node web/v3/distributionCenter.test.mjs
   node web/v3/distributionCenter.lifecycle.test.mjs
   node web/v3/navigationHost.test.mjs

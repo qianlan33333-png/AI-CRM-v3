@@ -76,6 +76,43 @@ func DistOverviewAdminAssets(distRoot string) (OverviewAssets, bool) {
 	return OverviewAssets{CSS: css, DetailDrawerCSS: drawerCSS, AdminJS: js}, true
 }
 
+func DistGovernanceAdminAssets(distRoot string) (OverviewAssets, bool) {
+	if distRoot == "" {
+		return OverviewAssets{}, false
+	}
+	var manifest struct {
+		Entries map[string]string          `json:"entries"`
+		Files   map[string]json.RawMessage `json:"files"`
+	}
+	raw, err := os.ReadFile(filepath.Join(distRoot, "asset-manifest.json"))
+	if err != nil || json.Unmarshal(raw, &manifest) != nil {
+		return OverviewAssets{}, false
+	}
+	asset := func(name, suffix string) (string, bool) {
+		entry := manifest.Entries[name]
+		if !strings.HasPrefix(entry, "assets/") || path.Clean(entry) != entry || !strings.HasSuffix(entry, suffix) || manifest.Files[entry] == nil {
+			return "", false
+		}
+		if info, statErr := os.Stat(filepath.Join(distRoot, filepath.FromSlash(entry))); statErr != nil || info.IsDir() {
+			return "", false
+		}
+		return "/" + entry, true
+	}
+	css, ok := asset("governanceStyles", ".css")
+	if !ok {
+		return OverviewAssets{}, false
+	}
+	drawerCSS, ok := asset("sharedDetailDrawerStyles", ".css")
+	if !ok {
+		return OverviewAssets{}, false
+	}
+	js, ok := asset("governanceAdmin", ".js")
+	if !ok {
+		return OverviewAssets{}, false
+	}
+	return OverviewAssets{CSS: css, DetailDrawerCSS: drawerCSS, AdminJS: js}, true
+}
+
 // DistComponentStatesAssets resolves the complete V3-owned style and Host
 // closure for the authenticated state-demo route. Frozen group/material paint
 // is referenced only by its staged manifest paths; this function never reads

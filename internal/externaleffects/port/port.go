@@ -42,6 +42,8 @@ const (
 	OwnerOutbound               Owner = "outbound"
 	OwnerPayment                Owner = "payment"
 	OwnerAutomation             Owner = "automation"
+	OwnerAdminOps               Owner = "adminops"
+	KindFeishuOpsNotification   Kind  = "feishu_ops_notification_v1"
 	OwnerSegment                Owner = "segment"
 	KindOutboundMessage         Kind  = "outbound_message"
 	KindAutomationMessage       Kind  = "automation_message"
@@ -73,8 +75,9 @@ type State string
 type Lane string
 
 const (
-	LaneOutboundExcel Lane = "outbound_excel"
-	LaneOutboundMedia Lane = "outbound_media"
+	LaneOutboundExcel   Lane = "outbound_excel"
+	LaneOutboundMedia   Lane = "outbound_media"
+	LaneOpsNotification Lane = "ops_notification"
 )
 
 const (
@@ -98,7 +101,8 @@ type Envelope struct {
 func (value Envelope) Valid() bool {
 	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindWeComContactDescription || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund || value.Kind == KindWeChatPayReceiverAdd || value.Kind == KindWeChatPayProfitSharing || value.Kind == KindWeChatPayProfitUnfreeze) ||
-		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate || value.Owner == OwnerSegment && value.Kind == KindAIRecommend
+		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate ||
+		value.Owner == OwnerAdminOps && value.Kind == KindFeishuOpsNotification || value.Owner == OwnerSegment && value.Kind == KindAIRecommend
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }
 func (value Envelope) Fingerprint() Digest {
@@ -120,6 +124,9 @@ type AcceptCommand struct {
 }
 
 func (command AcceptCommand) Valid() bool {
+	if command.Envelope.Owner == OwnerAdminOps {
+		return ValidDigest(command.ReceiptKey) && command.Envelope.Valid() && command.Lane == LaneOpsNotification
+	}
 	return ValidDigest(command.ReceiptKey) && command.Envelope.Valid() && (command.Lane == "" || command.Lane == LaneOutboundExcel || command.Lane == LaneOutboundMedia)
 }
 func (command AcceptCommand) Digest() Digest {

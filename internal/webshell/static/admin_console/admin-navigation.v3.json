@@ -275,6 +275,16 @@
           "required_permission": ""
         },
         {
+          "key": "ops_governance",
+          "label": "运行治理",
+          "endpoint": "api.admin_ops_governance",
+          "href": "/admin/ops",
+          "active_prefixes": [
+            "/admin/ops"
+          ],
+          "required_permission": ""
+        },
+        {
           "key": "config",
           "label": "配置",
           "endpoint": "api.admin_config",

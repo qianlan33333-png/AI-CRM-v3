@@ -4,6 +4,7 @@ package jobqueue
 import (
 	"context"
 	"errors"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/diagnostics"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,11 +19,15 @@ const (
 	OutboundWelcomeQueue = "outbound_welcome"
 	OutboundExcelQueue   = "outbound_excel"
 	OutboundMediaQueue   = "outbound_media"
+	OpsNotificationQueue = "ops_notification"
+	OpsInspectionQueue   = "adminops_inspections"
+	OpsRetentionQueue    = "adminops_retention"
 )
 
 var queueWorkers = map[string]int{
 	OutboundQueue: 4, OutboundWelcomeQueue: 4,
 	OutboundExcelQueue: 3, OutboundMediaQueue: 2,
+	OpsNotificationQueue: 1, OpsInspectionQueue: 1, OpsRetentionQueue: 1,
 }
 
 var ErrUnavailable = errors.New("River client unavailable")
@@ -58,7 +63,7 @@ func NewInsertClient(pool *pgxpool.Pool, workers *river.Workers) (*river.Client[
 	if workers == nil {
 		return nil, ErrUnavailable
 	}
-	return river.NewClient(riverpgxv5.New(pool), &river.Config{Workers: workers})
+	return river.NewClient(riverpgxv5.New(pool), &river.Config{Workers: workers, Middleware: []rivertype.Middleware{&CorrelationMiddleware{Release: "unknown"}}})
 }
 
 func InsertTx(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args river.JobArgs) (*rivertype.JobInsertResult, error) {
@@ -85,6 +90,21 @@ func InsertTxWithOptions(ctx context.Context, client *river.Client[pgx.Tx], tx p
 	if opts.MaxAttempts < 0 {
 		return nil, ErrUnavailable
 	}
+	if effect, ok := args.(interface{ DiagnosticEffectRef() string }); ok {
+		correlation := diagnostics.FromContext(ctx)
+		var err error
+		if correlation.RequestID == "" {
+			correlation, err = newCorrelation("unknown")
+			if err != nil {
+				return nil, err
+			}
+		}
+		correlation.EffectRef = effect.DiagnosticEffectRef()
+		ctx, err = diagnostics.WithCorrelation(ctx, correlation)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return client.InsertTx(ctx, tx, args, &opts)
 }
 
@@ -95,6 +115,10 @@ func NewRuntime(pool *pgxpool.Pool, workers *river.Workers, queueNames ...string
 }
 
 func NewRuntimeWithPeriodic(pool *pgxpool.Pool, workers *river.Workers, periodicJobs []*river.PeriodicJob, queueNames ...string) (*Runtime, error) {
+	return NewRuntimeWithDiagnostics(pool, workers, periodicJobs, "unknown", nil, queueNames...)
+}
+
+func NewRuntimeWithDiagnostics(pool *pgxpool.Pool, workers *river.Workers, periodicJobs []*river.PeriodicJob, release string, record diagnostics.Recorder, queueNames ...string) (*Runtime, error) {
 	if pool == nil || workers == nil {
 		return nil, ErrUnavailable
 	}
@@ -112,7 +136,11 @@ func NewRuntimeWithPeriodic(pool *pgxpool.Pool, workers *river.Workers, periodic
 		}
 		queues[name] = river.QueueConfig{MaxWorkers: maxWorkers}
 	}
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers, PeriodicJobs: periodicJobs})
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers, PeriodicJobs: periodicJobs, Middleware: []rivertype.Middleware{&CorrelationMiddleware{Release: release, Record: record}},
+		CompletedJobRetentionPeriod: 30 * 24 * time.Hour,
+		CancelledJobRetentionPeriod: 30 * 24 * time.Hour,
+		DiscardedJobRetentionPeriod: 30 * 24 * time.Hour,
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -32,6 +32,8 @@ const (
 	OwnerOutbound               = port.OwnerOutbound
 	OwnerPayment                = port.OwnerPayment
 	OwnerAutomation             = port.OwnerAutomation
+	OwnerAdminOps               = port.OwnerAdminOps
+	KindFeishuOpsNotification   = port.KindFeishuOpsNotification
 	OwnerSegment                = port.OwnerSegment
 	KindAIRecommend             = port.KindAIRecommend
 	KindOutboundMessage         = port.KindOutboundMessage

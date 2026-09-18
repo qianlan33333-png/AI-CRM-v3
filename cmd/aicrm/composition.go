@@ -15,8 +15,10 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/adminops"
 	adminopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/app"
 	adminopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/port"
+	adminopsprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/provider"
 	adminopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/store"
 	aiassistant "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant"
 	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
@@ -91,6 +93,8 @@ import (
 	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformdiagnostics "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/diagnostics"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/hostmaintenance"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -344,6 +348,19 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
+	opsInspectionWorker := adminops.NewInspectionWorker()
+	opsReportWorker := adminops.NewReportWorker()
+	opsRetentionWorker := adminops.NewRetentionWorker()
+	if err = river.AddWorkerSafely[adminops.InspectionJobArgs](effectWorkers, opsInspectionWorker); err != nil {
+		return fail(err)
+	}
+	if err = river.AddWorkerSafely[adminops.OpsReportJobArgs](effectWorkers, opsReportWorker); err != nil {
+		return fail(err)
+	}
+	if err = river.AddWorkerSafely[adminops.RetentionJobArgs](effectWorkers, opsRetentionWorker); err != nil {
+		return fail(err)
+	}
+
 	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
 		return fail(err)
 	}
@@ -465,6 +482,66 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	adminOpsProjectionStore, err := adminopsstore.NewProjectionPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	opsRetention, err := adminops.NewRetentionService(pool.Native(), mediaRepository, adminOpsProjectionStore, cfg.Ops.RetentionEnabled)
+	if err != nil {
+		return fail(err)
+	}
+	if err = bindOpsOwnerRetention(opsRetention, configRepository, archivestore.NewPostgreSQL()); err != nil {
+		return fail(err)
+	}
+	effectsQueues := []string{platformjobqueue.OpsInspectionQueue, platformjobqueue.OpsNotificationQueue, platformjobqueue.OpsRetentionQueue, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, distributionapp.DistributionSettlementQueue, referralapp.ReferralCampaignQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue}
+	opsHostMaintenance := hostmaintenance.New()
+	if err = opsRetention.BindHostReader(opsHostMaintenance); err != nil {
+		return fail(err)
+	}
+	if err = opsRetention.BindReleaseReader(opsHostMaintenance); err != nil {
+		return fail(err)
+	}
+	if err = opsRetentionWorker.BindHostMaintenance(opsHostMaintenance); err != nil {
+		return fail(err)
+	}
+	var opsProbe *platformruntime.EndpointProbe
+	if cfg.Ops.Enabled {
+		// Unsupported listener topology stays explicitly uncovered; a disabled
+		// observer must never stop an otherwise valid CRM deployment.
+		opsProbe, _ = platformruntime.NewEndpointProbe(cfg.ListenAddress, cfg.ReleaseSHA)
+	}
+	opsInspections, err := adminops.NewInspectionService(pool.Native(), uow, opsInspectionCollectors(pool.Native(), effectRepository, opsRetention, opsProbe, overviewReadUoW, opsHostMaintenance, effectsQueues), effectRepository, adminops.InspectionOptions{ReleaseSHA: cfg.ReleaseSHA, NotificationTargetRef: cfg.Ops.TargetRef, NotificationEnabled: cfg.Ops.NotificationEnabled, DetailURL: cfg.PublicOrigin + "/admin/ops"})
+	if err != nil {
+		return fail(err)
+	}
+	if err = opsInspectionWorker.BindService(opsInspections); err != nil {
+		return fail(err)
+	}
+	if err = opsReportWorker.BindService(opsInspections); err != nil {
+		return fail(err)
+	}
+	if err = opsRetentionWorker.BindService(opsRetention); err != nil {
+		return fail(err)
+	}
+	opsInspectionHTTP, err := adminops.NewInspectionHandler(opsInspections, opsSecurity{requestSecurity})
+	if err != nil {
+		return fail(err)
+	}
+	opsManualEnqueuer, err := adminops.NewInspectionManualEnqueuer(uow, effectClient, nil)
+	if err != nil {
+		return fail(err)
+	}
+	if err = opsInspectionHTTP.BindManualEnqueuer(opsManualEnqueuer); err != nil {
+		return fail(err)
+	}
+	opsRetentionHTTP, err := adminops.NewRetentionHandler(opsRetention, opsSecurity{requestSecurity})
+	if err != nil {
+		return fail(err)
+	}
+	opsProvider, err := adminopsprovider.NewFeishu(adminopsprovider.FeishuConfig{Enabled: cfg.Ops.NotificationEnabled, TargetRef: cfg.Ops.TargetRef, WebhookURL: cfg.Ops.WebhookURL, SigningSecret: cfg.Ops.SigningSecret}, opsInspections)
+	if err != nil {
+		return fail(err)
+	}
 	materialSources := excelMaterialSources{media: mediaRepository, excel: excelClient}
 	materialPreparation, err := outbound.NewMaterialPreparationService(uow, effectRepository, pool.Native(), materialSources)
 	if err != nil {
@@ -487,6 +564,12 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	periodicJobs := []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}
+	if cfg.Ops.Enabled {
+		periodicJobs = append(periodicJobs, adminops.InspectionPeriodicJobs()...)
+	}
+	if cfg.Ops.RetentionEnabled {
+		periodicJobs = append(periodicJobs, adminops.RetentionPeriodicJob())
+	}
 	periodicJobs = append(periodicJobs, outbound.MaterialRefreshPeriodicJob())
 	if excelClient != nil {
 		periodicJobs = append(periodicJobs, aiexcel.Periodic())
@@ -494,7 +577,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, platformjobqueue.OutboundExcelQueue, platformjobqueue.OutboundMediaQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, distributionapp.DistributionSettlementQueue, referralapp.ReferralCampaignQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
+	opsRecord := func(c context.Context, o platformdiagnostics.Observation) error {
+		return opsInspections.RecordDiagnosticObservation(c, adminopsport.DiagnosticObservation{Component: "runtime", Code: o.Code, Correlation: o.Correlation, RouteTemplate: o.RouteTemplate, JobRef: o.JobRef, EffectRef: o.EffectRef})
+	}
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithDiagnostics(pool.Native(), effectWorkers, periodicJobs, cfg.ReleaseSHA, opsRecord, effectsQueues...)
 	if err != nil {
 		return fail(err)
 	}
@@ -1030,10 +1116,6 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	adminOpsProjectionStore, err := adminopsstore.NewProjectionPostgreSQL(pool.Native(), uow)
-	if err != nil {
-		return fail(err)
-	}
 	adminOpsProjection, err := adminopsapp.NewProjectionService(uow, adminOpsProjectionStore)
 	if err != nil {
 		return fail(err)
@@ -1313,7 +1395,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink, paymentDistribution: paymentService, automation: generationCompletionSink, segment: coreRecommendationCompletion}); err != nil {
+	if err = effectRepository.SetCompletionSink(composedCompletionRouter{adminops: opsCompletion{observer: opsInspections}, outbound: outboundCompletionSink, payment: paymentCompletionSink, paymentDistribution: paymentService, automation: generationCompletionSink, segment: coreRecommendationCompletion}); err != nil {
 		return fail(err)
 	}
 	if err = paymentReconciliationWorker.BindService(paymentService); err != nil {
@@ -1849,7 +1931,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	materialProviderMux := outbound.MaterialEffectMux{GenericProvider: materialProvider, LegacyProvider: sidebarMediaProvider}
 	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithContactDescription(contactDescriptionProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(materialProviderMux).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider, segment: coreRecommendationProvider}); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{adminops: opsProvider, outbound: providerRouter, payment: paymentAdapter, automation: generationProvider, segment: coreRecommendationProvider}); err != nil {
 		return fail(err)
 	}
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
@@ -2088,6 +2170,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if checkErr = operationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
+		if cfg.Ops.Enabled {
+			if checkErr = opsInspections.Readiness(readinessContext); checkErr != nil {
+				return checkErr
+			}
+			if checkErr = opsRetention.Readiness(readinessContext); checkErr != nil {
+				return checkErr
+			}
+		}
 		if checkErr = adminOpsProjectionStore.Readiness(readinessContext); checkErr != nil {
 			return checkErr
 		}
@@ -2199,6 +2289,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	handler = mountOpsGovernance(handler, opsInspectionHTTP, opsRetentionHTTP)
 	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountOpenPlatformUI(handler, shellHandler, authentication)
 	handler = mountMemberGridUI(handler, memberGridUI)
@@ -2274,6 +2365,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if err = runtimeReleaseService.RecordRuntimeApplication(ctx, configport.RuntimeApplication{Revision: runtimeSnapshot.Revision, Source: runtimeSnapshot.Source, Role: string(cfg.Role), ReleaseSHA: cfg.ReleaseSHA, SnapshotChecksum: runtimeSnapshot.Checksum, AppliedAt: time.Now().UTC()}); err != nil {
 			return fail(err)
 		}
+	}
+	if cfg.Ops.Enabled {
+		handler = platformdiagnostics.Middleware(handler, cfg.ReleaseSHA, opsRecord)
 	}
 	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, paymentDistribution: paymentService, paymentReconciliation: paymentService, paymentSession: paymentSession, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }

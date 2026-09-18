@@ -32,7 +32,7 @@ const entryKeys = [
   // Composition can expose them under /product-public-assets/; they remain
   // assets only and do not add a second public document surface.
   'publicCommerceHost', 'publicCommerceStyles',
-  'navigationHost', 'overviewAdmin', 'overviewStyles',
+  'navigationHost', 'overviewAdmin', 'overviewStyles', 'governanceAdmin', 'governanceStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {

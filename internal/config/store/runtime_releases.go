@@ -306,7 +306,7 @@ func (r *Repository) ListRuntimeUsage(ctx context.Context, revision int64, limit
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT revision,source,consumer,role,operation,subject_kind,subject_id,used_at FROM config_runtime_usage WHERE ($1=0 OR revision=$1) ORDER BY used_at DESC,id DESC LIMIT $2`, revision, limit)
+	rows, err := tx.Query(ctx, `SELECT revision,source,consumer,role,operation,subject_kind,subject_id,used_at FROM config_runtime_usage WHERE used_at>=statement_timestamp()-interval '720 hours' AND ($1=0 OR revision=$1) ORDER BY used_at DESC,id DESC LIMIT $2`, revision, limit)
 	if err != nil {
 		return nil, err
 	}

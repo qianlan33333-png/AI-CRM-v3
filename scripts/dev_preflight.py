@@ -132,6 +132,7 @@ class Preflight:
         self.run("whitespace", ["git", "diff", "--check", "HEAD"])
         self.run("source-views", ["make", "prepare-donor-views"])
         self.run("frozen-frontend", ["bash", "scripts/check-pr01-donor-manifest.sh"])
+        self.run("retention-registry", [sys.executable, "scripts/check-retention-registry.py"])
         self.run("preflight-tests", [sys.executable, "scripts/test_dev_preflight.py"])
 
     def compile(self):

@@ -66,6 +66,7 @@ type Runtime struct {
 	AIAssistant                AIAssistant
 	AIGeneration               AIGeneration
 	OpenPlatform               OpenPlatform
+	Ops                        Ops
 }
 
 type Bootstrap struct {
@@ -397,6 +398,9 @@ func Load() (Runtime, error) {
 		Survey:       Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), CompletionNavigationTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_NAVIGATION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
 		Referral:     Referral{TokenDataKey: os.Getenv("AICRM_REFERRAL_TOKEN_DATA_KEY")},
 		CommercePush: CommercePush{TargetsJSON: os.Getenv("AICRM_COMMERCE_PUSH_TARGETS_JSON"), PayloadDataKey: os.Getenv("AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY")},
+	}
+	if cfg.Ops, err = loadOps(); err != nil {
+		return Runtime{}, err
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
 		return Runtime{}, err

@@ -124,6 +124,10 @@ for migration_contract in \
   '0177_survey_operation_legacy_parity.sql:Survey operation legacy parity' \
   '0181_hxc_dashboard_views.sql:Basic dashboard views and scoped sharing' \
   '0185_referral_core.sql:Referral campaign core' \
+  '0186_adminops_inspections.sql:AdminOps persisted inspections' \
+  '0187_adminops_notification_effect.sql:AdminOps notification external effect' \
+  '0188_adminops_retention.sql:AdminOps retention' \
+  '0189_owner_process_retention.sql:Owner process retention' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
@@ -229,22 +233,22 @@ canonical_backend_full_go_test || { echo "CI must test owner handoff history mig
 grep -qx 'test -x "$release_dir/bin/bootstrap-automation-operations"' "$installer" || { echo "release must include Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations' "$release_builder" || { echo "CI must build Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' deploy/aicrm-automation-bootstrap.service || { echo "Automation Operations bootstrap unit must execute the release binary" >&2; exit 1; }
-grep -qxF '  systemctl kill --kill-whom=all --signal=KILL aicrm-automation-bootstrap.service 2>/dev/null || true' "$installer" || { echo "deployment must terminate a stale Automation Operations bootstrap before waiting for the host lock" >&2; exit 1; }
+grep -qxF '  systemctl kill --kill-whom=all --signal=KILL aicrm-automation-bootstrap.service 2>/dev/null || true' "$installer" || { echo "deployment must terminate a stale Automation Operations bootstrap within the host lock" >&2; exit 1; }
 grep -qxF '  if ! timeout 15s systemctl stop aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must bound stale bootstrap stop confirmation" >&2; exit 1; }
-grep -qF '"${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$' "$installer" || { echo "deployment must scope stale installer supersession to validated release commands" >&2; exit 1; }
-grep -qxF '      if [[ "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ ]]; then' "$installer" || { echo "deployment must validate competing release run numbers" >&2; exit 1; }
-grep -qxF '        if ((stale_args[4] < release_run_number)); then' "$installer" || { echo "deployment must supersede only older release run numbers" >&2; exit 1; }
-grep -qxF '        non_older_installer_found=true' "$installer" || { echo "deployment must fail closed for manual or malformed installers" >&2; exit 1; }
-grep -qF 'read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children"' "$installer" || { echo "deployment must release stale installer child waits before terminating their parent" >&2; exit 1; }
-grep -qx 'stale_installer_found=false' "$installer" || { echo "deployment must prove an older validated installer exists before lock recovery" >&2; exit 1; }
-grep -qxF '    target="$(readlink -f "$lock_fd" 2>/dev/null || true)"' "$installer" || { echo "deployment lock recovery must inspect exact open file descriptors" >&2; exit 1; }
-grep -qxF '    [[ "$target" == "$release_lock" ]] || continue' "$installer" || { echo "deployment lock recovery must remain scoped to the release lock" >&2; exit 1; }
-grep -qxF 'release_lock_recovery_allowed="$stale_installer_found"' "$installer" || { echo "deployment must retain validated stale-installer recovery evidence" >&2; exit 1; }
-grep -qxF 'if [[ -d /proc && -x "$(command -v flock)" && -n "$release_run_number" ]]; then' "$installer" || { echo "orphan lock recovery must require Linux procfs, flock, and a numbered CI run" >&2; exit 1; }
-grep -qxF '  if [[ ! -e "$last_successful_run_file" ]]; then' "$installer" || { echo "pre-ordering hosts must be able to recover detached release locks" >&2; exit 1; }
-grep -qxF '    if ! run_is_not_newer "$release_run_number" "$deployed_run_number"; then' "$installer" || { echo "deployment must allow orphan recovery only for a run newer than the deployed marker" >&2; exit 1; }
-grep -qxF 'if [[ "$non_older_installer_found" != true && "$release_lock_recovery_allowed" == true ]] && ! flock -w 15 9; then' "$installer" || { echo "deployment may recover lock holders only after a bounded wait with supersession evidence" >&2; exit 1; }
-grep -qxF '  if ! flock -w 15 9; then' "$installer" || { echo "deployment must bound the recovered lock acquisition" >&2; exit 1; }
+# Busy releases must not terminate a runtime configuration or an unknown lock
+# holder. The same acquired fd protects packages, configuration, and services.
+grep -qxF 'if ! flock -w 15 9; then' "$installer" || { echo "release lock acquisition must be bounded" >&2; exit 1; }
+grep -qxF '    inherited = os.fstat(9)' "$installer" && grep -qF '(expected.st_dev, expected.st_ino) == (inherited.st_dev, inherited.st_ino)' "$installer" || { echo "inherited release fd must reference the exact lock inode" >&2; exit 1; }
+grep -qF 'runtime configuration recovery_required before release' "$installer" || { echo "unrecovered runtime configuration must block release" >&2; exit 1; }
+if grep -qE 'terminate_stale_release_lock_holders|kill .*stale_(pid|child_pid)|/proc/\[0-9\]\*/fd' "$installer"; then
+  echo "release may not kill lock holders to acquire the shared lock" >&2; exit 1
+fi
+lock_line="$(grep -nF 'if ! flock -w 15 9; then' "$installer" | cut -d: -f1)"
+recovery_line="$(grep -nF 'runtime configuration recovery_required before release' "$installer" | cut -d: -f1)"
+staging_line="$(grep -nF '  staging_dir="$(mktemp' "$installer" | cut -d: -f1)"
+env_write_line="$(grep -nF '  survey_data_key=' "$installer" | cut -d: -f1)"
+bootstrap_stop_line="$(grep -nF 'bootstrap_load_state=' "$installer" | cut -d: -f1)"
+test "$recovery_line" -gt "$lock_line" && test "$staging_line" -gt "$recovery_line" && test "$env_write_line" -gt "$lock_line" && test "$bootstrap_stop_line" -gt "$lock_line" || { echo "package/configuration/service changes must follow lock and recovery checks" >&2; exit 1; }
 grep -qxF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must run Automation Operations semantic bootstrap" >&2; exit 1; }
 bootstrap_start_line="$(grep -nF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" | cut -d: -f1)"
 bootstrap_status_line="$(grep -nF '  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true' "$installer" | tail -n 1 | cut -d: -f1)"
@@ -280,10 +284,17 @@ grep -qF '  channel_admission_pages.js' "$installer" || { echo "installer omits 
 grep -qF '  standard_components_host.js' "$installer" || { echo "installer omits unified asset standard_components_host.js" >&2; exit 1; }
 
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
+grep -qx 'chown -R root:root "$release_dir"' "$installer" || { echo "privileged release hooks must use root-owned packages" >&2; exit 1; }
+grep -qx 'for control_dir in /opt/aicrm "$release_root"; do' "$installer" || { echo "root release hooks require sealed parent directories" >&2; exit 1; }
+grep -q 'chown root:root "$control_dir"' "$installer" || { echo "release control directories must be root-owned" >&2; exit 1; }
+grep -qx 'chmod -R go-w "$release_dir"' "$installer" || { echo "application users must not rewrite privileged hook code" >&2; exit 1; }
+if grep -q 'chown -R aicrm:aicrm "$release_dir"' "$installer"; then
+  echo "release must not return root hook code to the application owner" >&2; exit 1
+fi
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }
 grep -qF 'sha256sum --strict --check release-files.sha256' "$release_builder" || { echo "CI must generate and verify the immutable release manifest" >&2; exit 1; }
 grep -qx 'exec 9>"$release_lock"' "$installer" || { echo "installer must hold a host-side release lock" >&2; exit 1; }
-grep -qx 'flock 9' "$installer" || { echo "installer must serialize the release critical section with flock" >&2; exit 1; }
+grep -qx 'if ! flock -w 15 9; then' "$installer" || { echo "installer must serialize the release critical section with flock" >&2; exit 1; }
 grep -qx 'release_run_number="${3:-}"' "$installer" || { echo "installer must accept the CI run number" >&2; exit 1; }
 grep -qF 'last_successful_run_file=/opt/aicrm/last-successful-run-number' "$installer" || { echo "installer must retain the successful CI run marker" >&2; exit 1; }
 grep -qF '${GITHUB_RUN_NUMBER}' .github/workflows/ci.yml || { echo "CI must pass the GitHub run number to the installer" >&2; exit 1; }

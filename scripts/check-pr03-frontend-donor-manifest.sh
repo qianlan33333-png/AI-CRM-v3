@@ -8,6 +8,7 @@ set -euo pipefail
 frozen_sha="6bfbe5816bb89913c70adaca87d6a486260e016e"
 target_root="${AICRM_V3_TARGET_ROOT:-$(git rev-parse --show-toplevel)}"
 donor_root="${AICRM_V2_DONOR_ROOT:-}"
+python3 "$target_root/scripts/ci/check_toolchain_ownership.py" --root "$target_root"
 
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -30,6 +31,12 @@ check_count=0
 while read -r expected path; do
   [ -n "$expected" ] || continue
   target_file="$target_root/$path"
+  # The execution toolchain is now V3-owned. Keep verifying the original
+  # donor bytes against the original inline hashes, never refresh donor hashes.
+  case "$path" in
+    package.json) target_file="$target_root/docs/donor-manifests/toolchain-v2/package.frozen.json" ;;
+    package-lock.json) target_file="$target_root/docs/donor-manifests/toolchain-v2/package-lock.frozen.json" ;;
+  esac
   test -f "$target_file" || { echo "missing target donor file: $path" >&2; exit 1; }
   actual="$(hash_file "$target_file")"
   test "$actual" = "$expected" || {

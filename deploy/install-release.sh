@@ -25,53 +25,58 @@ if ! id aicrm >/dev/null 2>&1 || [[ ! -f /etc/aicrm/aicrm.env ]]; then
   echo "aicrm runtime is not provisioned" >&2
   exit 3
 fi
-if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
-  survey_data_key="$(openssl rand -base64 32 | tr -d '\n=')"
-  if grep -q '^AICRM_SURVEY_DATA_KEY=' /etc/aicrm/aicrm.env; then
-    sed -i "s|^AICRM_SURVEY_DATA_KEY=.*$|AICRM_SURVEY_DATA_KEY=${survey_data_key}|" /etc/aicrm/aicrm.env
-  else
-    printf '\nAICRM_SURVEY_DATA_KEY=%s\n' "$survey_data_key" >> /etc/aicrm/aicrm.env
+# The root-owned helper and current symlink must not have an app-writable
+# ancestor. This changes only release control directories, never runtime data.
+for control_dir in /opt/aicrm "$release_root"; do
+  if [[ -L "$control_dir" || ( -e "$control_dir" && ! -d "$control_dir" ) ]]; then
+    echo "unsafe release control directory" >&2
+    exit 3
   fi
-  unset survey_data_key
-  chmod 0600 /etc/aicrm/aicrm.env
+  install -d -m 0755 "$control_dir"
+  chown root:root "$control_dir"
+  chmod 0755 "$control_dir"
+done
+
+# Share the exact host lock with release wrappers and runtime configuration.
+# Never kill another holder: an open lock fd does not prove an obsolete deploy.
+# Busy exits retain the input archive so the caller can retry after resolution.
+if [[ -L "$release_lock" || ( -e "$release_lock" && ! -f "$release_lock" ) ]]; then
+  echo "unsafe release lock" >&2
+  exit 15
 fi
-if ! grep -Eq '^AICRM_IDENTITY_PHONE_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
-  identity_phone_data_key="$(openssl rand -base64 32 | tr -d '\n=')"
-  if grep -q '^AICRM_IDENTITY_PHONE_DATA_KEY=' /etc/aicrm/aicrm.env; then
-    sed -i "s|^AICRM_IDENTITY_PHONE_DATA_KEY=.*$|AICRM_IDENTITY_PHONE_DATA_KEY=${identity_phone_data_key}|" /etc/aicrm/aicrm.env
-  else
-    printf '\nAICRM_IDENTITY_PHONE_DATA_KEY=%s\n' "$identity_phone_data_key" >> /etc/aicrm/aicrm.env
+inherited_release_lock=false
+if [[ "${AICRM_RELEASE_LOCK_HELD:-}" == 1 ]]; then
+  if [[ "${AICRM_RELEASE_LOCK_FD:-}" != 9 ]]; then
+    echo "invalid inherited release lock" >&2
+    exit 15
   fi
-  unset identity_phone_data_key
-  chmod 0600 /etc/aicrm/aicrm.env
+  inherited_release_lock=true
+else
+exec 9>"$release_lock"
 fi
-if ! grep -Eq '^AICRM_HXC_SUBJECT_HMAC_KEY=.{32,}$' /etc/aicrm/aicrm.env; then
-  hxc_subject_hmac_key="$(openssl rand -base64 48 | tr -d '\n=')"
-  if grep -q '^AICRM_HXC_SUBJECT_HMAC_KEY=' /etc/aicrm/aicrm.env; then
-    sed -i "s|^AICRM_HXC_SUBJECT_HMAC_KEY=.*$|AICRM_HXC_SUBJECT_HMAC_KEY=${hxc_subject_hmac_key}|" /etc/aicrm/aicrm.env
-  else
-    printf '\nAICRM_HXC_SUBJECT_HMAC_KEY=%s\n' "$hxc_subject_hmac_key" >> /etc/aicrm/aicrm.env
-  fi
-  unset hxc_subject_hmac_key
-  chmod 0600 /etc/aicrm/aicrm.env
+if ! python3 - "$release_lock" <<'VERIFY_RELEASE_LOCK'
+import os
+import stat
+import sys
+try:
+    expected = os.stat(sys.argv[1], follow_symlinks=False)
+    inherited = os.fstat(9)
+    valid = stat.S_ISREG(expected.st_mode) and (expected.st_dev, expected.st_ino) == (inherited.st_dev, inherited.st_ino)
+except OSError:
+    valid = False
+raise SystemExit(0 if valid else 1)
+VERIFY_RELEASE_LOCK
+then
+  echo "invalid release lock descriptor" >&2
+  exit 15
 fi
-if ! grep -Eq '^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=[A-Za-z0-9+/]{43}=$' /etc/aicrm/aicrm.env; then
-  identity_observation_vault_key="$(openssl rand -base64 32 | tr -d '\n')"
-  if grep -q '^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=' /etc/aicrm/aicrm.env; then
-    sed -i "s|^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=.*$|AICRM_IDENTITY_OBSERVATION_VAULT_KEY=${identity_observation_vault_key}|" /etc/aicrm/aicrm.env
-  else
-    printf '\nAICRM_IDENTITY_OBSERVATION_VAULT_KEY=%s\n' "$identity_observation_vault_key" >> /etc/aicrm/aicrm.env
-  fi
-  unset identity_observation_vault_key
-  chmod 0600 /etc/aicrm/aicrm.env
+if ! flock -w 15 9; then
+  echo "release lock busy; retry after the current operation completes" >&2
+  exit 75
 fi
-if ! grep -Eq '^AICRM_HXC_IDENTITY_WRITE_ENABLED=(true|false)$' /etc/aicrm/aicrm.env; then
-  if grep -q '^AICRM_HXC_IDENTITY_WRITE_ENABLED=' /etc/aicrm/aicrm.env; then
-    sed -i 's|^AICRM_HXC_IDENTITY_WRITE_ENABLED=.*$|AICRM_HXC_IDENTITY_WRITE_ENABLED=false|' /etc/aicrm/aicrm.env
-  else
-    printf '\nAICRM_HXC_IDENTITY_WRITE_ENABLED=false\n' >> /etc/aicrm/aicrm.env
-  fi
-  chmod 0600 /etc/aicrm/aicrm.env
+if [[ -e /etc/aicrm/.ops-runtime-recovery.json || -L /etc/aicrm/.ops-runtime-recovery.json ]]; then
+  echo "runtime configuration recovery_required before release" >&2
+  exit 75
 fi
 
 release_dir="${release_root}/${release_sha}"
@@ -203,6 +208,10 @@ test -f "$release_dir/migrations/0176_survey_single_submission_claims.sql"
 test -f "$release_dir/migrations/0177_survey_operation_legacy_parity.sql"
 test -f "$release_dir/migrations/0181_hxc_dashboard_views.sql"
 test -f "$release_dir/migrations/0185_referral_core.sql"
+test -f "$release_dir/migrations/0186_adminops_inspections.sql"
+test -f "$release_dir/migrations/0187_adminops_notification_effect.sql"
+test -f "$release_dir/migrations/0188_adminops_retention.sql"
+test -f "$release_dir/migrations/0189_owner_process_retention.sql"
 test -f "$release_dir/migrations/0067_survey_completion_snapshots.sql"
 test -f "$release_dir/migrations/0084_hxc_shared_facts.sql"
 test -f "$release_dir/migrations/0090_survey_oauth_state_redirect.sql"
@@ -317,9 +326,12 @@ for standard_component_asset in \
   }
 done
 test -f "$release_dir/release-files.sha256"
+# Privileged deployment hooks must never execute application-writable code.
+# Seal the package before its final checksum verification, including resumes.
+chown -R root:root "$release_dir"
+chmod -R go-w "$release_dir"
 (cd "$release_dir" && sha256sum --strict --check release-files.sha256)
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
-chown -R aicrm:aicrm "$release_dir"
 # The isolated Excel service account must traverse the immutable release root.
 chmod 0755 "$release_dir"
 
@@ -331,122 +343,12 @@ cleanup_release_artifacts() {
 }
 trap cleanup_release_artifacts EXIT
 
-# A workflow-level concurrency group cannot serialize every main deployment:
-# GitHub retains only one pending run per group, and SHA-unique groups allow
-# builds to overlap. The host therefore owns the release critical section.
-# A cancelled SSH deployment can leave the durable bootstrap oneshot running
-# while its installer still owns the host lock. A newer release may safely stop
-# it before waiting: every staged batch is transactional and the command resumes
-# through its idempotency receipts with the new release binary.
-stale_installer_found=false
-non_older_installer_found=false
-if [[ -n "$release_run_number" ]]; then
-  for stale_cmdline in /proc/[0-9]*/cmdline; do
-    stale_args=()
-    mapfile -d '' -t stale_args < "$stale_cmdline" 2>/dev/null || continue
-    stale_pid="${stale_cmdline#/proc/}"
-    stale_pid="${stale_pid%/cmdline}"
-    if [[ "$stale_pid" != "$$" && "${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$ ]]; then
-      if [[ "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ ]]; then
-        if ((stale_args[4] < release_run_number)); then
-          stale_installer_found=true
-          stale_children=""
-          read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children" 2>/dev/null || true
-          for stale_child_pid in $stale_children; do
-            [[ "$stale_child_pid" =~ ^[1-9][0-9]*$ ]] && kill -TERM "$stale_child_pid" 2>/dev/null || true
-          done
-          kill -TERM "$stale_pid" 2>/dev/null || true
-        else
-          non_older_installer_found=true
-        fi
-      else
-        # A manual or malformed installer has no comparable CI ordering proof.
-        # Never recover its lock out from under it.
-        non_older_installer_found=true
-      fi
-    fi
-  done
-fi
-bootstrap_load_state="$(systemctl show aicrm-automation-bootstrap.service -p LoadState --value 2>/dev/null || true)"
-if [[ "$bootstrap_load_state" == loaded ]]; then
-  systemctl kill --kill-whom=all --signal=TERM aicrm-automation-bootstrap.service 2>/dev/null || true
-  sleep 2
-  systemctl kill --kill-whom=all --signal=KILL aicrm-automation-bootstrap.service 2>/dev/null || true
-  if ! timeout 15s systemctl stop aicrm-automation-bootstrap.service; then
-    systemctl status --no-pager --full aicrm-automation-bootstrap.service || true
-    exit 14
-  fi
-fi
-# The Access convergence wrapper holds the exact same host release lock over
-# its pre-0151 reconciliation and delegates to this installer with fd 9
-# inherited. Reopening the file would drop that lock between the two phases.
-inherited_release_lock=false
-if [[ "${AICRM_RELEASE_LOCK_HELD:-}" == 1 ]]; then
-  if [[ "${AICRM_RELEASE_LOCK_FD:-}" != 9 ]]; then
-    echo "invalid inherited release lock" >&2
-    exit 15
-  fi
-  inherited_release_lock=true
-else
-exec 9>"$release_lock"
-fi
-# Terminating an obsolete installer is not sufficient when one of its deeper
-# descendants inherited fd 9: that orphan can keep the kernel lock forever.
-# Only a newer numbered release that actually found an older validated
-# installer may recover this condition. The fd scan is scoped to the exact
-# release lock and excludes this installer, which has opened but not yet locked
-# fd 9.
-terminate_stale_release_lock_holders() {
-  local signal="$1" lock_fd holder_pid target
-  for lock_fd in /proc/[0-9]*/fd/*; do
-    target="$(readlink -f "$lock_fd" 2>/dev/null || true)"
-    [[ "$target" == "$release_lock" ]] || continue
-    holder_pid="${lock_fd#/proc/}"
-    holder_pid="${holder_pid%%/*}"
-    [[ "$holder_pid" =~ ^[1-9][0-9]*$ && "$holder_pid" != "$$" ]] || continue
-    kill "-$signal" "$holder_pid" 2>/dev/null || true
-  done
-}
 run_is_not_newer() {
   local candidate="$1"
   local deployed="$2"
   [[ ${#candidate} -lt ${#deployed} ]] || \
     ([[ ${#candidate} -eq ${#deployed} ]] && [[ "$candidate" < "$deployed" || "$candidate" == "$deployed" ]])
 }
-
-# A cancelled workflow can outlive the installer process while leaving only a
-# descendant holding fd 9. A strictly newer CI run than the last successful
-# release may recover that orphan even when no stale installer remains to be
-# discovered. Manual installs and runs competing with an equal/newer installer
-# fail closed.
-release_lock_recovery_allowed="$stale_installer_found"
-if [[ -d /proc && -x "$(command -v flock)" && -n "$release_run_number" ]]; then
-  if [[ ! -e "$last_successful_run_file" ]]; then
-    # Hosts deployed before run ordering was introduced have no marker. When no
-    # active installer exists, an exact lock holder is necessarily detached
-    # from an obsolete install and can be recovered by this numbered CI run.
-    release_lock_recovery_allowed=true
-  else
-    deployed_run_number="$(<"$last_successful_run_file")"
-    if [[ ! "$deployed_run_number" =~ ^[1-9][0-9]*$ ]]; then
-      echo "invalid last successful release run number" >&2
-      exit 11
-    fi
-    if ! run_is_not_newer "$release_run_number" "$deployed_run_number"; then
-      release_lock_recovery_allowed=true
-    fi
-  fi
-fi
-if [[ "$non_older_installer_found" != true && "$release_lock_recovery_allowed" == true ]] && ! flock -w 15 9; then
-  terminate_stale_release_lock_holders TERM
-  sleep 2
-  terminate_stale_release_lock_holders KILL
-  if ! flock -w 15 9; then
-    echo "timed out recovering stale release lock" >&2
-    exit 15
-  fi
-fi
-flock 9
 
 if [[ -n "$release_run_number" && -e "$last_successful_run_file" ]]; then
   last_successful_run_number="$(<"$last_successful_run_file")"
@@ -460,6 +362,67 @@ if [[ -n "$release_run_number" && -e "$last_successful_run_file" ]]; then
   fi
 elif [[ -z "$release_run_number" ]]; then
   echo "installing release ${release_sha} without a CI run number; serialized but not stale-run guarded" >&2
+fi
+
+if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
+  survey_data_key="$(openssl rand -base64 32 | tr -d '\n=')"
+  if grep -q '^AICRM_SURVEY_DATA_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_SURVEY_DATA_KEY=.*$|AICRM_SURVEY_DATA_KEY=${survey_data_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_SURVEY_DATA_KEY=%s\n' "$survey_data_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset survey_data_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
+if ! grep -Eq '^AICRM_IDENTITY_PHONE_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
+  identity_phone_data_key="$(openssl rand -base64 32 | tr -d '\n=')"
+  if grep -q '^AICRM_IDENTITY_PHONE_DATA_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_IDENTITY_PHONE_DATA_KEY=.*$|AICRM_IDENTITY_PHONE_DATA_KEY=${identity_phone_data_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_IDENTITY_PHONE_DATA_KEY=%s\n' "$identity_phone_data_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset identity_phone_data_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
+if ! grep -Eq '^AICRM_HXC_SUBJECT_HMAC_KEY=.{32,}$' /etc/aicrm/aicrm.env; then
+  hxc_subject_hmac_key="$(openssl rand -base64 48 | tr -d '\n=')"
+  if grep -q '^AICRM_HXC_SUBJECT_HMAC_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_HXC_SUBJECT_HMAC_KEY=.*$|AICRM_HXC_SUBJECT_HMAC_KEY=${hxc_subject_hmac_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_HXC_SUBJECT_HMAC_KEY=%s\n' "$hxc_subject_hmac_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset hxc_subject_hmac_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
+if ! grep -Eq '^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=[A-Za-z0-9+/]{43}=$' /etc/aicrm/aicrm.env; then
+  identity_observation_vault_key="$(openssl rand -base64 32 | tr -d '\n')"
+  if grep -q '^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=.*$|AICRM_IDENTITY_OBSERVATION_VAULT_KEY=${identity_observation_vault_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_IDENTITY_OBSERVATION_VAULT_KEY=%s\n' "$identity_observation_vault_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset identity_observation_vault_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
+if ! grep -Eq '^AICRM_HXC_IDENTITY_WRITE_ENABLED=(true|false)$' /etc/aicrm/aicrm.env; then
+  if grep -q '^AICRM_HXC_IDENTITY_WRITE_ENABLED=' /etc/aicrm/aicrm.env; then
+    sed -i 's|^AICRM_HXC_IDENTITY_WRITE_ENABLED=.*$|AICRM_HXC_IDENTITY_WRITE_ENABLED=false|' /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_HXC_IDENTITY_WRITE_ENABLED=false\n' >> /etc/aicrm/aicrm.env
+  fi
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
+
+# Bootstrap interruption is safe only while owning the shared release lock.
+bootstrap_load_state="$(systemctl show aicrm-automation-bootstrap.service -p LoadState --value 2>/dev/null || true)"
+if [[ "$bootstrap_load_state" == loaded ]]; then
+  systemctl kill --kill-whom=all --signal=TERM aicrm-automation-bootstrap.service 2>/dev/null || true
+  sleep 2
+  systemctl kill --kill-whom=all --signal=KILL aicrm-automation-bootstrap.service 2>/dev/null || true
+  if ! timeout 15s systemctl stop aicrm-automation-bootstrap.service; then
+    systemctl status --no-pager --full aicrm-automation-bootstrap.service || true
+    exit 14
+  fi
 fi
 
 # The component is optional, but a partial provisioning must never activate a
@@ -591,6 +554,13 @@ CHECK_EXCEL
   printf '%s\n' 'Excel component configuration and readiness verified'
 fi
 
+# Install the fixed root helper before normal service restarts activate the
+# CRM-only journal/TMPDIR drop-ins. No extra timer or worker privilege is added.
+if ! python3 "$release_dir/deploy/install-host-maintenance.py"; then
+  rollback
+  exit 17
+fi
+
 if ! systemctl start aicrm-migrate.service; then
   rollback
   exit 5
@@ -655,3 +625,8 @@ if [[ -n "$release_run_number" ]]; then
   mv -f "$next_run_file" "$last_successful_run_file"
 fi
 echo "release ${release_sha} active"
+# FD 9 still holds the installer's shared lock. The hook verifies this same
+# inode and calls inventory/apply without acquiring a conflicting second fd.
+if ! python3 "$release_dir/deploy/post-release-retention.py" --sha "$release_sha"; then
+  echo 'release cleanup gap: inspect root-owned maintenance result; active release retained' >&2
+fi

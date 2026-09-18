@@ -116,6 +116,8 @@ type AdminShellView struct {
 	DistributionAssets    DistributionAssets
 	ComponentStates       bool
 	ComponentStatesAssets ComponentStatesAssets
+	Governance            bool
+	GovernanceAssets      OverviewAssets
 	Overview              bool
 	OverviewAssets        OverviewAssets
 }
@@ -339,6 +341,20 @@ func (renderer *Renderer) RenderOverview(writer http.ResponseWriter, data AdminP
 		Overview:       true,
 		OverviewAssets: assets,
 	})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderGovernance reuses the existing single admin shell and shared controls.
+func (renderer *Renderer) RenderGovernance(writer http.ResponseWriter, data AdminPageData, assets OverviewAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.CSS == "" || assets.AdminJS == "" || assets.DetailDrawerCSS == "" {
+		return errors.New("governance assets required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = true
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<section id="governance-admin-root" aria-live="polite"><p>正在读取治理数据…</p></section>`), Governance: true, GovernanceAssets: assets})
 	if err != nil {
 		return err
 	}
