@@ -1295,8 +1295,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = openPlatformExecutor.BindV1AI(aiService, aiService, uow); err != nil {
 		return fail(err)
 	}
+	openPlatformExecutor.coreAudience = coreOperations
 	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
-		CoreSupervision:       coreOperations,
 		MachineAuthentication: machineService,
 		RateLimiter:           machineRateLimiter,
 		AdminAuthentication:   authentication,
