@@ -1787,6 +1787,28 @@
       ],
       "reason": "Integrate the authorized governance outcomes capability with the current audience API and prior governance outcomes. Preserve frozen donor and existing business behavior.",
       "review_reference": "User authorized full governance implementation and continued work. docs/plans/2026-09-18-governance-outcomes.md defines scope. This source declaration is not independent approval; exact-head complete CI remains required."
+    },
+    {
+      "base_commit": "2c12d1c611d052821758c4c3246862a0a0be6086",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "831310222caf7f8c40b2c61851c67a837661a7ff860b6c11cd59d760255eeb76",
+          "head_sha256": "3e6056f76216ddb8215316c939be4cbc4e96c66df62908572c55bbc4a0af5a4c"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "dd1ae93ccca50ea37f7ed4f270401a80625e0eece4cbb527c12f8ca6a287c77d",
+          "head_sha256": "de4992db74b756a0ea1e2ca4c1e8a230d0e99d6e50872da44c454cf593b7b892"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "312f75865752896031dc1605b09bf0a00be02c3a2e889ba7d3ac45272bcdff2d",
+          "head_sha256": "114da85c58d14d835aaaf8b881a4e08a6d2ba237a2e989f4a606bff0320ad369"
+        }
+      ],
+      "reason": "Integrate the authorized governance outcomes capability with the current audience API and prior governance outcomes. Preserve frozen donor and existing business behavior.",
+      "review_reference": "User authorized full governance implementation and continued work. docs/plans/2026-09-18-governance-outcomes.md defines scope. This source declaration is not independent approval; exact-head complete CI remains required."
     }
   ]
 }
