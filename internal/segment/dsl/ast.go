@@ -5,6 +5,7 @@ import "encoding/json"
 type Template string
 
 const (
+	CoreAIProduct              Template = "core_ai_product"
 	ActiveContacts             Template = "active_contacts"
 	StageAny                   Template = "stage_any"
 	TagAny                     Template = "tag_any"

@@ -28,6 +28,8 @@ func Parse(raw json.RawMessage) (AST, error) {
 	}
 	field, op := "", "in"
 	switch wire.TemplateKey {
+	case CoreAIProduct:
+		field = "segment.core_product"
 	case ActiveContacts:
 		field, op = "customer.active_within_days", "lte"
 	case StageAny:

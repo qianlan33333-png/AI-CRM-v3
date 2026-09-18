@@ -175,6 +175,9 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 		if e != nil {
 			return e
 		}
+		if isCoreDefinition(config.Definition) {
+			return ErrConflict
+		}
 		kind := configuredRefreshKind(command.RefreshKind, config.RefreshMode)
 		if !segmentdomain.ValidRefreshKind(kind) {
 			return ErrInvalid
@@ -229,6 +232,9 @@ func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command Refre
 	config, err := s.store.CurrentConfiguration(ctx, command.PackageID)
 	if err != nil {
 		return segmentdomain.RefreshRun{}, classify(err)
+	}
+	if isCoreDefinition(config.Definition) {
+		return segmentdomain.RefreshRun{}, ErrConflict
 	}
 	kind := configuredRefreshKind(command.RefreshKind, config.RefreshMode)
 	if !segmentdomain.ValidRefreshKind(kind) {

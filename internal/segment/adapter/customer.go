@@ -12,6 +12,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	segmentdsl "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/dsl"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
@@ -83,7 +84,7 @@ func (a CanonicalCustomers) CanonicalCustomers(ctx context.Context, ids []custom
 		return nil, ErrCustomerReadUnavailable
 	}
 	result := make([]customerdomain.CustomerID, 0, len(ids))
-	err := a.UoW.Within(ctx, func(tx context.Context) error {
+	read := func(tx context.Context) error {
 		if batch, ok := a.Resolver.(canonicalCustomerBatchResolver); ok {
 			canonical, resolveErr := batch.ResolveCanonicalCustomers(tx, ids)
 			if resolveErr != nil || len(canonical) != len(ids) {
@@ -105,7 +106,13 @@ func (a CanonicalCustomers) CanonicalCustomers(ctx context.Context, ids []custom
 			result = append(result, canonical.CustomerID)
 		}
 		return nil
-	})
+	}
+	var err error
+	if _, transactionErr := platformpostgres.RequireTransaction(ctx); transactionErr == nil {
+		err = read(ctx)
+	} else {
+		err = a.UoW.Within(ctx, read)
+	}
 	if err != nil {
 		return nil, err
 	}

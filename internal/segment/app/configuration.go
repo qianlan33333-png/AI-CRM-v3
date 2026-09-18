@@ -375,6 +375,9 @@ func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segm
 			}
 			if codeErr == nil {
 				sourceConfiguration, configErr := s.store.CurrentConfiguration(tx, source.ID)
+				if configErr == nil && isCoreDefinition(sourceConfiguration.Definition) {
+					return nil, segmentstore.MutationFact{}, ErrConflict
+				}
 				if configErr == nil {
 					configuration, createErr := segmentdomain.NewConfigurationVersionWithActor(copied.ID, 1, sourceConfiguration.Definition, sourceConfiguration.RefreshCronUTC, sourceConfiguration.RefreshMode, actor.StaffID, string(actor.Kind), actor.Reference, now)
 					if createErr == nil {
@@ -446,6 +449,11 @@ func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCom
 	now := s.now().UTC()
 	result, err := s.mutate(ctx, "put_configuration", actor, command.IdempotencyKey, mutationPayload("put_configuration", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, putErr := s.store.LockPackage(tx, command.PackageID)
+		if guard, ok := s.store.(interface {
+			ValidateCoreConfiguration(context.Context, int64, []byte) error
+		}); ok && putErr == nil {
+			putErr = guard.ValidateCoreConfiguration(tx, command.PackageID, canonical)
+		}
 		if putErr == nil && item.Lifecycle != segmentdomain.Paused {
 			putErr = segmentdomain.ErrActiveEdit
 		}

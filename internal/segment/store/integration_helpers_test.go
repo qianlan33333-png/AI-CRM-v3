@@ -55,6 +55,7 @@ func segmentDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, func()) 
 		"0083_segment_audience_refresh_modes.sql",
 		"0085_segment_audience_refresh_kind.sql",
 		"0097_segment_audience_mutation_actor.sql",
+		"0183_segment_core_operations.sql",
 	} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {

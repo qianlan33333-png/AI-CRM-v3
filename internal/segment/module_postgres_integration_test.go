@@ -29,6 +29,10 @@ func TestPostgreSQLReadinessRequiresCurrentSegmentSchema(t *testing.T) {
 		t.Fatal("readiness succeeded before mutation actor schema was installed")
 	}
 	apply("0097_segment_audience_mutation_actor.sql")
+	if err := module.Readiness(ctx, native); err == nil {
+		t.Fatal("readiness succeeded before core operations schema")
+	}
+	apply("0183_segment_core_operations.sql")
 	if err := module.Readiness(ctx, native); err != nil {
 		t.Fatalf("readiness after refresh-mode schema: %v", err)
 	}

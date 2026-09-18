@@ -77,6 +77,8 @@
     }
   }
 
+  window.AudienceOperationsHTTP = { request, errorState };
+
   function errorState(error) {
     if (!(error instanceof APIError)) return { state: "unknown", message: "网络或服务状态未知，请勿将本次操作视为成功。" };
     if (error.code === "network_error") return { state: "unknown", message: "网络连接中断，已停止本次操作；请刷新页面核对实际状态后重试。" };
@@ -538,9 +540,9 @@
         state.snapshot = result?.snapshot || null;
         const items = result?.items || [];
         byID("memberTotal").textContent = result ? `${result.snapshot.member_count} 人` : "尚无快照";
-        byID("memberRows").innerHTML = items.length ? items.map((item) => `<tr><td>用户 #${item.customer_id}</td><td><span class="ai-pill${item.identity_disposition === "resolved" ? "" : " gray"}">${escapeHTML(identityDispositionLabel(item.identity_disposition))}</span></td><td>${formatTime(item.entered_at)}</td></tr>`).join("") : `<tr><td class="ai-empty" colspan="3">${result ? "当前快照为空" : "尚未发布人群快照"}</td></tr>`;
+        byID("memberRows").innerHTML = items.length ? items.map((item) => `<tr><td>用户 #${item.customer_id}</td><td><span class="ai-pill${item.identity_disposition === "resolved" ? "" : " gray"}">${escapeHTML(identityDispositionLabel(item.identity_disposition))}</span></td><td>${formatTime(item.operations?.assignments?.find(a => !a.ended_at)?.entered_at || item.entered_at)}</td><td>${escapeHTML(item.operations?.assignments?.find(a => !a.ended_at)?.reason || "—")}</td><td>${escapeHTML(item.operations?.stats?.push_count ?? "—")}</td><td>${escapeHTML(item.operations?.stats?.visit_count ?? "未接入")}</td><td><button type="button" class="ai-btn" data-core-member="${Number(item.customer_id)}" data-core-package="${packageID}">运营明细</button></td></tr>`).join("") : `<tr><td class="ai-empty" colspan="7">${result ? "当前快照为空" : "尚未发布人群快照"}</td></tr>`;
         renderSummary();
-      } catch (error) { const detail = errorState(error); byID("memberRows").innerHTML = `<tr><td class="ai-empty" colspan="3">${escapeHTML(detail.message)}</td></tr>`; }
+      } catch (error) { const detail = errorState(error); byID("memberRows").innerHTML = `<tr><td class="ai-empty" colspan="7">${escapeHTML(detail.message)}</td></tr>`; }
     }
 
     async function loadRuns() {

@@ -82,6 +82,7 @@ type externalSubmissionStore interface {
 }
 
 type SubmissionService struct {
+	observer            surveyport.SubmissionObserver
 	uow                 platformport.UnitOfWork
 	store               SubmissionStore
 	cipher              *secure.Cipher
@@ -327,6 +328,11 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 		if !created {
 			completionConfiguration, e = s.store.GetOperationConfiguration(tx, questionnaire.ID)
 			return e
+		}
+		if s.observer != nil && command.Identity.CustomerID != nil {
+			if e = s.observer.SubmissionCreatedWithin(tx, int64(stored.ID), int64(*command.Identity.CustomerID)); e != nil {
+				return e
+			}
 		}
 		for _, answer := range stored.Answers {
 			if answer.QuestionType != surveyport.QuestionMobile {
@@ -977,3 +983,7 @@ var _ surveyport.PublicApplication = (*SubmissionService)(nil)
 var _ surveyport.SubmissionApplication = (*SubmissionService)(nil)
 
 var _ surveyport.ExternalSubmissionReader = (*SubmissionService)(nil)
+
+func (s *SubmissionService) BindSubmissionObserver(observer surveyport.SubmissionObserver) {
+	s.observer = observer
+}

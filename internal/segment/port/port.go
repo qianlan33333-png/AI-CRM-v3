@@ -72,6 +72,7 @@ type Snapshot struct {
 }
 
 type Member struct {
+	Operations  *CoreMemberDetail         `json:"operations,omitempty"`
 	SnapshotID  SnapshotID                `json:"snapshot_id"`
 	CustomerID  customerdomain.CustomerID `json:"customer_id"`
 	EnteredAt   time.Time                 `json:"entered_at"`
