@@ -1706,17 +1706,17 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04",
-          "head_sha256": "eddb6bf671c26430b14060ab3fec1e8df66e0f01e76fe158f523c6290d594e80"
+          "head_sha256": "3e9871284b98d58489656d463e89b13be02d7e816f78c593340635ab46696329"
         },
         {
           "path": "web/donor-sources/source-index.json",
           "base_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4",
-          "head_sha256": "7c2be08390a6ba947dcba0c3b9857c4ce6b38956d8b0eee2f8a7b8bcbd14be1f"
+          "head_sha256": "7ae90fdfcfe47cad4f6fc0b54768f2afd2eb27d07c1f1e17b56230f91c244e60"
         },
         {
           "path": "web/donor-sources/source-lock.json",
           "base_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12",
-          "head_sha256": "b859067ffdfe1e5b81a834eb4cc7497a6843bf8882c0361f0d9922893127dfd5"
+          "head_sha256": "bff78af8959431e69cc1eb6e2d4aff76a27fe5cbfbec3cb525d8417648eecd69"
         }
       ],
       "reason": "Align the user-requested CRM audience APIs with the existing V1 OAuth operation catalog and standard response envelope. Only the active V3 OpenAPI and its source index/lock change; frozen donors remain unchanged.",

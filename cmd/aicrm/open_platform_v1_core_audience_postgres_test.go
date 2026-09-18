@@ -70,7 +70,16 @@ func coreAudienceOAuthJourney(t *testing.T, ctx context.Context, a *composedAppl
 		}
 		return w.Body.Bytes()
 	}
-	request("GET", "/open/v1/audience/core-products", "", read, "", 200)
+	products := request("GET", "/open/v1/audience/core-products", "", read, "", 200)
+	var productEnvelope struct {
+		Items json.RawMessage `json:"items"`
+		Data  struct {
+			Items json.RawMessage `json:"items"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(products, &productEnvelope) != nil || len(productEnvelope.Items) == 0 || string(productEnvelope.Items) != string(productEnvelope.Data.Items) {
+		t.Fatalf("legacy product alias mismatch: %s", products)
+	}
 	base := fmt.Sprintf("/open/v1/audience/packages/%d/members", pkg.ID)
 	members := request("GET", base, "", read, "", 200)
 	if !strings.Contains(string(members), `"customer_id":`+fmt.Sprint(customerID)) {
@@ -85,11 +94,20 @@ func coreAudienceOAuthJourney(t *testing.T, ctx context.Context, a *composedAppl
 	for i := 0; i < 3; i++ {
 		request("POST", "/open/v1/audience/push-records", string(raw), write, "core-api-push-0001", 200)
 	}
+	for _, key := range []string{"", "", "x", "x"} {
+		request("POST", "/open/v1/audience/push-records", string(raw), write, key, 200)
+	}
 	push["status"] = "success"
+	raw, _ = json.Marshal(push)
+	request("POST", "/open/v1/audience/push-records", string(raw), write, "", 409)
 	push["status_version"] = 2
 	raw, _ = json.Marshal(push)
+	// Same legacy key with a different payload must still conflict.
+	request("POST", "/open/v1/audience/push-records", string(raw), write, "x", 409)
 	request("POST", "/open/v1/audience/push-records", string(raw), write, "core-api-push-0001", 409)
 	request("POST", "/open/v1/audience/push-records", string(raw), write, "core-api-push-0002", 200)
+	request("POST", "/open/v1/audience/push-records", string(raw), write, "", 200)
+	request("POST", "/open/v1/audience/push-records", string(raw), write, "", 200)
 	body := request(http.MethodGet, detail, "", read, "", 200)
 	var out struct {
 		Data segmentport.CoreMemberDetail `json:"data"`

@@ -290,7 +290,7 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 		if len(params.Arguments) == 0 {
 			params.Arguments = json.RawMessage(`{}`)
 		}
-		if (descriptor.OperationID == openplatformport.OperationAIReviewPlanCreate || descriptor.OperationID == openplatformport.OperationCorePushRecord) && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+		if descriptor.OperationID == openplatformport.OperationAIReviewPlanCreate && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
 			writeJSONRPCOperationError(response, rpc.ID, openplatformport.ErrorValidation)
 			return
 		}
@@ -372,7 +372,7 @@ func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Req
 		writeV1Error(response, http.StatusBadRequest, openplatformport.ErrorValidation, id)
 		return
 	}
-	if (operation == openplatformport.OperationAIReviewPlanCreate || operation == openplatformport.OperationCorePushRecord) && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+	if operation == openplatformport.OperationAIReviewPlanCreate && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
 		writeV1Error(response, http.StatusBadRequest, openplatformport.ErrorValidation, id)
 		return
 	}
@@ -387,6 +387,15 @@ func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Req
 	status := http.StatusOK
 	if operation == openplatformport.OperationAIReviewPlanCreate {
 		status = http.StatusCreated
+	}
+	if operation == openplatformport.OperationCoreProducts {
+		// Keep the published top-level list alias while exposing the V1 envelope.
+		data, ok := result.Data.(map[string]any)
+		if ok {
+			response.Header().Set("X-Request-ID", id)
+			writeJSON(response, status, map[string]any{"data": data, "items": data["items"], "error": nil, "request_id": id})
+			return
+		}
 	}
 	writeV1Data(response, status, result.Data, id)
 }

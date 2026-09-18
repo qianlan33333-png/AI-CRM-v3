@@ -44,7 +44,7 @@ func replaceTestPath(path string) string {
 }
 func TestCoreAudienceValidationBeforeInvocation(t *testing.T) {
 	for _, tc := range []struct{ method, path, body string }{
-		{"POST", "/open/v1/audience/push-records", `{}`},
+		{"POST", "/open/v1/audience/push-records", `{`},
 		{"GET", "/open/v1/audience/packages/no/members", ""},
 		{"GET", "/open/v1/audience/packages/2/members?limit=101", ""},
 		{"GET", "/open/v1/audience/packages/2/members?limit=1&limit=2", ""},

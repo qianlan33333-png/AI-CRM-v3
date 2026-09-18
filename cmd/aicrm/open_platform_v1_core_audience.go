@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
@@ -80,7 +82,7 @@ func (e *openPlatformExecutor) v1CoreAudience(ctx context.Context, in openplatfo
 			return invalid()
 		}
 		push := segmentport.CorePush{PushID: input.PushID, CustomerID: input.CustomerID, PackageID: input.PackageID, Materials: input.Materials, OccurredAt: input.OccurredAt, Status: input.Status, StatusVersion: input.StatusVersion}
-		if push.CustomerID < 1 || push.PackageID < 1 || len(in.IdempotencyKey) < 16 || len(in.IdempotencyKey) > 128 || strings.TrimSpace(in.IdempotencyKey) != in.IdempotencyKey {
+		if push.CustomerID < 1 || push.PackageID < 1 || strings.TrimSpace(push.PushID) == "" || push.StatusVersion < 1 || len(in.IdempotencyKey) > 128 || strings.TrimSpace(in.IdempotencyKey) != in.IdempotencyKey {
 			return invalid()
 		}
 		if !audiencePackageScope(in.Principal, push.PackageID) {
@@ -89,7 +91,16 @@ func (e *openPlatformExecutor) v1CoreAudience(ctx context.Context, in openplatfo
 		if err := e.ensureCustomerScope(ctx, audienceCustomerPrincipal(in.Principal), customerdomain.CustomerID(push.CustomerID), nil); err != nil {
 			return openplatformport.Result{}, v1CustomerScopeError(err)
 		}
-		result, err := e.coreAudience.RecordSupervisedPush(ctx, in.Principal.ClientID, in.IdempotencyKey, push)
+		// Preserve the published optional/short header contract without losing
+		// Segment's durable receipt. Missing keys bind to one business version;
+		// explicit short keys bind to that exact caller key. Never use randomness.
+		key := in.IdempotencyKey
+		if key == "" {
+			key = fmt.Sprintf("audience-version-%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%d", push.PushID, push.CustomerID, push.PackageID, push.StatusVersion))))
+		} else if len(key) < 16 {
+			key = fmt.Sprintf("audience-header-%x", sha256.Sum256([]byte(key)))
+		}
+		result, err := e.coreAudience.RecordSupervisedPush(ctx, in.Principal.ClientID, key, push)
 		return openplatformport.Result{Data: result}, coreAudienceError(err)
 	}
 	var input struct {

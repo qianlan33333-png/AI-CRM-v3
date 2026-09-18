@@ -47,7 +47,7 @@ func TestV1CoreAudienceAuthorizationAndScope(t *testing.T) {
 	}{
 		{"legacy permission rejected", openplatformport.OperationCoreProducts, "read", "external_read", nil, `{}`, "", openplatformport.ErrorPermission},
 		{"read client cannot push", openplatformport.OperationCorePushRecord, "read", "audience.push.write", nil, `{}`, "", openplatformport.ErrorPermission},
-		{"missing key", openplatformport.OperationCorePushRecord, "write", "audience.push.write", nil, `{"customer_id":7,"package_id":2}`, "", openplatformport.ErrorValidation},
+		{"missing business push identity", openplatformport.OperationCorePushRecord, "write", "audience.push.write", nil, `{"customer_id":7,"package_id":2}`, "", openplatformport.ErrorValidation},
 		{"wrong package", openplatformport.OperationCoreMemberHistory, "read", "audience.member.history.read", accessdomain.OwnerScope{"package_id": {"3"}}, `{"customer_id":7,"package_id":2}`, "", openplatformport.ErrorPermission},
 		{"wrong customer", openplatformport.OperationCoreMemberOperations, "read", "audience.member.operations.read", accessdomain.OwnerScope{"customer_id": {"8"}}, `{"customer_id":7,"package_id":2}`, "", openplatformport.ErrorNotFound},
 		{"wrong corp", openplatformport.OperationCoreProducts, "read", "audience.product.read", accessdomain.OwnerScope{"corp_id": {"other"}}, `{}`, "", openplatformport.ErrorPermission},
@@ -82,7 +82,7 @@ func TestV1CoreAudienceScopeFilteringAndPushSource(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].CustomerID != 7 || page.NextCursor != "9" {
 		t.Fatalf("scope pagination=%+v", page)
 	}
-	_, err = e.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCorePushRecord, Principal: p, Input: json.RawMessage(`{"push_id":"business-push-1","customer_id":7,"package_id":2,"materials":[{"kind":"mini_program","id":1}],"status":"reported","status_version":1,"occurred_at":"2026-09-18T01:00:00Z"}`), IdempotencyKey: "push-report-00000001"})
+	_, err = e.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCorePushRecord, Principal: p, Input: json.RawMessage(`{"push_id":"business-push-1","customer_id":7,"package_id":2,"materials":[{"kind":"miniprogram","id":1}],"status":"reported","status_version":1,"occurred_at":"2026-09-18T01:00:00Z"}`), IdempotencyKey: "push-report-00000001"})
 	if err != nil || s.source != "node-a" || s.key != "push-report-00000001" {
 		t.Fatalf("push source=%q err=%v", s.source, err)
 	}
