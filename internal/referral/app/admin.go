@@ -25,6 +25,7 @@ type adminStore interface {
 	UpdateCampaignWithin(context.Context, referraldomain.Campaign, int64) (referraldomain.Campaign, error)
 	InsertTeamWithin(context.Context, referraldomain.Team) (referraldomain.Team, error)
 	ReadTeamWithin(context.Context, int64, bool) (referraldomain.Team, error)
+	LockParticipationWithin(context.Context, int64, int64) error
 	ReadInvitationWithin(context.Context, int64, bool) (referraldomain.Invitation, error)
 	UpdateInvitationStateWithin(context.Context, referraldomain.Invitation, referraldomain.InvitationState, time.Time) error
 	ReadParticipationByIDWithin(context.Context, int64, bool) (referraldomain.Participation, error)
@@ -41,8 +42,14 @@ type adminStore interface {
 	ListCampaignsWithin(context.Context, int32, int32, bool) ([]referraldomain.Campaign, error)
 	CampaignCountsWithin(context.Context, int64) (referralstore.CampaignCounts, error)
 	ListTeamsWithin(context.Context, int64) ([]referraldomain.Team, error)
+	ListAdminTeamSummariesWithin(context.Context, int64) ([]referralport.AdminTeamSummary, error)
 	CampaignDailyMetricsWithin(context.Context, int64) ([]referralport.CampaignDailyMetric, error)
 	ListAdminReferralsWithin(context.Context, int64, int32, int32) ([]referralport.AdminReferralRecord, error)
+	ListAdminParticipantsWithin(context.Context, referralport.AdminParticipantQuery, *referralstore.AdminJoinedCursor, int32) ([]referralport.AdminParticipantRecord, error)
+	ListAdminInvitationsWithin(context.Context, referralport.AdminInvitationQuery, *referralstore.AdminJoinedCursor, int32) ([]referralport.AdminInvitationRecord, error)
+	ListAdminParticipantsForExportWithin(context.Context, referralport.AdminParticipantQuery) ([]referralport.AdminParticipantRecord, error)
+	ListAdminInvitationsForExportWithin(context.Context, referralport.AdminInvitationQuery) ([]referralport.AdminInvitationRecord, error)
+	ListAdminParticipantInvitationsForExportWithin(context.Context, referralport.AdminParticipantInvitationQuery, int64) ([]referralport.AdminInvitationRecord, error)
 	ListRelationshipHistoryWithin(context.Context, int64, int32, int32) ([]referraldomain.RelationshipHistory, error)
 	ListRewardsWithin(context.Context, int64, int32, int32) ([]referraldomain.RewardRecord, error)
 }
@@ -216,7 +223,7 @@ func (s *AdminService) CreateTeam(ctx context.Context, command referralport.Crea
 				return err
 			}
 			if receipt.PayloadDigest != payload || receipt.ResultKind != "team" {
-				return referralport.ErrConflict
+				return referralport.ErrIdempotencyConflict
 			}
 			var readErr error
 			result, readErr = s.store.ReadTeamWithin(tx, receipt.ResultID, false)
@@ -227,15 +234,30 @@ func (s *AdminService) CreateTeam(ctx context.Context, command referralport.Crea
 			return verifyErr
 		}
 		if !trusted {
-			return referralport.ErrConflict
+			return referralport.ErrCaptainIneligible
 		}
 		campaign, err := s.store.ReadCampaignWithin(tx, command.CampaignID, true)
 		if err != nil {
 			return err
 		}
 		now := s.now().UTC()
-		if campaign.EffectiveState(now) != referraldomain.CampaignDraft && campaign.EffectiveState(now) != referraldomain.CampaignScheduled {
-			return referralport.ErrConflict
+		switch campaign.EffectiveState(now) {
+		case referraldomain.CampaignDraft, referraldomain.CampaignScheduled, referraldomain.CampaignActive:
+		default:
+			return referralport.ErrCampaignTeamLocked
+		}
+		// Serialize captain assignment with the first activity participation for
+		// this customer. A person who has already joined any activity team cannot
+		// later be retrofitted as a captain of another immutable team.
+		if err = s.store.LockParticipationWithin(tx, campaign.ID, command.CaptainCustomerID); err != nil {
+			return err
+		}
+		if participation, participationErr := s.store.ReadParticipationWithin(tx, campaign.ID, command.CaptainCustomerID, false); participationErr == nil {
+			if participation.ID > 0 {
+				return referralport.ErrCaptainIneligible
+			}
+		} else if !errors.Is(participationErr, referralport.ErrNotFound) {
+			return participationErr
 		}
 		candidate := referraldomain.Team{CampaignID: campaign.ID, Name: command.Name, LogoURL: command.LogoURL, CaptainCustomerID: command.CaptainCustomerID, Version: 1, CreatedAt: now, UpdatedAt: now}
 		if !candidate.ValidForInsert() {
@@ -526,6 +548,147 @@ func (s *AdminService) ListAdminReferrals(ctx context.Context, campaignID int64,
 	}
 	return page, nil
 }
+
+func (s *AdminService) ListAdminParticipants(ctx context.Context, query referralport.AdminParticipantQuery) (referralport.AdminParticipantPage, error) {
+	if s == nil || !validAdminParticipantQuery(query) {
+		return referralport.AdminParticipantPage{}, referralport.ErrConflict
+	}
+	after, err := referralstore.ParseAdminJoinedCursor(query.Cursor)
+	if err != nil {
+		return referralport.AdminParticipantPage{}, err
+	}
+	var values []referralport.AdminParticipantRecord
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		values, readErr = s.store.ListAdminParticipantsWithin(tx, query, after, query.Limit+1)
+		return readErr
+	})
+	if err != nil {
+		return referralport.AdminParticipantPage{}, err
+	}
+	page := referralport.AdminParticipantPage{Items: values}
+	if int32(len(values)) > query.Limit {
+		page.Items = values[:query.Limit]
+		last := page.Items[len(page.Items)-1].Participation
+		page.NextCursor = referralstore.EncodeAdminJoinedCursor(last.JoinedAt, last.ID)
+	}
+	return page, nil
+}
+
+func (s *AdminService) ListAdminInvitations(ctx context.Context, query referralport.AdminInvitationQuery) (referralport.AdminInvitationPage, error) {
+	if s == nil || !validAdminInvitationQuery(query) {
+		return referralport.AdminInvitationPage{}, referralport.ErrConflict
+	}
+	after, err := referralstore.ParseAdminJoinedCursor(query.Cursor)
+	if err != nil {
+		return referralport.AdminInvitationPage{}, err
+	}
+	var values []referralport.AdminInvitationRecord
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		values, readErr = s.store.ListAdminInvitationsWithin(tx, query, after, query.Limit+1)
+		return readErr
+	})
+	if err != nil {
+		return referralport.AdminInvitationPage{}, err
+	}
+	page := referralport.AdminInvitationPage{Items: values}
+	if int32(len(values)) > query.Limit {
+		page.Items = values[:query.Limit]
+		last := page.Items[len(page.Items)-1].Participation
+		page.NextCursor = referralstore.EncodeAdminJoinedCursor(last.JoinedAt, last.ID)
+	}
+	return page, nil
+}
+
+// ListAdminParticipantInvitations resolves the inviter from a campaign-owned
+// participation before listing their direct invitees. This avoids treating a
+// browser-supplied canonical customer identifier as a drilldown authority.
+func (s *AdminService) ListAdminParticipantInvitations(ctx context.Context, query referralport.AdminParticipantInvitationQuery) (referralport.AdminInvitationPage, error) {
+	if s == nil || !validAdminParticipantInvitationQuery(query) {
+		return referralport.AdminInvitationPage{}, referralport.ErrConflict
+	}
+	after, err := referralstore.ParseAdminJoinedCursor(query.Cursor)
+	if err != nil {
+		return referralport.AdminInvitationPage{}, err
+	}
+	var values []referralport.AdminInvitationRecord
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		participation, readErr := s.store.ReadParticipationByIDWithin(tx, query.ParticipationID, false)
+		if readErr != nil {
+			return readErr
+		}
+		if participation.CampaignID != query.CampaignID {
+			return referralport.ErrNotFound
+		}
+		values, readErr = s.store.ListAdminInvitationsWithin(tx, referralport.AdminInvitationQuery{
+			CampaignID:        query.CampaignID,
+			InviterCustomerID: participation.CustomerID,
+			State:             query.State,
+		}, after, query.Limit+1)
+		return readErr
+	})
+	if err != nil {
+		return referralport.AdminInvitationPage{}, err
+	}
+	page := referralport.AdminInvitationPage{Items: values}
+	if int32(len(values)) > query.Limit {
+		page.Items = values[:query.Limit]
+		last := page.Items[len(page.Items)-1].Participation
+		page.NextCursor = referralstore.EncodeAdminJoinedCursor(last.JoinedAt, last.ID)
+	}
+	return page, nil
+}
+
+func (s *AdminService) ListAdminParticipantsForExport(ctx context.Context, query referralport.AdminParticipantQuery) ([]referralport.AdminParticipantRecord, error) {
+	if s == nil || !validAdminParticipantExportQuery(query) {
+		return nil, referralport.ErrConflict
+	}
+	var values []referralport.AdminParticipantRecord
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		values, readErr = s.store.ListAdminParticipantsForExportWithin(tx, query)
+		return readErr
+	})
+	return values, err
+}
+
+func (s *AdminService) ListAdminInvitationsForExport(ctx context.Context, query referralport.AdminInvitationQuery) ([]referralport.AdminInvitationRecord, error) {
+	if s == nil || !validAdminInvitationExportQuery(query) {
+		return nil, referralport.ErrConflict
+	}
+	var values []referralport.AdminInvitationRecord
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		values, readErr = s.store.ListAdminInvitationsForExportWithin(tx, query)
+		return readErr
+	})
+	return values, err
+}
+
+// ListAdminParticipantInvitationsForExport keeps the export scoped to a
+// campaign-owned participation. The subsequent store read is one unpaged SQL
+// statement for all matching invitees; the browser never supplies an inviter
+// customer identifier.
+func (s *AdminService) ListAdminParticipantInvitationsForExport(ctx context.Context, query referralport.AdminParticipantInvitationQuery) ([]referralport.AdminInvitationRecord, error) {
+	if s == nil || !validAdminParticipantInvitationExportQuery(query) {
+		return nil, referralport.ErrConflict
+	}
+	var values []referralport.AdminInvitationRecord
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		participation, readErr := s.store.ReadParticipationByIDWithin(tx, query.ParticipationID, false)
+		if readErr != nil {
+			return readErr
+		}
+		if participation.CampaignID != query.CampaignID {
+			return referralport.ErrNotFound
+		}
+		values, readErr = s.store.ListAdminParticipantInvitationsForExportWithin(tx, query, participation.CustomerID)
+		return readErr
+	})
+	return values, err
+}
+
 func (s *AdminService) ListRelationshipHistory(ctx context.Context, customerID int64, cursor string, limit int32) (referralport.RelationshipHistoryPage, error) {
 	if s == nil || customerID < 1 || limit < 1 || limit > 100 {
 		return referralport.RelationshipHistoryPage{}, referralport.ErrConflict
@@ -593,10 +756,15 @@ func (s *AdminService) adminCampaignView(ctx context.Context, campaign referrald
 		return referralport.CampaignView{}, err
 	}
 	var teams []referraldomain.Team
+	var teamSummaries []referralport.AdminTeamSummary
 	var daily []referralport.CampaignDailyMetric
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		teams, err = s.store.ListTeamsWithin(tx, campaign.ID)
+		if err != nil {
+			return err
+		}
+		teamSummaries, err = s.store.ListAdminTeamSummariesWithin(tx, campaign.ID)
 		if err != nil {
 			return err
 		}
@@ -606,13 +774,37 @@ func (s *AdminService) adminCampaignView(ctx context.Context, campaign referrald
 	if err != nil {
 		return referralport.CampaignView{}, err
 	}
-	return referralport.CampaignView{CampaignSummary: summary, Teams: teams, DailyMetrics: daily}, nil
+	return referralport.CampaignView{CampaignSummary: summary, Teams: teams, TeamSummaries: teamSummaries, DailyMetrics: daily}, nil
 }
 
 func appendPlatformEvent(ctx context.Context, audit *platformaudit.Service, outbox platformoutbox.Appender, eventType, resourceType string, resourceID int64, actorType string, actorID int64, commandKey string, payload any, at time.Time) error {
 	return (&Service{audit: audit, outbox: outbox}).appendEvent(ctx, eventType, resourceType, resourceID, actorType, actorID, commandKey, payload, at)
 }
 func validAdminCommand(actorID int64, key string) bool { return actorID > 0 && validKey(key) }
+
+func validAdminParticipantQuery(query referralport.AdminParticipantQuery) bool {
+	return query.CampaignID > 0 && query.TeamID >= 0 && (query.State == "" || query.State.Valid()) && query.Limit >= 1 && query.Limit <= 100
+}
+
+func validAdminInvitationQuery(query referralport.AdminInvitationQuery) bool {
+	return query.CampaignID > 0 && query.TeamID >= 0 && query.InviterCustomerID >= 0 && (query.State == "" || query.State.Valid()) && query.Limit >= 1 && query.Limit <= 100
+}
+
+func validAdminParticipantInvitationQuery(query referralport.AdminParticipantInvitationQuery) bool {
+	return query.CampaignID > 0 && query.ParticipationID > 0 && (query.State == "" || query.State.Valid()) && query.Limit >= 1 && query.Limit <= 100
+}
+
+func validAdminParticipantInvitationExportQuery(query referralport.AdminParticipantInvitationQuery) bool {
+	return query.CampaignID > 0 && query.ParticipationID > 0 && (query.State == "" || query.State.Valid()) && query.Cursor == ""
+}
+
+func validAdminParticipantExportQuery(query referralport.AdminParticipantQuery) bool {
+	return query.CampaignID > 0 && query.TeamID >= 0 && (query.State == "" || query.State.Valid()) && query.Cursor == ""
+}
+
+func validAdminInvitationExportQuery(query referralport.AdminInvitationQuery) bool {
+	return query.CampaignID > 0 && query.TeamID >= 0 && query.InviterCustomerID >= 0 && (query.State == "" || query.State.Valid()) && query.Cursor == ""
+}
 func mapDomainError(err error) error {
 	if errors.Is(err, referraldomain.ErrVersion) || errors.Is(err, referraldomain.ErrTransition) || errors.Is(err, referraldomain.ErrInvalid) {
 		return referralport.ErrConflict

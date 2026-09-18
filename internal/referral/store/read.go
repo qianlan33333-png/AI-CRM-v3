@@ -428,3 +428,311 @@ func NextOffsetCursor(offset int32, count int, limit int32) string {
 	}
 	return strconv.FormatInt(int64(offset)+int64(count), 10)
 }
+
+// ListAdminTeamSummariesWithin returns campaign-scoped operational aggregates.
+// Correlated counts deliberately avoid multiplying a team's participants by its
+// credits when both facts are present.
+func (r *Repository) ListAdminTeamSummariesWithin(ctx context.Context, campaignID int64) ([]referralport.AdminTeamSummary, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if campaignID < 1 {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `SELECT `+teamColumns+`,
+        (SELECT count(*) FROM referral_participations p
+         WHERE p.campaign_id=t.campaign_id AND p.team_id=t.id AND p.state='active'),
+        (SELECT count(*) FROM referral_score_events e
+         WHERE e.campaign_id=t.campaign_id AND e.team_id=t.id AND e.kind='credit'
+           AND NOT EXISTS (SELECT 1 FROM referral_score_events r WHERE r.kind='reversal' AND r.reverses_score_event_id=e.id)),
+        EXISTS (SELECT 1 FROM referral_participations cp
+                WHERE cp.campaign_id=t.campaign_id AND cp.customer_id=t.captain_customer_id AND cp.state='active')
+        FROM referral_teams t
+        WHERE t.campaign_id=$1
+        ORDER BY t.id`, campaignID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := make([]referralport.AdminTeamSummary, 0)
+	for rows.Next() {
+		var value referralport.AdminTeamSummary
+		if err = rows.Scan(&value.Team.ID, &value.Team.CampaignID, &value.Team.Name, &value.Team.LogoURL, &value.Team.CaptainCustomerID, &value.Team.Version, &value.Team.CreatedAt, &value.Team.UpdatedAt, &value.ParticipantCount, &value.DirectInvitationCount, &value.CaptainParticipated); err != nil {
+			return nil, mapError(err)
+		}
+		if !value.Team.Valid() || value.ParticipantCount < 0 || value.DirectInvitationCount < 0 {
+			return nil, referralport.ErrUnavailable
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return values, nil
+}
+
+func validAdminParticipantFilter(query referralport.AdminParticipantQuery) bool {
+	return query.CampaignID > 0 && query.TeamID >= 0 && (query.State == "" || query.State.Valid())
+}
+
+func validAdminInvitationFilter(query referralport.AdminInvitationQuery) bool {
+	return query.CampaignID > 0 && query.TeamID >= 0 && query.InviterCustomerID >= 0 && (query.State == "" || query.State.Valid())
+}
+
+const adminParticipationColumns = `p.id,p.campaign_id,p.customer_id,p.team_id,COALESCE(p.invitation_id,0),COALESCE(p.inviter_customer_id,0),COALESCE(p.inviter_team_id,0),p.state,p.joined_at`
+const adminParticipantTeamColumns = `t.id,t.campaign_id,t.name,t.logo_url,t.captain_customer_id,t.version,t.created_at,t.updated_at`
+const adminInviterTeamColumns = `it.id,it.campaign_id,it.name,it.logo_url,it.captain_customer_id,it.version,it.created_at,it.updated_at`
+
+func scanAdminParticipant(row rowScanner) (referralport.AdminParticipantRecord, error) {
+	var value referralport.AdminParticipantRecord
+	var participationState string
+	if err := row.Scan(
+		&value.Participation.ID, &value.Participation.CampaignID, &value.Participation.CustomerID, &value.Participation.TeamID,
+		&value.Participation.InvitationID, &value.Participation.InviterCustomerID, &value.Participation.InviterTeamID, &participationState, &value.Participation.JoinedAt,
+		&value.Team.ID, &value.Team.CampaignID, &value.Team.Name, &value.Team.LogoURL, &value.Team.CaptainCustomerID, &value.Team.Version, &value.Team.CreatedAt, &value.Team.UpdatedAt,
+		&value.InviterCustomerID, &value.DirectInvitationCount,
+	); err != nil {
+		return referralport.AdminParticipantRecord{}, mapError(err)
+	}
+	value.Participation.State = referraldomain.ParticipationState(participationState)
+	if !value.Participation.Valid() || !value.Team.Valid() || value.Team.ID != value.Participation.TeamID || value.Team.CampaignID != value.Participation.CampaignID || value.InviterCustomerID != value.Participation.InviterCustomerID || value.DirectInvitationCount < 0 {
+		return referralport.AdminParticipantRecord{}, referralport.ErrUnavailable
+	}
+	return value, nil
+}
+
+func scanAdminInvitation(row rowScanner) (referralport.AdminInvitationRecord, error) {
+	var value referralport.AdminInvitationRecord
+	var participationState string
+	if err := row.Scan(
+		&value.Participation.ID, &value.Participation.CampaignID, &value.Participation.CustomerID, &value.Participation.TeamID,
+		&value.Participation.InvitationID, &value.Participation.InviterCustomerID, &value.Participation.InviterTeamID, &participationState, &value.Participation.JoinedAt,
+		&value.InviterTeam.ID, &value.InviterTeam.CampaignID, &value.InviterTeam.Name, &value.InviterTeam.LogoURL, &value.InviterTeam.CaptainCustomerID, &value.InviterTeam.Version, &value.InviterTeam.CreatedAt, &value.InviterTeam.UpdatedAt,
+		&value.ParticipantTeam.ID, &value.ParticipantTeam.CampaignID, &value.ParticipantTeam.Name, &value.ParticipantTeam.LogoURL, &value.ParticipantTeam.CaptainCustomerID, &value.ParticipantTeam.Version, &value.ParticipantTeam.CreatedAt, &value.ParticipantTeam.UpdatedAt,
+		&value.ScoreState,
+	); err != nil {
+		return referralport.AdminInvitationRecord{}, mapError(err)
+	}
+	value.Participation.State = referraldomain.ParticipationState(participationState)
+	value.InviterCustomerID = value.Participation.InviterCustomerID
+	value.InviterTeamID = value.Participation.InviterTeamID
+	if !value.Participation.Valid() || value.Participation.InvitationID < 1 || !value.InviterTeam.Valid() || !value.ParticipantTeam.Valid() ||
+		value.InviterTeam.ID != value.InviterTeamID || value.ParticipantTeam.ID != value.Participation.TeamID ||
+		value.InviterTeam.CampaignID != value.Participation.CampaignID || value.ParticipantTeam.CampaignID != value.Participation.CampaignID ||
+		(value.ScoreState != "valid" && value.ScoreState != "reversed" && value.ScoreState != "none") {
+		return referralport.AdminInvitationRecord{}, referralport.ErrUnavailable
+	}
+	return value, nil
+}
+
+func adminParticipantSQL(query referralport.AdminParticipantQuery, after *AdminJoinedCursor, limit int32) (string, []any) {
+	statement := `SELECT ` + adminParticipationColumns + `,` + adminParticipantTeamColumns + `,
+        COALESCE(p.inviter_customer_id,0),
+        (SELECT count(*) FROM referral_score_events e
+         WHERE e.campaign_id=p.campaign_id AND e.inviter_customer_id=p.customer_id AND e.kind='credit'
+           AND NOT EXISTS (SELECT 1 FROM referral_score_events r WHERE r.kind='reversal' AND r.reverses_score_event_id=e.id))
+        FROM referral_participations p
+        JOIN referral_teams t ON t.id=p.team_id
+	        WHERE p.campaign_id=$1
+	          AND ($2::bigint=0 OR p.team_id=$2)
+	          AND ($3::text='' OR p.state=$3)`
+	args := []any{query.CampaignID, query.TeamID, string(query.State)}
+	if after != nil {
+		args = append(args, after.JoinedAt.UTC(), after.ParticipationID)
+		statement += ` AND (p.joined_at,p.id)<($4,$5)`
+	}
+	statement += ` ORDER BY p.joined_at DESC,p.id DESC`
+	if limit > 0 {
+		args = append(args, limit)
+		statement += ` LIMIT $` + strconv.Itoa(len(args))
+	}
+	return statement, args
+}
+
+func adminInvitationSQL(query referralport.AdminInvitationQuery, after *AdminJoinedCursor, limit int32) (string, []any) {
+	statement := `SELECT ` + adminParticipationColumns + `,` + adminInviterTeamColumns + `,` + adminParticipantTeamColumns + `,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM referral_score_events c WHERE c.participation_id=p.id AND c.kind='credit'
+                           AND NOT EXISTS (SELECT 1 FROM referral_score_events r WHERE r.kind='reversal' AND r.reverses_score_event_id=c.id)) THEN 'valid'
+          WHEN EXISTS (SELECT 1 FROM referral_score_events c WHERE c.participation_id=p.id AND c.kind='credit') THEN 'reversed'
+          ELSE 'none'
+        END AS score_state
+        FROM referral_participations p
+        JOIN referral_teams it ON it.id=p.inviter_team_id
+        JOIN referral_teams t ON t.id=p.team_id
+        WHERE p.campaign_id=$1
+          AND p.invitation_id IS NOT NULL
+          AND ($2::bigint=0 OR p.team_id=$2)
+          AND ($3::bigint=0 OR p.inviter_customer_id=$3)
+          AND ($4::text='' OR
+               ($4='active' AND EXISTS (SELECT 1 FROM referral_score_events c WHERE c.participation_id=p.id AND c.kind='credit'
+                                           AND NOT EXISTS (SELECT 1 FROM referral_score_events r WHERE r.kind='reversal' AND r.reverses_score_event_id=c.id))) OR
+	               ($4='reversed' AND EXISTS (SELECT 1 FROM referral_score_events c JOIN referral_score_events r ON r.reverses_score_event_id=c.id AND r.kind='reversal'
+	                                             WHERE c.participation_id=p.id AND c.kind='credit')))`
+	args := []any{query.CampaignID, query.TeamID, query.InviterCustomerID, string(query.State)}
+	if after != nil {
+		args = append(args, after.JoinedAt.UTC(), after.ParticipationID)
+		statement += ` AND (p.joined_at,p.id)<($5,$6)`
+	}
+	statement += ` ORDER BY p.joined_at DESC,p.id DESC`
+	if limit > 0 {
+		args = append(args, limit)
+		statement += ` LIMIT $` + strconv.Itoa(len(args))
+	}
+	return statement, args
+}
+
+func (r *Repository) ListAdminParticipantsWithin(ctx context.Context, query referralport.AdminParticipantQuery, after *AdminJoinedCursor, limit int32) ([]referralport.AdminParticipantRecord, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !validAdminParticipantFilter(query) || (after != nil && (after.JoinedAt.IsZero() || after.ParticipationID < 1)) || limit < 1 || limit > 101 {
+		return nil, ErrInvalid
+	}
+	statement, args := adminParticipantSQL(query, after, limit)
+	rows, err := tx.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := make([]referralport.AdminParticipantRecord, 0, limit)
+	for rows.Next() {
+		value, scanErr := scanAdminParticipant(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return values, nil
+}
+
+func (r *Repository) ListAdminInvitationsWithin(ctx context.Context, query referralport.AdminInvitationQuery, after *AdminJoinedCursor, limit int32) ([]referralport.AdminInvitationRecord, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !validAdminInvitationFilter(query) || (after != nil && (after.JoinedAt.IsZero() || after.ParticipationID < 1)) || limit < 1 || limit > 101 {
+		return nil, ErrInvalid
+	}
+	statement, args := adminInvitationSQL(query, after, limit)
+	rows, err := tx.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := make([]referralport.AdminInvitationRecord, 0, limit)
+	for rows.Next() {
+		value, scanErr := scanAdminInvitation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return values, nil
+}
+
+// ListAdminParticipantsForExportWithin has no OFFSET or LIMIT and executes one
+// statement, so PostgreSQL supplies one statement snapshot for the complete
+// export result rather than a page sequence that can drift under new joins.
+func (r *Repository) ListAdminParticipantsForExportWithin(ctx context.Context, query referralport.AdminParticipantQuery) ([]referralport.AdminParticipantRecord, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !validAdminParticipantFilter(query) {
+		return nil, ErrInvalid
+	}
+	statement, args := adminParticipantSQL(query, nil, 0)
+	rows, err := tx.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := make([]referralport.AdminParticipantRecord, 0)
+	for rows.Next() {
+		value, scanErr := scanAdminParticipant(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return values, nil
+}
+
+// ListAdminInvitationsForExportWithin has no OFFSET or LIMIT and executes one
+// statement, keeping the invitation rows and their score-state predicate in
+// the same PostgreSQL statement snapshot.
+func (r *Repository) ListAdminInvitationsForExportWithin(ctx context.Context, query referralport.AdminInvitationQuery) ([]referralport.AdminInvitationRecord, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !validAdminInvitationFilter(query) {
+		return nil, ErrInvalid
+	}
+	statement, args := adminInvitationSQL(query, nil, 0)
+	rows, err := tx.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := make([]referralport.AdminInvitationRecord, 0)
+	for rows.Next() {
+		value, scanErr := scanAdminInvitation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return values, nil
+}
+
+// ListAdminParticipantInvitationsForExportWithin executes the unpaged export
+// statement after the application service has resolved and verified the source
+// participation. The caller supplies only the server-derived inviter customer
+// ID; no delivery adapter can broaden the exported invitee set.
+func (r *Repository) ListAdminParticipantInvitationsForExportWithin(ctx context.Context, query referralport.AdminParticipantInvitationQuery, inviterCustomerID int64) ([]referralport.AdminInvitationRecord, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if query.CampaignID < 1 || query.ParticipationID < 1 || inviterCustomerID < 1 || (query.State != "" && !query.State.Valid()) {
+		return nil, ErrInvalid
+	}
+	statement, args := adminInvitationSQL(referralport.AdminInvitationQuery{
+		CampaignID:        query.CampaignID,
+		InviterCustomerID: inviterCustomerID,
+		State:             query.State,
+	}, nil, 0)
+	rows, err := tx.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := make([]referralport.AdminInvitationRecord, 0)
+	for rows.Next() {
+		value, scanErr := scanAdminInvitation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return values, nil
+}

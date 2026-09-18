@@ -413,8 +413,209 @@ func TestPostgreSQLReferralCaptainMustJoinOwnTeamAndIsUniquePerCampaign(t *testi
 	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: draft.ID, CaptainCustomerID: 761, Name: "唯一队长队", IdempotencyKey: "create-captain-unique-team"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: draft.ID, CaptainCustomerID: 761, Name: "重复队长", IdempotencyKey: "duplicate-captain-761"}); !errors.Is(err, referralport.ErrConflict) {
+	if _, err := h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: draft.ID, CaptainCustomerID: 761, Name: "重复队长", IdempotencyKey: "duplicate-captain-761"}); !errors.Is(err, referralport.ErrCaptainAlreadyAssigned) {
 		t.Fatalf("one captain created multiple teams err=%v", err)
+	}
+}
+
+func TestPostgreSQLReferralAdminActivityDetailsAndStableExports(t *testing.T) {
+	h := newReferralPostgreSQLHarness(t)
+	defer h.cleanup()
+
+	campaign, teamOne, teamTwo := h.createCampaignWithTeams(t, "运营活动详情", 861, 862)
+	// A designated captain has an explicit team entry before accepting activity
+	// rules. The UI uses this to send the captain to their own team first.
+	captain, err := h.service.MyCampaign(context.Background(), referralActor(861, h.clock), campaign.ID)
+	if err != nil || !captain.IsCaptain || captain.CaptainTeam == nil || captain.CaptainTeam.ID != teamOne.ID || captain.Participation != nil {
+		t.Fatalf("pending captain view=%+v err=%v", captain, err)
+	}
+
+	// Teams can be created while the effective lifecycle is active. A replay
+	// returns the immutable first result; changing the payload for that key is
+	// rejected without a second team write.
+	teamThree, err := h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 863, Name: "运营活动详情丙队", IdempotencyKey: "active-team-three"})
+	if err != nil {
+		t.Fatalf("create team during active lifecycle: %v", err)
+	}
+	replayed, err := h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 863, Name: "运营活动详情丙队", IdempotencyKey: "active-team-three"})
+	if err != nil || replayed.ID != teamThree.ID {
+		t.Fatalf("same create-team key did not replay original team=%+v err=%v", replayed, err)
+	}
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 864, Name: "changed", IdempotencyKey: "active-team-three"}); !errors.Is(err, referralport.ErrIdempotencyConflict) {
+		t.Fatalf("changed create-team payload err=%v", err)
+	}
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 864, Name: teamThree.Name, IdempotencyKey: "duplicate-team-name"}); !errors.Is(err, referralport.ErrTeamNameExists) {
+		t.Fatalf("duplicate team name err=%v", err)
+	}
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 863, Name: "重复队长队", IdempotencyKey: "duplicate-team-captain"}); !errors.Is(err, referralport.ErrCaptainAlreadyAssigned) {
+		t.Fatalf("duplicate team captain err=%v", err)
+	}
+
+	var auditBefore, outboxBefore int64
+	if err = h.pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events WHERE action='referral.team.created'`).Scan(&auditBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.pool.QueryRow(context.Background(), `SELECT count(*) FROM outbox_events WHERE event_type='referral.team.created'`).Scan(&outboxBefore); err != nil {
+		t.Fatal(err)
+	}
+	h.admin.outbox = failingReferralOutbox{}
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 865, Name: "应回滚的队", IdempotencyKey: "team-outbox-failure"}); !errors.Is(err, errReferralOutbox) {
+		t.Fatalf("team outbox failure err=%v", err)
+	}
+	assertCount(t, h.pool, `SELECT count(*) FROM referral_teams WHERE campaign_id=$1 AND captain_customer_id=865`, 0, campaign.ID)
+	assertCount(t, h.pool, `SELECT count(*) FROM audit_events WHERE action='referral.team.created'`, auditBefore)
+	assertCount(t, h.pool, `SELECT count(*) FROM outbox_events WHERE event_type='referral.team.created'`, outboxBefore)
+	h.admin.outbox = platformoutbox.NewPostgreSQL()
+
+	h.joinDirect(t, campaign.ID, teamOne.ID, 861, "operations-captain-861")
+	inviteA := h.issue(t, campaign.ID, 861, "operations-invite-861")
+	joinedB := h.joinInvite(t, campaign.ID, 871, inviteA, "operations-join-871")
+	inviteB := h.issue(t, campaign.ID, 871, "operations-invite-871")
+	h.joinInvite(t, campaign.ID, 872, inviteB, "operations-join-872")
+	h.joinDirect(t, campaign.ID, teamOne.ID, 873, "operations-direct-873")
+
+	view, err := h.admin.ReadAdminCampaign(context.Background(), campaign.ID)
+	if err != nil || len(view.TeamSummaries) != 3 {
+		t.Fatalf("campaign team dashboard=%+v err=%v", view, err)
+	}
+	var one, two, three referralport.AdminTeamSummary
+	for _, summary := range view.TeamSummaries {
+		switch summary.Team.ID {
+		case teamOne.ID:
+			one = summary
+		case teamTwo.ID:
+			two = summary
+		case teamThree.ID:
+			three = summary
+		}
+	}
+	if one.ParticipantCount != 4 || one.DirectInvitationCount != 2 || !one.CaptainParticipated || two.ParticipantCount != 0 || two.CaptainParticipated || three.ParticipantCount != 0 || three.CaptainParticipated {
+		t.Fatalf("team aggregates one=%+v two=%+v three=%+v", one, two, three)
+	}
+
+	participants, err := h.admin.ListAdminParticipants(context.Background(), referralport.AdminParticipantQuery{CampaignID: campaign.ID, TeamID: teamOne.ID, Limit: 2})
+	if err != nil || len(participants.Items) != 2 || participants.NextCursor == "" {
+		t.Fatalf("first participant page=%+v err=%v", participants, err)
+	}
+	participants, err = h.admin.ListAdminParticipants(context.Background(), referralport.AdminParticipantQuery{CampaignID: campaign.ID, TeamID: teamOne.ID, Cursor: participants.NextCursor, Limit: 2})
+	if err != nil || len(participants.Items) != 2 || participants.NextCursor != "" {
+		t.Fatalf("second participant page=%+v err=%v", participants, err)
+	}
+	exportedParticipants, err := h.admin.ListAdminParticipantsForExport(context.Background(), referralport.AdminParticipantQuery{CampaignID: campaign.ID, TeamID: teamOne.ID, Limit: 1})
+	if err != nil || len(exportedParticipants) != 4 {
+		t.Fatalf("participant export was truncated values=%+v err=%v", exportedParticipants, err)
+	}
+	var noSource bool
+	for _, item := range exportedParticipants {
+		if item.Participation.CustomerID == 873 {
+			noSource = item.InviterCustomerID == 0 && item.DirectInvitationCount == 0
+		}
+	}
+	if !noSource {
+		t.Fatalf("no-source participant omitted or misrepresented export=%+v", exportedParticipants)
+	}
+
+	invitations, err := h.admin.ListAdminInvitations(context.Background(), referralport.AdminInvitationQuery{CampaignID: campaign.ID, InviterCustomerID: 871, State: referraldomain.ParticipationActive, Limit: 20})
+	if err != nil || len(invitations.Items) != 1 || invitations.Items[0].Participation.CustomerID != 872 || invitations.Items[0].ScoreState != "valid" || invitations.Items[0].InviterTeamID != teamOne.ID || invitations.Items[0].ParticipantTeam.ID != teamOne.ID {
+		t.Fatalf("filtered active invitations=%+v err=%v", invitations, err)
+	}
+	drilldown, err := h.admin.ListAdminParticipantInvitations(context.Background(), referralport.AdminParticipantInvitationQuery{CampaignID: campaign.ID, ParticipationID: joinedB.Participation.ID, Limit: 20})
+	if err != nil || len(drilldown.Items) != 1 || drilldown.Items[0].Participation.CustomerID != 872 {
+		t.Fatalf("participant invitation drilldown=%+v err=%v", drilldown, err)
+	}
+	drilldownExport, err := h.admin.ListAdminParticipantInvitationsForExport(context.Background(), referralport.AdminParticipantInvitationQuery{CampaignID: campaign.ID, ParticipationID: joinedB.Participation.ID, Limit: 1})
+	if err != nil || len(drilldownExport) != 1 || drilldownExport[0].Participation.CustomerID != 872 {
+		t.Fatalf("participant invitation export=%+v err=%v", drilldownExport, err)
+	}
+	if _, err = h.admin.ListAdminParticipantInvitationsForExport(context.Background(), referralport.AdminParticipantInvitationQuery{CampaignID: campaign.ID, ParticipationID: joinedB.Participation.ID, Cursor: "1"}); !errors.Is(err, referralport.ErrConflict) {
+		t.Fatalf("participant invitation paged export err=%v", err)
+	}
+	if _, err = h.admin.ListAdminParticipantInvitations(context.Background(), referralport.AdminParticipantInvitationQuery{CampaignID: campaign.ID + 1, ParticipationID: joinedB.Participation.ID, Limit: 20}); !errors.Is(err, referralport.ErrNotFound) {
+		t.Fatalf("cross-campaign participant drilldown err=%v", err)
+	}
+
+	if err = h.admin.ReverseInvitation(context.Background(), referralport.ReverseInvitationCommand{ParticipationID: joinedB.Participation.ID, ActorAdminID: 9001, Reason: "运营撤销", IdempotencyKey: "operations-reverse-871"}); err != nil {
+		t.Fatal(err)
+	}
+	reversedParticipants, err := h.admin.ListAdminParticipants(context.Background(), referralport.AdminParticipantQuery{CampaignID: campaign.ID, State: referraldomain.ParticipationReversed, Limit: 20})
+	if err != nil || len(reversedParticipants.Items) != 1 || reversedParticipants.Items[0].Participation.ID != joinedB.Participation.ID {
+		t.Fatalf("reversed participant filter=%+v err=%v", reversedParticipants, err)
+	}
+	validInvites, err := h.admin.ListAdminInvitations(context.Background(), referralport.AdminInvitationQuery{CampaignID: campaign.ID, State: referraldomain.ParticipationActive, Limit: 20})
+	if err != nil || len(validInvites.Items) != 1 || validInvites.Items[0].Participation.CustomerID != 872 {
+		t.Fatalf("valid score-state filter=%+v err=%v", validInvites, err)
+	}
+	reversedInvites, err := h.admin.ListAdminInvitations(context.Background(), referralport.AdminInvitationQuery{CampaignID: campaign.ID, State: referraldomain.ParticipationReversed, Limit: 20})
+	if err != nil || len(reversedInvites.Items) != 1 || reversedInvites.Items[0].Participation.ID != joinedB.Participation.ID || reversedInvites.Items[0].ScoreState != "reversed" {
+		t.Fatalf("reversed score-state filter=%+v err=%v", reversedInvites, err)
+	}
+	exportedInvites, err := h.admin.ListAdminInvitationsForExport(context.Background(), referralport.AdminInvitationQuery{CampaignID: campaign.ID, Limit: 1})
+	if err != nil || len(exportedInvites) != 2 {
+		t.Fatalf("invitation export was truncated values=%+v err=%v", exportedInvites, err)
+	}
+
+	// Adding a team after the activity already has facts cannot rewrite any
+	// existing participation. A member of another immutable team cannot then
+	// become a newly-designated captain.
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 874, Name: "活动中新增队", IdempotencyKey: "team-after-participations"}); err != nil {
+		t.Fatalf("create team after activity facts: %v", err)
+	}
+	assertCount(t, h.pool, `SELECT count(*) FROM referral_participations WHERE campaign_id=$1 AND team_id=$2`, 4, campaign.ID, teamOne.ID)
+	h.joinDirect(t, campaign.ID, teamOne.ID, 875, "operations-direct-875")
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 875, Name: "既有队员不能当新队长", IdempotencyKey: "team-member-captain"}); !errors.Is(err, referralport.ErrCaptainIneligible) {
+		t.Fatalf("existing other-team member became captain err=%v", err)
+	}
+
+	h.clock = campaign.EndsAt
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 866, Name: "结束后队", IdempotencyKey: "team-after-end"}); !errors.Is(err, referralport.ErrCampaignTeamLocked) {
+		t.Fatalf("ended campaign create team err=%v", err)
+	}
+	h.admin.verifier = untrustedReferralCustomerVerifier{}
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 867, Name: "不可信队长队", IdempotencyKey: "team-ineligible-captain"}); !errors.Is(err, referralport.ErrCaptainIneligible) {
+		t.Fatalf("ineligible captain err=%v", err)
+	}
+}
+
+func TestPostgreSQLReferralCreateTeamSerializesWithCaptainParticipation(t *testing.T) {
+	h := newReferralPostgreSQLHarness(t)
+	defer h.cleanup()
+
+	campaign, existingTeam, _ := h.createCampaignWithTeams(t, "队长参与并发", 881, 882)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	var createErr, joinErr error
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		_, createErr = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 883, Name: "并发队长队", IdempotencyKey: "concurrent-captain-team"})
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		_, joinErr = h.service.JoinCampaign(context.Background(), referralport.JoinCampaignCommand{Actor: referralActor(883, h.clock), CampaignID: campaign.ID, TeamID: existingTeam.ID, IdempotencyKey: "concurrent-captain-join"})
+	}()
+	close(start)
+	wait.Wait()
+
+	var teamCount, participationCount int64
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM referral_teams WHERE campaign_id=$1 AND captain_customer_id=883`, campaign.ID).Scan(&teamCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM referral_participations WHERE campaign_id=$1 AND customer_id=883`, campaign.ID).Scan(&participationCount); err != nil {
+		t.Fatal(err)
+	}
+	switch {
+	case createErr == nil:
+		if joinErr == nil || teamCount != 1 || participationCount != 0 {
+			t.Fatalf("team assignment should block conflicting join createErr=%v joinErr=%v teams=%d participations=%d", createErr, joinErr, teamCount, participationCount)
+		}
+	case joinErr == nil:
+		if !errors.Is(createErr, referralport.ErrCaptainIneligible) || teamCount != 0 || participationCount != 1 {
+			t.Fatalf("first participation should block captain assignment createErr=%v joinErr=%v teams=%d participations=%d", createErr, joinErr, teamCount, participationCount)
+		}
+	default:
+		t.Fatalf("one concurrent command must succeed createErr=%v joinErr=%v", createErr, joinErr)
 	}
 }
 
@@ -494,6 +695,87 @@ func TestPostgreSQLReferralRanksAcrossAsiaShanghaiDayAndWeekBoundaries(t *testin
 		if err != nil || len(board.Items) != 1 || board.Items[0].CustomerID != scenario.winner || board.Items[0].Score != 1 {
 			t.Fatalf("period=%s anchor=%s board=%+v err=%v", scenario.period, scenario.anchor, board, err)
 		}
+	}
+}
+
+func TestPostgreSQLReferralAdminKeysetPaginationIgnoresNewJoinsAndShowsReversal(t *testing.T) {
+	h := newReferralPostgreSQLHarness(t)
+	defer h.cleanup()
+
+	campaign, team, _ := h.createCampaignWithTeams(t, "管理分页稳定活动", 941, 942)
+	h.joinDirect(t, campaign.ID, team.ID, 941, "keyset-join-captain")
+	invitation := h.issue(t, campaign.ID, 941, "keyset-issue-captain")
+	joinedA := h.joinInvite(t, campaign.ID, 943, invitation, "keyset-join-a")
+	h.joinInvite(t, campaign.ID, 944, invitation, "keyset-join-b")
+	h.joinInvite(t, campaign.ID, 945, invitation, "keyset-join-c")
+
+	captain, err := h.service.MyCampaign(context.Background(), referralActor(941, h.clock), campaign.ID)
+	if err != nil || captain.Participation == nil {
+		t.Fatalf("captain participation=%+v err=%v", captain.Participation, err)
+	}
+
+	participantsFirst, err := h.admin.ListAdminParticipants(context.Background(), referralport.AdminParticipantQuery{CampaignID: campaign.ID, Limit: 2})
+	if err != nil || len(participantsFirst.Items) != 2 || participantsFirst.NextCursor == "" {
+		t.Fatalf("first participant page=%+v err=%v", participantsFirst, err)
+	}
+	invitationsFirst, err := h.admin.ListAdminInvitations(context.Background(), referralport.AdminInvitationQuery{CampaignID: campaign.ID, InviterCustomerID: 941, Limit: 2})
+	if err != nil || len(invitationsFirst.Items) != 2 || invitationsFirst.NextCursor == "" {
+		t.Fatalf("first invitation page=%+v err=%v", invitationsFirst, err)
+	}
+	scopedFirst, err := h.admin.ListAdminParticipantInvitations(context.Background(), referralport.AdminParticipantInvitationQuery{CampaignID: campaign.ID, ParticipationID: captain.Participation.ID, Limit: 2})
+	if err != nil || len(scopedFirst.Items) != 2 || scopedFirst.NextCursor == "" {
+		t.Fatalf("first scoped invitation page=%+v err=%v", scopedFirst, err)
+	}
+
+	// D joins after all cursors have been issued. Every continuation is after
+	// the last delivered joined_at/id pair, so D cannot shift, duplicate, or
+	// hide the older records on page two.
+	joinedD := h.joinInvite(t, campaign.ID, 946, invitation, "keyset-join-d-after-page-one")
+	if err = h.admin.ReverseInvitation(context.Background(), referralport.ReverseInvitationCommand{ParticipationID: joinedA.Participation.ID, Reason: "page-boundary-reversal", ActorAdminID: 9001, IdempotencyKey: "keyset-reverse-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	participantsSecond, err := h.admin.ListAdminParticipants(context.Background(), referralport.AdminParticipantQuery{CampaignID: campaign.ID, Cursor: participantsFirst.NextCursor, Limit: 2})
+	if err != nil || len(participantsSecond.Items) != 2 || participantsSecond.NextCursor != "" {
+		t.Fatalf("second participant page=%+v err=%v", participantsSecond, err)
+	}
+	participantIDs := map[int64]bool{}
+	for _, item := range append(participantsFirst.Items, participantsSecond.Items...) {
+		if participantIDs[item.Participation.ID] {
+			t.Fatalf("participant duplicated across keyset pages id=%d", item.Participation.ID)
+		}
+		participantIDs[item.Participation.ID] = true
+	}
+	if len(participantIDs) != 4 || participantIDs[joinedD.Participation.ID] || !participantIDs[joinedA.Participation.ID] {
+		t.Fatalf("participant traversal drift ids=%v new=%d original=%d", participantIDs, joinedD.Participation.ID, joinedA.Participation.ID)
+	}
+	if participantsSecond.Items[0].Participation.ID != joinedA.Participation.ID || participantsSecond.Items[0].Participation.State != referraldomain.ParticipationReversed {
+		t.Fatalf("reversed older participant missing from continuation=%+v", participantsSecond.Items)
+	}
+
+	invitationsSecond, err := h.admin.ListAdminInvitations(context.Background(), referralport.AdminInvitationQuery{CampaignID: campaign.ID, InviterCustomerID: 941, Cursor: invitationsFirst.NextCursor, Limit: 2})
+	if err != nil || len(invitationsSecond.Items) != 1 || invitationsSecond.NextCursor != "" || invitationsSecond.Items[0].Participation.ID != joinedA.Participation.ID || invitationsSecond.Items[0].ScoreState != "reversed" {
+		t.Fatalf("second invitation page=%+v err=%v", invitationsSecond, err)
+	}
+	if invitationsSecond.Items[0].Participation.ID == joinedD.Participation.ID {
+		t.Fatalf("new invitation leaked into continuation=%+v", invitationsSecond)
+	}
+
+	scopedSecond, err := h.admin.ListAdminParticipantInvitations(context.Background(), referralport.AdminParticipantInvitationQuery{CampaignID: campaign.ID, ParticipationID: captain.Participation.ID, Cursor: scopedFirst.NextCursor, Limit: 2})
+	if err != nil || len(scopedSecond.Items) != 1 || scopedSecond.NextCursor != "" || scopedSecond.Items[0].Participation.ID != joinedA.Participation.ID || scopedSecond.Items[0].ScoreState != "reversed" {
+		t.Fatalf("second scoped invitation page=%+v err=%v", scopedSecond, err)
+	}
+
+	// v1 used numeric offsets. Refusing every such continuation prevents mixed
+	// traversal semantics while a campaign is live.
+	if _, err = h.admin.ListAdminParticipants(context.Background(), referralport.AdminParticipantQuery{CampaignID: campaign.ID, Cursor: "2", Limit: 2}); !errors.Is(err, referralport.ErrConflict) {
+		t.Fatalf("legacy participant offset err=%v", err)
+	}
+	if _, err = h.admin.ListAdminInvitations(context.Background(), referralport.AdminInvitationQuery{CampaignID: campaign.ID, InviterCustomerID: 941, Cursor: "2", Limit: 2}); !errors.Is(err, referralport.ErrConflict) {
+		t.Fatalf("legacy invitation offset err=%v", err)
+	}
+	if _, err = h.admin.ListAdminParticipantInvitations(context.Background(), referralport.AdminParticipantInvitationQuery{CampaignID: campaign.ID, ParticipationID: captain.Participation.ID, Cursor: "2", Limit: 2}); !errors.Is(err, referralport.ErrConflict) {
+		t.Fatalf("legacy scoped invitation offset err=%v", err)
 	}
 }
 
@@ -618,6 +900,12 @@ type referralCustomerVerifier struct{}
 
 func (referralCustomerVerifier) VerifyCanonicalCustomer(context.Context, int64) (bool, error) {
 	return true, nil
+}
+
+type untrustedReferralCustomerVerifier struct{}
+
+func (untrustedReferralCustomerVerifier) VerifyCanonicalCustomer(context.Context, int64) (bool, error) {
+	return false, nil
 }
 
 func referralActor(customerID int64, at time.Time) distributionport.TrustedSessionActor {
