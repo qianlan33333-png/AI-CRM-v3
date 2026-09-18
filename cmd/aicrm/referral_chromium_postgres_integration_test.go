@@ -64,8 +64,16 @@ func TestPostgreSQLReferralChromiumJourney(t *testing.T) {
 	}
 	actors := []fixtureActor{}
 	now := time.Now().UTC()
-	for i, name := range []string{"队长阿青", "队长小夏", "超长昵称的活动参与者用于手机页面换行验证"} {
-		actor := fixtureActor{Name: name, Session: "dist_" + strings.Repeat(string(rune('D'+i)), 43)}
+	for i := 0; i < 53; i++ {
+		name := fmt.Sprintf("分页成员 %02d", i)
+		if i == 0 {
+			name = "队长阿青"
+		} else if i == 1 {
+			name = "队长小夏"
+		} else if i == 2 {
+			name = "超长昵称的活动参与者用于手机页面换行验证"
+		}
+		actor := fixtureActor{Name: name, Session: fmt.Sprintf("dist_%043d", i)}
 		var identityID int64
 		if err = application.pool.Native().QueryRow(ctx, "INSERT INTO customers DEFAULT VALUES RETURNING id").Scan(&actor.ID); err != nil {
 			t.Fatal(err)

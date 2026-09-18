@@ -391,7 +391,8 @@ func (s *Service) MyCampaign(ctx context.Context, actor referralport.TrustedSess
 	var campaign referraldomain.Campaign
 	var participation referraldomain.Participation
 	var relationship referraldomain.Relationship
-	var hasParticipation, hasRelationship bool
+	var captainTeam referraldomain.Team
+	var hasParticipation, hasRelationship, assignedCaptain bool
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		campaign, err = s.store.ReadCampaignWithin(tx, campaignID, false)
@@ -402,6 +403,10 @@ func (s *Service) MyCampaign(ctx context.Context, actor referralport.TrustedSess
 		if err == nil {
 			hasParticipation = true
 		} else if !errors.Is(err, referralport.ErrNotFound) {
+			return err
+		}
+		captainTeam, assignedCaptain, err = s.store.ReadCaptainTeamWithin(tx, campaignID, actor.CustomerID)
+		if err != nil {
 			return err
 		}
 		relationship, err = s.store.ReadCurrentRelationshipWithin(tx, actor.CustomerID, false)
@@ -419,7 +424,10 @@ func (s *Service) MyCampaign(ctx context.Context, actor referralport.TrustedSess
 	if err != nil {
 		return referralport.MyCampaign{}, err
 	}
-	result := referralport.MyCampaign{Campaign: summary}
+	result := referralport.MyCampaign{Campaign: summary, IsCaptain: assignedCaptain}
+	if assignedCaptain {
+		result.CaptainTeam = &captainTeam
+	}
 	if hasParticipation {
 		team, teamErr := s.readTeam(ctx, participation.TeamID)
 		if teamErr != nil {

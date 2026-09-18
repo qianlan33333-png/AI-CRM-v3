@@ -80,6 +80,24 @@ func (adminStub) ListAdminCampaigns(context.Context, string, int32) (referralpor
 func (adminStub) ListAdminReferrals(context.Context, int64, string, int32) (referralport.AdminReferralPage, error) {
 	return referralport.AdminReferralPage{}, nil
 }
+func (adminStub) ListAdminParticipants(context.Context, referralport.AdminParticipantQuery) (referralport.AdminParticipantPage, error) {
+	return referralport.AdminParticipantPage{}, nil
+}
+func (adminStub) ListAdminInvitations(context.Context, referralport.AdminInvitationQuery) (referralport.AdminInvitationPage, error) {
+	return referralport.AdminInvitationPage{}, nil
+}
+func (adminStub) ListAdminParticipantInvitations(context.Context, referralport.AdminParticipantInvitationQuery) (referralport.AdminInvitationPage, error) {
+	return referralport.AdminInvitationPage{}, nil
+}
+func (adminStub) ListAdminParticipantInvitationsForExport(context.Context, referralport.AdminParticipantInvitationQuery) ([]referralport.AdminInvitationRecord, error) {
+	return nil, nil
+}
+func (adminStub) ListAdminParticipantsForExport(context.Context, referralport.AdminParticipantQuery) ([]referralport.AdminParticipantRecord, error) {
+	return nil, nil
+}
+func (adminStub) ListAdminInvitationsForExport(context.Context, referralport.AdminInvitationQuery) ([]referralport.AdminInvitationRecord, error) {
+	return nil, nil
+}
 func (adminStub) ListRelationshipHistory(context.Context, int64, string, int32) (referralport.RelationshipHistoryPage, error) {
 	return referralport.RelationshipHistoryPage{}, nil
 }
@@ -134,6 +152,22 @@ func TestInvitationHandoffIsReadOnlyAndCanonical(t *testing.T) {
 	handler.ServePublicHTTP(response, httptest.NewRequest(http.MethodGet, "/referral/invite/"+token, nil))
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/referral?campaign=7&invite="+token || public.previewCalls != 1 || public.joinCalls != 0 {
 		t.Fatalf("status=%d location=%q preview=%d join=%d", response.Code, response.Header().Get("Location"), public.previewCalls, public.joinCalls)
+	}
+}
+
+func TestParticipantCSVIncludesSafeRole(t *testing.T) {
+	at := time.Date(2026, time.September, 18, 9, 30, 0, 0, time.UTC)
+	recorder := httptest.NewRecorder()
+	writeParticipantCSV(recorder, []referralport.AdminParticipantRecord{{
+		Participation: referraldomain.Participation{ID: 12, CampaignID: 7, CustomerID: 9, TeamID: 4, State: referraldomain.ParticipationActive, JoinedAt: at},
+		Team:          referraldomain.Team{ID: 4, CampaignID: 7, Name: "追光战队", CaptainCustomerID: 9, Version: 1, CreatedAt: at, UpdatedAt: at},
+	}}, map[customerdomain.CustomerID]string{9: "队长阿青"})
+	body := recorder.Body.String()
+	if !strings.Contains(body, "角色") || !strings.Contains(body, "队长") {
+		t.Fatalf("participant CSV must include the safe captain role: %q", body)
+	}
+	if strings.Contains(body, "CustomerID") || strings.Contains(body, ",9,") {
+		t.Fatalf("participant CSV must not export an internal customer identifier: %q", body)
 	}
 }
 

@@ -40,3 +40,26 @@ Go 自有业务实现复用现有 OneID/Session、Postgres/UoW、Jobqueue、共�
 本地真实 Host 旅程覆盖：真实管理接口建活动和队伍、两场活动显式接受、跨活动换绑和重复参加不回改、375/430 手机显示、日周总榜、复制自己的邀请入口、后台客户目录选择与归属历史、撤销邀请与榜单冲正、人工奖励待核查；同时断言没有新增支付分账指令。授权 Provider 和真实微信手机验收与本地 fixture 会话测试分开报告。
 
 数据库专项包含：同活动/跨活动并发参加、邀请人与管理员撤销竞争、奖励与撤销竞争、审计/Outbox 失败原子回滚、上海日期及周边界、队长归队与唯一性、无来源参与、伪造/自邀/过期/停用、奖励去重及关联核查范围、活动结束持久任务和排名快照。前端、编译、专项、CI、发布及生产业务验收分别留证，不互相替代。
+
+## 方案一：活动详情数据看板与可审计明细（2026-09-18 已批准）
+
+### 参考与边界
+
+开发前已检索 GitHub 上的 CRM 导出及裂变榜单实现。GopherCRM 的受权限保护、服务端筛选导出接口可作为“导出不依赖浏览器已加载页”的交互参考；Talon.One 的活动维度邀请码可作为“凭证绑定活动和邀请人”的边界参考。两者均不引入本仓：本方案仍以 Referral 的可信微信身份、活动参与事实和 PostgreSQL 单事务审计为唯一依据。
+
+一级「裂变活动」只承担活动列表、筛选和新建。进入单个活动后，默认页先显示参与人数、有效直接邀请人数、战队数及按加入日期统计的当前有效邀请；下方显示真实参与明细。配置、战队、邀请明细、归属历史和人工奖励都保持该活动上下文，不在一级堆叠表单。
+
+参与人数是该活动所有已确认参加者，包含已确认参加的队长、无来源参加者和直接邀请数为零的人。有效直接邀请人数只统计未被撤销的直接邀请，不汇总下级链路。指定但尚未确认参加的队长单列为「待加入」，不计入参与人数。活动进行中仍可新增战队；既有 participation、团队归属和 score 事实绝不迁移。已结束和停用活动不能新增战队。
+
+管理员详情契约：
+
+- `GET /api/admin/referral/campaigns/{campaign_id}` 返回核心指标、每日指标和战队摘要。战队摘要含队长公开展示、已参加人数、待加入状态和有效直接邀请人数。
+- `GET /api/admin/referral/campaigns/{campaign_id}/participants?team_id=&state=&cursor=&limit=` 返回所有参与者，不以邀请事实代替参与者；成员行含所属队、邀请人、加入时间、直接邀请数和状态。
+- `GET /api/admin/referral/campaigns/{campaign_id}/invitations?team_id=&inviter_customer_id=&state=&cursor=&limit=` 返回邀请下钻，状态区分有效与撤销。
+- `GET /api/admin/referral/campaigns/{campaign_id}/export?view=participants|invitations|teams` 复用相同筛选，从单个数据库读快照导出全部匹配行。管理员权限与同源会话不变；CSV 只含公开展示字段，拒绝公式注入，不含客户主键、OpenID、手机号或 Cookie。
+
+队长选择继续由客户目录返回的 canonical Customer ID 提交，服务端在同一事务内核验 canonical root、客户 active 状态和 provider-verified 身份。建队不增加 campaign version 参数，因为命令不改写 campaign；它只锁读活动生命周期。错误分别为活动不可配置、队长资格不足、队名已存在、队长已被占用和幂等请求内容不一致，页面保留填写内容并给出对应处理方式。精确重试复用原幂等键；用户修改队长、队标或队名后创建新的命令键。
+
+队长本人页面只通过自己的可信会话返回 `captain_team` / `is_captain`。被指定但未参加时显示身份和「同意规则并加入战队」；参加成功后才开启自己的邀请链接、二维码、海报和分享文案。管理员不代替队长接受规则，公开接口不暴露他人的身份事实。
+
+本轮仍然：OneID 只读 canonical/verified Port；持久化使用 Referral PostgreSQL 读模型及既有 UoW、receipt、audit、outbox；内部结束任务继续 River；不增加 Provider 写、资金效果、订单归因或佣金。
