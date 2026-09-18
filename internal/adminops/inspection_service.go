@@ -372,10 +372,10 @@ func (s *InspectionService) RecordDiagnostic(ctx context.Context, component, cod
 	return s.RecordDiagnosticObservation(ctx, opsport.DiagnosticObservation{Component: component, Code: code, Correlation: correlation})
 }
 func (s *InspectionService) RecordDiagnosticObservation(ctx context.Context, o opsport.DiagnosticObservation) error {
-	if !safeInspectionCode.MatchString(o.Component) || !safeInspectionCode.MatchString(o.Code) || o.Correlation == "" || len(o.Correlation) > 200 || len(o.RouteTemplate) > 240 || (o.RouteTemplate != "" && !inspectionRouteTemplate.MatchString(o.RouteTemplate)) || (o.JobRef != "" && !inspectionJobRef.MatchString(o.JobRef)) || (o.EffectRef != "" && !inspectionEffectRef.MatchString(o.EffectRef)) {
+	if !safeInspectionCode.MatchString(o.Component) || !safeInspectionCode.MatchString(o.Code) || o.Correlation == "" || len(o.Correlation) > 200 || len(o.RouteTemplate) > 240 || (o.RouteTemplate != "" && !inspectionRouteTemplate.MatchString(o.RouteTemplate)) || (o.JobRef != "" && (len(o.JobRef) > 25 || !inspectionJobRef.MatchString(o.JobRef))) || (o.EffectRef != "" && (len(o.EffectRef) > 23 || !inspectionEffectRef.MatchString(o.EffectRef))) || o.JobAttempt < 0 || o.JobAttempt > 2147483647 || (o.JobAttempt > 0 && o.JobRef == "") {
 		return ErrInspectionInvalid
 	}
-	_, e := s.pool.Exec(ctx, `INSERT INTO adminops_diagnostic_events(component,code,correlation_digest,route_template,job_ref,effect_ref,occurred_at,release_sha) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`, o.Component, o.Code, string(effectport.Hash("ops-correlation-v1", o.Correlation)), o.RouteTemplate, o.JobRef, o.EffectRef, s.now().UTC(), s.options.ReleaseSHA)
+	_, e := s.pool.Exec(ctx, `INSERT INTO adminops_diagnostic_events(component,code,correlation_digest,route_template,job_ref,effect_ref,job_attempt,occurred_at,release_sha) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT ON CONSTRAINT adminops_diagnostic_event_identity DO NOTHING`, o.Component, o.Code, string(effectport.Hash("ops-correlation-v1", o.Correlation)), o.RouteTemplate, o.JobRef, o.EffectRef, o.JobAttempt, s.now().UTC(), s.options.ReleaseSHA)
 	return e
 }
 

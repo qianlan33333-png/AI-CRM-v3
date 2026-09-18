@@ -107,4 +107,8 @@ type OpsReportObserver interface {
 
 // DiagnosticObservation accepts classified errors and static route templates.
 // Correlation is digested before storage; it must not be an error or URL.
-type DiagnosticObservation struct{ Component, Code, Correlation, RouteTemplate, JobRef, EffectRef string }
+type DiagnosticObservation struct {
+	Component, Code, Correlation, RouteTemplate, JobRef, EffectRef string
+	// JobAttempt is River's attempt; zero means no captured attempt evidence.
+	JobAttempt int
+}

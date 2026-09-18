@@ -324,6 +324,10 @@ func TestPostgreSQLInspectionHTTPPermissionsManualReadbackAndSafeErrors(t *testi
 }
 
 func inspectionTestPool(t *testing.T) (*pgxpool.Pool, *platformpostgres.UnitOfWork) {
+	return inspectionTestPoolWithDiagnosticMigration(t, true)
+}
+
+func inspectionTestPoolWithDiagnosticMigration(t *testing.T, includeIdentity bool) (*pgxpool.Pool, *platformpostgres.UnitOfWork) {
 	t.Helper()
 	raw, e := platformconfig.DatabaseURL()
 	if e != nil {
@@ -363,6 +367,9 @@ func inspectionTestPool(t *testing.T) (*pgxpool.Pool, *platformpostgres.UnitOfWo
 	if _, e = pool.Native().Exec(ctx, string(sql)); e != nil {
 		t.Fatal(e)
 	}
+	if includeIdentity {
+		applyDiagnosticIdentityMigration(t, pool.Native())
+	}
 	if _, e = pool.Native().Exec(ctx, `CREATE TABLE inspection_test_acceptances(id BIGINT GENERATED ALWAYS AS IDENTITY, key TEXT PRIMARY KEY)`); e != nil {
 		t.Fatal(e)
 	}
@@ -371,6 +378,18 @@ func inspectionTestPool(t *testing.T) (*pgxpool.Pool, *platformpostgres.UnitOfWo
 		t.Fatal(e)
 	}
 	return pool.Native(), uow
+}
+
+func applyDiagnosticIdentityMigration(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, file, _, _ := runtime.Caller(0)
+	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../../migrations/0192_adminops_diagnostic_event_identity.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(context.Background(), string(sql)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPostgreSQLInspectionLateCompletionCannotReopenNewerRecovery(t *testing.T) {

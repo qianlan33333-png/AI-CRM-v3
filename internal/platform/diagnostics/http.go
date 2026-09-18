@@ -18,10 +18,18 @@ type Correlation struct{ RequestID, ReleaseSHA, JobRef, EffectRef string }
 
 var ErrInvalidCorrelation = errors.New("invalid diagnostic correlation")
 
-var routePattern = regexp.MustCompile(`^(?:(?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS) )?/[a-zA-Z0-9_./{} -]{0,190}$`)
+var routePattern = regexp.MustCompile(`^(/[a-zA-Z_{}][a-zA-Z0-9_{}.-]*)+/?$`)
 
 func registeredRoute(pattern string) string {
-	if routePattern.MatchString(pattern) {
+	if method, path, found := strings.Cut(pattern, " "); found {
+		switch method {
+		case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
+			pattern = path
+		default:
+			return "/request"
+		}
+	}
+	if len(pattern) <= 190 && routePattern.MatchString(pattern) {
 		return pattern
 	}
 	return "/request"
@@ -73,8 +81,11 @@ func validRelease(value string) bool {
 
 type Observation struct {
 	Code, Correlation, RouteTemplate, ReleaseSHA, JobRef, EffectRef string
-	Status                                                          int
-	Duration                                                        time.Duration
+	// JobAttempt is River's attempt number, not the Provider attempt number.
+	// Zero means no job or a legacy observation without attempt evidence.
+	JobAttempt int
+	Status     int
+	Duration   time.Duration
 }
 type Recorder func(context.Context, Observation) error
 

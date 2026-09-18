@@ -280,10 +280,28 @@ func TestRegisteredRouteKeepsTemplateWithoutCustomerPath(t *testing.T) {
 	mux.HandleFunc("GET /customers/{customerID}", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) })
 	var got Observation
 	Middleware(mux, testRelease, func(_ context.Context, o Observation) error { got = o; return nil }).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/customers/private-customer?token=fixture-secret", nil))
-	if got.RouteTemplate != "GET /customers/{customerID}" {
+	if got.RouteTemplate != "/customers/{customerID}" {
 		t.Fatalf("route=%q", got.RouteTemplate)
 	}
 	if strings.Contains(logs.String(), "private-customer") || strings.Contains(logs.String(), "fixture-secret") {
 		t.Fatal("request values leaked")
+	}
+}
+
+func TestRegisteredRouteNormalizesOnlyStaticSupportedTemplates(t *testing.T) {
+	for input, want := range map[string]string{
+		"GET /customers/{customerID}": "/customers/{customerID}",
+		"POST /jobs/{job_id}/retry":   "/jobs/{job_id}/retry",
+		"/api/admin/ops":              "/api/admin/ops",
+		"":                            "/request",
+		"GET /":                       "/request",
+		"CONNECT /secret":             "/request",
+		"GET /private?token=secret":   "/request",
+		"GET  /double-space":          "/request",
+		"GET /private secret":         "/request",
+	} {
+		if got := registeredRoute(input); got != want {
+			t.Errorf("registeredRoute(%q)=%q, want %q", input, got, want)
+		}
 	}
 }

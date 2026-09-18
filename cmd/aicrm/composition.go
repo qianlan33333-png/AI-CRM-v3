@@ -588,7 +588,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
 	opsRecord := func(c context.Context, o platformdiagnostics.Observation) error {
-		return opsInspections.RecordDiagnosticObservation(c, adminopsport.DiagnosticObservation{Component: "runtime", Code: o.Code, Correlation: o.Correlation, RouteTemplate: o.RouteTemplate, JobRef: o.JobRef, EffectRef: o.EffectRef})
+		return opsInspections.RecordDiagnosticObservation(c, adminopsport.DiagnosticObservation{Component: "runtime", Code: o.Code, Correlation: o.Correlation, RouteTemplate: o.RouteTemplate, JobRef: o.JobRef, EffectRef: o.EffectRef, JobAttempt: o.JobAttempt})
 	}
 	effectsRuntime, err := platformjobqueue.NewRuntimeWithDiagnostics(pool.Native(), effectWorkers, periodicJobs, cfg.ReleaseSHA, opsRecord, effectsQueues...)
 	if err != nil {

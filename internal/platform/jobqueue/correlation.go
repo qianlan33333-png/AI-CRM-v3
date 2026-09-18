@@ -90,16 +90,16 @@ func (m *CorrelationMiddleware) Work(ctx context.Context, job *rivertype.JobRow,
 		recovered := recover()
 		var snooze *river.JobSnoozeError
 		if recovered != nil {
-			m.record(workctx, correlation, "durable_job_panic")
+			m.record(workctx, correlation, job.Attempt, "durable_job_panic")
 			panic("durable_job_panic")
 		}
 		if err != nil && !errors.As(err, &snooze) {
-			m.record(workctx, correlation, "durable_job_failed")
+			m.record(workctx, correlation, job.Attempt, "durable_job_failed")
 		}
 	}()
 	return next(workctx)
 }
-func (m *CorrelationMiddleware) record(ctx context.Context, c diagnostics.Correlation, code string) {
+func (m *CorrelationMiddleware) record(ctx context.Context, c diagnostics.Correlation, attempt int, code string) {
 	// Recorder failures must not change the job's retry or completion semantics.
 	defer func() { _ = recover() }()
 	if m.Record == nil {
@@ -107,5 +107,5 @@ func (m *CorrelationMiddleware) record(ctx context.Context, c diagnostics.Correl
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
 	defer cancel()
-	_ = m.Record(ctx, diagnostics.Observation{Code: code, Correlation: c.RequestID, ReleaseSHA: c.ReleaseSHA, JobRef: c.JobRef, EffectRef: c.EffectRef, RouteTemplate: "/background"})
+	_ = m.Record(ctx, diagnostics.Observation{Code: code, Correlation: c.RequestID, ReleaseSHA: c.ReleaseSHA, JobRef: c.JobRef, EffectRef: c.EffectRef, JobAttempt: attempt, RouteTemplate: "/background"})
 }
