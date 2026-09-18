@@ -368,6 +368,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = river.AddWorkerSafely[distributionapp.RefundRecheckJobArgs](effectWorkers, distributionRefundWorker); err != nil {
 		return fail(err)
 	}
+	coreSubmissionWorker := &segment.CoreSubmissionWorker{}
+	if err = river.AddWorkerSafely[segment.CoreSubmissionArgs](effectWorkers, coreSubmissionWorker); err != nil {
+		return fail(err)
+	}
 	audienceRefreshWorker := segment.NewAudienceRefreshWorker()
 	if err = river.AddWorkerSafely[segment.AudienceRefreshJobArgs](effectWorkers, audienceRefreshWorker); err != nil {
 		return fail(err)
@@ -582,7 +586,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	// Populate this composition-owned adapter as its Owner stores are built
 	// below. The process has not started serving requests at this point.
 	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Groups: wecom.PostgreSQLGroupMembershipFacts{}, GroupCandidates: wecom.GroupCandidateFacts{Identity: queries}, Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
-	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
+	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentapp.CoreSource{UOW: uow, Reader: segmentRepository, Fallback: segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
 	}
@@ -648,6 +652,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	coreOperations := segmentapp.NewCoreOperations(segmentService, segmentRepository, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}}, segmentSnapshots)
+	coreSubmissionWorker.Service = coreOperations
+	coreOperations.BindReevaluation(segment.CoreSubmissionEnqueuer{Client: effectClient})
+	segmentBindings.Handler.BindCoreOperations(coreOperations)
 	segmentBindings.Handler.BindAudienceRadarReferences(audienceRadarReferenceAdapter{radars: radarManager})
 	segmentWebhookService, err := segmentapp.NewWebhookService(uow, segmentRepository, oneID, segmentSnapshots)
 	if err != nil {
@@ -760,6 +768,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	materialCompletionMux := outbound.MaterialEffectMux{GenericCompletion: materialPreparation, LegacyCompletion: sidebarMediaPreparation}
 	outboundCompletionSink.WithSidebarMedia(materialCompletionMux)
+	coreRecommendationCompletion, err := automationprovider.NewAudienceRecommendationCompletionSink(coreOperations)
+	if err != nil {
+		return fail(err)
+	}
 	generationCompletionSink, err := automationprovider.NewGenerationCompletionSink(automationRuntime)
 	if err != nil {
 		return fail(err)
@@ -780,6 +792,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
 	segmentBindings.Handler.BindAudienceSurveyReferences(audienceSurveyReferenceAdapter{surveys: surveyDefinitions})
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
+	surveySubmissions.BindSubmissionObserver(segment.CoreSubmissionEnqueuer{Client: effectClient})
 	surveyCompletionTargets, err := surveyCompletionTargets(cfg.Survey.CompletionTargetsJSON)
 	if err != nil {
 		return fail(err)
@@ -1167,6 +1180,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
+		CoreSupervision:       coreOperations,
 		MachineAuthentication: machineService,
 		RateLimiter:           machineRateLimiter,
 		AdminAuthentication:   authentication,
@@ -1284,7 +1298,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink, paymentDistribution: paymentService, automation: generationCompletionSink}); err != nil {
+	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink, paymentDistribution: paymentService, automation: generationCompletionSink, segment: coreRecommendationCompletion}); err != nil {
 		return fail(err)
 	}
 	if err = paymentReconciliationWorker.BindService(paymentService); err != nil {
@@ -1738,6 +1752,12 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		tags:           customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
 		profiles:       sidebarProfiles,
 	}
+	coreRecommendationProvider, err := automationprovider.NewAudienceRecommendationProvider(automationprovider.GenerationConfig{Enabled: cfg.AIGeneration.Enabled, BaseURL: cfg.AIGeneration.BaseURL, APIKey: cfg.AIGeneration.APIKey, Model: cfg.AIGeneration.Model, Timeout: cfg.AIGeneration.Timeout}, coreOperations)
+	if err != nil {
+		return fail(err)
+	}
+	coreRecommendationProvider.ConfigReader = generationProvider.ConfigReader
+	coreOperations.BindRecommendationRuntime(effectRepository, generationContext, coreRecommendationProvider)
 	if err = automationRuntime.SetDynamicGenerationDependencies(effectRepository, generationContext, automationService, generationProvider); err != nil {
 		return fail(err)
 	}
@@ -1759,7 +1779,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	}
 	materialProviderMux := outbound.MaterialEffectMux{GenericProvider: materialProvider, LegacyProvider: sidebarMediaProvider}
 	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithTagCatalogMutation(tagCatalogMutationProvider).WithContactDescription(contactDescriptionProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSidebarMedia(materialProviderMux).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider}); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter, automation: generationProvider, segment: coreRecommendationProvider}); err != nil {
 		return fail(err)
 	}
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()

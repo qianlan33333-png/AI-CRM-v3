@@ -55,6 +55,7 @@ type ExecutionApplication interface {
 	Precheck(context.Context, int64) (segmentapp.Precheck, error)
 }
 type Handler struct {
+	core            *segmentapp.CoreOperations
 	service         ConfigurationApplication
 	snapshots       SnapshotApplication
 	execution       ExecutionApplication
@@ -160,6 +161,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tail := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/ai-audience/"), "/")
 	parts := strings.Split(tail, "/")
 	switch {
+	case strings.HasPrefix(tail, "core/") || (len(parts) == 5 && parts[0] == "packages" && parts[2] == "members" && (parts[4] == "operations" || parts[4] == "history")):
+		h.coreOperations(w, r, tail)
 	case tail == "package-groups":
 		h.groups(w, r)
 	case len(parts) == 2 && parts[0] == "package-groups":
@@ -1042,6 +1045,16 @@ func (h *Handler) members(w http.ResponseWriter, r *http.Request, packageID int6
 	if err != nil {
 		resultError(w, err)
 		return
+	}
+	if h.core != nil {
+		for i := range page.Items {
+			detail, e := h.core.MemberDetail(r.Context(), packageID, int64(page.Items[i].CustomerID), "", 1)
+			if e != nil {
+				resultError(w, e)
+				return
+			}
+			page.Items[i].Operations = &detail
+		}
 	}
 	respond(w, http.StatusOK, map[string]any{"snapshot": snapshot, "items": page.Items, "next_cursor": page.NextCursor})
 }

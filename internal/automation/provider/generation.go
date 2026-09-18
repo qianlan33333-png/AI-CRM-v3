@@ -41,6 +41,8 @@ func (c GenerationConfig) Policy() (automationport.GenerationModelPolicy, error)
 
 type GenerationProvider struct {
 	ConfigReader func(context.Context) (GenerationConfig, error)
+	owner        effectport.Owner
+	kind         effectport.Kind
 	config       GenerationConfig
 	dispatch     automationport.GenerationDispatchReader
 }
@@ -62,7 +64,7 @@ func NewGenerationProvider(config GenerationConfig, dispatch automationport.Gene
 	if config.Client == nil {
 		config.Client = &http.Client{Timeout: config.Timeout}
 	}
-	return &GenerationProvider{config: config, dispatch: dispatch}, nil
+	return &GenerationProvider{owner: effectport.OwnerAutomation, kind: effectport.KindAIAgentGenerate, config: config, dispatch: dispatch}, nil
 }
 
 func (p *GenerationProvider) GenerationModelPolicy(ctx context.Context) (automationport.GenerationModelPolicy, error) {
@@ -100,7 +102,7 @@ func generationFailure(code string, attempted bool) effectport.AdapterResult {
 }
 
 func (p *GenerationProvider) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
-	if p == nil || envelope.Owner != effectport.OwnerAutomation || envelope.Kind != effectport.KindAIAgentGenerate || attempt.EffectID == "" {
+	if p == nil || envelope.Owner != p.owner || envelope.Kind != p.kind || attempt.EffectID == "" {
 		return generationFailure("generation_dispatch_invalid", false), nil
 	}
 	config, configErr := p.currentConfig(ctx)
@@ -176,4 +178,16 @@ func (p *GenerationProvider) currentConfig(ctx context.Context) (GenerationConfi
 		return GenerationConfig{}, err
 	}
 	return config, nil
+}
+
+// NewAudienceRecommendationProvider reuses the approved model transport for
+// a separate Segment effect; it does not create an Automation send or review.
+func NewAudienceRecommendationProvider(config GenerationConfig, dispatch automationport.GenerationDispatchReader) (*GenerationProvider, error) {
+	p, e := NewGenerationProvider(config, dispatch)
+	if e != nil {
+		return nil, e
+	}
+	p.owner = effectport.OwnerSegment
+	p.kind = effectport.KindAIRecommend
+	return p, nil
 }

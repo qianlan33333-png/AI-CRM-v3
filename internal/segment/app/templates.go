@@ -148,6 +148,9 @@ func CanonicalDefinition(raw json.RawMessage) (json.RawMessage, error) {
 func validDefinition(input DefinitionInput) bool {
 	owner := validOwner(input.Parameters)
 	switch input.TemplateKey {
+	case "core_ai_product":
+		var id int64
+		return len(input.Parameters) == 1 && json.Unmarshal(input.Parameters["core_product_id"], &id) == nil && id >= 1 && id <= 5
 	case "member_excluding_group_paid":
 		group, ok := stringOf(input.Parameters, "exclude_group_chat")
 		products, pok := stringsOf(input.Parameters, "excluded_product_codes", 1, 100)

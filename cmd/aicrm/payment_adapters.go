@@ -21,6 +21,7 @@ type composedProviderRouter struct {
 	outbound   effectport.ProviderAdapter
 	payment    effectport.ProviderAdapter
 	automation effectport.ProviderAdapter
+	segment    effectport.ProviderAdapter
 }
 
 type paymentProviderRouter struct {
@@ -46,6 +47,12 @@ func (router paymentProviderRouter) Execute(ctx context.Context, envelope effect
 }
 
 func (router composedProviderRouter) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
+	if envelope.Owner == effectport.OwnerSegment {
+		if router.segment == nil {
+			return effectport.AdapterResult{}, errors.New("segment provider unavailable")
+		}
+		return router.segment.Execute(ctx, envelope, attempt)
+	}
 	if envelope.Owner == effectport.OwnerPayment {
 		if router.payment == nil {
 			return effectport.AdapterResult{}, errors.New("payment provider unavailable")
@@ -69,9 +76,16 @@ type composedCompletionRouter struct {
 	payment             effectport.CompletionSink
 	paymentDistribution effectport.CompletionSink
 	automation          effectport.CompletionSink
+	segment             effectport.CompletionSink
 }
 
 func (router composedCompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
+	if envelope.Owner == effectport.OwnerSegment {
+		if router.segment == nil {
+			return errors.New("segment completion unavailable")
+		}
+		return router.segment.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	}
 	if envelope.Owner == effectport.OwnerPayment {
 		switch envelope.Kind {
 		case effectport.KindWeChatPayReceiverAdd, effectport.KindWeChatPayProfitSharing, effectport.KindWeChatPayProfitUnfreeze:

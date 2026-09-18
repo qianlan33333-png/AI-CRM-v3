@@ -21,6 +21,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
 const maxBodyBytes int64 = 64 << 10
@@ -31,6 +32,7 @@ type AdminAuthentication interface {
 }
 
 type Config struct {
+	CoreSupervision       segmentport.CoreSupervision
 	MachineAuthentication accessport.MachineTokenIssuer
 	RateLimiter           accessport.MachineRequestLimiter
 	AdminAuthentication   AdminAuthentication
@@ -47,17 +49,18 @@ type Config struct {
 }
 
 type Handler struct {
-	machine        accessport.MachineTokenIssuer
-	rateLimiter    accessport.MachineRequestLimiter
-	requestTimeout time.Duration
-	admin          AdminAuthentication
-	management     accessport.MachineManagement
-	operations     openplatformport.OperationService
-	executor       openplatformport.Executor
-	sessionCookie  string
-	csrfCookie     string
-	trustedProxies []netip.Prefix
-	publicOrigin   string
+	coreSupervision segmentport.CoreSupervision
+	machine         accessport.MachineTokenIssuer
+	rateLimiter     accessport.MachineRequestLimiter
+	requestTimeout  time.Duration
+	admin           AdminAuthentication
+	management      accessport.MachineManagement
+	operations      openplatformport.OperationService
+	executor        openplatformport.Executor
+	sessionCookie   string
+	csrfCookie      string
+	trustedProxies  []netip.Prefix
+	publicOrigin    string
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -75,13 +78,18 @@ func NewHandler(config Config) (*Handler, error) {
 		}
 		proxies = append(proxies, prefix.Masked())
 	}
-	return &Handler{machine: config.MachineAuthentication, rateLimiter: config.RateLimiter, requestTimeout: config.RequestTimeout, admin: config.AdminAuthentication, management: config.Management,
+	return &Handler{coreSupervision: config.CoreSupervision, machine: config.MachineAuthentication, rateLimiter: config.RateLimiter, requestTimeout: config.RequestTimeout, admin: config.AdminAuthentication, management: config.Management,
 		operations: config.Operations, executor: config.Executor, sessionCookie: config.SessionCookieName, csrfCookie: config.CSRFCookieName, trustedProxies: proxies, publicOrigin: strings.TrimRight(strings.TrimSpace(config.PublicOrigin), "/")}, nil
 }
 
 func (handler *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /oauth/token", handler.token)
+	mux.HandleFunc("POST /open/v1/audience/push-records", handler.coreSupervisedPush)
+	mux.HandleFunc("GET /open/v1/audience/core-products", handler.coreOperationsRead)
+	mux.HandleFunc("GET /open/v1/audience/packages/{package_id}/members/{customer_id}/history", handler.coreOperationsRead)
+	mux.HandleFunc("GET /open/v1/audience/packages/{package_id}/members", handler.coreOperationsRead)
+	mux.HandleFunc("GET /open/v1/audience/packages/{package_id}/members/{customer_id}/operations", handler.coreOperationsRead)
 	mux.HandleFunc("GET /mcp", handler.mcpMetadata)
 	mux.HandleFunc("POST /mcp", handler.mcp)
 	mux.HandleFunc("GET /open/v1/capabilities", handler.v1Capabilities)

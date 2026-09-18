@@ -48,7 +48,12 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	var ready bool
 	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (
 		SELECT 1 FROM unnest(ARRAY[
-			'segment_audience_groups',
+			'segment_core_products',
+ 'segment_core_prompt_state',
+ 'segment_core_assignments',
+ 'segment_core_pushes',
+ 'segment_core_recommendations',
+ 'segment_audience_groups',
 			'segment_audience_packages',
 			'segment_audience_configuration_versions',
 			'segment_audience_operation_receipts',

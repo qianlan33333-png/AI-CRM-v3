@@ -280,6 +280,13 @@
       state.initialDateTimes = initialDateTimes;
     }
     async function render() {
+      if (state.configuration?.definition?.template_key === "core_ai_product") {
+        select.disabled = true; previewButton.disabled = true; saveButton.disabled = true;
+        const refresh=byID("manualRefreshBtn");if(refresh){refresh.disabled=true;refresh.title="成员随 AI 分配或人工调整更新"}
+        root.textContent = "此人群包由核心产品 AI 分配成员，请在人群包首页调整产品描述和分包提示词。";
+        byID("templateVersionBadge").textContent = "AI 推荐";
+        return;
+      }
       const template = templateFor();
       const stored = state.configuration?.definition;
       const source = stored?.template_key === template?.key ? await rehydrateOwnerUserIDs(stored.parameters) : {};
@@ -304,6 +311,7 @@
       await render();
     }
     function currentDefinition() {
+      if (state.configuration?.definition?.template_key === "core_ai_product") throw templateHostError("此包由核心产品配置管理，不支持修改筛选模板。");
       const template = templateFor();
       if (!template) throw templateHostError("请选择模板。");
       const value = form.getValue();
@@ -410,6 +418,7 @@
       if (legacyActions) legacyActions.hidden = true;
     });
     const observer = new MutationObserver(() => {
+      if (state.configuration?.definition?.template_key === "core_ai_product") return;
       if (!state.ready || state.restoring || root.querySelector("[data-field-name]")) return;
       state.restoring = true;
       queueMicrotask(() => {

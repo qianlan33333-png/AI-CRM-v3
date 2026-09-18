@@ -157,3 +157,43 @@ func TestGenerationProviderReadsStoredSelectionAndRejectsFrozenPolicyDrift(t *te
 		t.Fatal("frozen task silently switched models")
 	}
 }
+
+func TestAudienceRecommendationUsesStoredModelAndSeparateEffect(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer configured-key" {
+			t.Error("stored credential not used")
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"product_id\":1,\"reason\":\"匹配\",\"evidence\":\"问卷\"}"}}]}`))
+	}))
+	defer server.Close()
+	dispatch := testDispatch()
+	dispatch.ModelPolicy.Endpoint = server.URL + "/chat/completions"
+	p, err := NewAudienceRecommendationProvider(GenerationConfig{Timeout: time.Second}, generationDispatchStub{dispatch: dispatch, found: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := GenerationConfig{Enabled: true, BaseURL: server.URL, Model: "unit-model", APIKey: "configured-key", Timeout: time.Second}
+	p.ConfigReader = func(context.Context) (GenerationConfig, error) { return selected, nil }
+	policy, err := p.GenerationModelPolicy(context.Background())
+	if err != nil || policy != dispatch.ModelPolicy {
+		t.Fatal("stored policy unavailable", err)
+	}
+	envelope := testEnvelope()
+	attempt := effectport.Attempt{EffectID: "eer_1", Number: 1}
+	result, err := p.Execute(context.Background(), envelope, attempt)
+	if err != nil || result.CallAttempted || calls != 0 {
+		t.Fatal("accepted Automation effect")
+	}
+	envelope.Owner, envelope.Kind = effectport.OwnerSegment, effectport.KindAIRecommend
+	result, err = p.Execute(context.Background(), envelope, attempt)
+	if err != nil || result.Completion != effectport.StateExecuted || calls != 1 {
+		t.Fatalf("recommendation=%+v err=%v", result, err)
+	}
+	selected.Model = "changed-model"
+	result, err = p.Execute(context.Background(), envelope, attempt)
+	if err != nil || result.CallAttempted || calls != 1 {
+		t.Fatal("frozen recommendation silently switched model")
+	}
+}

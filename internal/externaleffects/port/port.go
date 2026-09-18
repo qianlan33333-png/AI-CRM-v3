@@ -42,6 +42,7 @@ const (
 	OwnerOutbound               Owner = "outbound"
 	OwnerPayment                Owner = "payment"
 	OwnerAutomation             Owner = "automation"
+	OwnerSegment                Owner = "segment"
 	KindOutboundMessage         Kind  = "outbound_message"
 	KindAutomationMessage       Kind  = "automation_message"
 	KindOutboundMedia           Kind  = "outbound_media"
@@ -59,6 +60,7 @@ const (
 	KindSidebarJSSDKSend        Kind  = "sidebar_jssdk_send"
 	KindSurveyCompletion        Kind  = "survey_completion"
 	KindAIAgentGenerate         Kind  = "ai_agent_generate"
+	KindAIRecommend             Kind  = "ai_audience_recommend"
 	KindWeChatPayPrepay         Kind  = "wechat_pay_prepay_v1"
 	KindWeChatPayRefund         Kind  = "wechat_pay_refund_v1"
 	KindWeChatShopRefund        Kind  = "wechat_shop_refund_v1"
@@ -96,7 +98,7 @@ type Envelope struct {
 func (value Envelope) Valid() bool {
 	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindWeComContactDescription || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund || value.Kind == KindWeChatPayReceiverAdd || value.Kind == KindWeChatPayProfitSharing || value.Kind == KindWeChatPayProfitUnfreeze) ||
-		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate
+		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate || value.Owner == OwnerSegment && value.Kind == KindAIRecommend
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }
 func (value Envelope) Fingerprint() Digest {

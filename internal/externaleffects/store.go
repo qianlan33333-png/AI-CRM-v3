@@ -616,7 +616,7 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	// projecting it here as well would update the same execution twice. AI
 	// Assistant and Automation Operations delegate their owner projection to
 	// the sink.
-	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindWeComTagCatalogMutation || Kind(kind) == KindOutboundMessage || (Kind(kind) == KindOutboundMedia && lane == port.LaneOutboundMedia) || Kind(kind) == KindAutomationMessage || Kind(kind) == KindAIAgentGenerate) && r.sink != nil {
+	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindWeComTagCatalogMutation || Kind(kind) == KindOutboundMessage || (Kind(kind) == KindOutboundMedia && lane == port.LaneOutboundMedia) || Kind(kind) == KindAutomationMessage || (Kind(kind) == KindAIAgentGenerate || Kind(kind) == KindAIRecommend)) && r.sink != nil {
 		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 		completion := AdapterResult{Completion: next, ReceiptDigest: digest}
 		if Kind(kind) == KindOutboundMedia && lane == port.LaneOutboundMedia {
@@ -805,7 +805,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			receipt = Hash("provider-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 		}
 	}
-	if next == StateExecuted && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelLink || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindAIAgentGenerate) && (r.sink == nil || !adapterResult.Artifact.Valid()) {
+	if next == StateExecuted && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelLink || envelope.Kind == KindCustomerOwnerHandoff || (envelope.Kind == KindAIAgentGenerate || envelope.Kind == KindAIRecommend)) && (r.sink == nil || !adapterResult.Artifact.Valid()) {
 		next, receipt = StateUnknown, Hash("provider-artifact-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 	}
 	autoRetryLane := (envelope.Kind == KindOutboundMedia && deliveryQueue == platformjobqueue.OutboundMediaQueue) ||
@@ -833,7 +833,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindWeComContactDescription || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindCustomerTagCommand || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindCommerceProductPush || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == port.KindSidebarJSSDKSend || envelope.Kind == KindSurveyCompletion || envelope.Kind == KindAIAgentGenerate || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindOutboundMedia || envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindWeComTagCatalogMutation || envelope.Kind == KindWeComContactDescription || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindCustomerTagCommand || envelope.Kind == KindCustomerOwnerHandoff || envelope.Kind == KindCommerceProductPush || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == port.KindSidebarJSSDKSend || envelope.Kind == KindSurveyCompletion || envelope.Kind == KindAIAgentGenerate || envelope.Kind == KindAIRecommend || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = persistedState
@@ -892,7 +892,7 @@ func (r *Repository) QueuedEnvelope(ctx context.Context, id, generation, riverJo
 
 func projectsStaleAttempt(kind Kind) bool {
 	switch kind {
-	case KindOutboundMedia, KindWeComTagCatalog, KindWeComTagCatalogMutation, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindSurveyCompletion, KindCustomerTagCommand, KindCustomerOwnerHandoff, KindCommerceProductPush, KindAIAgentGenerate, port.KindSidebarJSSDKSend:
+	case KindOutboundMedia, KindWeComTagCatalog, KindWeComTagCatalogMutation, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindSurveyCompletion, KindCustomerTagCommand, KindCustomerOwnerHandoff, KindCommerceProductPush, KindAIAgentGenerate, KindAIRecommend, port.KindSidebarJSSDKSend:
 		return true
 	default:
 		return false
