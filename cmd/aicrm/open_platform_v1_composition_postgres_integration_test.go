@@ -527,6 +527,8 @@ func TestOpenPlatformV1CompositionPostgreSQLJourney(t *testing.T) {
 	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"review_state":"pending_review"`) || !strings.Contains(statusResponse.Body.String(), `"operation_state":"pending_review"`) {
 		t.Fatalf("operation status=%d body=%s", statusResponse.Code, statusResponse.Body.String())
 	}
+	coreAudienceOAuthJourney(t, ctx, application, machine, admin, int64(provision.CustomerID))
+
 }
 
 func mustOpenPlatformV1CompositionMachine(t *testing.T, uow *platformpostgres.UnitOfWork, signingKey, corpID string) *accessapp.MachineService {

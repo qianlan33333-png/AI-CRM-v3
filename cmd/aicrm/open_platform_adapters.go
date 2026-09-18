@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 	"net/url"
 	"sort"
 	"strconv"
@@ -64,6 +65,10 @@ type openPlatformSurveyIdentityReader interface {
 }
 
 type openPlatformExecutor struct {
+	coreAudience interface {
+		segmentport.CoreOperationsReader
+		segmentport.CoreSupervision
+	}
 	identity            identityport.Resolver
 	externalUsers       openPlatformExternalUserIDReader
 	orders              orderport.Query

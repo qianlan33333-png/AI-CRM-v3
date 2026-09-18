@@ -21,7 +21,6 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
-	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
 const maxBodyBytes int64 = 64 << 10
@@ -32,7 +31,6 @@ type AdminAuthentication interface {
 }
 
 type Config struct {
-	CoreSupervision       segmentport.CoreSupervision
 	MachineAuthentication accessport.MachineTokenIssuer
 	RateLimiter           accessport.MachineRequestLimiter
 	AdminAuthentication   AdminAuthentication
@@ -49,18 +47,17 @@ type Config struct {
 }
 
 type Handler struct {
-	coreSupervision segmentport.CoreSupervision
-	machine         accessport.MachineTokenIssuer
-	rateLimiter     accessport.MachineRequestLimiter
-	requestTimeout  time.Duration
-	admin           AdminAuthentication
-	management      accessport.MachineManagement
-	operations      openplatformport.OperationService
-	executor        openplatformport.Executor
-	sessionCookie   string
-	csrfCookie      string
-	trustedProxies  []netip.Prefix
-	publicOrigin    string
+	machine        accessport.MachineTokenIssuer
+	rateLimiter    accessport.MachineRequestLimiter
+	requestTimeout time.Duration
+	admin          AdminAuthentication
+	management     accessport.MachineManagement
+	operations     openplatformport.OperationService
+	executor       openplatformport.Executor
+	sessionCookie  string
+	csrfCookie     string
+	trustedProxies []netip.Prefix
+	publicOrigin   string
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -78,7 +75,7 @@ func NewHandler(config Config) (*Handler, error) {
 		}
 		proxies = append(proxies, prefix.Masked())
 	}
-	return &Handler{coreSupervision: config.CoreSupervision, machine: config.MachineAuthentication, rateLimiter: config.RateLimiter, requestTimeout: config.RequestTimeout, admin: config.AdminAuthentication, management: config.Management,
+	return &Handler{machine: config.MachineAuthentication, rateLimiter: config.RateLimiter, requestTimeout: config.RequestTimeout, admin: config.AdminAuthentication, management: config.Management,
 		operations: config.Operations, executor: config.Executor, sessionCookie: config.SessionCookieName, csrfCookie: config.CSRFCookieName, trustedProxies: proxies, publicOrigin: strings.TrimRight(strings.TrimSpace(config.PublicOrigin), "/")}, nil
 }
 
@@ -152,6 +149,11 @@ func Mount(next, machine http.Handler) http.Handler {
 		"GET /open/v1/customers/{customer_id}/detail",
 		"GET /open/v1/radar/clicks", "GET /open/v1/radar/links",
 		"GET /open/v1/chat-records",
+		"GET /open/v1/audience/core-products",
+		"GET /open/v1/audience/packages/{package_id}/members",
+		"GET /open/v1/audience/packages/{package_id}/members/{customer_id}/operations",
+		"GET /open/v1/audience/packages/{package_id}/members/{customer_id}/history",
+		"POST /open/v1/audience/push-records",
 		"GET /api/admin/open-platform/clients", "POST /api/admin/open-platform/clients",
 		"GET /api/admin/open-platform/clients/{client_id}", "PATCH /api/admin/open-platform/clients/{client_id}", "GET /api/admin/open-platform/clients/{client_id}/audit",
 		"POST /api/admin/open-platform/clients/{client_id}/activate", "POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
@@ -288,7 +290,7 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 		if len(params.Arguments) == 0 {
 			params.Arguments = json.RawMessage(`{}`)
 		}
-		if descriptor.OperationID == openplatformport.OperationAIReviewPlanCreate && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+		if (descriptor.OperationID == openplatformport.OperationAIReviewPlanCreate || descriptor.OperationID == openplatformport.OperationCorePushRecord) && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
 			writeJSONRPCOperationError(response, rpc.ID, openplatformport.ErrorValidation)
 			return
 		}
@@ -370,7 +372,7 @@ func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Req
 		writeV1Error(response, http.StatusBadRequest, openplatformport.ErrorValidation, id)
 		return
 	}
-	if operation == openplatformport.OperationAIReviewPlanCreate && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+	if (operation == openplatformport.OperationAIReviewPlanCreate || operation == openplatformport.OperationCorePushRecord) && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
 		writeV1Error(response, http.StatusBadRequest, openplatformport.ErrorValidation, id)
 		return
 	}
@@ -1578,8 +1580,20 @@ func mcpTools(descriptors []openplatformport.Descriptor) []map[string]any {
 func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
 	stringValue := map[string]any{"type": "string"}
 	switch operation {
-	case openplatformport.OperationCapabilitiesList:
+	case openplatformport.OperationCapabilitiesList, openplatformport.OperationCoreProducts:
 		return map[string]any{"type": "object", "additionalProperties": false}
+	case openplatformport.OperationCoreMembers, openplatformport.OperationCoreMemberHistory, openplatformport.OperationCoreMemberOperations:
+		required := []string{"package_id"}
+		props := map[string]any{"package_id": map[string]any{"type": "integer", "minimum": 1}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": stringValue}
+		if operation != openplatformport.OperationCoreMembers {
+			required = append(required, "customer_id")
+			props["customer_id"] = map[string]any{"type": "integer", "minimum": 1}
+		}
+		return map[string]any{"type": "object", "additionalProperties": false, "required": required, "properties": props}
+	case openplatformport.OperationCorePushRecord:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"push_id", "customer_id", "package_id", "materials", "occurred_at", "status", "status_version"}, "properties": map[string]any{
+			"push_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "customer_id": map[string]any{"type": "integer", "minimum": 1}, "package_id": map[string]any{"type": "integer", "minimum": 1}, "status_version": map[string]any{"type": "integer", "minimum": 1}, "occurred_at": map[string]any{"type": "string", "format": "date-time"}, "status": map[string]any{"type": "string", "enum": []string{"reported", "success", "failed", "unknown"}}, "materials": map[string]any{"type": "array", "minItems": 1, "maxItems": 20, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "id"}, "properties": map[string]any{"kind": stringValue, "id": map[string]any{"type": "integer", "minimum": 1}}}},
+		}}
 	case openplatformport.OperationCustomerResolve:
 		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 			"references": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "scope", "value"}, "properties": map[string]any{"kind": stringValue, "scope": stringValue, "value": stringValue}}},
