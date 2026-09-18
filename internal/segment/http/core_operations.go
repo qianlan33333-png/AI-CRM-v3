@@ -1,6 +1,7 @@
 package http
 
 import (
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 	"net/http"
@@ -20,6 +21,17 @@ func (h *Handler) coreOperations(w http.ResponseWriter, r *http.Request, tail st
 		var value any
 		var e error
 		switch tail {
+		case "core/product-options":
+			if h.productOptions == nil {
+				resultError(w, segmentapp.ErrNotReady)
+				return
+			}
+			limit, offset := queryInt(r, "limit", 50), queryInt(r, "offset", 0)
+			if limit < 1 || limit > 100 || offset < 0 || offset > 1000000 {
+				fail(w, 400, "invalid_request")
+				return
+			}
+			value, e = h.productOptions.ListProductOptions(r.Context(), productport.ProductOptionQuery{Q: r.URL.Query().Get("q"), ProductType: productport.ProductOptionAll, Limit: int32(limit), Offset: int32(offset)})
 		case "core/products":
 			value, e = h.core.Products(r.Context())
 		case "core/prompt":

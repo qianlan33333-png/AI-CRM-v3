@@ -130,9 +130,6 @@ func (p *Package) UpdateDetailsWithActor(name string, groupID *int64, expectedVe
 	if p.Lifecycle == Archived {
 		return ErrArchived
 	}
-	if p.Lifecycle == Active {
-		return ErrActiveEdit
-	}
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > 200 || invalidOptionalID(groupID) || !validActor(actorID, actorKind, actorReference) || now.IsZero() {
 		return ErrInvalid

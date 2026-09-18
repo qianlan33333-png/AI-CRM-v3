@@ -31,6 +31,7 @@ dom.window.AudienceOperationsHTTP = {
   errorState: () => ({ message: "读取失败" }),
   request: async (path, options = {}) => {
     calls.push({ path, options });
+    if (path.includes("core/product-options")) return { data: { items: [{ code: "course-88", name: "销售课程", product_type: "standard" }], total: 1 } };
     if (path.endsWith("core/products"))
       return {
         data: options.body
@@ -83,12 +84,15 @@ dom.window.AudienceOperationsHTTP = {
     throw new Error("unexpected " + path);
   },
 };
+dom.window.eval(fs.readFileSync(new URL("./admin_search_select.js", import.meta.url), "utf8"));
 dom.window.eval(script);
 const settle = () => new Promise((r) => setTimeout(r, 10));
 await settle();
 const document = dom.window.document;
 const button = (text) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent === text);
+assert.equal(document.querySelector("#coreProductPanel").hidden, true);
+assert.equal(document.querySelector("#audiencePackagePanel").hidden, false);
 assert.equal(document.querySelectorAll("#coreOperationsRoot form").length, 0);
 assert.equal(document.querySelectorAll(".core-steps button").length, 3);
 button("2 编写分配规则").click();
@@ -119,9 +123,13 @@ form.querySelector("input").value = "成长课";
 form.querySelector("textarea").value = "需要成长的客户";
 form.querySelector("select").value = "9";
 assert.equal(form.querySelector('option[value="8"]').disabled, true);
+const sales = form.querySelector('[aria-label="关联销售商品"]');
+assert.match(sales.textContent, /销售课程 · course-88/);
+sales.value = "course-88"; sales.dispatchEvent(new dom.window.Event("change"));
 button("保存产品").click();
 await settle();
 assert.equal(document.querySelector("dialog"), null);
+assert.equal(calls.find(c => c.path.endsWith("core/products") && c.options.body).options.body.product.product_reference, "course-88");
 assert.equal(editor.value, "尚未保存的规则");
 assert.equal(
   document.querySelectorAll(".core-product-table tbody tr").length,
@@ -174,3 +182,23 @@ dom.window.close();
 console.log(
   "core operations: Chinese guided configuration, draft preservation, immutable binding, preview and confirmed assignment passed",
 );
+
+// A failed directory read must not silently remove the stored association.
+const pickerDOM = new JSDOM('<body></body>', { runScripts: 'outside-only' });
+pickerDOM.window.eval(fs.readFileSync(new URL('./admin_search_select.js', import.meta.url), 'utf8'));
+let failDirectory = true;
+const picker = pickerDOM.window.AICRMSearchSelect({ value: 'saved-course', label: '关联销售商品', loadPage: async () => {
+  if (failDirectory) throw new Error('unavailable');
+  return { total: 1, items: [{ value: 'saved-course', label: '已售课程 · saved-course' }] };
+}});
+pickerDOM.window.document.body.append(picker.element);
+await settle();
+assert.equal(picker.value, 'saved-course');
+assert.match(picker.element.textContent, /读取失败/);
+failDirectory = false;
+[...picker.element.querySelectorAll('button')].find(b => b.textContent === '重试').click();
+await settle();
+assert.match(picker.element.textContent, /已售课程/);
+[...picker.element.querySelectorAll('button')].find(b => b.textContent === '清空选择').click();
+assert.equal(picker.value, '');
+pickerDOM.window.close();

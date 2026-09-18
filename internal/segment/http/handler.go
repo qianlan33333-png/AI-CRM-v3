@@ -15,6 +15,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
@@ -63,12 +64,17 @@ type Handler struct {
 	owners          accessport.AudienceOwnerResolver
 	ownerReferences accessport.AudienceOwnerReferenceReader
 	products        AudienceProductReferenceResolver
+	productOptions  productport.ProductOptionReader
 	channels        AudienceChannelReferenceResolver
 	radars          AudienceRadarReferenceResolver
 	surveys         AudienceSurveyReferenceResolver
 }
 type AudienceProductReferenceResolver interface {
 	ResolveAudienceProduct(context.Context, string) (string, bool, error)
+}
+
+func (h *Handler) BindCoreProductOptions(reader productport.ProductOptionReader) {
+	h.productOptions = reader
 }
 
 func (h *Handler) BindAudienceProductReferences(resolver AudienceProductReferenceResolver) {
@@ -291,9 +297,10 @@ func (h *Handler) packages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name        string `json:"name"`
-		GroupID     *int64 `json:"group_id"`
-		TemplateKey string `json:"template_key"`
+		Name         string `json:"name"`
+		GroupID      *int64 `json:"group_id"`
+		TemplateKey  string `json:"template_key"`
+		CreationMode string `json:"creation_mode"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -302,7 +309,7 @@ func (h *Handler) packages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	item, e := h.service.CreatePackage(r.Context(), segmentapp.PackageCreateCommand{Name: in.Name, GroupID: in.GroupID, TemplateKey: in.TemplateKey, Actor: p.InternalID, IdempotencyKey: key})
+	item, e := h.service.CreatePackage(r.Context(), segmentapp.PackageCreateCommand{Name: in.Name, GroupID: in.GroupID, TemplateKey: in.TemplateKey, CreationMode: in.CreationMode, Actor: p.InternalID, IdempotencyKey: key})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -1180,6 +1187,27 @@ func packageDTO(p segmentdomain.Package) map[string]any {
 func (h *Handler) packageReadDTO(ctx context.Context, p segmentdomain.Package) (map[string]any, error) {
 	v := packageDTO(p)
 	v["member_count"] = 0
+	v["membership_mode"] = "empty"
+	if p.CurrentConfigurationVersionID != nil {
+		cfg, err := h.service.CurrentConfiguration(ctx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		v["membership_mode"] = "rule"
+		var definition struct {
+			TemplateKey string `json:"template_key"`
+			Parameters  struct {
+				CoreProductID int64 `json:"core_product_id"`
+			} `json:"parameters"`
+		}
+		if err := json.Unmarshal(cfg.Definition, &definition); err != nil {
+			return nil, err
+		}
+		if definition.TemplateKey == "core_ai_product" {
+			v["membership_mode"] = "core_ai"
+			v["core_product_id"] = definition.Parameters.CoreProductID
+		}
+	}
 	if h == nil || h.snapshots == nil {
 		return v, nil
 	}

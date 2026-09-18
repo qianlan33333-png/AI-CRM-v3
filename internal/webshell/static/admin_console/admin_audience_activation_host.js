@@ -55,7 +55,7 @@
     if (!id || !anchor) return;
     try {
       const pkg = await read(id);
-      if (pkg.lifecycle === "active" || pkg.lifecycle === "archived") return;
+      if (pkg.lifecycle === "active" || pkg.lifecycle === "archived" || pkg.membership_mode === "empty" || pkg.membership_mode === "core_ai") return;
       const button = document.createElement("button");
       button.id = "activateAudienceRuleBtn"; button.type = "button"; button.className = "ai-btn";
       button.dataset.packageId = id; button.textContent = "启用规则";

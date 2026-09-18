@@ -1216,6 +1216,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	segmentBindings.Handler.BindCoreProductOptions(productCatalog)
 	segmentBindings.Handler.BindAudienceProductReferences(audienceProductReferenceAdapter{products: productCatalog, historical: orderRepository, uow: uow})
 	legacyAudienceSource.Orders = orderRepository
 	orderService := orderapp.NewService(uow, orderRepository)
