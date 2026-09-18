@@ -7,10 +7,13 @@ const script = fs.readFileSync(
 );
 const calls = [];
 let confirmations = 0;
-const dom = new JSDOM('<div id="coreOperationsRoot"></div>', {
-  runScripts: "outside-only",
-  url: "https://crm.test/admin/automation-conversion",
-});
+const dom = new JSDOM(
+  '<nav><a href="?tab=products" data-audience-workspace-tab="products">核心产品配置</a><a href="?tab=packages" data-audience-workspace-tab="packages">人群包管理</a></nav><section id="coreProductPanel"><div id="coreOperationsRoot"></div></section><section id="audiencePackagePanel">原有人群包</section>',
+  {
+    runScripts: "outside-only",
+    url: "https://crm.test/admin/automation-conversion",
+  },
+);
 dom.window.HTMLDialogElement.prototype.showModal = function () {
   this.open = true;
 };
@@ -92,6 +95,21 @@ button("2 编写分配规则").click();
 await settle();
 const editor = document.querySelector("#corePromptEditor");
 editor.value = "尚未保存的规则";
+document.querySelector('[data-audience-workspace-tab="packages"]').click();
+assert.equal(document.querySelector("#coreProductPanel").hidden, true);
+assert.equal(document.querySelector("#audiencePackagePanel").hidden, false);
+assert.equal(
+  new URL(dom.window.location.href).searchParams.get("tab"),
+  "packages",
+);
+document.querySelector('[data-audience-workspace-tab="products"]').click();
+assert.equal(document.querySelector("#audiencePackagePanel").hidden, true);
+assert.equal(editor.value, "尚未保存的规则");
+dom.window.history.replaceState(null, "", "?tab=packages");
+dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+assert.equal(document.querySelector("#coreProductPanel").hidden, true);
+document.querySelector('[data-audience-workspace-tab="products"]').click();
+
 button("1 配置产品").click();
 await settle();
 button("新增产品").click();

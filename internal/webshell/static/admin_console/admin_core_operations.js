@@ -100,6 +100,47 @@
     video: "视频",
   };
   const label = (value) => (value ? labels[value] || "待核实" : "—");
+  // Match the material library's page tabs while retaining unsaved local forms.
+  const workspaceTabs = [
+    ...document.querySelectorAll("[data-audience-workspace-tab]"),
+  ];
+  if (workspaceTabs.length) {
+    const workspacePanels = {
+      products: document.getElementById("coreProductPanel"),
+      packages: document.getElementById("audiencePackagePanel"),
+    };
+    function showWorkspace() {
+      const selected =
+        new URL(location.href).searchParams.get("tab") === "packages"
+          ? "packages"
+          : "products";
+      for (const [key, panel] of Object.entries(workspacePanels))
+        panel.hidden = key !== selected;
+      for (const tab of workspaceTabs) {
+        if (tab.dataset.audienceWorkspaceTab === selected)
+          tab.setAttribute("aria-current", "page");
+        else tab.removeAttribute("aria-current");
+      }
+    }
+    for (const tab of workspaceTabs)
+      tab.addEventListener("click", (event) => {
+        if (
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        event.preventDefault();
+        const url = new URL(location.href);
+        url.searchParams.set("tab", tab.dataset.audienceWorkspaceTab);
+        history.pushState(null, "", url);
+        showWorkspace();
+      });
+    window.addEventListener("popstate", showWorkspace);
+    showWorkspace();
+  }
   const root = document.getElementById("coreOperationsRoot");
   if (root) {
     async function load() {
@@ -268,7 +309,7 @@
               "p",
               p
                 ? "绑定关系已固定，修改描述不会改变原人群包。"
-                : "每个产品绑定一个不同的人群包；没有合适的包，可先到下方人群包列表新建。",
+                : "每个产品绑定一个不同的人群包；没有合适的包，可先切换到“人群包管理”新建。",
               "core-muted",
             ),
             field("启用该产品，允许推荐新客户", enabled),

@@ -259,3 +259,37 @@
 .core-configuration ~ .aud-layout > .aud-card {
   min-width: 0;
 }
+
+/* Same compact page-tab presentation as the material library. */
+.aud-workspace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 20px 0;
+  margin-bottom: 20px;
+  background: #fff;
+  border-bottom: 1px solid #eff0f1;
+}
+.aud-workspace-tabs a {
+  height: 38px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px 6px 0 0;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 400;
+  color: #646a73;
+}
+.aud-workspace-tabs a[aria-current="page"] {
+  font-weight: 600;
+  color: #245bdb;
+  background: #eff4ff;
+}
+.aud-workspace-tabs a:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+}
+.aud-workspace-panel[hidden] {
+  display: none !important;
+}

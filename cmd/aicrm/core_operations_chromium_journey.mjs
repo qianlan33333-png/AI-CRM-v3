@@ -160,12 +160,14 @@ try {
   await waitFor(cdp, 'Boolean(document.querySelector(\'form[action="/login"] input[name="login_csrf_token"]\'))', "login shell did not render");
   await evaluate(cdp, "(() => { document.querySelector('input[name=\"username\"]').value=" + JSON.stringify(username) + "; document.querySelector('input[name=\"password\"]').value=" + JSON.stringify(password) + "; document.querySelector('form[action=\"/login\"]').requestSubmit(); return true; })()");
   await waitFor(cdp, "document.querySelectorAll('#coreOperationsRoot .core-steps button').length===3", "core operations did not load");
+  await click('[data-audience-workspace-tab=packages]');
   await click('#createPackageBtn');
   await waitFor(cdp, "!document.querySelector('#packageModal').hidden", "create package modal missing");
   const templateLabels=await evaluate(cdp,"[...document.querySelector('#packageCreateTemplate').options].map(x=>x.textContent)");
   if(templateLabels.some(x=>/[a-z]+_[a-z]+/.test(x)))throw new Error('internal template keys exposed');
   await capture('audience-create-chinese');
   await click('#cancelPackageBtn');
+  await click('[data-audience-workspace-tab=products]');
   await evaluate(cdp,"[...document.querySelectorAll('#coreOperationsRoot button')].find(x=>x.textContent==='新增产品').click()");
   await waitFor(cdp,"Boolean(document.querySelector('dialog[open] form'))", "product dialog missing");
   await evaluate(cdp, `(() => {
@@ -180,6 +182,11 @@ try {
   await waitFor(cdp,"document.querySelector('#coreOperationsRoot').textContent.includes('当前发布版本 1')", "prompt did not publish");
   for (const width of [1440,390]) {
     await resize(width);
+    await click('[data-audience-workspace-tab=packages]');
+    const exclusivePanel=await evaluate(cdp,"document.querySelector('#coreProductPanel').hidden && !document.querySelector('#audiencePackagePanel').hidden");
+    if(!exclusivePanel)throw new Error('product and package panels must not appear together');
+    await capture('audience-packages-'+width);
+    await click('[data-audience-workspace-tab=products]');
     for (let step=0;step<3;step++) {
       await evaluate(cdp,`document.querySelectorAll('.core-steps button')[${step}].click()`);
       await delay(80);

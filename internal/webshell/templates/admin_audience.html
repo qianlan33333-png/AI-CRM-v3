@@ -1,6 +1,10 @@
 {{define "admin_audience"}}
-<section class="aud-card core-configuration" aria-label="核心产品与智能分配"><header class="core-configuration-head"><h2>核心产品与智能分配</h2><p>先配置产品，再编写规则，最后用客户验证。</p></header><div id="coreOperationsRoot"></div></section>
-<section class="aud-layout" aria-label="AI 自动化运营人群包分组">
+<nav class="aud-workspace-tabs" aria-label="运营配置板块">
+  <a href="?tab=products" data-audience-workspace-tab="products" aria-current="page">核心产品配置</a>
+  <a href="?tab=packages" data-audience-workspace-tab="packages">人群包管理</a>
+</nav>
+<section id="coreProductPanel" class="aud-card core-configuration aud-workspace-panel" aria-label="核心产品与智能分配"><header class="core-configuration-head"><h2>核心产品与智能分配</h2><p>先配置产品，再编写规则，最后用客户验证。</p></header><div id="coreOperationsRoot"></div></section>
+<section id="audiencePackagePanel" class="aud-layout aud-workspace-panel" hidden aria-label="AI 自动化运营人群包分组">
   <aside class="aud-card aud-groups">
     <div class="aud-group-head"><h2>人群包分组</h2><button class="aud-btn soft" id="createGroupBtn" type="button" disabled aria-disabled="true">新增</button></div>
     <p class="aud-group-note" id="groupSummary">共 0 个自定义分组</p>
