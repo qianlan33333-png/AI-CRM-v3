@@ -28,3 +28,11 @@ final result: passed
 - 1440×900与390×900、1倍像素截图和真实Host测试重新完成。产品保存、规则发布、页签互斥及无横向溢出通过；DOM验证切换保留草稿、URL状态及浏览器历史恢复。
 - 最终交付使用上述最新截图；旧截图仅保留为被替换布局的历史证据。
 - final result: passed
+
+## Referral activity detail
+
+- Evidence: `/tmp/referral-dashboard-review/admin-1440.png`, `admin-detail-1440.png`, `admin-teams-1440.png`, `admin-member-drilldown-1440.png`, and `admin-captain-entry-1440.png` from the real composed Host and isolated PostgreSQL fixture.
+- The CRM shell, activity context, lifecycle/date, data-first metrics, compact daily list, teams, members, named member drilldown, and captain-owned QR remain visible without leaving the admin experience.
+- The Host journey verifies 53 trusted-session participations, pagination, team filtering, scoped direct-invite export, reversal, manual reward review, and the QR's same-origin `/referral?campaign=…` payload. The designated captain must still complete trusted login and explicit participation.
+
+final result: passed

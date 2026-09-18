@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"io"
@@ -149,6 +150,14 @@ func (h *Handler) ServeAdminHTTP(w http.ResponseWriter, r *http.Request) {
 		h.setCampaignState(w, r, parts[1], actor)
 	case len(parts) == 3 && parts[0] == "campaigns" && parts[2] == "teams" && r.Method == http.MethodPost:
 		h.createTeam(w, r, parts[1], actor)
+	case len(parts) == 3 && parts[0] == "campaigns" && parts[2] == "participants" && r.Method == http.MethodGet:
+		h.listAdminParticipants(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "campaigns" && parts[2] == "invitations" && r.Method == http.MethodGet:
+		h.listAdminInvitations(w, r, parts[1])
+	case len(parts) == 3 && parts[0] == "campaigns" && parts[2] == "export" && r.Method == http.MethodGet:
+		h.exportAdminCampaign(w, r, parts[1])
+	case len(parts) == 5 && parts[0] == "campaigns" && parts[2] == "participants" && parts[4] == "invitations" && r.Method == http.MethodGet:
+		h.listAdminParticipantInvitations(w, r, parts[1], parts[3])
 	case len(parts) == 3 && parts[0] == "participations" && parts[2] == "reverse" && r.Method == http.MethodPost:
 		h.reverseInvitation(w, r, parts[1], actor)
 	case len(parts) == 3 && parts[0] == "invitations" && parts[2] == "revoke" && r.Method == http.MethodPost:
@@ -504,20 +513,24 @@ func (h *Handler) readAdminCampaign(w http.ResponseWriter, r *http.Request, raw 
 		return
 	}
 	response := campaignView(view)
-	captainIDs := make([]customerdomain.CustomerID, 0, len(view.Teams))
-	for _, team := range view.Teams {
-		captainIDs = append(captainIDs, customerdomain.CustomerID(team.CaptainCustomerID))
+	captainIDs := make([]customerdomain.CustomerID, 0, len(view.TeamSummaries))
+	for _, summary := range view.TeamSummaries {
+		captainIDs = append(captainIDs, customerdomain.CustomerID(summary.Team.CaptainCustomerID))
 	}
 	names, err := h.displayNames(r.Context(), captainIDs)
 	if err != nil {
 		resultError(w, err)
 		return
 	}
-	teams := make([]any, 0, len(view.Teams))
-	for _, team := range view.Teams {
-		teams = append(teams, adminTeam(team, names[customerdomain.CustomerID(team.CaptainCustomerID)]))
+	teams := make([]any, 0, len(view.TeamSummaries))
+	for _, summary := range view.TeamSummaries {
+		team := adminTeam(summary.Team, names[customerdomain.CustomerID(summary.Team.CaptainCustomerID)])
+		team["participant_count"] = summary.ParticipantCount
+		team["direct_invitation_count"] = summary.DirectInvitationCount
+		team["captain_participated"] = summary.CaptainParticipated
+		teams = append(teams, team)
 	}
-	response["teams"] = teams
+	response["team_summaries"] = teams
 	writeJSON(w, http.StatusOK, response)
 }
 func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request, actor int64) {
@@ -650,6 +663,206 @@ func (h *Handler) listAdminReferrals(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{"participation_id": item.Participation.ID, "campaign_name": item.CampaignName, "participant_name": names[customerdomain.CustomerID(item.Participation.CustomerID)], "inviter_name": names[customerdomain.CustomerID(item.Participation.InviterCustomerID)], "joined_at": item.Participation.JoinedAt.UTC(), "score_event_id": item.ScoreEventID, "score_state": item.ScoreState})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
+}
+
+func (h *Handler) listAdminParticipants(w http.ResponseWriter, r *http.Request, rawCampaignID string) {
+	campaignID, ok := id(rawCampaignID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	query, ok := adminParticipantQuery(r, campaignID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	page, err := h.admin.ListAdminParticipants(r.Context(), query)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	names, err := h.displayNames(r.Context(), participantRecordIDs(page.Items))
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	items := make([]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, adminParticipant(item, names))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
+}
+
+func (h *Handler) listAdminInvitations(w http.ResponseWriter, r *http.Request, rawCampaignID string) {
+	campaignID, ok := id(rawCampaignID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	query, ok := adminInvitationQuery(r, campaignID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	page, err := h.admin.ListAdminInvitations(r.Context(), query)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	names, err := h.displayNames(r.Context(), invitationRecordIDs(page.Items))
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	items := make([]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, adminInvitation(item, names))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
+}
+
+func (h *Handler) listAdminParticipantInvitations(w http.ResponseWriter, r *http.Request, rawCampaignID, rawParticipationID string) {
+	campaignID, ok := id(rawCampaignID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	participationID, ok := id(rawParticipationID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	values := r.URL.Query()
+	for key, entries := range values {
+		if (key != "state" && key != "cursor" && key != "limit") || len(entries) != 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+	}
+	state, ok := optionalParticipationState(values.Get("state"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	cursor, limit, ok := cursorLimit(values)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	page, err := h.admin.ListAdminParticipantInvitations(r.Context(), referralport.AdminParticipantInvitationQuery{CampaignID: campaignID, ParticipationID: participationID, State: state, Cursor: cursor, Limit: limit})
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	names, err := h.displayNames(r.Context(), invitationRecordIDs(page.Items))
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	items := make([]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, adminInvitation(item, names))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
+}
+
+func (h *Handler) exportAdminCampaign(w http.ResponseWriter, r *http.Request, rawCampaignID string) {
+	campaignID, ok := id(rawCampaignID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	values := r.URL.Query()
+	if len(values["view"]) != 1 || (values.Get("view") != "participants" && values.Get("view") != "invitations" && values.Get("view") != "teams") || values.Get("cursor") != "" || values.Get("limit") != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	view := values.Get("view")
+	if view == "teams" {
+		if len(values) != 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		campaign, err := h.admin.ReadAdminCampaign(r.Context(), campaignID)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		captainIDs := make([]customerdomain.CustomerID, 0, len(campaign.TeamSummaries))
+		for _, summary := range campaign.TeamSummaries {
+			captainIDs = append(captainIDs, customerdomain.CustomerID(summary.Team.CaptainCustomerID))
+		}
+		names, err := h.displayNames(r.Context(), captainIDs)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeTeamCSV(w, campaign.TeamSummaries, names)
+		return
+	}
+	if view == "participants" {
+		query, valid := adminParticipantQuery(r, campaignID)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		items, err := h.admin.ListAdminParticipantsForExport(r.Context(), query)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		names, err := h.displayNames(r.Context(), participantRecordIDs(items))
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeParticipantCSV(w, items, names)
+		return
+	}
+	if rawParticipationID := values.Get("participation_id"); rawParticipationID != "" {
+		if view != "invitations" || values.Get("team_id") != "" || values.Get("inviter_customer_id") != "" {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		participationID, valid := id(rawParticipationID)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		state, valid := optionalParticipationState(values.Get("state"))
+		if !valid {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		items, err := h.admin.ListAdminParticipantInvitationsForExport(r.Context(), referralport.AdminParticipantInvitationQuery{CampaignID: campaignID, ParticipationID: participationID, State: state})
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		names, err := h.displayNames(r.Context(), invitationRecordIDs(items))
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeInvitationCSV(w, items, names)
+		return
+	}
+	query, valid := adminInvitationQuery(r, campaignID)
+	if !valid {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	items, err := h.admin.ListAdminInvitationsForExport(r.Context(), query)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	names, err := h.displayNames(r.Context(), invitationRecordIDs(items))
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	writeInvitationCSV(w, items, names)
 }
 func (h *Handler) listHistory(w http.ResponseWriter, r *http.Request) {
 	customerID, cursor, limit, ok := historyPageQuery(r)
@@ -847,12 +1060,15 @@ func campaignView(value referralport.CampaignView) map[string]any {
 }
 
 func myCampaign(value referralport.MyCampaign) map[string]any {
-	response := map[string]any{"campaign": campaignSummary(value.Campaign), "direct_invitation_count": value.DirectInvitationCount, "personal_total_score": value.PersonalTotalScore, "team_total_score": value.TeamTotalScore, "personal_rank": value.PersonalRank, "team_rank": value.TeamRank, "invitation_available": value.InvitationAvailable}
+	response := map[string]any{"campaign": campaignSummary(value.Campaign), "direct_invitation_count": value.DirectInvitationCount, "personal_total_score": value.PersonalTotalScore, "team_total_score": value.TeamTotalScore, "personal_rank": value.PersonalRank, "team_rank": value.TeamRank, "invitation_available": value.InvitationAvailable, "is_captain": value.IsCaptain}
 	if value.Participation != nil {
 		response["participation"] = map[string]any{"joined_at": value.Participation.JoinedAt.UTC(), "state": value.Participation.State}
 	}
 	if value.Team != nil {
 		response["team"] = publicTeam(*value.Team)
+	}
+	if value.CaptainTeam != nil {
+		response["captain_team"] = publicTeam(*value.CaptainTeam)
 	}
 	return response
 }
@@ -897,7 +1113,25 @@ func (h *Handler) displayNames(ctx context.Context, ids []customerdomain.Custome
 	if len(filtered) == 0 {
 		return map[customerdomain.CustomerID]string{}, nil
 	}
-	return h.names.DisplayNames(ctx, filtered)
+	result := make(map[customerdomain.CustomerID]string, len(filtered))
+	// Directory projections may impose a conservative parameter limit. Batching
+	// keeps a full CSV export within that Port contract without changing the
+	// query snapshot already fixed by Referral's export read.
+	const displayNameBatchSize = 100
+	for start := 0; start < len(filtered); start += displayNameBatchSize {
+		end := start + displayNameBatchSize
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		names, err := h.names.DisplayNames(ctx, filtered[start:end])
+		if err != nil {
+			return nil, err
+		}
+		for customerID, name := range names {
+			result[customerID] = name
+		}
+	}
+	return result, nil
 }
 
 func participantIDs(items []referralport.InviteItem) []customerdomain.CustomerID {
@@ -925,6 +1159,126 @@ func adminReferralIDs(items []referralport.AdminReferralRecord) []customerdomain
 		ids = append(ids, customerdomain.CustomerID(item.Participation.CustomerID), customerdomain.CustomerID(item.Participation.InviterCustomerID))
 	}
 	return ids
+}
+
+func participantRecordIDs(items []referralport.AdminParticipantRecord) []customerdomain.CustomerID {
+	ids := make([]customerdomain.CustomerID, 0, len(items)*2)
+	for _, item := range items {
+		ids = append(ids, customerdomain.CustomerID(item.Participation.CustomerID), customerdomain.CustomerID(item.InviterCustomerID))
+	}
+	return ids
+}
+
+func invitationRecordIDs(items []referralport.AdminInvitationRecord) []customerdomain.CustomerID {
+	ids := make([]customerdomain.CustomerID, 0, len(items)*2)
+	for _, item := range items {
+		ids = append(ids, customerdomain.CustomerID(item.Participation.CustomerID), customerdomain.CustomerID(item.InviterCustomerID))
+	}
+	return ids
+}
+
+func adminParticipant(item referralport.AdminParticipantRecord, names map[customerdomain.CustomerID]string) map[string]any {
+	return map[string]any{
+		"participation_id":        item.Participation.ID,
+		"participant_name":        names[customerdomain.CustomerID(item.Participation.CustomerID)],
+		"inviter_name":            names[customerdomain.CustomerID(item.InviterCustomerID)],
+		"team_name":               item.Team.Name,
+		"team_logo_url":           item.Team.LogoURL,
+		"joined_at":               item.Participation.JoinedAt.UTC(),
+		"state":                   item.Participation.State,
+		"role":                    participantRole(item.Participation.CustomerID, item.Team.CaptainCustomerID),
+		"direct_invitation_count": item.DirectInvitationCount,
+	}
+}
+
+func participantRole(customerID, captainCustomerID int64) string {
+	if customerID > 0 && customerID == captainCustomerID {
+		return "captain"
+	}
+	return "member"
+}
+
+func adminInvitation(item referralport.AdminInvitationRecord, names map[customerdomain.CustomerID]string) map[string]any {
+	return map[string]any{
+		"participation_id":      item.Participation.ID,
+		"participant_name":      names[customerdomain.CustomerID(item.Participation.CustomerID)],
+		"inviter_name":          names[customerdomain.CustomerID(item.InviterCustomerID)],
+		"inviter_team_name":     item.InviterTeam.Name,
+		"participant_team_name": item.ParticipantTeam.Name,
+		"joined_at":             item.Participation.JoinedAt.UTC(),
+		"score_state":           item.ScoreState,
+	}
+}
+
+func csvSafe(value string) string {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if strings.HasPrefix(value, "\t") || strings.HasPrefix(value, "\r") || strings.HasPrefix(value, "\n") || (trimmed != "" && strings.ContainsRune("=+-@", rune(trimmed[0]))) {
+		return "'" + value
+	}
+	return value
+}
+
+func csvHeaders(w http.ResponseWriter, filename string) *csv.Writer {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Excel and WPS both use the signature to reliably open Chinese headers as
+	// UTF-8 rather than the machine's legacy code page.
+	_, _ = w.Write([]byte{0xef, 0xbb, 0xbf})
+	return csv.NewWriter(w)
+}
+
+func writeTeamCSV(w http.ResponseWriter, items []referralport.AdminTeamSummary, names map[customerdomain.CustomerID]string) {
+	writer := csvHeaders(w, "referral-teams.csv")
+	_ = writer.Write([]string{"战队", "队长", "已确认队员数", "有效直接邀请数", "队长参加状态", "创建时间（北京时间）"})
+	for _, item := range items {
+		captainState := "待加入"
+		if item.CaptainParticipated {
+			captainState = "已参加"
+		}
+		_ = writer.Write([]string{csvSafe(item.Team.Name), csvSafe(names[customerdomain.CustomerID(item.Team.CaptainCustomerID)]), strconv.FormatInt(item.ParticipantCount, 10), strconv.FormatInt(item.DirectInvitationCount, 10), captainState, item.Team.CreatedAt.In(shanghai).Format("2006-01-02 15:04:05")})
+	}
+	writer.Flush()
+}
+
+func writeParticipantCSV(w http.ResponseWriter, items []referralport.AdminParticipantRecord, names map[customerdomain.CustomerID]string) {
+	writer := csvHeaders(w, "referral-participants.csv")
+	_ = writer.Write([]string{"参与人", "所属战队", "角色", "邀请人", "参加时间（北京时间）", "参与状态", "本人有效直接邀请数"})
+	for _, item := range items {
+		role := "队员"
+		if participantRole(item.Participation.CustomerID, item.Team.CaptainCustomerID) == "captain" {
+			role = "队长"
+		}
+		_ = writer.Write([]string{csvSafe(names[customerdomain.CustomerID(item.Participation.CustomerID)]), csvSafe(item.Team.Name), role, csvSafe(names[customerdomain.CustomerID(item.InviterCustomerID)]), item.Participation.JoinedAt.In(shanghai).Format("2006-01-02 15:04:05"), participationStateLabel(item.Participation.State), strconv.FormatInt(item.DirectInvitationCount, 10)})
+	}
+	writer.Flush()
+}
+
+func writeInvitationCSV(w http.ResponseWriter, items []referralport.AdminInvitationRecord, names map[customerdomain.CustomerID]string) {
+	writer := csvHeaders(w, "referral-invitations.csv")
+	_ = writer.Write([]string{"邀请人", "邀请人战队", "参加人", "参加人战队", "参加时间（北京时间）", "计分状态"})
+	for _, item := range items {
+		_ = writer.Write([]string{csvSafe(names[customerdomain.CustomerID(item.InviterCustomerID)]), csvSafe(item.InviterTeam.Name), csvSafe(names[customerdomain.CustomerID(item.Participation.CustomerID)]), csvSafe(item.ParticipantTeam.Name), item.Participation.JoinedAt.In(shanghai).Format("2006-01-02 15:04:05"), scoreStateLabel(item.ScoreState)})
+	}
+	writer.Flush()
+}
+
+func participationStateLabel(value referraldomain.ParticipationState) string {
+	if value == referraldomain.ParticipationReversed {
+		return "已撤销"
+	}
+	return "有效"
+}
+
+func scoreStateLabel(value string) string {
+	if value == "reversed" {
+		return "已撤销"
+	}
+	if value == "none" {
+		return "无计分"
+	}
+	return "有效"
 }
 
 var shanghai, _ = time.LoadLocation("Asia/Shanghai")
@@ -1002,6 +1356,69 @@ func adminPageQuery(r *http.Request) (int64, string, int32, bool) {
 	}
 	campaignID, valid := id(raw)
 	return campaignID, cursor, limit, valid
+}
+
+func adminParticipantQuery(r *http.Request, campaignID int64) (referralport.AdminParticipantQuery, bool) {
+	values := r.URL.Query()
+	for key, entries := range values {
+		if (key != "team_id" && key != "state" && key != "cursor" && key != "limit" && key != "view") || len(entries) != 1 {
+			return referralport.AdminParticipantQuery{}, false
+		}
+	}
+	teamID, ok := optionalID(values.Get("team_id"))
+	if !ok {
+		return referralport.AdminParticipantQuery{}, false
+	}
+	state, ok := optionalParticipationState(values.Get("state"))
+	if !ok {
+		return referralport.AdminParticipantQuery{}, false
+	}
+	cursor, limit, ok := cursorLimit(values)
+	if !ok {
+		return referralport.AdminParticipantQuery{}, false
+	}
+	return referralport.AdminParticipantQuery{CampaignID: campaignID, TeamID: teamID, State: state, Cursor: cursor, Limit: limit}, true
+}
+
+func adminInvitationQuery(r *http.Request, campaignID int64) (referralport.AdminInvitationQuery, bool) {
+	values := r.URL.Query()
+	for key, entries := range values {
+		if (key != "team_id" && key != "inviter_customer_id" && key != "state" && key != "cursor" && key != "limit" && key != "view") || len(entries) != 1 {
+			return referralport.AdminInvitationQuery{}, false
+		}
+	}
+	teamID, ok := optionalID(values.Get("team_id"))
+	if !ok {
+		return referralport.AdminInvitationQuery{}, false
+	}
+	inviterCustomerID, ok := optionalID(values.Get("inviter_customer_id"))
+	if !ok {
+		return referralport.AdminInvitationQuery{}, false
+	}
+	state, ok := optionalParticipationState(values.Get("state"))
+	if !ok {
+		return referralport.AdminInvitationQuery{}, false
+	}
+	cursor, limit, ok := cursorLimit(values)
+	if !ok {
+		return referralport.AdminInvitationQuery{}, false
+	}
+	return referralport.AdminInvitationQuery{CampaignID: campaignID, TeamID: teamID, InviterCustomerID: inviterCustomerID, State: state, Cursor: cursor, Limit: limit}, true
+}
+
+func optionalID(raw string) (int64, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	return id(raw)
+}
+
+func optionalParticipationState(raw string) (referraldomain.ParticipationState, bool) {
+	if raw == "" {
+		return "", true
+	}
+	state := referraldomain.ParticipationState(raw)
+	return state, state.Valid()
 }
 func historyPageQuery(r *http.Request) (int64, string, int32, bool) {
 	values := r.URL.Query()
@@ -1186,6 +1603,16 @@ func resultError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "invitation_invalid")
 	case errors.Is(err, referralport.ErrCampaignUnavailable):
 		writeError(w, http.StatusConflict, "campaign_unavailable")
+	case errors.Is(err, referralport.ErrCampaignTeamLocked):
+		writeError(w, http.StatusConflict, "campaign_team_locked")
+	case errors.Is(err, referralport.ErrCaptainIneligible):
+		writeError(w, http.StatusConflict, "captain_ineligible")
+	case errors.Is(err, referralport.ErrTeamNameExists):
+		writeError(w, http.StatusConflict, "team_name_exists")
+	case errors.Is(err, referralport.ErrCaptainAlreadyAssigned):
+		writeError(w, http.StatusConflict, "captain_already_assigned")
+	case errors.Is(err, referralport.ErrIdempotencyConflict):
+		writeError(w, http.StatusConflict, "idempotency_conflict")
 	case errors.Is(err, referralport.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict")
 	default:

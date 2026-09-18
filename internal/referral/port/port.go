@@ -19,6 +19,13 @@ var (
 	ErrUnauthorized        = errors.New("referral unauthorized")
 	ErrInvitationInvalid   = errors.New("referral invitation invalid")
 	ErrCampaignUnavailable = errors.New("referral campaign unavailable")
+	// CreateTeam reports safe, actionable conflicts without exposing storage
+	// constraint names or canonical-customer facts to delivery adapters.
+	ErrCampaignTeamLocked     = errors.New("referral campaign team configuration is locked")
+	ErrCaptainIneligible      = errors.New("referral captain is ineligible")
+	ErrTeamNameExists         = errors.New("referral team name already exists")
+	ErrCaptainAlreadyAssigned = errors.New("referral captain is already assigned")
+	ErrIdempotencyConflict    = errors.New("referral idempotency key conflicts with a different command")
 )
 
 // TrustedSessionActor is an alias, not a second session or identity model.
@@ -59,8 +66,21 @@ type CampaignSummary struct {
 
 type CampaignView struct {
 	CampaignSummary
-	Teams        []domain.Team
-	DailyMetrics []CampaignDailyMetric
+	// Teams remains the public team list. TeamSummaries is populated only by
+	// admin reads and contains activity aggregates for the operations dashboard.
+	Teams         []domain.Team
+	TeamSummaries []AdminTeamSummary
+	DailyMetrics  []CampaignDailyMetric
+}
+
+type AdminTeamSummary struct {
+	Team                  domain.Team
+	ParticipantCount      int64
+	DirectInvitationCount int64
+	// CaptainParticipated is false until the designated captain explicitly
+	// confirms activity participation. A captain assignment alone is not a
+	// participant and never contributes to team totals.
+	CaptainParticipated bool
 }
 
 // CampaignDailyMetric is a server-time (Asia/Shanghai) activity projection.
@@ -93,6 +113,11 @@ type MyCampaign struct {
 	PersonalRank          int64
 	TeamRank              int64
 	InvitationAvailable   bool
+	// CaptainTeam is derived from the activity configuration and is present
+	// even before the captain participates. It lets the member UI direct that
+	// customer to join their designated team before issuing invitations.
+	CaptainTeam *domain.Team
+	IsCaptain   bool
 }
 
 type InviteItem struct {
@@ -237,6 +262,74 @@ type AdminReferralPage struct {
 	NextCursor string
 }
 
+// AdminParticipantQuery filters confirmed activity participations. An empty
+// State means all states; otherwise only "active" and "reversed" are valid.
+// TeamID applies to the participant's immutable activity team. Cursor is an
+// opaque joined-at/id keyset continuation; legacy numeric OFFSET cursors are
+// rejected so a live activity cannot mix pagination semantics.
+type AdminParticipantQuery struct {
+	CampaignID int64
+	TeamID     int64
+	State      domain.ParticipationState
+	Cursor     string
+	Limit      int32
+}
+
+type AdminParticipantRecord struct {
+	Participation         domain.Participation
+	Team                  domain.Team
+	InviterCustomerID     int64
+	DirectInvitationCount int64
+}
+
+type AdminParticipantPage struct {
+	Items      []AdminParticipantRecord
+	NextCursor string
+}
+
+// AdminInvitationQuery filters invited activity participations. State is the
+// score truth: active selects an unreversed credit and reversed selects a
+// reversed credit. TeamID applies to the invitee's immutable activity team.
+// Cursor follows the same opaque joined-at/id keyset contract as participants.
+type AdminInvitationQuery struct {
+	CampaignID        int64
+	TeamID            int64
+	InviterCustomerID int64
+	State             domain.ParticipationState
+	Cursor            string
+	Limit             int32
+}
+
+type AdminInvitationRecord struct {
+	Participation     domain.Participation
+	InviterCustomerID int64
+	InviterTeamID     int64
+	InviterTeam       domain.Team
+	ParticipantTeam   domain.Team
+	// ScoreState is one of "valid", "reversed", or "none" for a legacy or
+	// inconsistent read row. Invited v1 participations normally have valid or
+	// reversed credit facts.
+	ScoreState string
+}
+
+type AdminInvitationPage struct {
+	Items      []AdminInvitationRecord
+	NextCursor string
+}
+
+// AdminParticipantInvitationQuery scopes an operations drilldown to one
+// immutable participation record. The service resolves that record's customer
+// server-side before applying the invitation query, so an admin page does not
+// need to pass a raw inviter customer ID from the browser. Cursor follows the
+// same opaque joined-at/id keyset contract as participants.
+type AdminParticipantInvitationQuery struct {
+	CampaignID      int64
+	ParticipationID int64
+	State           domain.ParticipationState
+	Cursor          string
+	Limit           int32
+}
+
 type RelationshipHistoryPage struct {
 	Items      []domain.RelationshipHistory
 	NextCursor string
@@ -258,6 +351,14 @@ type AdminApplication interface {
 	ReadAdminCampaign(context.Context, int64) (CampaignView, error)
 	ListAdminCampaigns(context.Context, string, int32) (AdminCampaignPage, error)
 	ListAdminReferrals(context.Context, int64, string, int32) (AdminReferralPage, error)
+	ListAdminParticipants(context.Context, AdminParticipantQuery) (AdminParticipantPage, error)
+	ListAdminInvitations(context.Context, AdminInvitationQuery) (AdminInvitationPage, error)
+	ListAdminParticipantInvitations(context.Context, AdminParticipantInvitationQuery) (AdminInvitationPage, error)
+	// Export reads every matching record with a single SQL statement. It does
+	// not accept cursor pagination and never silently truncates results.
+	ListAdminParticipantsForExport(context.Context, AdminParticipantQuery) ([]AdminParticipantRecord, error)
+	ListAdminInvitationsForExport(context.Context, AdminInvitationQuery) ([]AdminInvitationRecord, error)
+	ListAdminParticipantInvitationsForExport(context.Context, AdminParticipantInvitationQuery) ([]AdminInvitationRecord, error)
 	ListRelationshipHistory(context.Context, int64, string, int32) (RelationshipHistoryPage, error)
 	ListRewards(context.Context, int64, string, int32) (RewardPage, error)
 }

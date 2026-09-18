@@ -182,6 +182,14 @@ func mapError(err error) error {
 	}
 	var databaseError *pgconn.PgError
 	if errors.As(err, &databaseError) {
+		if databaseError.Code == "23505" {
+			switch databaseError.ConstraintName {
+			case "referral_teams_campaign_id_name_key":
+				return referralport.ErrTeamNameExists
+			case "referral_teams_campaign_id_captain_customer_id_key":
+				return referralport.ErrCaptainAlreadyAssigned
+			}
+		}
 		switch databaseError.Code {
 		case "23505", "23514", "40001", "40P01":
 			return referralport.ErrConflict
