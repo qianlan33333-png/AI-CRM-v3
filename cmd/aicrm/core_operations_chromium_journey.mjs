@@ -159,23 +159,40 @@ try {
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=%2Fadmin%2Fautomation-conversion" });
   await waitFor(cdp, 'Boolean(document.querySelector(\'form[action="/login"] input[name="login_csrf_token"]\'))', "login shell did not render");
   await evaluate(cdp, "(() => { document.querySelector('input[name=\"username\"]').value=" + JSON.stringify(username) + "; document.querySelector('input[name=\"password\"]').value=" + JSON.stringify(password) + "; document.querySelector('form[action=\"/login\"]').requestSubmit(); return true; })()");
-  await waitFor(cdp, "document.querySelectorAll('#coreOperationsRoot form').length===5", "core operations did not load");
-  await evaluate(cdp,"document.querySelector('#coreOperationsRoot').closest('details').open=true");
+  await waitFor(cdp, "document.querySelectorAll('#coreOperationsRoot .core-steps button').length===3", "core operations did not load");
+  await click('#createPackageBtn');
+  await waitFor(cdp, "!document.querySelector('#packageModal').hidden", "create package modal missing");
+  const templateLabels=await evaluate(cdp,"[...document.querySelector('#packageCreateTemplate').options].map(x=>x.textContent)");
+  if(templateLabels.some(x=>/[a-z]+_[a-z]+/.test(x)))throw new Error('internal template keys exposed');
+  await capture('audience-create-chinese');
+  await click('#cancelPackageBtn');
+  await evaluate(cdp,"[...document.querySelectorAll('#coreOperationsRoot button')].find(x=>x.textContent==='新增产品').click()");
+  await waitFor(cdp,"Boolean(document.querySelector('dialog[open] form'))", "product dialog missing");
   await evaluate(cdp, `(() => {
-    const form=document.querySelector('#coreOperationsRoot form');const fields=form.querySelectorAll('input,textarea');
-    fields[0].value='测试核心产品';fields[1].value='适合创业初期客户';fields[2].value='结合问卷推荐';
+    const form=document.querySelector('dialog[open] form');const fields=form.querySelectorAll('input,textarea');
+    fields[0].value='测试核心产品';fields[1].value='适合创业初期客户';
     form.querySelector('select').value=${JSON.stringify(packageID)};
-    form.querySelector('button').click();
+    [...document.querySelectorAll('dialog button')].find(x=>x.textContent==='保存产品').click();
   })()`);
-  await waitFor(cdp,"document.querySelector('#coreOperationsRoot form select')?.disabled===true", "core product was not saved/read back");
-  await evaluate(cdp,`(() => {const areas=document.querySelectorAll('#coreOperationsRoot textarea');areas[areas.length-1].value='只能从启用产品中选择一个，信息不足暂不分配';[...document.querySelectorAll('#coreOperationsRoot button')].find(x=>x.textContent==='发布提示词').click()})()`);
+  await waitFor(cdp,"!document.querySelector('dialog[open]') && document.querySelector('.core-product-table')?.textContent.includes('测试核心产品')", "core product was not saved/read back");
+  await evaluate(cdp,"[...document.querySelectorAll('.core-steps button')][1].click()");
+  await evaluate(cdp,`(() => {document.querySelector('#corePromptEditor').value='只能从启用产品中选择一个，信息不足暂不分配';document.querySelector('#corePromptEditor').dispatchEvent(new Event('input'));[...document.querySelectorAll('#coreOperationsRoot button')].find(x=>x.textContent==='发布规则').click()})()`);
   await waitFor(cdp,"document.querySelector('#coreOperationsRoot').textContent.includes('当前发布版本 1')", "prompt did not publish");
   for (const width of [1440,390]) {
     await resize(width);
-    await evaluate(cdp,"document.querySelector('#coreOperationsRoot').closest('details').open=true");
-    const layout=await evaluate(cdp,"(() => {const n=document.querySelector('#coreOperationsRoot input');const s=getComputedStyle(n);return {height:n.getBoundingClientRect().height,border:s.borderTopStyle}})()");
+    for (let step=0;step<3;step++) {
+      await evaluate(cdp,`document.querySelectorAll('.core-steps button')[${step}].click()`);
+      await delay(80);
+      const overflow=await evaluate(cdp,"document.documentElement.scrollWidth>innerWidth+2");
+      await capture('core-step-'+(step+1)+'-'+width);
+      if(overflow)throw new Error('core page overflows at '+width+' '+JSON.stringify(await evaluate(cdp,"[...document.querySelectorAll('body *')].filter(n=>n.getBoundingClientRect().right>innerWidth+2).slice(0,18).map(n=>({tag:n.tagName,cls:n.className,width:n.getBoundingClientRect().width,right:n.getBoundingClientRect().right}))")));
+    }
+    await evaluate(cdp,"document.querySelectorAll('.core-steps button')[0].click();document.querySelector('.core-product-table button').click()");
+    await waitFor(cdp,"Boolean(document.querySelector('dialog[open] select:disabled'))", "saved binding must not be editable");
+    const layout=await evaluate(cdp,"(() => {const n=document.querySelector('dialog input');const s=getComputedStyle(n);return {height:n.getBoundingClientRect().height,border:s.borderTopStyle}})()");
     if(layout.height<30 || layout.border==='none')throw new Error('core form style missing');
-    await capture('core-operations-'+width);
+    await capture('core-product-edit-'+width);
+    await evaluate(cdp,"[...document.querySelectorAll('dialog button')].find(x=>x.textContent==='取消').click()");
   }
   await cdp.call("Page.navigate",{url:baseURL+'/admin/automation-conversion/packages/'+packageID});
   await waitFor(cdp,"document.querySelector('#templateVersionBadge')?.textContent==='AI 推荐'", "bound package did not show AI ownership");

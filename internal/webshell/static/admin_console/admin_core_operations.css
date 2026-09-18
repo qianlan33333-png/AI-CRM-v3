@@ -50,3 +50,212 @@
   padding: 8px 14px;
   cursor: pointer;
 }
+/* Flat, compact workspace panels follow the selected CRM template. */
+.core-configuration {
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+.core-configuration-head {
+  padding: 22px 24px 14px;
+}
+.core-configuration-head h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+.core-configuration-head p,
+#coreOperationsRoot .core-muted,
+.core-operations-dialog .core-muted {
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 6px 0;
+}
+#coreOperationsRoot .core-steps {
+  display: flex;
+  border-block: 1px solid #eaecf0;
+  padding: 0 24px;
+  gap: 28px;
+}
+#coreOperationsRoot .core-steps button {
+  flex: 1;
+  margin: 0;
+  padding: 18px 8px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #667085;
+  font-size: 14px;
+}
+#coreOperationsRoot .core-steps button.active {
+  border-bottom-color: #1677ff;
+  color: #1677ff;
+  font-weight: 600;
+}
+#coreOperationsRoot .core-panel {
+  padding: 20px 24px 24px;
+}
+#coreOperationsRoot [hidden] {
+  display: none !important;
+}
+#coreOperationsRoot h3 {
+  font-size: 17px;
+  margin: 0 0 12px;
+}
+#coreOperationsRoot .core-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+#coreOperationsRoot .core-heading h3 {
+  margin: 0;
+}
+#coreOperationsRoot .core-heading > button {
+  margin-left: auto;
+}
+#coreOperationsRoot .aud-table {
+  width: 100%;
+}
+#coreOperationsRoot .aud-table th {
+  background: #f7f8fa;
+  color: #475467;
+}
+#coreOperationsRoot .aud-table td {
+  vertical-align: middle;
+}
+#coreOperationsRoot .core-description {
+  max-width: 330px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+#coreOperationsRoot .core-help {
+  padding: 12px 16px;
+  margin: 16px 0;
+  background: #f0f6ff;
+  color: #365782;
+  font-size: 13px;
+  line-height: 1.8;
+  border-radius: 4px;
+}
+#coreOperationsRoot .core-footer,
+.core-operations-dialog .core-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #eaecf0;
+}
+#coreOperationsRoot .core-notice {
+  margin: 0;
+  padding: 12px 24px;
+  background: #fffbe6;
+  color: #694b13;
+  font-size: 13px;
+  line-height: 1.6;
+}
+#coreOperationsRoot .core-notice:empty {
+  display: none;
+}
+#coreOperationsRoot .ai-input,
+#coreOperationsRoot .ai-select,
+.core-operations-dialog .ai-input,
+.core-operations-dialog .ai-select {
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.core-operations-dialog .ai-select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d0d5dd;
+  font: inherit;
+  background: white;
+  color: #1d2939;
+}
+.core-operations-dialog input[type="checkbox"] {
+  width: auto;
+  justify-self: start;
+}
+.core-operations-dialog .primary,
+#coreOperationsRoot .aud-btn.primary {
+  background: #1677ff;
+  border-color: #1677ff;
+  color: #fff;
+}
+.core-operations-dialog .core-extra {
+  border-top: 1px solid #eaecf0;
+  margin-top: 16px;
+  padding-top: 12px;
+}
+.core-operations-dialog .core-extra summary {
+  cursor: pointer;
+  color: #475467;
+  font-size: 13px;
+}
+#coreOperationsRoot button:disabled,
+.core-operations-dialog button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+#coreOperationsRoot .core-results {
+  margin-top: 24px;
+}
+#coreOperationsRoot .core-result-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
+  border-top: 1px solid #eaecf0;
+  font-size: 13px;
+}
+#coreOperationsRoot .core-result-row p {
+  line-height: 1.7;
+  color: #475467;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+#coreOperationsRoot .core-result-row > button {
+  flex-shrink: 0;
+}
+#coreOperationsRoot input:focus-visible,
+#coreOperationsRoot textarea:focus-visible,
+#coreOperationsRoot button:focus-visible,
+.core-operations-dialog :focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+@media (max-width: 640px) {
+  .core-configuration-head,
+  #coreOperationsRoot .core-panel {
+    padding: 16px;
+  }
+  #coreOperationsRoot .core-steps {
+    padding: 0 8px;
+    gap: 0;
+  }
+  #coreOperationsRoot .core-steps button {
+    font-size: 12px;
+    padding: 14px 4px;
+  }
+  #coreOperationsRoot .core-heading {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  #coreOperationsRoot .core-heading .core-muted {
+    width: 100%;
+    order: 3;
+  }
+  #coreOperationsRoot .core-product-table {
+    min-width: 620px;
+  }
+  #coreOperationsRoot .core-result-row {
+    flex-direction: column;
+  }
+}
+/* Keep the existing audience list's min-content table inside its scroll area. */
+.core-configuration ~ .aud-layout > .aud-card {
+  min-width: 0;
+}
