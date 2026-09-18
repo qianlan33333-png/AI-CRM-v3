@@ -293,3 +293,6 @@
 .aud-workspace-panel[hidden] {
   display: none !important;
 }
+.admin-search-select { display: grid; gap: 10px; min-width: 0; }
+.admin-search-select .aud-actions { flex-wrap: wrap; justify-content: flex-start; }
+[data-rule-config][hidden] { display: none !important; }

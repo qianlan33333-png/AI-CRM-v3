@@ -36,3 +36,9 @@ final result: passed
 - The Host journey verifies 53 trusted-session participations, pagination, team filtering, scoped direct-invite export, reversal, manual reward review, and the QR's same-origin `/referral?campaign=…` payload. The designated captain must still complete trusted login and explicit participation.
 
 final result: passed
+## 2026-09-18 人群优先与空包迭代
+- Target: user supplied bf2de3aa screenshot + approved existing CRM tabs/dialogs; requested changes override old manual product-reference input.
+- Compared original and real PostgreSQL Host screenshots in the same inspection: `/tmp/empty-ai-shots/core-product-edit-1440.png`, `core-product-sales-1440.png`, `core-product-sales-390.png`, `audience-create-empty.png`.
+- Native dialog scroll intentionally retains full form; scrolled selector/footer checked at 1440 and 390. No page overflow. Product selector label, selected product, search, clear and save remain accessible.
+- Empty creation and direct list edit exercised against persisted API; reference read back as `core-ui-sales`. Previous algorithm rule remains independent.
+- final result: pass. Production acceptance pending release.

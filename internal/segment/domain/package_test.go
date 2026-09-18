@@ -20,17 +20,17 @@ func TestPackageLifecycleCopyAndCAS(t *testing.T) {
 	if err = p.Transition(Active, 1, 7, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err = p.UpdateDetails("forbidden", nil, 2, 7, now.Add(2*time.Minute)); !errors.Is(err, ErrActiveEdit) {
-		t.Fatalf("expected active edit rejection, got %v", err)
+	if err = p.UpdateDetails("renamed active package", nil, 2, 7, now.Add(2*time.Minute)); err != nil || p.Lifecycle != Active || p.Version != 3 {
+		t.Fatalf("expected metadata edit without lifecycle change, got %v", err)
 	}
 	copy, err := p.Copy("new-customers-copy", "新客人群副本", 8, now.Add(3*time.Minute))
 	if err != nil || copy.ID != 0 || copy.Version != 1 || copy.Lifecycle != Paused || copy.CurrentConfigurationVersionID != nil {
 		t.Fatalf("copy=%+v err=%v", copy, err)
 	}
-	if err = p.Transition(Archived, 2, 7, now.Add(4*time.Minute)); err != nil || p.ArchivedAt == nil {
+	if err = p.Transition(Archived, 3, 7, now.Add(4*time.Minute)); err != nil || p.ArchivedAt == nil {
 		t.Fatalf("archive=%+v err=%v", p, err)
 	}
-	if err = p.Transition(Paused, 3, 7, now.Add(5*time.Minute)); !errors.Is(err, ErrArchived) {
+	if err = p.Transition(Paused, 4, 7, now.Add(5*time.Minute)); !errors.Is(err, ErrArchived) {
 		t.Fatalf("expected archived terminal state, got %v", err)
 	}
 }

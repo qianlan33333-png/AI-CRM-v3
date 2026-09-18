@@ -111,9 +111,9 @@
     };
     function showWorkspace() {
       const selected =
-        new URL(location.href).searchParams.get("tab") === "packages"
-          ? "packages"
-          : "products";
+        new URL(location.href).searchParams.get("tab") === "products"
+          ? "products"
+          : "packages";
       for (const [key, panel] of Object.entries(workspacePanels))
         panel.hidden = key !== selected;
       for (const tab of workspaceTabs) {
@@ -250,7 +250,8 @@
             body.append(row);
           }
         }
-        function editProduct(p) {
+        async function editProduct(p) {
+          try { packages.items = (await allPackages()).items; } catch (e) { notice.textContent = http.errorState(e).message; return; }
           const id =
             p?.id ||
             [1, 2, 3, 4, 5].find((id) => !products.some((x) => x.id === id));
@@ -274,7 +275,13 @@
           const name = input(p?.name),
             description = input(p?.description, true),
             context = input(p?.ai_context, true),
-            reference = input(p?.product_reference);
+            reference = window.AICRMSearchSelect({
+              value: p?.product_reference || "", label: "关联销售商品",
+              loadPage: async (q, offset) => {
+                const page = await read(`core/product-options?q=${encodeURIComponent(q)}&limit=50&offset=${offset}`);
+                return { total: page.total, items: page.items.map(item => ({ value: item.code, label: `${item.name} · ${item.code}${item.product_type === "service_period" ? " · 周期商品" : ""}` })) };
+              },
+            });
           name.maxLength = 200;
           description.placeholder =
             "介绍产品适合谁、解决什么问题、提供什么服务，帮助智能推荐做判断。";
@@ -299,7 +306,7 @@
           extra.append(
             el("summary", "更多信息（可选）"),
             field("补充判断信息", context),
-            field("关联销售商品编号", reference),
+            field("关联销售商品", reference.element),
           );
           form.append(
             field("产品名称", name),
@@ -328,6 +335,9 @@
                   "请填写产品名称、产品描述并选择人群包。";
                 return;
               }
+              if (!p && packages.items.find(item => item.id === Number(pkg.value))?.membership_mode === "rule") {
+                if (!window.AICRMConfirmation || !await window.AICRMConfirmation.confirm({ title: "切换为 AI 推荐入包", description: "绑定后将停止原算法筛选，当前成员视图改由 AI 推荐结果维护，可能暂时为空；原快照、推送和历史记录保留。", confirmLabel: "确认绑定", tone: "danger" })) return;
+              }
               const saved = await write("core/products", {
                 product: {
                   id,
@@ -345,6 +355,7 @@
               if (index < 0) products.push(saved);
               else products[index] = saved;
               renderProducts();
+              window.dispatchEvent(new Event("core-products-changed"));
               updateReadiness();
               notice.textContent =
                 "产品已保存。可以继续配置产品，或进入下一步编写规则。";
