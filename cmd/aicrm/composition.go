@@ -510,7 +510,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		// observer must never stop an otherwise valid CRM deployment.
 		opsProbe, _ = platformruntime.NewEndpointProbe(cfg.ListenAddress, cfg.ReleaseSHA)
 	}
-	opsInspections, err := adminops.NewInspectionService(pool.Native(), uow, opsInspectionCollectors(pool.Native(), effectRepository, opsRetention, opsProbe, overviewReadUoW, opsHostMaintenance, effectsQueues), effectRepository, adminops.InspectionOptions{ReleaseSHA: cfg.ReleaseSHA, NotificationTargetRef: cfg.Ops.TargetRef, NotificationEnabled: cfg.Ops.NotificationEnabled, DetailURL: cfg.PublicOrigin + "/admin/ops"})
+	opsInspections, err := adminops.NewInspectionService(pool.Native(), uow, opsInspectionCollectors(pool.Native(), effectRepository, opsRetention, opsProbe, overviewReadUoW, opsHostMaintenance, effectsQueues), effectRepository, adminops.InspectionOptions{ReleaseSHA: cfg.ReleaseSHA, NotificationTargetRef: cfg.Ops.TargetRef, NotificationEnabled: cfg.Ops.NotificationEnabled, DetailURL: cfg.PublicOrigin + "/admin/ops", WindowReader: effectRepository})
 	if err != nil {
 		return fail(err)
 	}
