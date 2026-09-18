@@ -189,7 +189,7 @@ func TestPostgreSQLCPUProfileGlobalConcurrencyNoSamplingTransactionAndCancellati
 	<-entered
 	var state string
 	var xact *time.Time
-	if err := pool.QueryRow(context.Background(), `SELECT a.state,a.xact_start FROM pg_stat_activity a JOIN pg_locks l ON a.pid=l.pid WHERE l.locktype='advisory' AND l.objid=$1 AND l.granted`, cpuProfileLock).Scan(&state, &xact); err != nil || state != "idle" || xact != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT a.state,a.xact_start FROM pg_stat_activity a JOIN pg_locks l ON a.pid=l.pid WHERE l.locktype='advisory' AND l.objid=$1 AND l.granted AND a.datname=current_database() AND a.application_name=current_setting('application_name')`, cpuProfileLock).Scan(&state, &xact); err != nil || state != "idle" || xact != nil {
 		t.Fatalf("sampler holds transaction: %s %v %v", state, xact, err)
 	}
 	second, _ := NewCPUProfileService(pool, p, strings.Repeat("b", 40), true)
@@ -212,7 +212,7 @@ func TestPostgreSQLCPUProfileGlobalConcurrencyNoSamplingTransactionAndCancellati
 		t.Fatalf("lock not released after cancellation: %v", err)
 	}
 	var held int
-	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=$1 AND granted`, cpuProfileLock).Scan(&held); err != nil || held != 0 {
+	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE l.locktype='advisory' AND l.objid=$1 AND l.granted AND a.datname=current_database() AND a.application_name=current_setting('application_name')`, cpuProfileLock).Scan(&held); err != nil || held != 0 {
 		t.Fatalf("pool leaked session lock=%d %v", held, err)
 	}
 }
@@ -220,7 +220,7 @@ func TestPostgreSQLCPUProfileGlobalConcurrencyNoSamplingTransactionAndCancellati
 func TestPostgreSQLCPUProfileCompletionFailureNeverResamplesAndDiscardsLostSession(t *testing.T) {
 	s, pool, p := cpuProfileFixture(t)
 	p.capture = func(ctx context.Context, _ string) error {
-		_, err := pool.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype='advisory' AND objid=$1 AND granted`, cpuProfileLock)
+		_, err := pool.Exec(ctx, `SELECT pg_terminate_backend(l.pid) FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE l.locktype='advisory' AND l.objid=$1 AND l.granted AND a.datname=current_database() AND a.application_name=current_setting('application_name')`, cpuProfileLock)
 		return err
 	}
 	r, err := s.Capture(context.Background(), 7, "lost-session-key")

@@ -344,6 +344,7 @@ func inspectionTestPool(t *testing.T) (*pgxpool.Pool, *platformpostgres.UnitOfWo
 	}
 	q := parsed.Query()
 	q.Set("search_path", schema)
+	q.Set("application_name", schema)
 	parsed.RawQuery = q.Encode()
 	pool, e := platformpostgres.Open(ctx, platformpostgres.Config{URL: parsed.String()})
 	if e != nil {
