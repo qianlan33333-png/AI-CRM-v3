@@ -15,11 +15,34 @@ const xlsxBase64 = (await fs.readFile(xlsxPath)).toString("base64");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const asError = (error) => error instanceof Error ? error : new Error(String(error));
 function binary() { for (const item of [process.env.AICRM_CHROMIUM_BINARY, process.env.CHROME_BIN, process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"].filter(Boolean)) { if (item.includes("/")) { try { if (spawnSync(item, ["--version"], { stdio: "ignore" }).status === 0) return item; } catch {} } else if (spawnSync("which", [item], { stdio: "ignore" }).status === 0) return item; } throw new Error("Chromium binary is unavailable"); }
-class CDP { constructor(socket) { this.socket=socket; this.id=0; this.waiting=new Map(); socket.addEventListener("message", event => { const m=JSON.parse(String(event.data)); if (m.id && this.waiting.has(m.id)) { const p=this.waiting.get(m.id); this.waiting.delete(m.id); m.error ? p.reject(new Error(`CDP ${m.error.code}`)) : p.resolve(m.result||{}); } }); } call(method, params={}) { return new Promise((resolve,reject)=>{ const id=++this.id; this.waiting.set(id,{resolve,reject}); this.socket.send(JSON.stringify({id,method,params})); }); } close() { this.socket.close(); } }
+class CDP { constructor(socket) { this.socket=socket; this.id=0; this.waiting=new Map(); socket.addEventListener("message", event => { const m=JSON.parse(String(event.data)); if (m.id && this.waiting.has(m.id)) { const p=this.waiting.get(m.id); this.waiting.delete(m.id); m.error ? p.reject(Object.assign(new Error(`CDP ${m.error.code}: ${m.error.message}`), {code:m.error.code})) : p.resolve(m.result||{}); } }); } call(method, params={}) { return new Promise((resolve,reject)=>{ const id=++this.id; this.waiting.set(id,{resolve,reject}); this.socket.send(JSON.stringify({id,method,params})); }); } close() { this.socket.close(); } }
 let browser; let stderr="";
 async function devtools(profile) { const until=Date.now()+chromiumStartupTimeoutMS; while(Date.now()<until) { try { const port=String(await fs.readFile(path.join(profile,"DevToolsActivePort"),"utf8")).split("\n")[0]; if(/^\d+$/.test(port)) return `http://127.0.0.1:${port}`; } catch {} if(browser?.exitCode!==null) break; await sleep(50); } throw new Error(chromiumStartupDiagnostic({profile,exitCode:browser?.exitCode,signalCode:browser?.signalCode,stderr})); }
-async function value(cdp, expression) { const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) throw new Error(`page evaluation exception: ${expression.slice(0,100)}`); return result.result?.value; }
-async function wait(cdp, expression, label) { for(let i=0;i<150;i++) { if(await value(cdp,expression)) return; await sleep(100); } throw new Error(`${label}: ${await value(cdp,"JSON.stringify({path:location.pathname,title:document.title,body:document.body.innerText.slice(-2400),requests:window.__mediaRefreshRequests||[]})")}`); }
+async function value(cdp, expression) { const result=await cdp.call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true}); if(result.exceptionDetails) throw new Error(`page evaluation exception: ${result.exceptionDetails.exception?.description || result.exceptionDetails.text}; expression=${expression.slice(0,180)}`); return result.result?.value; }
+async function wait(cdp, expression, label) {
+ for(let i=0;i<150;i++) {
+  try { if(await value(cdp,expression)) return; }
+  catch(error) {
+   // Polling may race a document commit; never retry actions or assertions.
+   if(error.code!==-32000 || !/context.*(destroyed|not found)|Cannot find context/i.test(error.message)) throw error;
+  }
+  await sleep(100);
+ }
+ throw new Error(`${label}: ${await value(cdp,"JSON.stringify({path:location.pathname,title:document.title,body:document.body.innerText.slice(-2400),requests:window.__mediaRefreshRequests||[]})")}`);
+}
+async function navigate(cdp, url) {
+ const previous=(await cdp.call('Page.getFrameTree')).frameTree.frame.loaderId;
+ await cdp.call(url ? 'Page.navigate' : 'Page.reload', url ? {url} : {});
+ let committed=false;
+ for(let i=0;i<150;i++) {
+  const current=(await cdp.call('Page.getFrameTree')).frameTree.frame.loaderId;
+  if(current && current!==previous) { committed=true; break; }
+  await sleep(100);
+ }
+ if(!committed) throw new Error('navigation did not commit a new document');
+ await wait(cdp,"document.readyState !== 'loading'",'new document ready');
+}
+
 async function assertImageLibraryLayout(cdp, width, height) {
  await cdp.call("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:false});
  await wait(cdp,"Boolean(document.querySelector('[data-image-library-query]')&&document.querySelector('[data-image-library-cards]'))",`image library ${width}px controls`);
@@ -79,7 +102,7 @@ async function exerciseGroupManagement(cdp) {
  for(const [kind,tab] of [['image','images'],['attachment','attachments'],['miniprogram','miniprograms']]) {
   const prefix=`分组旅程-${kind}`;
   const api=`/api/admin/${kind}-library`;
-  await cdp.call('Page.navigate',{url:`${baseURL}/admin/materials?tab=${tab}`});
+  await navigate(cdp,`${baseURL}/admin/materials?tab=${tab}`);
   await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组'&&!b.disabled))",`${kind} group controls`);
   await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组').click();true");
   await value(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix)};document.querySelector('dialog[open] form').requestSubmit();true`);
@@ -87,6 +110,7 @@ async function exerciseGroupManagement(cdp) {
   const groupID=await value(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.find(g=>g.name===${JSON.stringify(prefix)}).id)`);
   for(let n=0;n<2;n++) {
    const action={image:'上传图片',attachment:'上传附件',miniprogram:'新增小程序'}[kind];
+   await wait(cdp,`Boolean([...document.querySelectorAll('.admin-topbar button')].find(b=>!b.disabled&&(b.textContent.trim()===${JSON.stringify(action)}||(${JSON.stringify(kind)}==='miniprogram'&&/小程序/.test(b.textContent)))))`,`${kind} create toolbar ready`);
    // The existing mini-program title may use 创建 instead of 新增.
    await value(cdp,`(()=>{const b=[...document.querySelectorAll('.admin-topbar button')].find(b=>b.textContent.trim()===${JSON.stringify(action)}||(${JSON.stringify(kind)}==='miniprogram'&&/小程序/.test(b.textContent)));if(!b)throw Error('missing create');b.click();return true})()`);
    await wait(cdp,"Boolean(document.querySelector('[data-material-group-select]'))",`${kind} create group selector`);
@@ -100,7 +124,7 @@ async function exerciseGroupManagement(cdp) {
    await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.some(g=>g.id===${groupID}&&g.count===${n+1}))`,`${kind} upload group readback`);
   }
   // Reload to exercise persisted memberships and select only the current page.
-  await cdp.call('Page.reload');
+  await navigate(cdp);
   await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2 && !document.querySelector('[aria-label=\"选择当前页全部素材\"],[aria-label=\"全选当前页素材\"]')?.disabled",`${kind} selectable rows`);
   if(kind==='image') {
    await cdp.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
@@ -118,7 +142,7 @@ async function exerciseGroupManagement(cdp) {
   if(Number(await value(cdp,"document.querySelector('[data-material-group-select]').value"))!==groupID)throw Error(`${kind} edit lost existing group`);
   await value(cdp,"[...document.querySelectorAll('#stage button')].find(b=>b.textContent.trim()==='保存').click();true");
   await wait(cdp,"!document.querySelector('[data-material-group-select]')",`${kind} edit saved with group`);
-  await cdp.call('Page.reload');
+  await navigate(cdp);
   await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2",`${kind} edited group readback`);
   await value(cdp,"document.querySelector('[aria-label=\"选择当前页全部素材\"],[aria-label=\"全选当前页素材\"]').click();[...document.querySelectorAll('button')].find(b=>['移动到分组','转移分组'].includes(b.textContent)&&!b.hidden).click();true");
   await wait(cdp,"Boolean(document.querySelector('dialog[open] select'))",`${kind} batch move dialog`);
@@ -139,7 +163,7 @@ const profile=await fs.mkdtemp(path.join(os.tmpdir(),"aicrm-media-refresh-chromi
 try {
  browser=spawn(binary(),["--headless=new","--no-sandbox","--remote-debugging-port=0",`--user-data-dir=${profile}`,"--no-first-run","--no-default-browser-check","--disable-background-networking","--ignore-certificate-errors","--allow-insecure-localhost","about:blank"],{stdio:["ignore","ignore","pipe"]}); browser.stderr.on("data",c=>{stderr=(stderr+c).slice(-2048);});
  const tab=await (await fetch(`${await devtools(profile)}/json/new?about:blank`,{method:"PUT"})).json(); const socket=new WebSocket(tab.webSocketDebuggerUrl); await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",reject,{once:true});}); cdp=new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
- await cdp.call("Page.navigate",{url:`${baseURL}/login?next=%2Fadmin%2Fimage-library`}); await wait(cdp,"Boolean(document.querySelector('form[action=\"/login\"] input[name=login_csrf_token]'))","login page");
+ await navigate(cdp,`${baseURL}/login?next=%2Fadmin%2Fimage-library`); await wait(cdp,"Boolean(document.querySelector('form[action=\"/login\"] input[name=login_csrf_token]'))","login page");
  await value(cdp,`(()=>{document.querySelector('input[name=username]').value=${JSON.stringify(username)};document.querySelector('input[name=password]').value=${JSON.stringify(password)};document.querySelector('form[action="/login"]').requestSubmit();return true})()`);
  await wait(cdp,"location.pathname==='/admin/materials'&&document.body?.dataset.page==='images'&&document.title.includes('素材库')","material workspace title");
  await wait(cdp,"Boolean(document.querySelector('[data-image-library-query]')&&document.querySelector('[data-image-library-cards]'))",'V3 image library controls');
@@ -190,23 +214,23 @@ try {
  if(accepted!==202)throw new Error('fixture refresh command was not accepted: '+accepted);
  await wait(cdp,"fetch('/api/admin/media-preparations').then(r=>r.json()).then(body=>body.items.some(item=>item.media_id==='fixture-media-2'&&item.credential_usable))",'replacement credential must be usable');
  await cdp.call('Network.enable'); await cdp.call('Network.setCacheDisabled',{cacheDisabled:true});
- await cdp.call("Page.navigate",{url:`${baseURL}/admin/image-library`}); await assertImageLibraryThumbnailLoadingGeometry(cdp);
+ await navigate(cdp,`${baseURL}/admin/image-library`); await assertImageLibraryThumbnailLoadingGeometry(cdp);
  if(await value(cdp,"Boolean(document.querySelector('#material-refresh-panel'))"))throw new Error('diagnostics returned after reload');
  await assertImageLibraryThumbnailStates(cdp);
  await captureImageLibraryViewport(cdp,1280,800); await captureImageLibraryViewport(cdp,1440,900); await cdp.call('Emulation.clearDeviceMetricsOverride');
  await cdp.call("Page.captureScreenshot",{format:"png",captureBeyondViewport:true}).then(async result=>fs.writeFile(screenshot,Buffer.from(result.data,"base64")));
  // Real navigation must retain the selected material type (the former server redirect bug).
  for (const [tab, page] of [['attachments','attach'],['miniprograms','mpLib']]) {
-   await cdp.call('Page.navigate',{url:`${baseURL}/admin/materials?tab=${tab}`});
+   await navigate(cdp,`${baseURL}/admin/materials?tab=${tab}`);
    await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && Boolean(document.querySelector('[data-material-group-value="group:"]'))`, `${tab} group sidebar`);
    await value(cdp, `document.querySelector('[data-material-group-value="group:"]').click();true`);
    await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped navigation`);
-   await cdp.call('Page.reload');
+   await navigate(cdp);
    await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && document.querySelector('[data-material-group-value="group:"]')?.getAttribute('aria-pressed')==='true'`, `${tab} ungrouped reload`);
    await value(cdp, `document.querySelector('[data-material-group-value="all"]').click();true`);
    await wait(cdp, `document.body?.dataset.page===${JSON.stringify(page)} && !new URL(location.href).searchParams.has('material_group') && document.querySelector('[data-material-group-value="all"]')?.getAttribute('aria-pressed')==='true'`, `${tab} all groups navigation`);
  }
- await cdp.call("Page.navigate",{url:`${baseURL}/admin/operation-cycles`}); await wait(cdp,"Boolean([...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情'))","operation cycles");
+ await navigate(cdp,`${baseURL}/admin/operation-cycles`); await wait(cdp,"Boolean([...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情'))","operation cycles");
  await value(cdp,"[...document.querySelectorAll('.operation-excel-workspace button')].find(b=>b.textContent==='查看详情').click();true"); await wait(cdp,"Boolean([...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次'))","strategy detail");
  await value(cdp,"[...document.querySelectorAll('.xeb-detail-main button')].find(b=>b.textContent==='新建发送批次').click();true"); await wait(cdp,"Boolean(document.querySelector('dialog[open] input[type=file]'))","new Excel draft dialog");
  await value(cdp,`(()=>{const input=document.querySelector('dialog[open] input[type=file]');const dt=new DataTransfer();const xlsx=Uint8Array.from(atob(${JSON.stringify(xlsxBase64)}),c=>c.charCodeAt(0));dt.items.add(new File([xlsx],'media-refresh.xlsx',{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));input.files=dt.files;input.dispatchEvent(new Event('change'));const fresh=document.querySelector('dialog[open] input[type=checkbox]');fresh.checked=true;fresh.dispatchEvent(new Event('change'));[...document.querySelectorAll('dialog[open] button')].find(b=>b.textContent==='上传并开始审核').click();return true})()`);
