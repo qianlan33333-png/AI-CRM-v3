@@ -31,6 +31,9 @@ func recordInspectionIssue(ctx context.Context, tx pgx.Tx, r opsport.CheckResult
 		if e != nil {
 			return nil, nil, e
 		}
+		if e = recoverIncidentEpisodes(ctx, tx, r.ID, at); e != nil {
+			return nil, nil, e
+		}
 		if id > 0 {
 			return nil, &inspectionTransition{ID: id, CheckID: r.ID, Code: "fresh_observation_recovered"}, nil
 		}
@@ -48,6 +51,9 @@ func recordInspectionIssue(ctx context.Context, tx pgx.Tx, r opsport.CheckResult
  ON CONFLICT(fingerprint) DO UPDATE SET status=CASE WHEN adminops_inspection_issues.status='resolved' THEN 'open' ELSE adminops_inspection_issues.status END,
  severity=EXCLUDED.severity,last_seen=GREATEST(adminops_inspection_issues.last_seen,EXCLUDED.last_seen),resolved_at=NULL,critical_active=adminops_inspection_issues.critical_active OR EXCLUDED.critical_active,occurrences=adminops_inspection_issues.occurrences+1,version=adminops_inspection_issues.version+1 RETURNING id`, fingerprint, r.ID, r.Code, r.Status, at, r.Status == "critical").Scan(&id)
 	if e != nil {
+		return nil, nil, e
+	}
+	if e = observeIncidentEpisode(ctx, tx, id, r, at); e != nil {
 		return nil, nil, e
 	}
 	if newlyCritical {

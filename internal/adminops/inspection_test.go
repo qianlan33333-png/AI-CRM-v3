@@ -370,6 +370,7 @@ func inspectionTestPoolWithDiagnosticMigration(t *testing.T, includeIdentity boo
 	if includeIdentity {
 		applyDiagnosticIdentityMigration(t, pool.Native())
 	}
+	applyGovernanceOutcomesMigration(t, pool.Native())
 	if _, e = pool.Native().Exec(ctx, `CREATE TABLE inspection_test_acceptances(id BIGINT GENERATED ALWAYS AS IDENTITY, key TEXT PRIMARY KEY)`); e != nil {
 		t.Fatal(e)
 	}
