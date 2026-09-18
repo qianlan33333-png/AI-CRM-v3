@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
+import { readFileSync } from 'node:fs';
 
 const bundle = await build({ entryPoints: ['web/v3/governanceAdmin.ts'], bundle: true, format: 'iife', platform: 'browser', write: false, target: 'es2020' });
 const flush = async () => { for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 const at = '2026-09-18T08:00:00Z';
 const overview = (title = '真实巡查', status = 'unknown') => ({ fresh: false, observed_at: at, latest: { id: 11, release_sha: 'release-fixture' }, checks: [{ id: 'fixture.check', owner: 'fixture', title, status, code: 'no_evidence', observed_at: at, metrics: { observed: 0 } }], issues: [{ id: 17, check_id: 'fixture.check', code: 'no_evidence', status: 'open', severity: 'unknown', version: 9, first_seen: at, last_seen: at, occurrences: 2 }] });
+function resourceCoverage(enabled = true) {
+  const data = JSON.parse(readFileSync('internal/adminops/retention_resources.generated.json', 'utf8'));
+  for (const item of data.items) if (item.coverage_status === 'policy_available') item.coverage_status = enabled ? 'scheduled' : 'disabled';
+  const count = (field, values) => data.items.filter(item => values.includes(item[field])).length;
+  return { ...data, automatic_cleanup_enabled: enabled, allowlist_policy_count: 9, summary: {
+    registered_tables: count('kind', ['table']), registered_resources: count('kind', ['resource']), registered_filesystem_prefixes: count('kind', ['filesystem_prefix']),
+    gap_resources: count('coverage_status', ['gap', 'owner_not_bound']), protected_resources: count('coverage_status', ['protected']), owner_managed_resources: count('coverage_status', ['owner_managed']), scheduled_resources: count('coverage_status', ['scheduled']), disabled_resources: count('coverage_status', ['disabled']), unbound_resources: count('coverage_status', ['owner_not_bound']), unobserved_resources: count('coverage_status', ['native_unobserved', 'host_unobserved']), security_ttl_resources: count('policy', ['security_ttl']), mixed_payload_resources: count('policy', ['protected_mixed_payload']), unclassified_resources: count('policy', ['protected_unclassified']), coordination_resources: count('policy', ['runtime_coordination']),
+  } };
+}
 function setup() {
   const dom = new JSDOM('<!doctype html><header class="admin-topbar"><h1>运行治理</h1><div class="admin-topbar-meta"></div></header><section id="governance-admin-root"></section>', { url: 'https://fixture.invalid/admin/ops', runScripts: 'outside-only' });
   dom.window.Headers = Headers;
@@ -174,6 +184,96 @@ for (const response of [{ body: { checks: [], issues: [] }, code: 200, expected:
   h.tab('reports'); h.pending.shift().respond({ items: [] }); await flush();
   oldPreview.respond({ cutoff: at, candidates: 999, estimated_payload_bytes: 999 }); await flush();
   assert.equal(h.dom.window.document.querySelector('dialog'), null, 'late preview cannot open over another tab');
+  h.dom.window.close();
+}
+
+{
+  const h = setup(); h.pending.shift().respond(overview()); await flush();
+  h.tab('resources'); assert.equal(h.pending[0].url, '/api/admin/ops-retention/resources');
+  const data = resourceCoverage(); h.pending.shift().respond(data); await flush();
+  const rows = () => [...h.root.querySelectorAll('[data-resource-table] tbody tr')];
+  const text = () => h.root.querySelector('[data-resource-table]').textContent;
+  const submit = () => h.root.querySelector('[data-resource-filters]').dispatchEvent(new h.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  const set = (name, value) => { h.root.querySelector(`[name="resource_${name}"]`).value = value; };
+  assert.match(h.root.textContent, /白名单健康不代表全部资源已覆盖/);
+  assert.match(h.root.textContent, new RegExp(`已登记资源${data.items.length}`));
+  assert.equal(rows().length, 25, 'the full registry must not become an unbounded table');
+  const first = text(); h.root.querySelector('[data-resource-page="next"]').click();
+  assert.equal(rows().length, 25); assert.notEqual(text(), first);
+  assert.match(h.root.querySelector('[data-resource-count]').textContent, /第 2/);
+  const last = data.items.at(-1);
+  set('query', last.name);
+  h.root.querySelector('[name="resource_query"]').dispatchEvent(new h.dom.window.Event('input', { bubbles: true }));
+  assert.equal(rows().length, 25, 'draft search must not redraw on each key');
+  h.root.querySelector('[name="resource_query"]').dispatchEvent(new h.dom.window.CompositionEvent('compositionstart', { bubbles: true }));
+  submit(); assert.equal(rows().length, 25, 'IME composition does not commit a filter');
+  h.root.querySelector('[name="resource_query"]').dispatchEvent(new h.dom.window.CompositionEvent('compositionend', { bubbles: true }));
+  submit();
+  assert.match(text(), new RegExp(last.owner));
+  assert.match(h.root.querySelector('[data-resource-count]').textContent, /第 1/);
+  assert.ok(rows().length < 25, 'filter covers the complete registry, including later pages');
+  assert.equal(h.pending.length, 0, 'local full-registry filters do not send unsupported server query parameters');
+  h.root.querySelector('[data-resource-reset]').click(); set('status', 'native_unobserved'); submit();
+  assert.match(text(), /river_job.*原生执行未观察.*需要原生清理器/s);
+  assert.equal(h.root.querySelector('[data-status="ok"]'), null);
+  assert.ok(h.root.querySelector('[data-coverage-status="native_unobserved"][data-status="unknown"]'));
+  set('status', 'host_unobserved'); submit();
+  assert.ok(rows().length > 0); assert.ok(h.root.querySelector('[data-coverage-status="host_unobserved"][data-status="unknown"]'));
+  set('status', ''); set('owner', 'access'); set('policy', 'security_ttl'); submit();
+  assert.ok(rows().length > 0); assert.match(text(), /缺少物理清理.*授权是否有效由安全 TTL 独立判断/s);
+  assert.ok(rows().every(row => row.cells[1].textContent === 'access'));
+  h.root.querySelector('[data-resource-detail]').focus(); h.root.querySelector('[data-resource-detail]').click();
+  const dialog = h.dom.window.document.querySelector('dialog');
+  assert.match(dialog.textContent, /Owner：access.*安全有效期.*由 Owner 安全 TTL.*登记来源.*SHA256/s);
+  dialog.querySelector('button').click();
+  assert.ok(h.dom.window.document.activeElement.hasAttribute('data-resource-detail'), 'resource detail uses shared focus-return drawer');
+  set('query', 'no-such-registered-resource'); submit();
+  assert.equal(h.root.querySelector('[data-surface-table-read-state="no-match"]')?.textContent, '没有匹配资源，请调整筛选；这不代表系统没有治理缺口。');
+  assert.equal(h.root.querySelector('[data-resource-page="next"]').disabled, true);
+  headerAction(h, '刷新').click(); h.pending.shift().respond(data); await flush();
+  assert.equal(h.root.querySelector('[name="resource_query"]').value, 'no-such-registered-resource', 'refresh preserves committed filters');
+  h.dom.window.close();
+}
+{
+  const h = setup(); h.pending.shift().respond(overview()); await flush(); h.tab('resources');
+  const data = resourceCoverage(false);
+  data.items.find(item => item.coverage_status === 'gap').reason = '<img src=x onerror="window.__unsafe=true">';
+  h.pending.shift().respond(data); await flush();
+  assert.match(h.root.textContent, /自动执行未启用/);
+  h.root.querySelector('[name="resource_status"]').value = 'disabled';
+  h.root.querySelector('form').dispatchEvent(new h.dom.window.Event('submit', { cancelable: true }));
+  assert.ok(h.root.querySelector('[data-coverage-status="disabled"]'));
+  assert.equal(h.root.querySelector('[data-status="ok"]'), null);
+  h.root.querySelector('[name="resource_query"]').value = '<img'; h.root.querySelector('[name="resource_status"]').value = '';
+  h.root.querySelector('form').dispatchEvent(new h.dom.window.Event('submit', { cancelable: true }));
+  h.root.querySelector('[data-resource-detail]').click();
+  assert.match(h.dom.window.document.querySelector('dialog').textContent, /<img/);
+  assert.equal(h.dom.window.document.querySelector('dialog img'), null, 'registry text must not become executable HTML');
+  assert.equal(h.dom.window.__unsafe, undefined);
+  h.dom.window.close();
+}
+for (const mutate of [
+  data => { delete data.summary; },
+  data => { data.summary.registered_tables++; },
+  data => { data.items[0].coverage_status = 'new_unrecognized_state'; },
+  data => { data.items[1] = data.items[0]; },
+]) {
+  const h = setup(); h.pending.shift().respond(overview()); await flush(); h.tab('resources');
+  const data = resourceCoverage(); mutate(data); h.pending.shift().respond(data); await flush();
+  assert.match(h.root.querySelector('[role="alert"]').textContent, /资源登记数据不完整/);
+  assert.equal(h.root.querySelector('[data-resource-table]'), null);
+  h.dom.window.close();
+}
+{
+  const h = setup(); h.pending.shift().respond(overview()); await flush(); h.tab('resources');
+  h.pending.shift().respond(resourceCoverage()); await flush();
+  headerAction(h, '刷新').click(); h.pending.shift().respond({}, 403); await flush();
+  assert.match(h.root.querySelector('[role="alert"]').textContent, /超级管理员/);
+  assert.equal(h.root.querySelector('[data-resource-table]'), null, 'permission loss clears previously authorized resource metadata');
+  h.tab('resources'); const late = h.pending.shift();
+  h.tab('reports'); h.pending.shift().respond({ items: [] }); await flush(); const current = h.root.textContent;
+  late.respond(resourceCoverage()); await flush();
+  assert.equal(h.root.textContent, current, 'late coverage response cannot overwrite report navigation');
   h.dom.window.close();
 }
 

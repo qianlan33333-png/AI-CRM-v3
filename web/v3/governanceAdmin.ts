@@ -1,12 +1,13 @@
 import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 import { openDetailDrawer } from './shared/ui/detailDrawer';
+import { renderTableReadState } from './shared/ui/tableReadState';
 
 type Check = { id: string; owner: string; title: string; scope?: string; status: string; code: string; observed_at: string; metrics: Record<string, number> };
 type Issue = { id: number; check_id: string; code: string; status: string; severity: string; version: number; first_seen: string; last_seen: string; occurrences: number };
 type Overview = { fresh: boolean; observed_at: string; latest?: { id: number; release_sha: string; completed_at?: string }; checks: Check[]; issues: Issue[] };
-type Tab = 'overview' | 'checks' | 'issues' | 'reports' | 'diagnostics' | 'profiles' | 'retention';
+type Tab = 'overview' | 'checks' | 'issues' | 'reports' | 'diagnostics' | 'profiles' | 'retention' | 'resources';
 const root = document.querySelector<HTMLElement>('#governance-admin-root');
-const labels: Record<Tab, string> = { overview: '治理总览', checks: '检查详情', issues: '问题跟踪', reports: '巡查报告', diagnostics: '错误聚合', profiles: '性能采样', retention: '数据生命周期' };
+const labels: Record<Tab, string> = { overview: '治理总览', checks: '检查详情', issues: '问题跟踪', reports: '巡查报告', diagnostics: '错误聚合', profiles: '性能采样', retention: '数据生命周期', resources: '资源覆盖' };
 const statusLabels: Record<string, string> = { ok: '正常', warning: '需关注', critical: '严重', unknown: '未知', uncovered: '未覆盖', stale: '过期', open: '待处理', acknowledged: '已确认', resolved: '已恢复', queued: '待发送', executed: '飞书已接受', outcome_unknown: '发送结果未知', final_failed: '发送失败', disabled: '发送未启用' };
 let tab: Tab = 'overview';
 let serial = 0;
@@ -17,6 +18,15 @@ let acceptedScan: {job: number} | null = null;
 let profilesEnabled = false;
 let profileBusy = false;
 let profileRequestKey: string | null = null;
+const resourceKinds = { table: '数据库表', resource: '登记资源', filesystem_prefix: '主机目录' };
+const resourcePolicies = { permanent: '永久保留', never_delete_by_retention: '禁止按保留期删除', operational_detail_30d: '过程明细 · 30 天', report_payload_30d: '报告载荷 · 30 天', temporary_upload_parts_30d: '上传临时分片 · 30 天', river_terminal_jobs_30d: 'River 终态任务 · 30 天', '30_days': '主机过程文件 · 30 天', verified_release_allowlist: '发布包与回滚保护', security_ttl: '安全有效期', protected_mixed_payload: '业务与过程混合 · 保护', protected_unclassified: '尚未分类 · 保护', owner_projection: 'Owner 投影', runtime_coordination: '运行协调状态' };
+const resourceStates = { protected: '受保护', owner_managed: 'Owner 管理', scheduled: '已排程', disabled: '自动执行未启用', owner_not_bound: '执行入口未绑定', native_unobserved: '原生执行未观察', host_unobserved: '主机执行未观察', gap: '治理缺口' };
+const resourceGaps: Record<string, string> = { classification_unverified: '分类尚未确认，保持保护', mixed_payload_owner_split_required: '需要 Owner 拆分业务事实与过程载荷', security_ttl_physical_cleanup_missing: '缺少物理清理；授权是否有效由安全 TTL 独立判断', owner_cleanup_contract_missing: '缺少 Owner 清理契约', owner_port_not_bound: 'Owner 清理入口未绑定', host_evidence_reader_not_bound: '主机执行证据读取未绑定' };
+type RetentionResource = { kind: keyof typeof resourceKinds; name: string; owner: string; policy: keyof typeof resourcePolicies; reason: string; source: string; cleanup_entrypoint: string; policy_id: string; coverage_status: keyof typeof resourceStates; gap_code: string; authorization_expiry: 'owner_security_ttl' | 'not_assessed' };
+const coverageCounts = ['registered_tables', 'registered_resources', 'registered_filesystem_prefixes', 'gap_resources', 'protected_resources', 'owner_managed_resources', 'scheduled_resources', 'disabled_resources', 'unbound_resources', 'unobserved_resources', 'security_ttl_resources', 'mixed_payload_resources', 'unclassified_resources', 'coordination_resources'] as const;
+type RetentionCoverage = { registry_version: number; registry_sha256: string; inventory_scope: 'committed_registry'; automatic_cleanup_enabled: boolean; allowlist_policy_count: number; summary: Record<typeof coverageCounts[number], number>; items: RetentionResource[] };
+let resourceFilters = { query: '', owner: '', policy: '', status: '', page: 1 };
+const resourcePageSize = 25;
 const esc = (v: unknown): string => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const date = (v: unknown): string => typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
 const badge = (s: string): string => `<span class="governance-status" data-status="${esc(s)}">${esc(statusLabels[s] || s)}</span>`;
@@ -25,6 +35,21 @@ function isOverview(v: unknown): v is Overview {
   return record(v) && typeof v.fresh === 'boolean' && Array.isArray(v.checks) && Array.isArray(v.issues)
     && v.checks.every((c: unknown) => record(c) && typeof c.id === 'string' && typeof c.status === 'string' && typeof c.title === 'string' && record(c.metrics))
     && v.issues.every((i: unknown) => record(i) && Number.isSafeInteger(i.id) && Number.isSafeInteger(i.version));
+}
+function isRetentionCoverage(v: unknown): v is RetentionCoverage {
+  if (!record(v) || v.registry_version !== 1 || typeof v.registry_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(v.registry_sha256)
+    || v.inventory_scope !== 'committed_registry' || typeof v.automatic_cleanup_enabled !== 'boolean' || !Number.isSafeInteger(v.allowlist_policy_count) || Number(v.allowlist_policy_count) < 0
+    || !record(v.summary) || !Array.isArray(v.items) || !v.items.length) return false;
+  const summary = v.summary;
+  if (!coverageCounts.every((key) => Number.isSafeInteger(summary[key]) && Number(summary[key]) >= 0)) return false;
+  const keys = new Set<string>();
+  if (!v.items.every((item: unknown) => {
+    if (!record(item) || !['kind', 'name', 'owner', 'policy', 'reason', 'source', 'cleanup_entrypoint', 'policy_id', 'coverage_status', 'gap_code', 'authorization_expiry'].every((key) => typeof item[key] === 'string')
+      || !Object.hasOwn(resourceKinds, String(item.kind)) || !Object.hasOwn(resourcePolicies, String(item.policy)) || !Object.hasOwn(resourceStates, String(item.coverage_status))
+      || !item.name || !item.owner || !item.reason || !item.source || !['owner_security_ttl', 'not_assessed'].includes(String(item.authorization_expiry))) return false;
+    const key = `${item.kind}:${item.name}`; if (keys.has(key)) return false; keys.add(key); return true;
+  })) return false;
+  return Number(v.summary.registered_tables) + Number(v.summary.registered_resources) + Number(v.summary.registered_filesystem_prefixes) === v.items.length;
 }
 function csrf(): string {
   for (const part of document.cookie.split(';')) { const [name, ...rest] = part.trim().split('='); if (name === 'aicrm_csrf' || name === 'aicrm_admin_csrf') { try { return decodeURIComponent(rest.join('=')); } catch { return ''; } } }
@@ -66,6 +91,65 @@ function overviewContent(data: Overview): string {
   <section class="admin-panel"><h2>需要处理</h2>${table(['检查项', '状态', '原因', '最近观察'], data.checks.filter((c) => c.status !== 'ok').map((c) => [esc(c.title), badge(c.status), esc(c.code), esc(date(c.observed_at))]))}</section>
   <p class="governance-note">业务故障只报告和跟踪。纯过程明细保留 30 天；业务数据及防重依据永久保留。飞书接受与群内可见分别验证。</p>`;
 }
+function resourceStatus(item: RetentionResource): string {
+  const tone = ['native_unobserved', 'host_unobserved'].includes(item.coverage_status) ? 'unknown' : ['gap', 'owner_not_bound'].includes(item.coverage_status) ? 'warning' : item.coverage_status;
+  return `<span class="governance-status" data-status="${tone}" data-coverage-status="${item.coverage_status}">${resourceStates[item.coverage_status]}</span>`;
+}
+function resourceGap(item: RetentionResource): string {
+  if (item.gap_code) return resourceGaps[item.gap_code] || `未识别的缺口：${item.gap_code}`;
+  return ({ native_unobserved: '需要原生清理器的执行证据', host_unobserved: '需要另查宿主执行记录与新鲜度', disabled: '策略已登记，当前不会自动执行', scheduled: '已绑定并启用，不代表已经清理成功', owner_managed: '由 Owner 管理，未纳入统一定时清理', protected: '按保护规则保留' } as Record<string, string>)[item.coverage_status] || '尚无可验证依据';
+}
+function renderResources(data: RetentionCoverage): void {
+  const s = data.summary;
+  const needle = resourceFilters.query.toLocaleLowerCase();
+  const matched = data.items.filter((item) => (!needle || `${item.name}\n${item.owner}\n${item.reason}\n${item.gap_code}`.toLocaleLowerCase().includes(needle))
+    && (!resourceFilters.owner || item.owner === resourceFilters.owner) && (!resourceFilters.policy || item.policy === resourceFilters.policy)
+    && (!resourceFilters.status || (resourceFilters.status === 'attention' ? ['gap', 'owner_not_bound', 'native_unobserved', 'host_unobserved', 'disabled'].includes(item.coverage_status) : item.coverage_status === resourceFilters.status)));
+  const pages = Math.max(1, Math.ceil(matched.length / resourcePageSize));
+  resourceFilters.page = Math.min(resourceFilters.page, pages);
+  const start = (resourceFilters.page - 1) * resourcePageSize;
+  const visible = matched.slice(start, start + resourcePageSize);
+  const options = (values: Record<string, string>, selected: string): string => Object.entries(values).map(([value, label]) => `<option value="${esc(value)}"${value === selected ? ' selected' : ''}>${esc(label)}</option>`).join('');
+  const owners = Object.fromEntries([...new Set(data.items.map((item) => item.owner))].sort().map((owner) => [owner, owner]));
+  const rows = visible.map((item, n) => [`<span style="overflow-wrap:anywhere">${esc(item.name)}</span><br><small>${resourceKinds[item.kind]}</small>`, esc(item.owner), esc(resourcePolicies[item.policy]), resourceStatus(item), `${esc(resourceGap(item))}${item.gap_code ? `<br><small>${esc(item.gap_code)}</small>` : ''}`, `<button type="button" class="admin-button" data-resource-detail="${n}">查看依据</button>`]);
+  layout(`<h2>全资源登记与覆盖</h2><p class="governance-note">范围为已提交的资源登记簿，包含 ${s.registered_tables} 张表、${s.registered_resources} 项资源和 ${s.registered_filesystem_prefixes} 个主机目录；不代表已扫描生产全部文件或已执行删除。</p>
+    <div class="governance-metrics">${[['已登记资源', data.items.length], ['治理缺口（含未绑定）', s.gap_resources], ['执行未观察', s.unobserved_resources], ['已排程（非执行结果）', s.scheduled_resources]].map(([title, count]) => `<div class="admin-panel"><span>${title}</span><strong>${count}</strong></div>`).join('')}</div>
+    <section class="admin-panel"><h2>白名单执行与全资源覆盖分别判断</h2><p>数据库清理白名单已绑定 ${data.allowlist_policy_count} 项策略；自动执行${data.automatic_cleanup_enabled ? '已启用' : '未启用'}。白名单健康不代表全部资源已覆盖，排程也不代表清理成功。</p><p>受保护 ${s.protected_resources} 项 · Owner 管理 ${s.owner_managed_resources} 项 · 执行未启用 ${s.disabled_resources} 项 · 未绑定 ${s.unbound_resources} 项。</p><button type="button" class="admin-button" data-tab="retention">查看清理执行记录</button> <button type="button" class="admin-button" data-tab="checks">查看执行健康检查</button></section>
+    <p class="governance-note">安全有效期 ${s.security_ttl_resources} 项 · 混合载荷 ${s.mixed_payload_resources} 项 · 未分类 ${s.unclassified_resources} 项 · 运行协调状态 ${s.coordination_resources} 项。安全有效期由 Owner 判断，物理清理缺口不能用来推断会话或令牌仍然有效。</p>
+    <form class="governance-query" data-resource-filters style="display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;align-items:end">
+      <label>资源搜索 <input name="resource_query" value="${esc(resourceFilters.query)}" maxlength="200" placeholder="名称、Owner 或缺口原因" autocomplete="off"></label>
+      <label>Owner <select name="resource_owner">${options({ '': '全部 Owner', ...owners }, resourceFilters.owner)}</select></label>
+      <label>登记分类 <select name="resource_policy" style="max-width:240px">${options({ '': '全部分类', ...resourcePolicies }, resourceFilters.policy)}</select></label>
+      <label>覆盖状态 <select name="resource_status">${options({ '': '全部状态', attention: '缺口、未观察或未启用', ...resourceStates }, resourceFilters.status)}</select></label>
+      <button type="submit" class="admin-button">筛选</button><button type="button" class="admin-button" data-resource-reset>重置筛选</button></form>
+    <p data-resource-count role="status">匹配 ${matched.length} / ${data.items.length} 项；当前第 ${resourceFilters.page} / ${pages} 页，每页 ${resourcePageSize} 项。</p>
+    <section data-resource-table>${table(['资源 / 类型', 'Owner', '登记分类 / 策略', '覆盖状态', '缺口或边界', '依据'], rows.length ? rows : [['', '', '', '', '', '']])}</section>
+    <nav aria-label="资源分页" style="display:flex;flex-wrap:wrap;gap:12px;margin:16px 0"><button type="button" class="admin-button" data-resource-page="previous"${resourceFilters.page === 1 ? ' disabled' : ''}>上一页</button><button type="button" class="admin-button" data-resource-page="next"${resourceFilters.page === pages ? ' disabled' : ''}>下一页</button></nav>
+    <p class="governance-note">只读登记簿版本 ${data.registry_version} · 摘要 ${esc(data.registry_sha256.slice(0, 16))}。业务事实与防重依据永久保留；未分类和混合载荷保持保护。此页不提供删除操作。</p>`);
+  if (!visible.length) {
+    const body = root?.querySelector<HTMLTableSectionElement>('[data-resource-table] tbody');
+    if (body) renderTableReadState(body, { state: 'no-match', colSpan: 6, message: '没有匹配资源，请调整筛选；这不代表系统没有治理缺口。' });
+  }
+  const form = root?.querySelector<HTMLFormElement>('[data-resource-filters]');
+  let composing = false;
+  form?.addEventListener('compositionstart', () => { composing = true; });
+  form?.addEventListener('compositionend', () => { composing = false; });
+  form?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.isComposing || composing)) event.preventDefault(); });
+  form?.addEventListener('submit', (event) => {
+    event.preventDefault(); if (composing || tab !== 'resources') return;
+    const value = (name: string): string => form.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value.trim() || '';
+    resourceFilters = { query: value('resource_query'), owner: value('resource_owner'), policy: value('resource_policy'), status: value('resource_status'), page: 1 };
+    renderResources(data);
+  });
+  root?.querySelector('[data-resource-reset]')?.addEventListener('click', () => { resourceFilters = { query: '', owner: '', policy: '', status: '', page: 1 }; renderResources(data); });
+  root?.querySelectorAll<HTMLButtonElement>('[data-resource-page]').forEach((button) => button.addEventListener('click', () => { resourceFilters.page += button.dataset.resourcePage === 'next' ? 1 : -1; renderResources(data); root?.querySelector<HTMLButtonElement>(`[data-resource-page="${button.dataset.resourcePage}"]`)?.focus(); }));
+  root?.querySelectorAll<HTMLButtonElement>('[data-resource-detail]').forEach((button) => button.addEventListener('click', () => {
+    const item = visible[Number(button.dataset.resourceDetail)]; if (!item) return;
+    const body = document.createElement('div'); body.className = 'governance-report';
+    body.textContent = [`资源：${item.name}`, `类型：${resourceKinds[item.kind]}；Owner：${item.owner}`, `登记分类：${resourcePolicies[item.policy]} (${item.policy})`, `覆盖状态：${resourceStates[item.coverage_status]}`, `边界：${resourceGap(item)}`, `登记原因：${item.reason}`, `策略 ID：${item.policy_id || '未绑定执行策略'}`, `清理入口：${item.cleanup_entrypoint || '无自动清理入口'}`, `授权有效期：${item.authorization_expiry === 'owner_security_ttl' ? '由 Owner 安全 TTL 独立判断' : '本登记不评估授权有效期'}`, `登记来源：${item.source}`, `登记簿 SHA256：${data.registry_sha256}`].join('\n');
+    openDetailDrawer('资源治理依据', body);
+  }));
+}
 async function refresh(): Promise<void> {
   const id = ++serial; const selected = tab;
   if (selected === 'profiles') profilesEnabled = false;
@@ -80,6 +164,13 @@ async function refresh(): Promise<void> {
         throw new Error('本次巡查的完成状态尚未确认，请刷新后查看。');
       }
       if (command.state === 'completed') acceptedScan = null;
+    }
+    if (selected === 'resources') {
+      const data = await request('/api/admin/ops-retention/resources');
+      if (id !== serial) return;
+      if (!isRetentionCoverage(data)) throw new Error('资源登记数据不完整，暂时无法确认覆盖情况。');
+      renderResources(data);
+      return;
     }
     if (['overview', 'checks', 'issues'].includes(selected)) {
       const data = await request('/api/admin/ops-inspections');

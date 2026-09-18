@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "833cc8726577c571b3a1fcbdf98e038e3a329d3d0aebe7cd242a2a6cbef542ad",
+  "registry_sha256": "f47025fe60ff5e9f14c65b46b3fa02f485e9512228cb8f56a5fe865a5aed73d9",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -242,7 +242,7 @@
       "name": "adminops_diagnostic_events",
       "owner": "adminops",
       "policy": "operational_detail_30d",
-      "reason": "Bounded process metadata/details; terminal 30-day Owner cleanup must preserve active work and commit aggregate counts in the same transaction.",
+      "reason": "Bounded diagnostic events; migration 0192 distinguishes request fanout and River attempts without extending the 720-hour retention. Business receipts remain outside this process cleanup.",
       "source": "migrations/0186_adminops_inspections.sql",
       "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn",
       "policy_id": "ops_diagnostics",

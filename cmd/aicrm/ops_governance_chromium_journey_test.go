@@ -235,6 +235,27 @@ try{
  await evaluate("document.querySelector('[data-preview=ops_results]').click()");await poll(()=>evaluate("document.querySelector('dialog[open]')?.textContent.includes('清理候选预览')"),'real Owner cleanup preview');
  assert.match(await evaluate("document.querySelector('dialog[open]').textContent"),/候选：0/);
  await evaluate("document.querySelector('dialog[open] .shared-detail-drawer__close').click()");
+ assert.equal(await evaluate("fetch('/api/admin/ops-retention/resources',{credentials:'omit'}).then(r=>r.status)"),403);
+ assert.equal(await evaluate("fetch('/api/admin/ops-retention/resources?owner=adminops').then(r=>r.status)"),400,'registry endpoint does not accept unbounded resource queries');
+ const coverage=await evaluate("fetch('/api/admin/ops-retention/resources').then(r=>r.json())");
+ assert.equal(coverage.inventory_scope,'committed_registry');assert.ok(coverage.items.length>100);assert.ok(coverage.summary.gap_resources>0);
+ await evaluate("document.querySelector('[data-tab=resources]').click()");await poll(()=>evaluate("document.querySelector('[data-resource-count]')"),'real registered resource coverage');
+ assert.equal(await evaluate("document.querySelectorAll('[data-resource-table] tbody tr').length"),25);
+ assert.match(await evaluate("document.querySelector('[data-resource-count]').textContent"),new RegExp('/ '+coverage.items.length+' 项'));
+ assert.match(await evaluate("document.querySelector('.governance-content').textContent"),/白名单健康不代表全部资源已覆盖/);
+ await evaluate("document.querySelector('[data-resource-page=next]').click()");assert.match(await evaluate("document.querySelector('[data-resource-count]').textContent"),/第 2/);
+ await evaluate("document.querySelector('[name=resource_status]').value='native_unobserved';document.querySelector('[data-resource-filters]').requestSubmit()");
+ assert.match(await evaluate("document.querySelector('[data-resource-table]').textContent"),/river_job.*原生执行未观察/s);
+ assert.equal(await evaluate("!!document.querySelector('[data-coverage-status=native_unobserved][data-status=unknown]')"),true,'native cleaner is never green without observation');
+ await evaluate("document.querySelector('[data-resource-detail]').focus();document.querySelector('[data-resource-detail]').click()");await poll(()=>evaluate("document.querySelector('dialog[open]')?.textContent.includes('资源治理依据')"),'shared resource evidence drawer');
+ assert.match(await evaluate("document.querySelector('dialog[open]').textContent"),/Owner：platform.*原生清理器.*登记来源.*SHA256/s);
+ await evaluate("document.querySelector('dialog[open] .shared-detail-drawer__close').click()");assert.equal(await evaluate("document.activeElement.hasAttribute('data-resource-detail')"),true);
+ await evaluate("document.querySelector('[data-resource-reset]').click()");
+ for(const width of [1440,390]){
+  await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<600});await delay(100);
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth+2'),true,'resource coverage must remain within '+width+'px viewport');
+  const shot=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(output,'ops-resources-'+width+'.png'),Buffer.from(shot.data,'base64'));
+ }
  await evaluate("document.querySelector('[data-tab=overview]').click()");await poll(()=>evaluate("document.querySelector('.governance-freshness')"),'overview restored');
  const before=await evaluate("fetch('/api/admin/ops-inspections').then(r=>r.json()).then(v=>v.latest.id)");
  await evaluate("window.__opsOriginalFetch=window.fetch;window.fetch=async(...args)=>{const response=await window.__opsOriginalFetch(...args);if(String(args[0])==='/api/admin/ops-inspections/runs'){window.__opsManualAccepted={status:response.status,body:await response.clone().json()};}return response;}");
