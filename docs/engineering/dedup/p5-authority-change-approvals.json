@@ -1684,17 +1684,17 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04",
-          "head_sha256": "8a207ce6872527823940c41d5da515f2c2b2f92f50dfd3653deb4ba5396dd2c5"
+          "head_sha256": "70e0450ef6358d1a2163e44fb82ade5867c15c5ed67ee3ce2062a8b9101eed2f"
         },
         {
           "path": "web/donor-sources/source-index.json",
           "base_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4",
-          "head_sha256": "cbd3d858f25a5eaa49f8bc8e68658294a429f0bce21f5daa3dc0d5096a21fc6e"
+          "head_sha256": "8c6a5f62a5cb845c839952c614253c07ff83fbacefa4405e3ebc0d323d6998f1"
         },
         {
           "path": "web/donor-sources/source-lock.json",
           "base_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12",
-          "head_sha256": "3e6e9ee5585968cca514d1fc5bf449f2bab87ae7a2d3db414ed0efe5efd99ef6"
+          "head_sha256": "505f6ec442b0782eafe4c2ce24829965c27719b131388b89d89ee77aafec33b8"
         }
       ],
       "reason": "Expose permanent, audited governance episodes and explicit-coverage outcome metrics. Preserve frozen donors and all current application behavior.",

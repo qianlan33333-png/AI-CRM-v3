@@ -60,6 +60,33 @@ function assertSurveyCompletionContracts(specification) {
   }
 }
 
+function assertGovernanceUnknownContracts(specification) {
+  // These are real API states: no fault start, an open episode, or no verified
+  // denominator. OpenAPI 3.1 uses JSON Schema null unions, not 3.0 nullable.
+  const fields = {
+    OpsIncidentEpisode: ['recovered_at', 'caused_by_release_sequence', 'fault_started_at', 'effort_minutes', 'attributed_at'],
+    OpsIncidentAttribution: ['caused_by_release_sequence', 'fault_started_at', 'effort_minutes'],
+    OpsIncidentAttributionCommand: ['caused_by_release_sequence', 'fault_started_at', 'effort_minutes'],
+    OpsGovernanceDurationMetric: ['mean_seconds'],
+    OpsGovernanceRatioMetric: ['ratio'],
+    OpsGovernanceDeploymentMetrics: ['evidence_at', 'historical_sequence_gaps', 'verified_success_cohort_failure_ratio'],
+  };
+  const parserPath = require.resolve('@apidevtools/swagger-parser');
+  const Ajv = require(require.resolve('ajv', { paths: [path.dirname(parserPath)] }));
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  for (const [name, keys] of Object.entries(fields)) {
+    for (const key of keys) {
+      const schema = specification.components.schemas[name].properties[key];
+      assert.ok(Array.isArray(schema.type) && schema.type.includes('null'), name + '.' + key + ' must declare JSON Schema null');
+      assert.equal(schema.nullable, undefined, '3.0 nullable must not silently substitute 3.1 null');
+      const validate = ajv.compile(schema);
+      assert.equal(validate(null), true, name + '.' + key + ' must preserve unknown');
+      assert.equal(validate(schema.type.includes('string') ? '2026-09-18T13:00:00Z' : 3), true, name + '.' + key + ' must accept a known value');
+      assert.equal(validate({unknown: true}), false, name + '.' + key + ' rejects arbitrary objects');
+    }
+  }
+}
+
 try {
   // Keep the repository's normal OpenAPI structural validation.  The
   // dereferenced copy below is only for compiling the local DTO examples.
@@ -68,6 +95,7 @@ try {
   const dereferenced = await SwaggerParser.dereference('api/openapi.yaml');
   assertGroupOpsPlanListItemExamples(dereferenced);
   assertSurveyCompletionContracts(specification);
+  assertGovernanceUnknownContracts(specification);
   console.log(`validated OpenAPI ${specification.openapi}: ${Object.keys(specification.paths).length} paths`);
 } catch (error) {
   console.error(`OpenAPI validation failed: ${error instanceof Error ? error.message : String(error)}`);
