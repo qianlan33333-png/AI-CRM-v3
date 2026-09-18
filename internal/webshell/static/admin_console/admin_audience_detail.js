@@ -232,7 +232,9 @@
         ]);
         state.groups = groups.items || [];
         state.packages = packages.items || [];
-        enable();
+        // Only enable controls owned by this list. Product dialogs keep their
+        // own disabled states, including the immutable package binding.
+        ["audiencePackagePanel", "groupModal", "packageModal"].forEach(id => enable(byID(id)));
         render();
         showNotice(state.packages.length ? "" : "尚未创建人群包。创建空包后，可在核心产品配置中绑定并由 AI 推荐成员。", false);
       } catch (error) {

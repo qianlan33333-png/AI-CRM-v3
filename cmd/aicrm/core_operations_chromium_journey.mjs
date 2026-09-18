@@ -137,6 +137,12 @@ try {
   await cdp.call("Page.enable");
   await cdp.call("Runtime.enable");
   await cdp.call("Network.enable");
+  // Exercise independent product/package loading deterministically. The list
+  // controls must remain disabled while the actual group read is still pending.
+  cdp.on("Fetch.requestPaused", (params) => {
+    void delay(750).then(() => cdp.call("Fetch.continueRequest", { requestId: params.requestId })).catch((error) => { if (socket.readyState === WebSocket.OPEN) exceptions.push("group read continuation: " + error.message); });
+  });
+  await cdp.call("Fetch.enable", { patterns: [{ urlPattern: baseURL + "/api/admin/ai-audience/package-groups", requestStage: "Request" }] });
   const requests = [];
   const exceptions = [];
   cdp.on("Network.requestWillBeSent", (params) => {
@@ -153,7 +159,15 @@ try {
     const image = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     await fs.writeFile(path.join(screenshotDirectory, name + ".png"), Buffer.from(image.data, "base64"), { mode: 0o600 });
   };
-  const click = (selector) => evaluate(cdp, "(() => { const node=document.querySelector(" + JSON.stringify(selector) + "); if (!(node instanceof HTMLElement)) return false; node.focus({preventScroll:true}); node.click(); return true; })()");
+  const click = async (selector) => {
+    for (let attempt=0; attempt<180; attempt++) {
+      // Resolve readiness and click together; a disabled native button does not
+      // dispatch a click. False means no action, and thrown errors are not retried.
+      if (await evaluate(cdp, "(() => { const node=document.querySelector(" + JSON.stringify(selector) + "); if (!(node instanceof HTMLElement) || node.disabled || !node.getClientRects().length) return false; node.focus({preventScroll:true}); node.click(); return true; })()")) return;
+      await delay(50);
+    }
+    throw new Error("control not actionable: " + selector);
+  };
 
   await resize(1440);
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=%2Fadmin%2Fautomation-conversion" });

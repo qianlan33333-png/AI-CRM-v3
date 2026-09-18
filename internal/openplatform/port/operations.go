@@ -18,6 +18,11 @@ const SchemaVersion = "v1"
 type OperationID string
 
 const (
+	OperationCoreProducts             OperationID = "audience.core_products.list"
+	OperationCoreMembers              OperationID = "audience.members.list"
+	OperationCoreMemberOperations     OperationID = "audience.member.operations.get"
+	OperationCoreMemberHistory        OperationID = "audience.member.history.list"
+	OperationCorePushRecord           OperationID = "audience.push.record"
 	OperationCapabilitiesList         OperationID = "platform.capabilities.list"
 	OperationCustomerResolve          OperationID = "customer.resolve"
 	OperationCustomerContext          OperationID = "customer.context.get"
@@ -37,6 +42,11 @@ const (
 type Capability string
 
 const (
+	CapabilityCoreProductRead          Capability = "audience.product.read"
+	CapabilityCoreMemberRead           Capability = "audience.member.read"
+	CapabilityCoreMemberOperationsRead Capability = "audience.member.operations.read"
+	CapabilityCoreMemberHistoryRead    Capability = "audience.member.history.read"
+	CapabilityCorePushWrite            Capability = "audience.push.write"
 	CapabilityPlatformCapabilitiesRead Capability = "platform.capabilities.read"
 	CapabilityCustomerResolve          Capability = "customer.resolve"
 	CapabilityCustomerRead             Capability = "customer.read"
@@ -85,6 +95,11 @@ func OperationCatalog() []Descriptor {
 		{OperationID: OperationRadarClicks, RESTMethod: "GET", RESTPath: "/open/v1/radar/clicks", MCPTool: "list_radar_clicks", Capability: CapabilityRadarClickRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationRadarLinks, RESTMethod: "GET", RESTPath: "/open/v1/radar/links", MCPTool: "list_radar_links", Capability: CapabilityRadarLinkRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
 		{OperationID: OperationChatRecords, RESTMethod: "GET", RESTPath: "/open/v1/chat-records", MCPTool: "list_chat_records", Capability: CapabilityChatRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationCoreProducts, RESTMethod: "GET", RESTPath: "/open/v1/audience/core-products", MCPTool: "list_audience_core_products", Capability: CapabilityCoreProductRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationCoreMembers, RESTMethod: "GET", RESTPath: "/open/v1/audience/packages/{package_id}/members", MCPTool: "list_audience_members", Capability: CapabilityCoreMemberRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationCoreMemberOperations, RESTMethod: "GET", RESTPath: "/open/v1/audience/packages/{package_id}/members/{customer_id}/operations", MCPTool: "get_audience_member_operations", Capability: CapabilityCoreMemberOperationsRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationCoreMemberHistory, RESTMethod: "GET", RESTPath: "/open/v1/audience/packages/{package_id}/members/{customer_id}/history", MCPTool: "list_audience_member_history", Capability: CapabilityCoreMemberHistoryRead, RequiredScope: "read", SchemaVersion: SchemaVersion},
+		{OperationID: OperationCorePushRecord, RESTMethod: "POST", RESTPath: "/open/v1/audience/push-records", MCPTool: "record_audience_push", Capability: CapabilityCorePushWrite, RequiredScope: "write", SchemaVersion: SchemaVersion},
 	}
 }
 
