@@ -10,6 +10,8 @@ OneID：不涉及身份匹配、建客、关联或归属变更。持久化：Med
 
 `python3 scripts/check-retention-registry.py` 检查所有迁移声明、平台迁移账本和固定 River 表；新增表未登记、来源不匹配、业务表被套用具名可删策略都会失败。`--live-tables table-names.json` 接受只读取得的 public 表名 JSON 列表，额外的生产表拒绝放行。`cleanup` 表明是禁用、Owner Port 已有还是仍待平台配置，不能将“已登记”当作“清理已启用”。
 
+超管只读 `GET /api/admin/ops-retention/resources` 读取注册表绑定的资源覆盖目录，包含Owner、理由、精确入口与缺口；九项白名单执行健康单独呈现。修改清单后运行 `python3 scripts/check-retention-registry.py --write-runtime-snapshot`，默认checker拒绝摘要或内容漂移。目录是已提交资源清单，不伪称生产实时盘点；安全TTL授权失效与物理清理缺口分开。完整DTO与状态语义见[覆盖设计](../plans/2026-09-18-retention-coverage-design.md)。
+
 文件系统也有明确 `filesystem_prefixes` 清单。校验器扫描 `deploy/internal/cmd` 的受支持源码与 unit 配置，检查 `/opt`、`/etc`、`/var/lib`、`/var/log`、`/run` 绝对路径及 systemd `StateDirectory/LogsDirectory/CacheDirectory/RuntimeDirectory`；新增前缀未登记会失败。父容器如 `/opt/aicrm` 只允许精确自身，不会自动批准任意新增子目录。`--live-roots roots.json` 验证只读宿主盘点发现的真实存储前缀。动态拼接的任意路径不能仅靠静态扫描证明，发布时仍须真实目录盘点。分类器不执行 SQL，也不直接删除任何表。
 
 | 资源 | Owner / 保留规则 | 允许的动作 |

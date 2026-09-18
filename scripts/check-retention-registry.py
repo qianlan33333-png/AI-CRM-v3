@@ -7,6 +7,7 @@ deletability from a table name and never executes SQL or deletes data.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -25,6 +26,79 @@ COORDINATION |= {'wecom_customer_tag_refresh_watermarks', 'operation_cycle_runne
 PROJECTIONS |= {'wecom_customer_owner_observations', 'wecom_group_membership_facts', 'wecom_group_provider_facts', 'group_ops_directory_groups', 'wecom_customer_tag_observations', 'group_ops_operation_member_directory', 'hxc_registration_coverage', 'wecom_external_contact_profiles'}
 RESOURCE_PATH = re.compile(r'/(?:opt|etc|usr/local/libexec|var/lib|var/log|run)(?:/[A-Za-z0-9_.@+-]+)+')
 DIRECTIVE_ROOTS = {"StateDirectory": "/var/lib", "LogsDirectory": "/var/log", "CacheDirectory": "/var/cache", "RuntimeDirectory": "/run"}
+RUNTIME_SNAPSHOT = "internal/adminops/retention_resources.generated.json"
+
+
+def coverage_items(root: Path, registry: dict) -> list[dict]:
+    """Read-only coverage, never an input to a deletion executor.
+
+    Categories come from reviewed policies; executor bindings are exact resource
+    identities in the canonical registry, never a cache/log/name heuristic.
+    """
+    bindings = registry.get("coverage_bindings", {})
+    remaining = set(bindings)
+    result = []
+    for section, kind in (("tables", "table"), ("resources", "resource"), ("filesystem_prefixes", "filesystem_prefix")):
+        for name, item in sorted(registry[section].items()):
+            policy = item["policy"]
+            status, gap = "protected", ""
+            if policy == "protected_unclassified":
+                status, gap = "gap", "classification_unverified"
+            elif policy == "protected_mixed_payload":
+                status, gap = "gap", "mixed_payload_owner_split_required"
+            elif policy == "security_ttl":
+                status, gap = "gap", "security_ttl_physical_cleanup_missing"
+            elif policy in {"runtime_coordination", "owner_projection"}:
+                status = "owner_managed"
+            elif policy not in {"permanent", "never_delete_by_retention"}:
+                status = "binding_required"
+            entry = {"kind": kind, "name": name, "owner": item["owner"], "policy": policy,
+                     "reason": item["reason"], "source": item.get("source", "docs/governance/retention-registry.json#" + section + "/" + name),
+                     "cleanup_entrypoint": "", "policy_id": "", "coverage_status": status,
+                     "gap_code": gap, "authorization_expiry": "owner_security_ttl" if policy == "security_ttl" else "not_assessed"}
+            identity = kind + ":" + name
+            if identity in bindings:
+                binding = bindings[identity]
+                if set(binding) != {"coverage_status", "gap_code", "policy_id", "cleanup_entrypoint"}:
+                    raise ValueError("invalid coverage binding fields: " + identity)
+                if status == "binding_required":
+                    allowed = {"policy_available", "native_unobserved", "host_unobserved"}
+                elif policy in {"runtime_coordination", "owner_projection"}:
+                    allowed = {"gap"}
+                else:
+                    allowed = set()  # business, mixed, security and unknown stay protected
+                if binding["coverage_status"] not in allowed:
+                    raise ValueError("invalid coverage binding policy: " + identity)
+                if binding["coverage_status"] == "gap":
+                    if binding["gap_code"] != "owner_cleanup_contract_missing" or binding["policy_id"] or binding["cleanup_entrypoint"]:
+                        raise ValueError("invalid protected coverage gap: " + identity)
+                else:
+                    path, sep, symbol = binding["cleanup_entrypoint"].partition("#")
+                    if not sep or not symbol or Path(path).is_absolute() or ".." in Path(path).parts or not (root / path).is_file() or symbol not in (root / path).read_text():
+                        raise ValueError("coverage entrypoint missing: " + identity)
+                    if binding["gap_code"] or not binding["policy_id"]:
+                        raise ValueError("invalid executable coverage binding: " + identity)
+                entry.update(binding)
+                remaining.remove(identity)
+            if entry["coverage_status"] == "binding_required":
+                raise ValueError("explicit coverage binding required: " + identity)
+            result.append(entry)
+    if remaining:
+        raise ValueError("unknown coverage binding: " + ",".join(sorted(remaining)))
+    return result
+
+
+def runtime_snapshot(root: Path, registry: dict, raw: bytes) -> bytes:
+    value = {"registry_version": registry["version"], "registry_sha256": hashlib.sha256(raw).hexdigest(),
+             "inventory_scope": "committed_registry", "items": coverage_items(root, registry)}
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode()
+
+
+def validate_runtime_snapshot(root: Path, registry: dict, raw: bytes) -> list[str]:
+    target = root / RUNTIME_SNAPSHOT
+    if not target.is_file() or target.read_bytes() != runtime_snapshot(root, registry, raw):
+        return ["runtime coverage catalog drift; run python3 scripts/check-retention-registry.py --write-runtime-snapshot"]
+    return []
 
 
 def source_resource_paths(root: Path) -> set[str]:
@@ -120,6 +194,10 @@ def validate(root: Path, registry: dict, live_tables: list[str] | None = None, l
         if resources.get(name, {}).get("policy") != "never_delete_by_retention":
             errors.append(f"protected resource policy changed: {name}")
     errors.extend(validate_resources(root, registry, live_roots))
+    try:
+        coverage_items(root, registry)
+    except (ValueError, KeyError) as error:
+        errors.append(str(error))
     return errors
 
 
@@ -128,11 +206,20 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--live-tables", type=Path, help="JSON list of public table names from a read-only inventory")
     parser.add_argument("--live-roots", type=Path, help="JSON list of actual application storage roots from read-only host inventory")
+    parser.add_argument("--write-runtime-snapshot", action="store_true", help="regenerate only the embedded read-only coverage catalog after successful validation")
     args = parser.parse_args()
-    registry = json.loads((args.root / "docs/governance/retention-registry.json").read_text())
+    raw = (args.root / "docs/governance/retention-registry.json").read_bytes()
+    registry = json.loads(raw)
     live = json.loads(args.live_tables.read_text()) if args.live_tables else None
     live_roots = json.loads(args.live_roots.read_text()) if args.live_roots else None
     failures = validate(args.root, registry, live, live_roots)
+    if not failures:
+        expected = runtime_snapshot(args.root, registry, raw)
+        target = args.root / RUNTIME_SNAPSHOT
+        if args.write_runtime_snapshot:
+            target.write_bytes(expected)
+        else:
+            failures.extend(validate_runtime_snapshot(args.root, registry, raw))
     counts = {policy: sum(item["policy"] == policy for item in registry["tables"].values()) for policy in sorted(POLICIES)}
     print(json.dumps({"ok": not failures, "registered_tables": len(registry["tables"]), "classification_counts": counts, "errors": failures}, ensure_ascii=False))
     return 1 if failures else 0

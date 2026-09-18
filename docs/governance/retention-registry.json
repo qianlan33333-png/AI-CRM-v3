@@ -1,6 +1,128 @@
 {
   "version": 1,
   "unknown_policy": "deny_delete",
+  "coverage_bindings": {
+    "table:adminops_diagnostic_events": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_diagnostics",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_diagnostic_snapshots": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_snapshots",
+      "cleanup_entrypoint": "internal/adminops/store/snapshot_retention.go#CleanupDiagnosticSnapshotsWithin"
+    },
+    "table:adminops_inspection_reports": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_report_payloads",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_inspection_results": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_results",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_inspection_runs": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_runs",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_retention_runs": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_retention_history",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:media_attachment_upload_parts": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "media_upload_parts",
+      "cleanup_entrypoint": "internal/media/store/retention.go#CleanupExpiredUploadPartsWithin"
+    },
+    "table:config_runtime_usage": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "config_usage",
+      "cleanup_entrypoint": "internal/config/store/process_retention.go#CleanupProcessDetailWithin"
+    },
+    "table:message_archive_sync_runs": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "archive_sync_runs",
+      "cleanup_entrypoint": "internal/messagearchive/store/process_retention.go#CleanupProcessDetailWithin"
+    },
+    "table:river_job": {
+      "coverage_status": "native_unobserved",
+      "gap_code": "",
+      "policy_id": "river_terminal",
+      "cleanup_entrypoint": "internal/platform/jobqueue/river.go#NewRuntimeWithDiagnostics"
+    },
+    "resource:process_journals": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "resource:process_files": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "filesystem_prefix:/var/lib/aicrm/process-diagnostics": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "filesystem_prefix:/var/lib/aicrm/process-tmp": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "resource:release_directories": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "release_artifacts",
+      "cleanup_entrypoint": "deploy/post-release-retention.py#run"
+    },
+    "filesystem_prefix:/opt/aicrm/releases": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "release_artifacts",
+      "cleanup_entrypoint": "deploy/post-release-retention.py#run"
+    },
+    "table:admin_login_rate_limits": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    },
+    "table:wecom_provider_cache_metadata": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    },
+    "table:customer_directory_projection": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    },
+    "table:customer_timeline_projection": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    }
+  },
   "resources": {
     "release_directories": {
       "owner": "release",

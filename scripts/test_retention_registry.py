@@ -66,6 +66,31 @@ class RegistryTests(unittest.TestCase):
         self.value["filesystem_prefixes"]["/etc/aicrm"]["policy"] = "30_days"
         self.assertIn("unapproved filesystem deletion prefix: /etc/aicrm",registry.validate(ROOT,self.value))
 
+    def test_runtime_catalog_exactly_binds_registry_and_every_resource(self):
+        raw = (ROOT / "docs/governance/retention-registry.json").read_bytes()
+        self.assertEqual(registry.validate_runtime_snapshot(ROOT, self.value, raw), [])
+        catalog = json.loads(registry.runtime_snapshot(ROOT, self.value, raw))
+        self.assertEqual(len(catalog["items"]), sum(len(self.value[k]) for k in ("tables", "resources", "filesystem_prefixes")))
+        self.assertEqual(len({(x["kind"], x["name"]) for x in catalog["items"]}), len(catalog["items"]))
+        self.value["tables"]["orders"]["reason"] += " reviewed update"
+        self.assertTrue(registry.validate_runtime_snapshot(ROOT, self.value, raw))
+        self.assertTrue(registry.validate_runtime_snapshot(ROOT, self.value, raw + b"\n"))
+
+    def test_coverage_cannot_enable_protected_or_unknown_resource(self):
+        enabled = self.value["coverage_bindings"]["table:config_runtime_usage"]
+        for name in ("orders", "admin_sessions", "webhook_inbox", "payment_shop_materials", "not_a_real_table"):
+            with self.subTest(name=name):
+                value = copy.deepcopy(self.value)
+                value["coverage_bindings"]["table:" + name] = enabled
+                self.assertTrue(registry.validate(ROOT, value))
+
+    def test_coverage_executor_requires_explicit_existing_binding(self):
+        del self.value["coverage_bindings"]["table:config_runtime_usage"]
+        self.assertIn("explicit coverage binding required: table:config_runtime_usage", registry.validate(ROOT, self.value))
+        self.setUp()
+        self.value["coverage_bindings"]["table:config_runtime_usage"]["cleanup_entrypoint"] = "internal/config/store/missing.go#Cleanup"
+        self.assertIn("coverage entrypoint missing: table:config_runtime_usage", registry.validate(ROOT, self.value))
+
 
 if __name__ == "__main__":
     unittest.main()
