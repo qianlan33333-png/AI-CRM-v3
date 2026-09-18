@@ -69,6 +69,23 @@ class BridgeTests(unittest.TestCase):
                 bridge.project(cleanup, self.sha)
             path.unlink()
 
+    def test_interrupted_atomic_temporary_is_not_a_fact_but_counts_toward_capacity(self):
+        temporary = self.write('.pending-abcd1234', {'not': 'a published success receipt'})
+        report = bridge.project(cleanup, self.sha)
+        self.assertEqual(len(report['facts']), 1)
+        self.assertEqual(report['facts'][0]['sequence'], 1)
+        self.assertTrue(temporary.exists(), 'read-only bridge must not delete another writer artifact')
+        maximum = bridge.MAX_FACTS
+        bridge.MAX_FACTS = 1
+        try:
+            with self.assertRaisesRegex(ValueError, 'capacity'):
+                bridge.project(cleanup, self.sha)
+        finally:
+            bridge.MAX_FACTS = maximum
+        self.write('.publication-pending.json', {})
+        with self.assertRaisesRegex(ValueError, 'publication_pending'):
+            bridge.project(cleanup, self.sha)
+
     def test_symlink_hardlink_and_loose_receipt_permissions_rejected(self):
         path = self.directory / (self.sha + '.json')
         path.chmod(0o644)

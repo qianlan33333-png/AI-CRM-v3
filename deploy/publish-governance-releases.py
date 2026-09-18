@@ -69,6 +69,10 @@ def project(cleanup, sha):
         if count > MAX_FACTS:
             raise ValueError('release_evidence_capacity')
         name = path.name
+        # Match the success writer: interrupted atomic temporary files are not
+        # published evidence. They still count toward the directory bound.
+        if name.startswith('.pending-'):
+            continue
         if re.fullmatch(r'[a-f0-9]{40}\.json', name):
             receipt = cleanup.read_success_receipt(ROOT, name[:-5])
             revoked = False

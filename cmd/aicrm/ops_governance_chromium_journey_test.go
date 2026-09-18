@@ -274,6 +274,19 @@ try{
  await evaluate("[...document.querySelectorAll('[data-page-header-actions=governance] button')].find(b=>b.textContent==='刷新').click()");
  await poll(()=>evaluate("!!document.querySelector('.governance-freshness') && !document.querySelector('.governance-content').textContent.includes('等待执行结果')"),'only the completed command receipt clears its waiting indicator');
  assert.deepEqual(exceptions,[],'actual Host has no runtime exceptions');
+ assert.equal(await evaluate("fetch('/api/admin/ops-governance/outcomes',{credentials:'omit'}).then(r=>r.status)"),403);
+ await evaluate("document.querySelector('[data-tab=outcomes]').click()");await poll(()=>evaluate("document.querySelector('[data-outcomes-episode]')"),'real governance episode list');
+ assert.match(await evaluate("document.querySelector('.governance-content').textContent"),/全量|完整/);
+ const episodeID=await evaluate("Number(document.querySelector('[data-outcomes-episode]').dataset.outcomesEpisode)");
+ const episodeBefore=await evaluate("fetch('/api/admin/ops-governance/episodes/"+episodeID+"').then(r=>r.json())");
+ await evaluate("document.querySelector('[data-outcomes-episode]').click()");await poll(()=>evaluate("document.querySelector('dialog[open] .governance-attribution')"),'shared attribution drawer');
+ await evaluate("const f=document.querySelector('dialog[open] form');f.querySelector('[name=classification]').value='observation_gap';f.querySelector('[name=effort_minutes]').value='3';f.requestSubmit()");
+ await poll(()=>evaluate("fetch('/api/admin/ops-governance/episodes/"+episodeID+"').then(r=>r.json()).then(e=>e.classification==='observation_gap'&&e.effort_minutes===3)"),'attribution durable readback');
+ const staleAttribution={expected_version:episodeBefore.version,classification:'observation_gap',escaped_defect:'unclassified',change_failure:'unclassified',caused_by_release_sequence:null,root_cause:'unknown',remediation:'unknown',fault_started_at:null,fault_start_basis:'unknown',effort_minutes:4};
+ assert.equal(await evaluate("fetch('/api/admin/ops-governance/episodes/"+episodeID+"/attribution',{method:'PUT',headers:{'Content-Type':'application/json','X-CSRF-Token':"+JSON.stringify(csrf)+",'Idempotency-Key':crypto.randomUUID()},body:"+JSON.stringify(JSON.stringify(staleAttribution))+"}).then(r=>r.status)"),409,'attribution stale CAS must fail');
+ await evaluate("document.querySelector('dialog[open] .shared-detail-drawer__close').click()");
+ const outcomes=await evaluate("fetch('/api/admin/ops-governance/outcomes').then(r=>r.json())");assert.equal(outcomes.deployments.full_change_failure_rate_available,false);assert.ok(outcomes.effort_minutes_total>=3);assert.equal(outcomes.mttd.mean_seconds,null);
+ for(const width of [1440,390]){await call('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<600});await delay(100);assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth+2'),true,'outcomes fit '+width);}
  console.log('ops_governance_chromium: PASS — real Host, stale/unknown, authorization, CAS, drawer, manual scan, 1440/390px');
 }finally{
  ws?.close();if(child.exitCode===null&&!child.signalCode){child.kill('SIGTERM');await Promise.race([new Promise(r=>child.once('exit',r)),delay(3000)]);if(child.exitCode===null&&!child.signalCode){child.kill('SIGKILL');await delay(500);}}

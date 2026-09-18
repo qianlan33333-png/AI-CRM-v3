@@ -37,4 +37,4 @@ OneID：不涉及，没有客户、渠道身份或归属。持久化：AdminOps 
 - 恢复均值均为当前事实下、首次检测落在窗口内的 confirmed_defect cohort；不把开放样本的当前年龄混入均值。复发比例仅表示本机制历史内已确认的相同 fingerprint 复发。
 - 发布摘要 `generated_at` 是分母证据截止时间；长期不发布不要求伪造新成功收据。当前版本不匹配、正在发布未完成、来源冲突或无法读取时 `evidence_state=unavailable`、ratio=null。已导入的历史最小事实可以展示，但不是完整分母。
 - 固定桥接一次最多2048个收据文件、摘要不超过1MiB；超过上限明确失败，不截断或输出全量成功。继续增加发布频次前应扩展有界分页协议；应用表中的历史事实不会因此被删除。撤销序号只作为收据撤销，不擅自认定为失败部署。
-- root 集成待办：0193 的安装/就绪版本与实际Host PG夹具；API+UI以及需要的源码权威索引；在成功收据完成后调用桥接，`--lock-fd 9` 继承原锁；完整CI接入 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s deploy -p test_publish_governance_releases.py`。Go专项正常自动发现。未接线前不能声称生产页面或全量部署验收已完成。
+- root 集成：0193 安装/就绪校验、实际 Host 旅程、API 和共享治理页接入；源码权威索引绑定该 API。在成功收据完成后调用桥接，`--lock-fd 9` 继承原锁。Python bridge 测试由现有 preflight 自动发现，Go 专项正常自动发现；治理成效 DOM 接入 frontend lane。接线不等于验证或部署完成，证据分别留存。

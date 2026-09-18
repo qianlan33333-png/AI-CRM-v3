@@ -1677,6 +1677,28 @@
       ],
       "reason": "Implement actor-bound manual inspection completion receipts and explicit resource retention coverage after production acceptance. Preserve existing API and frozen donor behavior.",
       "review_reference": "User explicitly authorized complete runtime governance implementation and continued work. docs/plans/2026-09-18-governance-acceptance-corrections.md and docs/plans/2026-09-18-retention-coverage-design.md define scope. This exact-source declaration is not independent approval; current-head CI and review remain required."
+    },
+    {
+      "base_commit": "90a26fe786e5df275a9d7bee7ab5ad8f25a4e18f",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04",
+          "head_sha256": "8a207ce6872527823940c41d5da515f2c2b2f92f50dfd3653deb4ba5396dd2c5"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4",
+          "head_sha256": "cbd3d858f25a5eaa49f8bc8e68658294a429f0bce21f5daa3dc0d5096a21fc6e"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12",
+          "head_sha256": "3e6e9ee5585968cca514d1fc5bf449f2bab87ae7a2d3db414ed0efe5efd99ef6"
+        }
+      ],
+      "reason": "Expose permanent, audited governance episodes and explicit-coverage outcome metrics. Preserve frozen donors and all current application behavior.",
+      "review_reference": "User authorized the complete runtime governance plan and continued implementation. docs/plans/2026-09-18-governance-outcomes.md defines facts, attribution, security and validation. This declaration is not independent approval; exact-head complete CI is required."
     }
   ]
 }
