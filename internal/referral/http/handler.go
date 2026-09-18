@@ -1597,6 +1597,8 @@ func resultError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, referralport.ErrUnauthorized), errors.Is(err, distributionport.ErrUnauthorized):
 		writeError(w, http.StatusUnauthorized, "referral_session_required")
+	case errors.Is(err, referralport.ErrParticipationRequired):
+		writeError(w, http.StatusForbidden, "referral_participation_required")
 	case errors.Is(err, referralport.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found")
 	case errors.Is(err, referralport.ErrInvitationInvalid):

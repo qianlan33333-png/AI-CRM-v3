@@ -13,12 +13,17 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("referral record not found")
-	ErrConflict            = errors.New("referral command conflict")
-	ErrUnavailable         = errors.New("referral unavailable")
-	ErrUnauthorized        = errors.New("referral unauthorized")
-	ErrInvitationInvalid   = errors.New("referral invitation invalid")
-	ErrCampaignUnavailable = errors.New("referral campaign unavailable")
+	ErrNotFound     = errors.New("referral record not found")
+	ErrConflict     = errors.New("referral command conflict")
+	ErrUnavailable  = errors.New("referral unavailable")
+	ErrUnauthorized = errors.New("referral unauthorized")
+	// ErrParticipationRequired means a trusted customer has not yet confirmed
+	// this campaign (or their participation is no longer active). It is a
+	// business prerequisite for issuing an invitation, never an authentication
+	// failure.
+	ErrParticipationRequired = errors.New("referral participation required")
+	ErrInvitationInvalid     = errors.New("referral invitation invalid")
+	ErrCampaignUnavailable   = errors.New("referral campaign unavailable")
 	// CreateTeam reports safe, actionable conflicts without exposing storage
 	// constraint names or canonical-customer facts to delivery adapters.
 	ErrCampaignTeamLocked     = errors.New("referral campaign team configuration is locked")

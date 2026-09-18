@@ -174,6 +174,40 @@ func TestPostgreSQLReferralAcceptsAndFreezesActivityFacts(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLReferralUnjoinedCaptainHasNoInvitationDetailsUntilExplicitJoin(t *testing.T) {
+	h := newReferralPostgreSQLHarness(t)
+	defer h.cleanup()
+
+	campaign, captainTeam, _ := h.createCampaignWithTeams(t, "队长确认活动", 611, 612)
+	actor := referralActor(611, h.clock)
+	testKey := "test-key"
+	mine, err := h.service.MyCampaign(context.Background(), actor, campaign.ID)
+	if err != nil || !mine.IsCaptain || mine.CaptainTeam == nil || mine.CaptainTeam.ID != captainTeam.ID || mine.Participation != nil || mine.InvitationAvailable {
+		t.Fatalf("unjoined captain view=%+v err=%v", mine, err)
+	}
+	page, err := h.service.ListMyInvites(context.Background(), actor, campaign.ID, "", 50)
+	if err != nil || len(page.Items) != 0 || page.NextCursor != "" {
+		t.Fatalf("unjoined captain invitation details=%+v err=%v", page, err)
+	}
+	assertCount(t, h.pool, `SELECT count(*) FROM referral_participations WHERE campaign_id=$1 AND customer_id=$2`, 0, campaign.ID, 611)
+	assertCount(t, h.pool, `SELECT count(*) FROM referral_relationship_history WHERE customer_id=$1`, 0, 611)
+	if _, err = h.service.IssueInvitation(context.Background(), referralport.IssueInvitationCommand{Actor: actor, CampaignID: campaign.ID, IdempotencyKey: testKey}); !errors.Is(err, referralport.ErrParticipationRequired) {
+		t.Fatalf("unjoined captain issue invitation err=%v", err)
+	}
+
+	joined, err := h.service.JoinCampaign(context.Background(), referralport.JoinCampaignCommand{Actor: actor, CampaignID: campaign.ID, TeamID: captainTeam.ID, IdempotencyKey: testKey})
+	if err != nil || joined.Participation == nil || joined.Participation.TeamID != captainTeam.ID || !joined.InvitationAvailable {
+		t.Fatalf("captain explicit join=%+v err=%v", joined, err)
+	}
+	page, err = h.service.ListMyInvites(context.Background(), actor, campaign.ID, "", 50)
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("joined captain invitation details=%+v err=%v", page, err)
+	}
+	if _, err = h.service.IssueInvitation(context.Background(), referralport.IssueInvitationCommand{Actor: actor, CampaignID: campaign.ID, IdempotencyKey: "captain-issue-611"}); err != nil {
+		t.Fatalf("joined captain should issue invitation: %v", err)
+	}
+}
+
 func TestPostgreSQLReferralConcurrentAcceptsPreserveOneParticipationAndLastRelation(t *testing.T) {
 	h := newReferralPostgreSQLHarness(t)
 	defer h.cleanup()
