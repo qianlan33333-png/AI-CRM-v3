@@ -41,7 +41,7 @@ func InspectionCatalog() []opsport.CheckDefinition {
 		{ID: "retention.lifecycle", Owner: "adminops", Title: "数据生命周期清理"},
 	}
 	scopes := map[string]string{
-		"inspection.self":                "当前目录与最近完成检查数量、10分钟采集新鲜度；首次持久扫描或已到期小时收据之后最近24个:05到期小时的唯一报告，生成宽限2分钟；未决发送超过10分钟、unknown及近24小时最终失败；禁用通知为未覆盖，executed不等于送达证明",
+		"inspection.self":                "当前目录与最近完成检查数量、75分钟采集新鲜度；每小时:05执行一次持久扫描并为上一完整小时生成唯一报告，生成宽限2分钟；未决发送超过10分钟、unknown及近24小时最终失败；禁用通知为未覆盖，executed不等于送达证明",
 		"runtime.endpoints":              "本机API健康、准备状态、版本与未登录鉴权边界；登录后业务操作由完整浏览器旅程验证，不据此声称公网可达",
 		"runtime.host":                   "根文件系统容量与当前Worker进程堆和协程；不代表整机内存和公网可达",
 		"runtime.external_monitor":       "腾讯云已有免费外部监控的配置和送达证据；未接入不得声称覆盖整机故障",
@@ -72,7 +72,7 @@ func InspectionCatalog() []opsport.CheckDefinition {
 	for i := range defs {
 		defs[i].Scope = scopes[defs[i].ID]
 		if defs[i].MaxAge == 0 {
-			defs[i].MaxAge = 10 * time.Minute
+			defs[i].MaxAge = 75 * time.Minute
 		}
 	}
 	return defs

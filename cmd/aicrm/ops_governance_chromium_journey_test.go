@@ -34,7 +34,7 @@ func TestPostgreSQLOpsGovernanceChromiumJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().UTC().Add(-11 * time.Minute)
+	old := time.Now().UTC().Add(-76 * time.Minute)
 	service, err := adminops.NewInspectionService(f.application.pool.Native(), uow, []opsport.InspectionCollector{
 		opsport.CollectorFunc{ID: "runtime.endpoints", Read: func(context.Context, time.Time) (opsport.CheckObservation, error) {
 			return opsport.CheckObservation{Status: "ok", Code: "fixture_observed", ObservedAt: old}, nil
