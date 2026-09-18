@@ -1545,6 +1545,116 @@
       ],
       "reason": "Document the user-approved CRM core product, AI audience and customer push history interfaces. Refresh only the active V3 OpenAPI contract; frozen donors remain unchanged.",
       "review_reference": "User explicitly requested implementing CRM existing capability release and HXC integration on 2026-09-18. Product authorization only; exact changes remain visible for PR review and complete CI in PR #383. docs/plans/2026-09-18-crm-core-first-release.md"
+    },
+    {
+      "base_commit": "10c3e0a963c88d18ca8fe09fdd6df0b11d5cbd89",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "e333a3404d78b69aa00dd8378f55f457330c73aa70cc17d2c221f4f0524a74a4",
+          "head_sha256": "1e4514591e76dff478974a47b096e39325ea511b91b1bbd93aa60b7a7c96407a"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "9722589155f13ffdc2fab762644b75a7a62a5f964b62008e9d92058cf27f60b9",
+          "head_sha256": "1f49ae172a7bccb9c8a85261b0db41440a5e54e51be2684bdf1bd290d89fb734"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "57b2f22bb4f4c5ed1271d450ce7560526d9b9f898e99d34b72d32ed98721365e",
+          "head_sha256": "3e6eb04803e7efa7dfaf977901eb7f9a0e43ee2ed41abc9cc5e0e98318a9ad9e"
+        }
+      ],
+      "reason": "Document the user-approved runtime governance interfaces, align manual inspection acceptance with HTTP 202 and hourly limit HTTP 429, and register the config_usage/archive_sync_runs Owner policies in the read-only retention preview query. Only active V3 OpenAPI authority and its exact index/lock identities change; frozen donor bytes remain unchanged.",
+      "review_reference": "User authorized runtime governance implementation in this task on 2026-09-18; docs/plans/2026-09-18-runtime-governance-prd.md. This is product authorization and a reviewable source-change declaration only. Independent review is unverified and final current-head complete CI remains required."
+    },
+    {
+      "base_commit": "bb6b21891281477b2d781cac4a4054344ac5fefa",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "1e4514591e76dff478974a47b096e39325ea511b91b1bbd93aa60b7a7c96407a",
+          "head_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "1f49ae172a7bccb9c8a85261b0db41440a5e54e51be2684bdf1bd290d89fb734",
+          "head_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "3e6eb04803e7efa7dfaf977901eb7f9a0e43ee2ed41abc9cc5e0e98318a9ad9e",
+          "head_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12"
+        }
+      ],
+      "reason": "Complete the user-approved controlled API CPU diagnostic capability with fixed five-second capture, strict administrator/CSRF gates, bounded quotas and 720-hour reads. Only the active V3 OpenAPI authority and exact index/lock identities change.",
+      "review_reference": "User requested implementing the full runtime governance plan on 2026-09-18. docs/plans/2026-09-18-runtime-cpu-profiling.md records scope; this declaration is product authorization, not independent approval or complete CI evidence."
+    },
+    {
+      "base_commit": "e2e0f2505b59d41a8ec533ecd5537d90fea5682a",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "e333a3404d78b69aa00dd8378f55f457330c73aa70cc17d2c221f4f0524a74a4",
+          "head_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "9722589155f13ffdc2fab762644b75a7a62a5f964b62008e9d92058cf27f60b9",
+          "head_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "57b2f22bb4f4c5ed1271d450ce7560526d9b9f898e99d34b72d32ed98721365e",
+          "head_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12"
+        }
+      ],
+      "reason": "Integrate approved runtime inspections, retention previews and controlled API CPU profiling after the concurrent Chinese UI main update. Preserve all main contracts and frozen donor bytes.",
+      "review_reference": "User authorized implementation of the complete CRM runtime governance plan and continued work on 2026-09-18; docs/plans/2026-09-18-runtime-governance-prd.md and docs/plans/2026-09-18-runtime-cpu-profiling.md. This exact source change declaration is not independent approval; current-head complete CI is required."
+    },
+    {
+      "base_commit": "eaa86a082633ed1d021bf5eb4d10c9d0cda91fb1",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "e333a3404d78b69aa00dd8378f55f457330c73aa70cc17d2c221f4f0524a74a4",
+          "head_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "9722589155f13ffdc2fab762644b75a7a62a5f964b62008e9d92058cf27f60b9",
+          "head_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "57b2f22bb4f4c5ed1271d450ce7560526d9b9f898e99d34b72d32ed98721365e",
+          "head_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12"
+        }
+      ],
+      "reason": "Integrate the approved runtime governance and controlled CPU profile interfaces after the concurrent referral activity operations release; preserve the latest main behavior and frozen donor bytes.",
+      "review_reference": "User authorized the complete runtime governance implementation and continued work on 2026-09-18. docs/plans/2026-09-18-runtime-governance-prd.md records the business scope. This source-change declaration is not independent approval; exact-head complete CI remains required."
+    },
+    {
+      "base_commit": "7ef85d87e1a0c84ea3eaf0c3adaab85da9e437f4",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "e333a3404d78b69aa00dd8378f55f457330c73aa70cc17d2c221f4f0524a74a4",
+          "head_sha256": "82f4107fe3b19f8de0c4cadbb2e2a8d6b7f1e26851bf6c95e7f9ebbe3a5e6c04"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "9722589155f13ffdc2fab762644b75a7a62a5f964b62008e9d92058cf27f60b9",
+          "head_sha256": "c25df57ba7874ca6308011bb478160adc9b8aa8ca9b9da604fe1a40e6084caf4"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "57b2f22bb4f4c5ed1271d450ce7560526d9b9f898e99d34b72d32ed98721365e",
+          "head_sha256": "d68011f973afa5fa477305cf6abcfd14c8070205760455c20cf3dd1023f16b12"
+        }
+      ],
+      "reason": "Integrate the approved runtime governance and controlled CPU profile interfaces after the concurrent audience empty-package release; preserve latest main behavior and frozen donor bytes.",
+      "review_reference": "User authorized the complete runtime governance implementation and continued work on 2026-09-18. docs/plans/2026-09-18-runtime-governance-prd.md records the business scope. This source-change declaration is not independent approval; exact-head complete CI remains required."
     }
   ]
 }

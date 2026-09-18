@@ -147,6 +147,17 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 		methodNotAllowed(writer, http.MethodGet+", "+http.MethodHead)
 		return
 	}
+	if request.URL.Path == "/admin/ops" {
+		assets, ok := DistGovernanceAdminAssets(handler.distDir)
+		if !ok {
+			http.Error(writer, "运行治理页面资源不可用", http.StatusServiceUnavailable)
+			return
+		}
+		if err := handler.renderer.RenderGovernance(writer, AdminPageForRequest(request, "运行治理", "", "api.admin_ops_governance"), assets); err != nil {
+			http.Error(writer, "unable to render governance", http.StatusInternalServerError)
+		}
+		return
+	}
 	// The operating overview is a V3-owned server shell. It takes the admin
 	// root before generic frozen-document fallback; its Host reads the
 	// authenticated overview API and never relies on the donor home redirect.

@@ -57,8 +57,12 @@ scripts/run-go-with-donor-views.sh go test ./cmd/aicrm
 ```
 
 For a normal front-end command in a fresh P4 checkout, first prepare the exact
-views, then use the unchanged frozen package command. Do not edit
-`package.json` or `web/scripts/build.mjs` to create an implicit hook:
+views. The root npm execution toolchain is V3-owned since the security migration
+recorded in `docs/donor-manifests/v3-toolchain-ownership.json`. Its original two
+donor files remain preserved under `toolchain-v2` and checked against the original
+PR01/PR03 hashes. Only these two execution files leave the donor byte contract;
+all donor source, including `web/scripts/build.mjs`, remains frozen. Do not create
+implicit source-materialization hooks in the package or build commands:
 
 ```sh
 node scripts/check-donor-source-view-ignore.mjs

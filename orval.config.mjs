@@ -17,7 +17,8 @@ export default defineConfig({
       // AI Assistant client. Cleaning the whole directory here makes the two
       // generators delete each other's output.
       clean: false,
-      prettier: true,
+      formatter: 'prettier',
+      override: { aliasCombinedTypes: true },
     },
   },
   surveyPublic: {
@@ -36,7 +37,8 @@ export default defineConfig({
       target: './web/v3/generated/survey-public.ts',
       client: 'fetch',
       clean: false,
-      prettier: true,
+      formatter: 'prettier',
+      override: { aliasCombinedTypes: true },
     },
   },
 });

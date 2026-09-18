@@ -8,6 +8,7 @@ set -euo pipefail
 # read-contract test is authored for the V3 order adapter, not a donor payload.
 manifest="docs/donor-manifests/pr01-web.sha256"
 test -s "$manifest" || { echo "missing PR01 web donor manifest" >&2; exit 1; }
+python3 scripts/ci/check_toolchain_ownership.py
 
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -21,6 +22,8 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
 cat > "$scratch/v3-owned-overrides" <<'EOF'
+package.json
+package-lock.json
 web/scripts/e2e.mjs
 web/scripts/channel-center-characterization.mjs
 web/scripts/survey-editor-characterization.mjs

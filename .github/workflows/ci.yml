@@ -125,7 +125,8 @@ jobs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Bound the full serial race suite plus setup/vet; each package keeps its 15m timeout.
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:16
@@ -320,9 +321,51 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  governance:
+    # Always run, including main's verified-tree reuse: vulnerability data and
+    # PR review declarations are external facts, not immutable tree evidence.
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: setup
+        uses: ./.github/actions/governance-setup
+      - name: Validate governance rules with adversarial regression cases
+        run: python3 -m unittest discover -s scripts/ci -p test_governance.py -v
+      - id: impact
+        name: Map source changes to affected capabilities and existing journeys
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/governance_impact.py --out "$RUNNER_TEMP/governance/impact.json"
+      - name: Gate API compatibility, reachable vulnerabilities and redacted secret scan
+        if: ${{ always() && steps.checkout.outcome == 'success' && steps.setup.outcome == 'success' }}
+        env:
+          GOVERNANCE_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          base="$GOVERNANCE_BASE"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then base="HEAD^"; fi
+          python3 scripts/ci/governance_security.py scan --base "$base" --tools-dir "$RUNNER_TEMP/governance-tools" --out "$RUNNER_TEMP/governance/security"
+      - name: Upload exact-head impact and security evidence
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: governance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/governance
+          if-no-files-found: error
+          retention-days: 30
+
   check:
     if: always()
-    needs: [plan, preflight, backend, frontend, browser, archive-sdk]
+    needs: [plan, preflight, backend, frontend, browser, archive-sdk, governance]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -333,7 +376,10 @@ jobs:
       - name: Require full success or a verified identical merged tree
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
-        run: python3 scripts/ci/verification.py gate
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/governance_impact.py --gate
+          python3 scripts/ci/verification.py gate
       - name: Record the exact tested tree for main
         if: needs.plan.outputs.full == 'true'
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808

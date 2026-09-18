@@ -152,7 +152,7 @@ def commands(lane: str, report_dir: Path | None) -> list[list[str]]:
             sys.executable, "scripts/audit/test_check_new_exact_duplicates.py"
         ], [sys.executable, "scripts/audit/test_check_source_authority_changes.py"], [
             "bash", "scripts/audit/check-dedup-base-diff.sh", "."
-        ], ["bash", "scripts/test-configure-wecom-tag-catalog-mutation-runtime.sh"]]
+        ], ["bash", "scripts/test-configure-wecom-tag-catalog-mutation-runtime.sh"], [sys.executable, "scripts/test_retention_registry.py"], [sys.executable, "-m", "unittest", "discover", "-s", "deploy", "-p", "test_*.py"]]
     if lane == "backend":
         venv = venv_path(lane, report_dir)
         return [["bash", "scripts/run-donor-view-consumers.sh", "stage"], [
@@ -163,7 +163,7 @@ def commands(lane: str, report_dir: Path | None) -> list[list[str]]:
             "bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-race", "-count=1", "-timeout=15m", "./..."
         ]]
     if lane == "frontend":
-        return [["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/excel-batches-pagination-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
+        return [[sys.executable, "scripts/ci/check_toolchain_ownership.py"], ["npm", "run", "orval:check"], ["node", "scripts/ci/generated_clients_contract.mjs"], ["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/excel-batches-pagination-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
             "node", "scripts/verify-donor-sources.mjs"
         ], ["node", "--test", "scripts/donor-source-views.test.mjs"], [
             "bash", "scripts/run-donor-view-consumers.sh", "check"

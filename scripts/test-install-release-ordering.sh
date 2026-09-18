@@ -5,13 +5,12 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_installer="${repository_root}/deploy/install-release.sh"
 test_root="$(mktemp -d)"
 archives=()
-stale_lock_pid=""
-stale_lock_grandchild_pid_file=""
+lock_holder_pid=""
 
 cleanup() {
-  [[ -n "$stale_lock_pid" ]] && kill -KILL "$stale_lock_pid" 2>/dev/null || true
-  if [[ -n "$stale_lock_grandchild_pid_file" && -f "$stale_lock_grandchild_pid_file" ]]; then
-    kill -KILL "$(<"$stale_lock_grandchild_pid_file")" 2>/dev/null || true
+  if [[ -n "$lock_holder_pid" ]]; then
+    touch "$test_root/holder-release"
+    wait "$lock_holder_pid" 2>/dev/null || true
   fi
   rm -rf -- "$test_root"
   if ((${#archives[@]})); then
@@ -32,8 +31,7 @@ sha_failed=4444444444444444444444444444444444444444
 sha_first=5555555555555555555555555555555555555555
 sha_second=6666666666666666666666666666666666666666
 sha_recovered=7777777777777777777777777777777777777777
-sha_orphaned=8888888888888888888888888888888888888888
-sha_orphan_only=9999999999999999999999999999999999999999
+sha_invalid_lock=9999999999999999999999999999999999999999
 sha_missing_commerce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 sha_missing_archive=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 sha_missing_0066=cccccccccccccccccccccccccccccccccccccccc
@@ -57,6 +55,11 @@ sha_missing_0175=1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c
 sha_missing_0176=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d
 sha_missing_0177=1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e
 sha_missing_0185=f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3
+sha_missing_0186=f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4
+sha_missing_0187=f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5
+sha_missing_0188=f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6
+sha_missing_0189=f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7
+sha_missing_0190=f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -131,6 +134,7 @@ exec /usr/bin/readlink "$@"
 EOF
 cat > "$test_root/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${AICRM_TEST_LOG}.systemctl"
 if [[ "${1:-}" == start && "${2:-}" == aicrm-migrate.service ]]; then
   printf 'migration:%s\n' "${AICRM_TEST_LABEL:-unknown}" >> "$AICRM_TEST_LOG"
   [[ "${AICRM_TEST_FAIL_MIGRATION:-}" == 1 ]] && exit 1
@@ -143,24 +147,38 @@ exit 0
 EOF
 chmod 0755 "$test_root/bin"/*
 
-if command -v flock >/dev/null 2>&1; then
-  cp "$source_installer" "$test_root/install-release.sh"
-else
-  {
-    head -n 1 "$source_installer"
-    cat <<'EOF'
-test_lock_acquire() {
-  while ! mkdir "$AICRM_TEST_LOCK_DIR" 2>/dev/null; do /bin/sleep 0.01; done
-  trap 'cleanup_release_artifacts; rmdir "$AICRM_TEST_LOCK_DIR" 2>/dev/null || true' EXIT
-}
+# macOS lacks the flock CLI. Use the actual kernel flock on inherited fd 9
+# rather than a mkdir substitute, so configure/installer exclusion is tested.
+if ! command -v flock >/dev/null 2>&1; then
+  cat > "$test_root/bin/flock" <<'EOF'
+#!/usr/bin/env python3
+import fcntl
+import sys
+import time
+args = sys.argv[1:]
+wait = float(args[1]) if args[0] == '-w' else None
+fd = int(args[-1])
+if wait is None:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+else:
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                sys.exit(1)
+            time.sleep(0.01)
 EOF
-    tail -n +2 "$source_installer"
-  } | sed -e 's|flock 9|test_lock_acquire|' > "$test_root/install-release.sh"
+  chmod 0755 "$test_root/bin/flock"
 fi
+cp "$source_installer" "$test_root/install-release.sh"
 sed \
   -e "s|/opt/aicrm|$test_root/aicrm|g" \
   -e "s|/etc/aicrm|$test_root/etc-aicrm|g" \
   -e "s|/etc/systemd/system|$test_root/systemd|g" \
+  -e 's|flock -w 15 9|flock -w 2 9|' \
   "$test_root/install-release.sh" > "$test_root/install-release.rewritten.sh"
 mv "$test_root/install-release.rewritten.sh" "$test_root/install-release.sh"
 chmod 0755 "$test_root/install-release.sh"
@@ -222,6 +240,11 @@ make_release() {
     0177_survey_operation_legacy_parity.sql \
     0181_hxc_dashboard_views.sql \
     0185_referral_core.sql \
+    0186_adminops_inspections.sql \
+    0187_adminops_notification_effect.sql \
+    0188_adminops_retention.sql \
+    0189_owner_process_retention.sql \
+    0190_adminops_cpu_profiles.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -344,6 +367,28 @@ make_release() {
     : > "$release/deploy/$unit"
   done
   : > "$release/deploy/rollout-hxc-identity-v2.sh"
+  # Host/systemd behavior is tested separately; these deterministic fixtures
+  # verify ordering and that failed/stale deployments never run cleanup.
+  cat > "$release/deploy/install-host-maintenance.py" <<'PY'
+import os
+with open(os.environ["AICRM_TEST_LOG"], "a") as log:
+    log.write("host-install:" + os.environ["AICRM_TEST_LABEL"] + "\n")
+PY
+  cat > "$release/deploy/post-release-retention.py" <<'PY'
+import os
+with open(os.environ["AICRM_TEST_LOG"], "a") as log:
+    log.write("release-cleanup:" + os.environ["AICRM_TEST_LABEL"] + "\n")
+PY
+  cat > "$release/deploy/record-release-success.py" <<'PY'
+import os
+import sys
+with open(os.environ["AICRM_TEST_LOG"], "a") as log:
+    log.write(("receipt-recovery:" if "--revoke-incomplete" in sys.argv else "success-receipt:") + os.environ["AICRM_TEST_LABEL"] + "\n")
+if "--revoke-incomplete" in sys.argv:
+    sys.exit(1 if os.environ.get("AICRM_TEST_FAIL_RECEIPT_RECOVERY") == "1" else 0)
+if os.environ.get("AICRM_TEST_FAIL_SUCCESS_RECEIPT") == "1":
+    sys.exit(1)
+PY
   if [[ -n "$missing_release_file" ]]; then
     rm -f -- "$release/$missing_release_file"
   fi
@@ -373,7 +418,7 @@ run_release() {
     "$test_root/install-release.sh" "/tmp/aicrm-${sha}.tar.gz" "$sha" "$run_number" >> "$test_root/installer.log" 2>&1
 }
 
-for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered" "$sha_orphan_only"; do make_release "$sha"; done
+for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered" "$sha_invalid_lock"; do make_release "$sha"; done
 for missing_release in \
   "$sha_missing_operation_runner:bin/aicrm-operation-cycle-runner" \
   "$sha_missing_operation_result:bin/aicrm-operation-cycle-result" \
@@ -400,6 +445,11 @@ for missing_release in \
   "$sha_missing_0176:migrations/0176_survey_single_submission_claims.sql" \
   "$sha_missing_0177:migrations/0177_survey_operation_legacy_parity.sql" \
   "$sha_missing_0185:migrations/0185_referral_core.sql" \
+  "$sha_missing_0186:migrations/0186_adminops_inspections.sql" \
+  "$sha_missing_0187:migrations/0187_adminops_notification_effect.sql" \
+  "$sha_missing_0188:migrations/0188_adminops_retention.sql" \
+  "$sha_missing_0189:migrations/0189_owner_process_retention.sql" \
+  "$sha_missing_0190:migrations/0190_adminops_cpu_profiles.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \
@@ -444,7 +494,65 @@ if [[ -f "$test_root/install.log" ]] && grep -Fqx 'migration:tampered-operation-
   fail "tampered OperationCycle runner ran migrations"
 fi
 
+# Model the same kernel lock held by configure-ops-runtime (or any other live
+# process). A newer numbered release is not evidence that this owner is stale.
+cp "$test_root/etc-aicrm/aicrm.env" "$test_root/env-before-busy"
+python3 - "$test_root" <<'PY_HOLDER' &
+import fcntl
+from pathlib import Path
+import sys
+import time
+root = Path(sys.argv[1])
+with (root / 'aicrm/install-release.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    (root / 'holder-ready').touch()
+    while not (root / 'holder-release').exists():
+        time.sleep(0.01)
+PY_HOLDER
+lock_holder_pid=$!
+for _ in $(seq 1 200); do
+  [[ -f "$test_root/holder-ready" ]] && break
+  /bin/sleep 0.01
+done
+[[ -f "$test_root/holder-ready" ]] || fail "real lock holder did not start"
+set +e
+run_release "$sha_one" 100 busy
+busy_status=$?
+set -e
+[[ "$busy_status" == 75 ]] || fail "busy release did not fail explicitly"
+kill -0 "$lock_holder_pid" || fail "installer terminated a live lock holder"
+cmp -s "$test_root/env-before-busy" "$test_root/etc-aicrm/aicrm.env" || fail "busy installer changed runtime configuration"
+[[ ! -L "$test_root/aicrm/current" && ! -d "$test_root/aicrm/releases/$sha_one" ]] || fail "busy installer changed release selection/package"
+[[ ! -s "$test_root/install.log.systemctl" ]] || fail "busy installer changed services"
+[[ -f "/tmp/aicrm-${sha_one}.tar.gz" ]] || fail "busy installer consumed its retry archive"
+touch "$test_root/holder-release"
+wait "$lock_holder_pid"
+lock_holder_pid=""
+
+# A killed configurer leaves recovery evidence; changing SHA before recovery
+# would make its same-release rollback impossible. Reject without mutations.
+printf '{}\n' > "$test_root/etc-aicrm/.ops-runtime-recovery.json"
+set +e
+run_release "$sha_one" 100 recovery-required
+recovery_status=$?
+set -e
+[[ "$recovery_status" == 75 ]] || fail "unrecovered runtime configuration did not block installation"
+grep -qF 'recovery_required' "$test_root/installer.log" || fail "missing recovery-required explanation"
+cmp -s "$test_root/env-before-busy" "$test_root/etc-aicrm/aicrm.env" || fail "recovery-required installer changed runtime configuration"
+[[ ! -L "$test_root/aicrm/current" && ! -d "$test_root/aicrm/releases/$sha_one" ]] || fail "recovery-required installer staged or activated a release"
+[[ ! -s "$test_root/install.log.systemctl" && -f "/tmp/aicrm-${sha_one}.tar.gz" ]] || fail "recovery-required installer changed services or consumed archive"
+rm "$test_root/etc-aicrm/.ops-runtime-recovery.json"
+
+if AICRM_TEST_FAIL_RECEIPT_RECOVERY=1 run_release "$sha_one" 100 recovery-failed; then
+  fail "unrecoverable success receipt unexpectedly allowed release"
+fi
+cmp -s "$test_root/env-before-busy" "$test_root/etc-aicrm/aicrm.env" || fail "failed receipt recovery changed runtime configuration"
+[[ ! -L "$test_root/aicrm/current" && ! -s "$test_root/install.log.systemctl" ]] || fail "failed receipt recovery changed current or services"
+[[ ! -e "$test_root/aicrm/last-successful-run-number" ]] || fail "failed receipt recovery advanced success marker"
+make_release "$sha_one"
+
 run_release "$sha_one" 100 initial 1
+[[ "$(grep -E '^(host-install|migration|success-receipt|release-cleanup):initial$' "$test_root/install.log" | tr '\n' ' ')" == 'host-install:initial migration:initial success-receipt:initial release-cleanup:initial ' ]] || fail "maintenance install/migration/success receipt/cleanup ordering changed"
 [[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "successful run did not persist its run number"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_one" ]] || fail "initial release was not activated"
@@ -470,7 +578,22 @@ if PATH="$test_root/bin:$PATH" \
 fi
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "failed run advanced the deployment marker"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_manual" ]] || fail "failed run did not roll back"
+if grep -Eq '^(success-receipt|release-cleanup):(failed|stale)$' "$test_root/install.log"; then
+  fail "failed or stale release claimed success or ran cleanup"
+fi
 [[ -x "$test_root/aicrm/current/bin/aicrm-operation-cycle-runner" && -x "$test_root/aicrm/current/bin/aicrm-operation-cycle-result" ]] || fail "rollback did not retain the previous OperationCycle runner artifacts"
+
+# A healthy HTTP status alone cannot advance the deployment marker: the real
+# observer also checks the exact API/worker images and installed schema.
+make_release "$sha_failed"
+if AICRM_TEST_FAIL_SUCCESS_RECEIPT=1 run_release "$sha_failed" 101 receipt-failed; then
+  fail "unverified successful-release receipt unexpectedly succeeded"
+fi
+[[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "unverified receipt advanced deployment marker"
+[[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_manual" ]] || fail "unverified receipt did not roll back"
+if grep -q '^release-cleanup:receipt-failed$' "$test_root/install.log"; then
+  fail "unverified release ran cleanup"
+fi
 
 PATH="$test_root/bin:$PATH" \
   AICRM_TEST_LOCK_DIR="$test_root/install.lock" \
@@ -487,55 +610,25 @@ wait "$first_pid"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_second" ]] || fail "serialized deployments did not retain the newest release"
 [[ "$(grep '^migration:' "$test_root/install.log" | tail -n 2 | tr '\n' ' ')" == 'migration:first migration:second ' ]] || fail "second deployment entered the critical section before the first completed"
 
-if [[ -d /proc && -x "$(command -v flock)" ]]; then
-  stale_installer="/tmp/install-release-${sha_orphaned}.sh"
-  stale_lock_grandchild_pid_file="$test_root/stale-lock-grandchild.pid"
-  cat > "$stale_installer" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exec 9>"$AICRM_TEST_RELEASE_LOCK"
-flock 9
-bash -c 'sleep 300 & printf "%s\n" "$!" > "$AICRM_TEST_GRANDCHILD_PID_FILE"; wait' &
-wait
-EOF
-  chmod 0755 "$stale_installer"
-  AICRM_TEST_RELEASE_LOCK="$test_root/aicrm/install-release.lock" \
-    AICRM_TEST_GRANDCHILD_PID_FILE="$stale_lock_grandchild_pid_file" \
-    /usr/bin/bash "$stale_installer" ignored ignored 104 &
-  stale_lock_pid=$!
-  for _ in $(seq 1 100); do
-    [[ -f "$stale_lock_grandchild_pid_file" ]] && break
-    /bin/sleep 0.01
-  done
-  [[ -f "$stale_lock_grandchild_pid_file" ]] || fail "stale lock fixture did not start"
-  run_release "$sha_recovered" 105 recovered
-  wait "$stale_lock_pid" 2>/dev/null || true
-  stale_lock_pid=""
-  [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 105 ]] || fail "orphan lock recovery did not persist the newer run number"
-  [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_recovered" ]] || fail "orphan lock recovery did not activate the newer release"
-  [[ ! -e "/proc/$(<"$stale_lock_grandchild_pid_file")" ]] || fail "orphaned lock holder survived recovery"
-  rm -f -- "$stale_installer"
+# A valid wrapper shares its already-held open file description. Reopening
+# that path here would deadlock against the wrapper itself.
+(
+  exec 9>"$test_root/aicrm/install-release.lock"
+  PATH="$test_root/bin:$PATH" flock 9
+  AICRM_RELEASE_LOCK_HELD=1 AICRM_RELEASE_LOCK_FD=9 run_release "$sha_recovered" 105 inherited
+)
+[[ "$(<"$test_root/aicrm/last-successful-run-number")" == 105 ]] || fail "inherited lock did not retain run ordering"
+[[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_recovered" ]] || fail "inherited lock did not activate the release"
 
-  # Model the production failure after the obsolete installer has already
-  # exited: only a detached descendant and its inherited lock fd remain.
-  orphan_only_pid_file="$test_root/orphan-only.pid"
-  (
-    exec 9>"$test_root/aicrm/install-release.lock"
-    flock 9
-    /bin/sleep 300 &
-    printf '%s\n' "$!" > "$orphan_only_pid_file"
-  )
-  for _ in $(seq 1 100); do
-    [[ -f "$orphan_only_pid_file" ]] && break
-    /bin/sleep 0.01
-  done
-  [[ -f "$orphan_only_pid_file" ]] || fail "orphan-only lock fixture did not start"
-  stale_lock_grandchild_pid_file="$orphan_only_pid_file"
-  rm -f -- "$test_root/aicrm/last-successful-run-number"
-  run_release "$sha_orphan_only" 106 orphan-only
-  [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 106 ]] || fail "unmarked orphan-only recovery did not persist the newer run number"
-  [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_orphan_only" ]] || fail "orphan-only recovery did not activate the newer release"
-  [[ ! -e "/proc/$(<"$orphan_only_pid_file")" ]] || fail "orphan-only lock holder survived recovery"
-fi
+set +e
+(
+  exec 9>"$test_root/wrong.lock"
+  AICRM_RELEASE_LOCK_HELD=1 AICRM_RELEASE_LOCK_FD=9 run_release "$sha_invalid_lock" 106 wrong-inherited-lock
+)
+wrong_lock_status=$?
+set -e
+[[ "$wrong_lock_status" == 15 ]] || fail "inherited unrelated fd was accepted"
+[[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_recovered" ]] || fail "invalid inherited lock changed current"
+[[ -f "/tmp/aicrm-${sha_invalid_lock}.tar.gz" ]] || fail "invalid inherited lock consumed its retry archive"
 
 echo "install release ordering contract passed"

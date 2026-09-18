@@ -90,7 +90,9 @@ try {
   const firstAdminView=await api(`/api/admin/referral/campaigns/${first.c.id}`);
   assert.equal(firstAdminView.team_summaries?.[0]?.captain_name,'队长阿青',`admin team summary must resolve its captain: ${JSON.stringify(firstAdminView.team_summaries)}`);
   await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
-  await call('Page.navigate',{url:base+'/admin/referral'});await wait("document.body.textContent.includes('同行邀请季')");
+  await call('Page.navigate',{url:base+'/admin/referral'});
+  // Navigation can return before body exists; wait for the loaded activity card.
+  await wait(`location.pathname === '/admin/referral' && [...document.querySelectorAll('#referral-admin-root .referral-admin-campaign')].some(card=>card.textContent.includes(${JSON.stringify(first.c.name)}))`);
   assert.equal(await evaluate("document.querySelectorAll('main').length"),1,'one CRM main');
   const image=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(screenshots,'admin-1440.png'),Buffer.from(image.data,'base64'));
   // Open an activity before using its second-level operational controls.

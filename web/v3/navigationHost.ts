@@ -1,3 +1,5 @@
+import { installDiagnosticFeedback } from './diagnosticFeedbackHost';
+installDiagnosticFeedback();
 // The donor pages retain their own HTML authority. This Host only rebuilds
 // their already-authenticated sidebar from the V3 navigation document that
 // also feeds the server-rendered Webshell. It never reads business data or

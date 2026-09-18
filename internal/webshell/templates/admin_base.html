@@ -198,6 +198,11 @@
   {{with presentationAssets}}{{if .ConfirmationDialogCSS}}<link rel="stylesheet" href="{{.ConfirmationDialogCSS}}">{{end}}{{if .ConfirmationDialogScript}}<script type="module" src="{{.ConfirmationDialogScript}}"></script>{{end}}{{end}}
   <script type="module" src="{{.DistributionAssets.AdminJS}}"></script>
   {{end}}
+  {{if .Governance}}
+  <link rel="stylesheet" href="{{.GovernanceAssets.CSS}}">
+  <link rel="stylesheet" href="{{.GovernanceAssets.DetailDrawerCSS}}">
+  <script type="module" src="{{.GovernanceAssets.AdminJS}}"></script>
+  {{end}}
   {{if .Overview}}
   <link rel="stylesheet" href="{{.OverviewAssets.CSS}}">
   <link rel="stylesheet" href="{{.OverviewAssets.DetailDrawerCSS}}">

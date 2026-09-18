@@ -80,6 +80,7 @@ func (store *ProjectionStore) ListDiagnosticSnapshots(ctx context.Context) ([]ad
 	}
 	rows, err := tx.Query(ctx, `SELECT id,diagnostic_key,status,observed_at
 FROM adminops_diagnostic_snapshots
+WHERE observed_at>=transaction_timestamp()-interval '30 days'
 ORDER BY observed_at DESC,id DESC
 LIMIT 100`)
 	if err != nil {

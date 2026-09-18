@@ -63,6 +63,7 @@ type AdminNavGroup struct {
 // paths only; they do not imply that the corresponding business capability is
 // implemented.
 var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
+	"api.admin_ops_governance":                         {"api.admin_ops_governance", "/admin/ops"},
 	"api.admin_console_dashboard":                      {"api.admin_console_dashboard", "/admin"},
 	"api.admin_operating_overview":                     {"api.admin_operating_overview", AdminRootPath},
 	"api.admin_console_customers":                      {"api.admin_console_customers", "/admin/customers"},

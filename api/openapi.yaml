@@ -6,6 +6,351 @@ info:
 servers:
   - url: https://id-dev.youcangogogo.com
 paths:
+  /api/admin/ops-inspections:
+    get:
+      operationId: opsInspectionOverview
+      summary: 治理总览与检查结果
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-inspections/catalog:
+    get:
+      operationId: opsInspectionCatalog
+      summary: 检查范围与Owner
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-inspections/reports:
+    get:
+      operationId: opsInspectionReports
+      summary: 保留期内报告与独立发送状态
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-inspections/runs:
+    post:
+      operationId: opsInspectionRun
+      summary: 接受幂等手动巡查
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+          csrfHeader: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 8, maxLength: 160}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '202':
+          description: 已接受幂等巡查任务；接受不代表巡查完成，通过运行详情读取结果
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '429':
+          description: 已达到手动巡查的小时限额
+          headers:
+            Retry-After:
+              description: 重试前等待的秒数
+              schema: {type: integer, enum: [3600]}
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-inspections/runs/{id}:
+    get:
+      operationId: opsInspectionRunDetail
+      summary: 读取保留期内检查明细
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-inspections/issues/{id}:
+    patch:
+      operationId: opsInspectionIssueUpdate
+      summary: 按版本确认问题跟踪
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, minimum: 1}
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 8, maxLength: 160}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version, status]
+              properties:
+                version: {type: integer, minimum: 1}
+                status: {type: string, enum: [acknowledged]}
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-diagnostics:
+    get:
+      operationId: opsDiagnostics
+      summary: 按排查编号定位脱敏错误
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      parameters:
+        - name: correlation
+          in: query
+          schema: {type: string, maxLength: 200}
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-diagnostics/cpu-profiles: {"get":{"operationId":"opsCPUProfiles","summary":"查看720小时内的API CPU采样","tags":["AdminOps"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"经过权限校验的脱敏采样结果","content":{"application/json":{"schema":{"type":"object","required":["items","enabled","target","duration_seconds","worker_coverage"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/OpsCPUProfile"}},"enabled":{"type":"boolean"},"target":{"type":"string","enum":["api"]},"duration_seconds":{"type":"integer","enum":[5]},"worker_coverage":{"type":"string","enum":["not_supported"]}}}}}},"400":{"description":"固定空对象或不透明编号无效"},"403":{"description":"需要超级管理员权限及写操作CSRF"},"409":{"description":"已有采样或幂等冲突"},"410":{"description":"超过720小时，在线详情和文件不可读"},"429":{"description":"滚动小时次数或总存储配额已满"},"503":{"description":"采样未启用或不可用，结果未知时原键不重采"}}},"post":{"operationId":"captureOpsCPUProfile","summary":"超级管理员固定采集当前API进程5秒CPU","description":"需运行巡查与过程清理均启用；不接受路径、PID、时长或任意profile类型。每管理员每小时3次，全局6次，合计64MiB；结果不明时使用原Idempotency-Key查询，不换键重采。","tags":["AdminOps"],"security":[{"adminSession":[],"csrfHeader":[]}],"parameters":[{"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":8,"maxLength":160}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"maxProperties":0}}}},"responses":{"200":{"description":"经过权限校验的脱敏采样结果","content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpsCPUProfile"}}}},"400":{"description":"固定空对象或不透明编号无效"},"403":{"description":"需要超级管理员权限及写操作CSRF"},"409":{"description":"已有采样或幂等冲突"},"410":{"description":"超过720小时，在线详情和文件不可读"},"429":{"description":"滚动小时次数或总存储配额已满"},"503":{"description":"采样未启用或不可用，结果未知时原键不重采"}}}}
+  /api/admin/ops-diagnostics/cpu-profiles/{id}: {"get":{"operationId":"opsCPUProfile","summary":"查看未到期的采样结果","tags":["AdminOps"],"security":[{"adminSession":[]}],"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","pattern":"^[a-f0-9]{32}$"}}],"responses":{"200":{"description":"经过权限校验的脱敏采样结果","content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpsCPUProfile"}}}},"404":{"description":"采样不存在"},"400":{"description":"固定空对象或不透明编号无效"},"403":{"description":"需要超级管理员权限及写操作CSRF"},"409":{"description":"已有采样或幂等冲突"},"410":{"description":"超过720小时，在线详情和文件不可读"},"429":{"description":"滚动小时次数或总存储配额已满"},"503":{"description":"采样未启用或不可用，结果未知时原键不重采"}}}}
+  /api/admin/ops-diagnostics/cpu-profiles/{id}/download: {"get":{"operationId":"downloadOpsCPUProfile","summary":"下载脱敏CPU样本，超过720小时拒绝","tags":["AdminOps"],"security":[{"adminSession":[]}],"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","pattern":"^[a-f0-9]{32}$"}}],"responses":{"200":{"description":"已净化的pprof文件；不包含原始标签和注释","content":{"application/octet-stream":{"schema":{"type":"string","format":"binary"}}}},"404":{"description":"采样不存在"},"400":{"description":"固定空对象或不透明编号无效"},"403":{"description":"需要超级管理员权限及写操作CSRF"},"409":{"description":"已有采样或幂等冲突"},"410":{"description":"超过720小时，在线详情和文件不可读"},"429":{"description":"滚动小时次数或总存储配额已满"},"503":{"description":"采样未启用或不可用，结果未知时原键不重采"}}}}
+  /api/admin/ops-diagnostics/client-events:
+    post:
+      operationId: opsDiagnosticClientEvent
+      summary: 记录固定类别前端异常，不接受错误原文
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: {type: string, enum: [frontend_error, frontend_unhandled_rejection]}
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-retention:
+    get:
+      operationId: opsRetentionPolicies
+      summary: 固定生命周期策略目录
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-retention/runs:
+    get:
+      operationId: opsRetentionRuns
+      summary: 保留期内清理记录
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-retention/preview:
+    get:
+      operationId: opsRetentionPreview
+      summary: 已登记策略的只读候选统计
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      parameters:
+        - name: policy
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [ops_results, ops_runs, ops_diagnostics, ops_report_payloads, media_upload_parts, ops_retention_history, ops_snapshots, config_usage, archive_sync_runs]
+      responses:
+        '200':
+          description: 超级管理员可读的脱敏治理结果；未知、未覆盖与正常分别表达
+          headers:
+            X-AICRM-Diagnostic-ID:
+              description: 不透明的排查编号
+              schema: {type: string, pattern: "^[a-f0-9]{32}$"}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400':
+          description: 固定策略或请求字段无效
+        '403':
+          description: 权限或CSRF校验失败
+        '409':
+          description: 幂等摘要或记录版本冲突
+        '503':
+          description: 数据源不可用，不能据此认定正常
   /api/admin/access/users/refresh-names: {"post":{"operationId":"refreshAccessStaffNames","description":"Read current WeCom names and update existing Access accounts with transactional audit. Does not grant permissions or create users.","security":[{"adminSession":[],"csrfHeader":[]}],"responses":{"200":{"$ref":"#/components/responses/MutationOK"},"400":{"$ref":"#/components/responses/Error"},"401":{"$ref":"#/components/responses/Error"},"403":{"$ref":"#/components/responses/Error"},"409":{"$ref":"#/components/responses/Error"},"503":{"$ref":"#/components/responses/Error"}}}}
   /api/admin/config/ai-model: {"get":{"operationId":"getConfiguredAIModel","security":[{"adminSession":[]}],"responses":{"200":{"description":"Success","content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["provider","model","configured","version"],"properties":{"provider":{"type":"string"},"model":{"type":"string"},"configured":{"type":"boolean"},"version":{"type":"integer","minimum":0}}}}}},"401":{"$ref":"#/components/responses/Error"},"403":{"$ref":"#/components/responses/Error"},"503":{"$ref":"#/components/responses/Error"}}},"put":{"operationId":"saveConfiguredAIModel","security":[{"adminSession":[],"csrfHeader":[]}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["provider","model","expected_version"],"properties":{"provider":{"type":"string","enum":["deepseek","qwen","glm","kimi"]},"model":{"type":"string","minLength":1,"maxLength":200},"api_key":{"type":"string","maxLength":8192,"writeOnly":true,"description":"Blank retains the saved key only for the same provider."},"expected_version":{"type":"integer","minimum":0}}}}}},"responses":{"200":{"description":"Success","content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["provider","model","configured","version"],"properties":{"provider":{"type":"string"},"model":{"type":"string"},"configured":{"type":"boolean"},"version":{"type":"integer","minimum":0}}}}}},"400":{"$ref":"#/components/responses/Error"},"401":{"$ref":"#/components/responses/Error"},"403":{"$ref":"#/components/responses/Error"},"409":{"$ref":"#/components/responses/Error"},"503":{"$ref":"#/components/responses/Error"}}}}
   /api/admin/attachment-library/groups: {"get":{"operationId":"listAttachmentGroups","security":[{"adminSession":[]}],"responses":{"200":{"description":"Success","content":{"application/json":{"schema":{"type":"object","required":["items"],"properties":{"items":{"type":"array","items":{"type":"object","required":["name","count"],"properties":{"name":{"type":"string","maxLength":100},"count":{"type":"integer","minimum":0}}}}}}}}},"401":{"$ref":"#/components/responses/Error"},"403":{"$ref":"#/components/responses/Error"},"503":{"$ref":"#/components/responses/Error"}}}}
@@ -4526,6 +4871,7 @@ components:
       content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformV1Failure"}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    OpsCPUProfile: {"type":"object","required":["id","target","release_sha","duration_seconds","state","bytes","accepted_at","expires_at","replay"],"properties":{"id":{"type":"string","pattern":"^[a-f0-9]{32}$"},"target":{"type":"string","enum":["api"]},"release_sha":{"type":"string"},"duration_seconds":{"type":"integer","enum":[5]},"state":{"type":"string","enum":["sampling","outcome_unknown","completed","failed"]},"failure_code":{"type":"string","enum":["capture_failed","profile_busy","profile_too_large","profile_capacity"]},"bytes":{"type":"integer","minimum":0,"maximum":2097152},"accepted_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"},"completed_at":{"type":"string","format":"date-time"},"replay":{"type":"boolean"}}}
     CoreOperatingProduct: {"type": "object", "properties": {"id": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 5}, "package_id": {"type": "integer", "format": "int64", "minimum": 1}, "name": {"type": "string"}, "description": {"type": "string"}, "ai_context": {"type": "string"}, "product_reference": {"type": "string"}, "enabled": {"type": "boolean"}, "version": {"type": "integer", "format": "int64", "minimum": 1}, "updated_at": {"type": "string", "format": "date-time"}}}
     CoreOperatingPrompt: {"type": "object", "properties": {"draft": {"type": "string"}, "published_id": {"type": "integer", "format": "int64"}, "published_body": {"type": "string"}, "version": {"type": "integer", "format": "int64", "minimum": 1}}}
     CoreOperatingPromptVersion: {"type": "object", "properties": {"id": {"type": "integer", "format": "int64", "minimum": 1}, "body": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}}}
