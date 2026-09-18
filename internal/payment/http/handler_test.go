@@ -179,8 +179,8 @@ func (stub *h5OAuthStub) Enabled() bool { return stub.enabled }
 func (stub *h5OAuthStub) Start(_ context.Context, returnPath string) (string, error) {
 	stub.starts++
 	stub.returnPath = returnPath
-	if returnPath != "/pay/course-7" && returnPath != "/distribution?product_id=7&product_type=standard_product" && returnPath != "/s/term-31/pay?promotion_context=dpc_"+strings.Repeat("A", 43) {
-		return "", errors.New("invalid")
+	if returnPath != "/pay/course-7" && returnPath != "/distribution?product_id=7&product_type=standard_product" && returnPath != "/referral" && returnPath != "/referral?campaign=7" && returnPath != "/referral?campaign=7&invite=rfi_"+strings.Repeat("A", 43) && returnPath != "/s/term-31/pay?promotion_context=dpc_"+strings.Repeat("A", 43) {
+		return "", paymenth5oauth.ErrInvalid
 	}
 	return "https://open.weixin.qq.com/oauth", nil
 }
@@ -578,6 +578,19 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" {
 		t.Fatalf("code=%d location=%q", response.Code, response.Header().Get("Location"))
 	}
+	for _, returnPath := range []string{
+		"/referral",
+		"/referral?campaign=7",
+		"/referral?campaign=7&invite=rfi_" + strings.Repeat("A", 43),
+	} {
+		request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url="+url.QueryEscape(returnPath), nil)
+		request.Header.Set("User-Agent", "MicroMessenger")
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" || enabled.returnPath != returnPath {
+			t.Fatalf("referral return=%q oauth=%d location=%q actual=%q", returnPath, response.Code, response.Header().Get("Location"), enabled.returnPath)
+		}
+	}
 	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fdistribution%3Fproduct_id%3D7%26product_type%3Dstandard_product", nil)
 	request.Header.Set("User-Agent", "MicroMessenger")
 	response = httptest.NewRecorder()
@@ -593,6 +606,38 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" || enabled.returnPath != "/s/term-31/pay?promotion_context="+promotion {
 		t.Fatalf("promotion oauth=%d location=%q return=%q", response.Code, response.Header().Get("Location"), enabled.returnPath)
 	}
+}
+
+func TestH5OAuthStartMapsUnavailableStateReservationToServiceUnavailable(t *testing.T) {
+	handler, err := NewHandler(&appStub{}, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauth := &h5OAuthStub{enabled: true}
+	if err = handler.SetH5OAuth(h5OAuthStartErrorStub{oauth: oauth, err: paymenth5oauth.ErrUnavailable}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Freferral%3Fcampaign%3D7", nil)
+	request.Header.Set("User-Agent", "MicroMessenger")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"payment_h5_oauth_unavailable"`) || strings.Contains(response.Body.String(), "unavailable") == false {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+type h5OAuthStartErrorStub struct {
+	oauth *h5OAuthStub
+	err   error
+}
+
+func (stub h5OAuthStartErrorStub) Enabled() bool { return stub.oauth.Enabled() }
+func (stub h5OAuthStartErrorStub) Start(ctx context.Context, returnPath string) (string, error) {
+	_, _ = stub.oauth.Start(ctx, returnPath)
+	return "", stub.err
+}
+func (stub h5OAuthStartErrorStub) Complete(ctx context.Context, state, code string) (paymentsession.Issued, string, error) {
+	return stub.oauth.Complete(ctx, state, code)
 }
 
 func TestH5OAuthRejectsDuplicateAndUnknownQueryBeforeApplication(t *testing.T) {

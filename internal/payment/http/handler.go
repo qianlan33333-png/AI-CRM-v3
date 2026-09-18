@@ -260,7 +260,14 @@ func (handler *Handler) startH5OAuth(writer http.ResponseWriter, request *http.R
 	}
 	location, err := handler.h5OAuth.Start(request.Context(), query["return_url"])
 	if err != nil {
-		writeError(writer, http.StatusBadRequest, "invalid_request")
+		if errors.Is(err, paymenth5oauth.ErrInvalid) {
+			writeError(writer, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		// A valid canonical return can still fail while durably reserving its
+		// one-time OAuth state. Do not misreport that server-side condition as a
+		// caller error or expose its database/provider detail.
+		writeError(writer, http.StatusServiceUnavailable, "payment_h5_oauth_unavailable")
 		return
 	}
 	http.Redirect(writer, request, location, http.StatusFound)
