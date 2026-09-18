@@ -50,14 +50,48 @@ try {
     const c=await api('/api/admin/referral/campaigns',{name:`同行邀请季 ${i+1}`,description:'邀请好友，和战队一起前进。',cover_url:'',reward_rules:'前 3 名可获得活动纪念礼物，由管理员核实后登记。',starts_at:new Date(Date.now()-3600000).toISOString(),ends_at:new Date(Date.now()+86400000).toISOString()});
     const team=await api(`/api/admin/referral/campaigns/${c.id}/teams`,{name:i?'向阳战队':'追光战队',logo_url:'',captain_customer_id:actors[i].id});
     await api(`/api/admin/referral/campaigns/${c.id}/state`,{expected_version:c.version,target:'active'});
-    await api(`/api/v1/referral/campaigns/${c.id}/participations`,{team_id:team.id},actors[i]);
-    const link=await api(`/api/v1/referral/campaigns/${c.id}/invite`,{},actors[i]);
-    campaigns.push({c,team,link});
+    // Keep the first designated captain unjoined for the member-facing
+    // journey below. A captain assignment is not participation: the browser
+    // must show an explicit join action before it can issue an invitation.
+    if(i===0) campaigns.push({c,team,link:null});
+    else {
+      await api(`/api/v1/referral/campaigns/${c.id}/participations`,{team_id:team.id},actors[i]);
+      const link=await api(`/api/v1/referral/campaigns/${c.id}/invite`,{},actors[i]);
+      campaigns.push({c,team,link});
+    }
   }
   // Create more than one page of real, trusted-session participants without
   // manufacturing Referral facts. They join directly, so this does not change
   // the independent invitation-credit assertions below.
   for(const actor of actors.slice(3)) await api(`/api/v1/referral/campaigns/${campaigns[0].c.id}/participations`,{team_id:campaigns[0].team.id},actor);
+  // A verified, assigned captain can inspect their empty invitation details
+  // without a false 401, then must explicitly accept rules before the invite
+  // panel becomes available. This is deliberately browser-driven rather than
+  // only an API assertion.
+  {
+    const captain=actors[0], first=campaigns[0];
+    await cookie('aicrm_distribution_session',captain.session);await cookie('aicrm_distribution_csrf','referral-fixture-csrf');
+    await call('Emulation.setDeviceMetricsOverride',{width:375,height:850,deviceScaleFactor:1,mobile:true});
+    await call('Page.navigate',{url:`${base}/referral?campaign=${first.c.id}`});
+    await wait("document.querySelector('[data-testid=referral-join-captain-team]') && document.querySelector('[data-testid=referral-invite]')?.textContent.includes('加入战队并邀请')");
+    await wait("[...document.querySelectorAll('button')].some(b=>b.textContent==='参加后查看')");
+    const beforeDetail=networkRequests.length;
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='参加后查看').click()");
+    await wait("document.querySelector('[data-testid=referral-confirm-join]')");
+    assert.equal(networkRequests.slice(beforeDetail).some(url=>/\/invitations(?:\?|$)/.test(url)),false,'unjoined detail action must not request invitation details');
+    await evaluate("[...document.querySelectorAll('dialog button')].find(b=>b.textContent==='暂不参加').click()");
+    await wait("!document.querySelector('[data-testid=referral-accept-dialog]')");
+    const unjoinedImage=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(screenshots,'captain-unjoined-375.png'),Buffer.from(unjoinedImage.data,'base64'));
+    await evaluate("document.querySelector('[data-testid=referral-invite]').click()");
+    await wait("document.querySelector('[data-testid=referral-confirm-join]')");
+    await evaluate("document.querySelector('#referral-rule-check').click(); document.querySelector('[data-testid=referral-confirm-join]').click()");
+    await wait("document.querySelector('[data-testid=referral-invite-dialog]') && document.querySelector('[data-testid=referral-invite]')?.textContent==='邀请好友'");
+    const captainURL=await evaluate("document.querySelector('[data-testid=referral-invite-url]')?.value");
+    assert.match(captainURL,/^https:\/\/127\.0\.0\.1:\d+\/referral\/invite\/rfi_[A-Za-z0-9_-]{43}$/);
+    first.link={url:captainURL};
+    const joinedImage=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(screenshots,'captain-joined-375.png'),Buffer.from(joinedImage.data,'base64'));
+    await evaluate("document.querySelector('[data-testid=referral-invite-dialog]').close()");
+  }
   for(let index=0;index<2;index++){
     await cookie('aicrm_distribution_session',actors[2].session);await cookie('aicrm_distribution_csrf','referral-fixture-csrf');
     await call('Emulation.setDeviceMetricsOverride',{width:index?430:375,height:850,deviceScaleFactor:1,mobile:true});

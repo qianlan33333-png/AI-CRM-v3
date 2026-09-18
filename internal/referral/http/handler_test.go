@@ -19,6 +19,7 @@ import (
 type publicStub struct {
 	previewCalls int
 	joinCalls    int
+	issueErr     error
 }
 
 func (s *publicStub) ListPublicCampaigns(context.Context) ([]referralport.CampaignSummary, error) {
@@ -36,7 +37,7 @@ func (s *publicStub) JoinCampaign(_ context.Context, _ referralport.JoinCampaign
 	return referralport.MyCampaign{}, nil
 }
 func (s *publicStub) IssueInvitation(context.Context, referralport.IssueInvitationCommand) (referralport.InvitationLink, error) {
-	return referralport.InvitationLink{}, nil
+	return referralport.InvitationLink{}, s.issueErr
 }
 func (s *publicStub) MyCampaign(context.Context, referralport.TrustedSessionActor, int64) (referralport.MyCampaign, error) {
 	return referralport.MyCampaign{}, nil
@@ -191,6 +192,33 @@ func TestJoinRequiresExplicitSameOriginCSRFAndTrustedSession(t *testing.T) {
 	handler.ServePublicHTTP(response, request)
 	if response.Code != http.StatusOK || public.joinCalls != 1 {
 		t.Fatalf("status=%d join=%d", response.Code, public.joinCalls)
+	}
+}
+
+func TestInvitationRequiresTrustedSessionAndActiveParticipation(t *testing.T) {
+	public := &publicStub{issueErr: referralport.ErrParticipationRequired}
+	handler := referralTestHandler(t, public)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/referral/campaigns/7/invite", nil)
+	request.Header.Set("Origin", "https://crm.example.test")
+	request.Header.Set("X-CSRF", "proof")
+	request.Header.Set("Idempotency-Key", strings.Repeat("k", 16))
+	request.AddCookie(&http.Cookie{Name: "csrf", Value: "proof"})
+	response := httptest.NewRecorder()
+	handler.ServePublicHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "referral_session_required") {
+		t.Fatalf("missing session status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/referral/campaigns/7/invite", nil)
+	request.Header.Set("Origin", "https://crm.example.test")
+	request.Header.Set("X-CSRF", "proof")
+	request.Header.Set("Idempotency-Key", strings.Repeat("k", 16))
+	request.AddCookie(&http.Cookie{Name: "csrf", Value: "proof"})
+	request.AddCookie(&http.Cookie{Name: "dist", Value: "trusted"})
+	response = httptest.NewRecorder()
+	handler.ServePublicHTTP(response, request)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "referral_participation_required") {
+		t.Fatalf("unjoined trusted customer status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
