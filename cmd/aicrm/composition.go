@@ -510,7 +510,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		// observer must never stop an otherwise valid CRM deployment.
 		opsProbe, _ = platformruntime.NewEndpointProbe(cfg.ListenAddress, cfg.ReleaseSHA)
 	}
-	opsInspections, err := adminops.NewInspectionService(pool.Native(), uow, opsInspectionCollectors(pool.Native(), effectRepository, opsRetention, opsProbe, overviewReadUoW, opsHostMaintenance, effectsQueues), effectRepository, adminops.InspectionOptions{ReleaseSHA: cfg.ReleaseSHA, NotificationTargetRef: cfg.Ops.TargetRef, NotificationEnabled: cfg.Ops.NotificationEnabled, DetailURL: cfg.PublicOrigin + "/admin/ops"})
+	opsInspections, err := adminops.NewInspectionService(pool.Native(), uow, opsInspectionCollectors(pool.Native(), effectRepository, opsRetention, opsProbe, overviewReadUoW, opsHostMaintenance, effectsQueues), effectRepository, adminops.InspectionOptions{ReleaseSHA: cfg.ReleaseSHA, NotificationTargetRef: cfg.Ops.TargetRef, NotificationEnabled: cfg.Ops.NotificationEnabled, DetailURL: cfg.PublicOrigin + "/admin/ops", WindowReader: effectRepository})
 	if err != nil {
 		return fail(err)
 	}
@@ -588,7 +588,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
 	opsRecord := func(c context.Context, o platformdiagnostics.Observation) error {
-		return opsInspections.RecordDiagnosticObservation(c, adminopsport.DiagnosticObservation{Component: "runtime", Code: o.Code, Correlation: o.Correlation, RouteTemplate: o.RouteTemplate, JobRef: o.JobRef, EffectRef: o.EffectRef})
+		return opsInspections.RecordDiagnosticObservation(c, adminopsport.DiagnosticObservation{Component: "runtime", Code: o.Code, Correlation: o.Correlation, RouteTemplate: o.RouteTemplate, JobRef: o.JobRef, EffectRef: o.EffectRef, JobAttempt: o.JobAttempt})
 	}
 	effectsRuntime, err := platformjobqueue.NewRuntimeWithDiagnostics(pool.Native(), effectWorkers, periodicJobs, cfg.ReleaseSHA, opsRecord, effectsQueues...)
 	if err != nil {

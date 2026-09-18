@@ -6,10 +6,16 @@ import (
 	"time"
 )
 
-// RetentionHealth evaluates each required policy independently. An old success,
-// an unrelated policy or an unfinished batch cannot hide a stopped cleaner.
+// RetentionHealth evaluates only the bound execution allowlist independently.
+// A fresh allowlist never implies complete resource coverage: coverage_* metrics
+// retain gaps even when every scheduled policy succeeds.
 func (s *RetentionService) RetentionHealth(ctx context.Context, at time.Time) (opsport.CheckObservation, error) {
-	o := opsport.CheckObservation{ObservedAt: at, Metrics: map[string]int64{}, Status: "ok", Code: "all_policies_fresh"}
+	metrics, err := s.coverageMetrics()
+	o := opsport.CheckObservation{ObservedAt: at, Metrics: metrics, Status: "ok", Code: "allowlist_policies_fresh"}
+	if err != nil {
+		o.Status, o.Code = "unknown", "coverage_catalog_invalid"
+		return o, err
+	}
 	if !s.enabled {
 		o.Status = "uncovered"
 		o.Code = "automatic_cleanup_disabled"

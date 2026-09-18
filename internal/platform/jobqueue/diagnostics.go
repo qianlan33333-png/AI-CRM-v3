@@ -2,9 +2,21 @@ package jobqueue
 
 import (
 	"context"
+	"time"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
-	"time"
+)
+
+const (
+	// River v0.24.0 reports each queue at startup and every ten minutes.
+	// Its public Config does not expose this cadence. The runtime contract test
+	// checks the actual producer config so a dependency upgrade cannot silently
+	// invalidate this observation window.
+	riverQueueReportInterval = 10 * time.Minute
+	// Allow startup jitter (up to one second), the ten-second report SQL timeout,
+	// and ordinary database/scheduler delays without hiding a missed report.
+	riverQueueReportGrace = 2 * time.Minute
 )
 
 // DiagnosticCounts uses scheduled_at, not creation age: future appointments
@@ -30,7 +42,9 @@ func DiagnosticCounts(ctx context.Context, pool *pgxpool.Pool, at time.Time) (ma
 }
 
 // Queue observations are advisory live worker evidence maintained by River.
-// They do not prove an external host can reach this machine.
+// A queue may be idle or paused and still report. Job completions are not a
+// heartbeat, and one queue's report cannot prove another expected queue is live.
+// These observations do not prove an external host can reach this machine.
 func WorkerDiagnosticCounts(ctx context.Context, pool *pgxpool.Pool, at time.Time, queues ...string) (map[string]int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -44,6 +58,7 @@ func WorkerDiagnosticCounts(ctx context.Context, pool *pgxpool.Pool, at time.Tim
 	if len(expected) == 0 {
 		expected = []string{OutboundQueue, OutboundWelcomeQueue, OutboundExcelQueue, OutboundMediaQueue, OpsInspectionQueue, OpsNotificationQueue, OpsRetentionQueue}
 	}
-	err := tx.QueryRow(ctx, `SELECT count(*) FILTER(WHERE q.name IS NOT NULL AND q.updated_at >= $1::timestamptz-interval '2 minutes'),count(*) FILTER(WHERE q.name IS NOT NULL AND q.updated_at < $1::timestamptz-interval '2 minutes'),count(*) FILTER(WHERE q.paused_at IS NOT NULL),count(*) FILTER(WHERE q.name IS NULL) FROM unnest($2::text[]) expected(name) LEFT JOIN river_queue q USING(name)`, at.UTC(), expected).Scan(&fresh, &stale, &paused, &missing)
+	cutoff := at.UTC().Add(-riverQueueReportInterval - riverQueueReportGrace)
+	err := tx.QueryRow(ctx, `SELECT count(*) FILTER(WHERE q.name IS NOT NULL AND q.updated_at >= $1::timestamptz),count(*) FILTER(WHERE q.name IS NOT NULL AND q.updated_at < $1::timestamptz),count(*) FILTER(WHERE q.paused_at IS NOT NULL),count(*) FILTER(WHERE q.name IS NULL) FROM unnest($2::text[]) expected(name) LEFT JOIN river_queue q USING(name)`, cutoff, expected).Scan(&fresh, &stale, &paused, &missing)
 	return map[string]int64{"expected_queues": int64(len(expected)), "fresh_queue_observations": fresh, "stale_queue_observations": stale, "missing_queue_observations": missing, "paused_queues": paused}, err
 }

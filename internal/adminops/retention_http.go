@@ -24,6 +24,15 @@ func (h *RetentionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
+	if path == "/api/admin/ops-retention/resources" && r.Method == http.MethodGet {
+		if r.URL.RawQuery != "" {
+			inspectionJSON(w, 400, map[string]string{"error": "invalid_request"})
+			return
+		}
+		out, e := h.service.Resources()
+		inspectionResponse(w, out, e)
+		return
+	}
 	if path == "/api/admin/ops-retention" && r.Method == http.MethodGet {
 		inspectionJSON(w, 200, map[string]any{"items": h.service.Policies()})
 		return

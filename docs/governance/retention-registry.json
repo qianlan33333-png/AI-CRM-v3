@@ -1,6 +1,128 @@
 {
   "version": 1,
   "unknown_policy": "deny_delete",
+  "coverage_bindings": {
+    "table:adminops_diagnostic_events": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_diagnostics",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_diagnostic_snapshots": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_snapshots",
+      "cleanup_entrypoint": "internal/adminops/store/snapshot_retention.go#CleanupDiagnosticSnapshotsWithin"
+    },
+    "table:adminops_inspection_reports": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_report_payloads",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_inspection_results": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_results",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_inspection_runs": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_runs",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:adminops_retention_runs": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "ops_retention_history",
+      "cleanup_entrypoint": "internal/adminops/retention_service.go#pruneOwn"
+    },
+    "table:media_attachment_upload_parts": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "media_upload_parts",
+      "cleanup_entrypoint": "internal/media/store/retention.go#CleanupExpiredUploadPartsWithin"
+    },
+    "table:config_runtime_usage": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "config_usage",
+      "cleanup_entrypoint": "internal/config/store/process_retention.go#CleanupProcessDetailWithin"
+    },
+    "table:message_archive_sync_runs": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "archive_sync_runs",
+      "cleanup_entrypoint": "internal/messagearchive/store/process_retention.go#CleanupProcessDetailWithin"
+    },
+    "table:river_job": {
+      "coverage_status": "native_unobserved",
+      "gap_code": "",
+      "policy_id": "river_terminal",
+      "cleanup_entrypoint": "internal/platform/jobqueue/river.go#NewRuntimeWithDiagnostics"
+    },
+    "resource:process_journals": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "resource:process_files": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "filesystem_prefix:/var/lib/aicrm/process-diagnostics": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "filesystem_prefix:/var/lib/aicrm/process-tmp": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "host_process_files",
+      "cleanup_entrypoint": "internal/platform/hostmaintenance/systemd.go#Run"
+    },
+    "resource:release_directories": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "release_artifacts",
+      "cleanup_entrypoint": "deploy/post-release-retention.py#run"
+    },
+    "filesystem_prefix:/opt/aicrm/releases": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "release_artifacts",
+      "cleanup_entrypoint": "deploy/post-release-retention.py#run"
+    },
+    "table:admin_login_rate_limits": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    },
+    "table:wecom_provider_cache_metadata": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    },
+    "table:customer_directory_projection": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    },
+    "table:customer_timeline_projection": {
+      "coverage_status": "gap",
+      "gap_code": "owner_cleanup_contract_missing",
+      "policy_id": "",
+      "cleanup_entrypoint": ""
+    }
+  },
   "resources": {
     "release_directories": {
       "owner": "release",
@@ -312,7 +434,7 @@
     "admin_sessions": {"owner": "access", "policy": "security_ttl", "source": "migrations/0003_access.sql", "reason": "Authorization keeps existing shorter expires_at/revocation/consumption rules; physical cleanup not yet connected to an Owner port. Historical attribution references must be retained.", "cleanup": "disabled"},
     "admin_user_roles": {"owner": "access", "policy": "permanent", "cleanup": "disabled", "reason": "保存领域业务对象、成员/归属关系、内容或来源凭据，Owner 读取/写入及引用关系持续使用；年龄本身不能使该业务事实失效。 核验字段：admin_user_id, role_code。", "source": "migrations/0003_access.sql", "classification_evidence": "docs/governance/retention-classification-review.json#tables/admin_user_roles"},
     "admin_users": {"owner": "access", "policy": "permanent", "cleanup": "disabled", "reason": "保存长期业务账户、分享/集成配置或密钥引用；授权撤销/轮换由 Owner 规则控制，不能用过程日志30天策略破坏现有访问合同。 核验字段：session_version, username, password_hash, display_name, wecom_userid, is_active, last_login_at。", "source": "migrations/0003_access.sql", "classification_evidence": "docs/governance/retention-classification-review.json#tables/admin_users"},
-    "adminops_diagnostic_events": {"owner": "adminops", "source": "migrations/0186_adminops_inspections.sql", "policy": "operational_detail_30d", "cleanup": "owner_port_available", "executor": "internal/adminops retention Owner", "reason": "Bounded process metadata/details; terminal 30-day Owner cleanup must preserve active work and commit aggregate counts in the same transaction."},
+    "adminops_diagnostic_events": {"owner": "adminops", "source": "migrations/0186_adminops_inspections.sql", "policy": "operational_detail_30d", "cleanup": "owner_port_available", "executor": "internal/adminops retention Owner", "reason": "Bounded diagnostic events; migration 0192 distinguishes request fanout and River attempts without extending the 720-hour retention. Business receipts remain outside this process cleanup."},
     "adminops_diagnostic_snapshots": {"owner": "adminops", "policy": "operational_detail_30d", "source": "migrations/0015_config_adminops.sql", "reason": "Diagnostic process snapshots; read TTL 30 days and bounded same-UoW Owner cleanup. Shared scheduling activation is separate.", "cleanup": "owner_port_available", "executor": "internal/adminops/port.SnapshotRetention"},
     "adminops_inspection_commands": {"owner": "adminops", "source": "migrations/0186_adminops_inspections.sql", "policy": "permanent", "reason": "Immutable manual inspection acceptance, actor audit and completion receipt prevent replay after River/run detail pruning."},
     "adminops_inspection_issue_actions": {"owner": "adminops", "source": "migrations/0186_adminops_inspections.sql", "policy": "permanent", "cleanup": "disabled", "reason": "Permanent issue ledger and optimistic-concurrency/idempotent action evidence; independent of disposable diagnostic detail."},

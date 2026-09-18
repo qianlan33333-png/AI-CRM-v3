@@ -33,6 +33,7 @@ type InspectionOptions struct {
 	NotificationEnabled   bool
 	DetailURL             string
 	Now                   func() time.Time
+	WindowReader          effectport.OpsWindowReader
 }
 type InspectionService struct {
 	pool       *pgxpool.Pool
@@ -371,10 +372,10 @@ func (s *InspectionService) RecordDiagnostic(ctx context.Context, component, cod
 	return s.RecordDiagnosticObservation(ctx, opsport.DiagnosticObservation{Component: component, Code: code, Correlation: correlation})
 }
 func (s *InspectionService) RecordDiagnosticObservation(ctx context.Context, o opsport.DiagnosticObservation) error {
-	if !safeInspectionCode.MatchString(o.Component) || !safeInspectionCode.MatchString(o.Code) || o.Correlation == "" || len(o.Correlation) > 200 || len(o.RouteTemplate) > 240 || (o.RouteTemplate != "" && !inspectionRouteTemplate.MatchString(o.RouteTemplate)) || (o.JobRef != "" && !inspectionJobRef.MatchString(o.JobRef)) || (o.EffectRef != "" && !inspectionEffectRef.MatchString(o.EffectRef)) {
+	if !safeInspectionCode.MatchString(o.Component) || !safeInspectionCode.MatchString(o.Code) || o.Correlation == "" || len(o.Correlation) > 200 || len(o.RouteTemplate) > 240 || (o.RouteTemplate != "" && !inspectionRouteTemplate.MatchString(o.RouteTemplate)) || (o.JobRef != "" && (len(o.JobRef) > 25 || !inspectionJobRef.MatchString(o.JobRef))) || (o.EffectRef != "" && (len(o.EffectRef) > 23 || !inspectionEffectRef.MatchString(o.EffectRef))) || o.JobAttempt < 0 || o.JobAttempt > 2147483647 || (o.JobAttempt > 0 && o.JobRef == "") {
 		return ErrInspectionInvalid
 	}
-	_, e := s.pool.Exec(ctx, `INSERT INTO adminops_diagnostic_events(component,code,correlation_digest,route_template,job_ref,effect_ref,occurred_at,release_sha) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`, o.Component, o.Code, string(effectport.Hash("ops-correlation-v1", o.Correlation)), o.RouteTemplate, o.JobRef, o.EffectRef, s.now().UTC(), s.options.ReleaseSHA)
+	_, e := s.pool.Exec(ctx, `INSERT INTO adminops_diagnostic_events(component,code,correlation_digest,route_template,job_ref,effect_ref,job_attempt,occurred_at,release_sha) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT ON CONSTRAINT adminops_diagnostic_event_identity DO NOTHING`, o.Component, o.Code, string(effectport.Hash("ops-correlation-v1", o.Correlation)), o.RouteTemplate, o.JobRef, o.EffectRef, o.JobAttempt, s.now().UTC(), s.options.ReleaseSHA)
 	return e
 }
 
@@ -450,7 +451,16 @@ func (s *InspectionService) PrepareReport(ctx context.Context, hour time.Time) (
 			if readErr != nil {
 				return nil, readErr
 			}
-			return reportMessage(hour, overview, s.options.DetailURL)
+			var window *effectport.OpsWindowCounts
+			// Owner reads are bounded and aggregate only. Failure is explicit in
+			// the frozen report while current health remains independently useful.
+			if s.options.WindowReader != nil {
+				counts, windowErr := s.options.WindowReader.ReadOpsWindowCounts(txctx, hour, hour.Add(time.Hour))
+				if windowErr == nil && counts.Started >= 0 && counts.Executed >= 0 {
+					window = &counts
+				}
+			}
+			return reportMessage(hour, overview, window, s.options.DetailURL)
 		})
 		return e
 	})
@@ -580,19 +590,30 @@ func (s *InspectionService) String() string {
 
 // reportMessage freezes the exact bytes sent to Feishu. It carries all check
 // statuses and bounded issue detail; business payloads are never serialized.
-func reportMessage(hour time.Time, o opsport.InspectionOverview, detailURL string) ([]byte, error) {
+func reportMessage(hour time.Time, o opsport.InspectionOverview, window *effectport.OpsWindowCounts, detailURL string) ([]byte, error) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "CRM 每小时巡查 · 窗口起点 %s\n当前观察新鲜：%t\n", hour.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:00"), o.Fresh)
-	fmt.Fprintf(&b, "采集读回时间：%s（累计计数和各指标窗口见详情）\n", o.ObservedAt.Format(time.RFC3339))
+	zone := time.FixedZone("CST", 8*3600)
+	fmt.Fprintf(&b, "CRM 每小时巡查 · 窗口 [%s, %s)\n当前观察新鲜：%t\n", hour.In(zone).Format("2006-01-02 15:04"), hour.Add(time.Hour).In(zone).Format("2006-01-02 15:04"), o.Fresh)
+	if window == nil {
+		b.WriteString("报告窗口外部效果流量：[unknown] 原窗口数据未取得，不以其他窗口替代\n")
+	} else {
+		fmt.Fprintf(&b, "报告窗口外部效果流量：开始尝试=%d，执行完成=%d（分别按开始、完成时间统计；非群内可见凭证）\n", window.Started, window.Executed)
+	}
+	fmt.Fprintf(&b, "当前状态采集读回：%s；以下为采集时积压或保留状态总数，不代表本小时新增故障；滚动指标另标窗口。\n", o.ObservedAt.Format(time.RFC3339))
 	for _, r := range o.Checks {
 		fmt.Fprintf(&b, "[%s] %s · %s", r.Status, r.Title, r.Code)
 		keys := make([]string, 0, len(r.Metrics))
 		for k := range r.Metrics {
+			// The separately queried report window is authoritative; the latest
+			// scan's preceding hour may differ after a delayed report attempt.
+			if r.ID == "effects.outcomes" && (k == "previous_hour_attempts" || k == "previous_hour_executed") {
+				continue
+			}
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			fmt.Fprintf(&b, " %s=%d", k, r.Metrics[k])
+			fmt.Fprintf(&b, " %s%s=%d", k, reportMetricWindow(k), r.Metrics[k])
 		}
 		b.WriteByte('\n')
 	}
@@ -615,4 +636,17 @@ func reportMessage(hour time.Time, o opsport.InspectionOverview, detailURL strin
 		return nil, ErrInspectionInvalid
 	}
 	return content, nil
+}
+
+func reportMetricWindow(key string) string {
+	switch {
+	case strings.HasSuffix(key, "_last_hour"):
+		return "（采集前60分钟）"
+	case strings.HasSuffix(key, "_last_24h"):
+		return "（采集前24小时）"
+	case key == "failed" || key == "retryable" || key == "final_failed" || key == "discarded_retained" || strings.HasSuffix(key, "_failed"):
+		return "（保留状态总数）"
+	default:
+		return ""
+	}
 }

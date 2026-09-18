@@ -1743,6 +1743,50 @@
       ],
       "reason": "Align the user-requested CRM audience APIs with the existing V1 OAuth operation catalog and standard response envelope. Only the active V3 OpenAPI and its source index/lock change; frozen donors remain unchanged.",
       "review_reference": "User explicitly requested fixing CRM API issues from the integration handoff on 2026-09-18. Product authorization only; exact diff remains subject to PR #389 review and complete CI. docs/plans/2026-09-18-core-audience-open-api.md"
+    },
+    {
+      "base_commit": "68eca45fd441759c4fa18d35e4730e4392200c8c",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "3e9871284b98d58489656d463e89b13be02d7e816f78c593340635ab46696329",
+          "head_sha256": "831310222caf7f8c40b2c61851c67a837661a7ff860b6c11cd59d760255eeb76"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "7ae90fdfcfe47cad4f6fc0b54768f2afd2eb27d07c1f1e17b56230f91c244e60",
+          "head_sha256": "dd1ae93ccca50ea37f7ed4f270401a80625e0eece4cbb527c12f8ca6a287c77d"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "bff78af8959431e69cc1eb6e2d4aff76a27fe5cbfbec3cb525d8417648eecd69",
+          "head_sha256": "312f75865752896031dc1605b09bf0a00be02c3a2e889ba7d3ac45272bcdff2d"
+        }
+      ],
+      "reason": "Integrate actor-bound inspection receipts and explicit retention coverage after the concurrent audience operations API release. Preserve the current main API and frozen donor behavior.",
+      "review_reference": "User authorized full runtime governance implementation and continued work. docs/plans/2026-09-18-governance-acceptance-corrections.md and docs/plans/2026-09-18-retention-coverage-design.md define scope. This source declaration is not independent approval; exact-head full CI remains required."
+    },
+    {
+      "base_commit": "f488616309957113b9583143654e7797cc40dc66",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "3e9871284b98d58489656d463e89b13be02d7e816f78c593340635ab46696329",
+          "head_sha256": "831310222caf7f8c40b2c61851c67a837661a7ff860b6c11cd59d760255eeb76"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "7ae90fdfcfe47cad4f6fc0b54768f2afd2eb27d07c1f1e17b56230f91c244e60",
+          "head_sha256": "dd1ae93ccca50ea37f7ed4f270401a80625e0eece4cbb527c12f8ca6a287c77d"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "bff78af8959431e69cc1eb6e2d4aff76a27fe5cbfbec3cb525d8417648eecd69",
+          "head_sha256": "312f75865752896031dc1605b09bf0a00be02c3a2e889ba7d3ac45272bcdff2d"
+        }
+      ],
+      "reason": "Preserve the current referral invitation behavior while integrating reviewed governance report windows, manual command completion, diagnostic identities and resource coverage. No frozen donor content changed.",
+      "review_reference": "User authorized continued full governance implementation. This is the source declaration only, not independent Owner approval. Exact-head full CI and production acceptance remain separate gates."
     }
   ]
 }

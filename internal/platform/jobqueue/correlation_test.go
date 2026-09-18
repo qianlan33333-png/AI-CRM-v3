@@ -34,7 +34,7 @@ func TestCorrelationSurvivesInsertionAndWorkerReleaseChange(t *testing.T) {
 		panic("recorder secret must not leak")
 	}
 	expected := errors.New("business failure")
-	err = middleware.Work(context.Background(), &rivertype.JobRow{ID: 7, Metadata: p.Metadata}, func(ctx context.Context) error {
+	err = middleware.Work(context.Background(), &rivertype.JobRow{ID: 7, Attempt: 3, Metadata: p.Metadata}, func(ctx context.Context) error {
 		got := diagnostics.FromContext(ctx)
 		if got.RequestID != input.RequestID || got.ReleaseSHA != middleware.Release || got.JobRef != "river_7" || got.EffectRef != "eer_9" {
 			t.Fatalf("correlation=%+v", got)
@@ -44,7 +44,7 @@ func TestCorrelationSurvivesInsertionAndWorkerReleaseChange(t *testing.T) {
 	if err != expected {
 		t.Fatalf("recording changed outcome: %v", err)
 	}
-	if observed.Correlation != input.RequestID || observed.Code != "durable_job_failed" {
+	if observed.Correlation != input.RequestID || observed.Code != "durable_job_failed" || observed.JobAttempt != 3 {
 		t.Fatalf("observation=%+v", observed)
 	}
 }

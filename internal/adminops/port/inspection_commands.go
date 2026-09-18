@@ -14,6 +14,16 @@ type ManualInspectionAcceptance struct {
 	Replay     bool      `json:"replay"`
 }
 
+// ManualInspectionCommand is the actor-bound permanent completion evidence.
+// Completion does not imply healthy checks, and its run details may expire.
+type ManualInspectionCommand struct {
+	State       string     `json:"state"`
+	JobID       int64      `json:"job_id"`
+	AcceptedAt  time.Time  `json:"accepted_at"`
+	RunID       *int64     `json:"run_id,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
 type ManualInspectionEnqueuer interface {
 	EnqueueManualInspection(context.Context, int64, string) (ManualInspectionAcceptance, error)
 }

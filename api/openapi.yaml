@@ -103,7 +103,7 @@ paths:
               additionalProperties: false
       responses:
         '202':
-          description: 已接受幂等巡查任务；接受不代表巡查完成，通过运行详情读取结果
+          description: 已接受幂等巡查任务；接受不代表巡查完成，通过 commands/{job_id} 读取本人的完成收据
           headers:
             X-AICRM-Diagnostic-ID:
               description: 不透明的排查编号
@@ -125,6 +125,46 @@ paths:
               schema: {type: integer, enum: [3600]}
         '503':
           description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-inspections/commands/{job_id}:
+    get:
+      operationId: opsInspectionCommandDetail
+      summary: 读取本人手动巡查命令的完成依据
+      description: 仅超级管理员可读取本人接受的命令。永久收据绑定任务及完成运行，不以其他巡查或排队成功推断完成；完成不代表检查正常，运行明细仍受30天保留期限制。
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 本人命令的最小接受或完成证据，不包含原始幂等键、摘要、操作者或错误内容
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [state, job_id, accepted_at]
+                properties:
+                  state: {type: string, enum: [accepted, completed]}
+                  job_id: {type: integer, format: int64, minimum: 1}
+                  accepted_at: {type: string, format: date-time}
+                  run_id: {type: integer, format: int64, minimum: 1}
+                  completed_at: {type: string, format: date-time}
+                oneOf:
+                  - properties: {state: {const: accepted}}
+                  - required: [run_id, completed_at]
+                    properties: {state: {const: completed}}
+        '400':
+          description: 任务编号无效
+        '403':
+          description: 未登录或不是超级管理员
+        '404':
+          description: 命令不存在或不属于当前操作者
+        '503':
+          description: 完成依据暂不可读取，不能认定完成
   /api/admin/ops-inspections/runs/{id}:
     get:
       operationId: opsInspectionRunDetail
@@ -294,6 +334,29 @@ paths:
           description: 幂等摘要或记录版本冲突
         '503':
           description: 数据源不可用，不能据此认定正常
+  /api/admin/ops-retention/resources:
+    get:
+      operationId: opsRetentionResources
+      summary: 已登记资源的生命周期分类与覆盖边界
+      description: 仅超级管理员可读。返回完整已提交登记簿及运行时策略绑定，不扫描数据库内容或主机文件，不执行清理。不接受查询参数；客户端在完整返回集内筛选分页。已排程不是清理成功，白名单执行健康不代表全资源覆盖，原生和主机执行必须另查证据。
+      tags: [AdminOps]
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: 只读登记分类、保护边界和覆盖缺口，不包含业务数据或凭据
+          headers:
+            Cache-Control:
+              schema: {type: string, const: 'private, no-store'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OpsRetentionCoverage'}
+        '400':
+          description: 不接受任何查询参数
+        '403':
+          description: 未登录或不是超级管理员
+        '503':
+          description: 登记快照不可读或不完整，不能认定已覆盖
   /api/admin/ops-retention/runs:
     get:
       operationId: opsRetentionRuns
@@ -4871,6 +4934,9 @@ components:
       content: {application/json: {schema: {$ref: "#/components/schemas/OpenPlatformV1Failure"}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    OpsRetentionResource: {"type":"object","additionalProperties":false,"required":["kind","name","owner","policy","reason","source","cleanup_entrypoint","policy_id","coverage_status","gap_code","authorization_expiry"],"properties":{"kind":{"type":"string","enum":["table","resource","filesystem_prefix"]},"name":{"type":"string","minLength":1},"owner":{"type":"string","minLength":1},"policy":{"type":"string","enum":["permanent","never_delete_by_retention","operational_detail_30d","report_payload_30d","temporary_upload_parts_30d","river_terminal_jobs_30d","30_days","verified_release_allowlist","security_ttl","protected_mixed_payload","protected_unclassified","owner_projection","runtime_coordination"]},"reason":{"type":"string","minLength":1},"source":{"type":"string","minLength":1},"cleanup_entrypoint":{"type":"string"},"policy_id":{"type":"string"},"coverage_status":{"type":"string","enum":["protected","owner_managed","scheduled","disabled","owner_not_bound","native_unobserved","host_unobserved","gap"],"description":"scheduled仅代表绑定和启用。native_unobserved和host_unobserved不代表执行成功。"},"gap_code":{"type":"string","enum":["","classification_unverified","mixed_payload_owner_split_required","security_ttl_physical_cleanup_missing","owner_cleanup_contract_missing","owner_port_not_bound","host_evidence_reader_not_bound"]},"authorization_expiry":{"type":"string","enum":["owner_security_ttl","not_assessed"],"description":"安全授权有效期与物理清理分离；not_assessed不代表有效或无过期规则。"}}}
+    OpsRetentionCoverageSummary: {"type":"object","additionalProperties":false,"required":["registered_tables","registered_resources","registered_filesystem_prefixes","gap_resources","protected_resources","owner_managed_resources","scheduled_resources","disabled_resources","unbound_resources","unobserved_resources","security_ttl_resources","mixed_payload_resources","unclassified_resources","coordination_resources"],"properties":{"registered_tables":{"type":"integer","minimum":0},"registered_resources":{"type":"integer","minimum":0},"registered_filesystem_prefixes":{"type":"integer","minimum":0},"gap_resources":{"type":"integer","minimum":0,"description":"包含unbound_resources，不能与其相加。"},"protected_resources":{"type":"integer","minimum":0},"owner_managed_resources":{"type":"integer","minimum":0},"scheduled_resources":{"type":"integer","minimum":0},"disabled_resources":{"type":"integer","minimum":0},"unbound_resources":{"type":"integer","minimum":0},"unobserved_resources":{"type":"integer","minimum":0},"security_ttl_resources":{"type":"integer","minimum":0},"mixed_payload_resources":{"type":"integer","minimum":0},"unclassified_resources":{"type":"integer","minimum":0},"coordination_resources":{"type":"integer","minimum":0}}}
+    OpsRetentionCoverage: {"type":"object","additionalProperties":false,"required":["registry_version","registry_sha256","inventory_scope","automatic_cleanup_enabled","allowlist_policy_count","summary","items"],"properties":{"registry_version":{"type":"integer","const":1},"registry_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"inventory_scope":{"type":"string","const":"committed_registry"},"automatic_cleanup_enabled":{"type":"boolean"},"allowlist_policy_count":{"type":"integer","minimum":0},"summary":{"$ref":"#/components/schemas/OpsRetentionCoverageSummary"},"items":{"type":"array","minItems":1,"items":{"$ref":"#/components/schemas/OpsRetentionResource"}}}}
     OpsCPUProfile: {"type":"object","required":["id","target","release_sha","duration_seconds","state","bytes","accepted_at","expires_at","replay"],"properties":{"id":{"type":"string","pattern":"^[a-f0-9]{32}$"},"target":{"type":"string","enum":["api"]},"release_sha":{"type":"string"},"duration_seconds":{"type":"integer","enum":[5]},"state":{"type":"string","enum":["sampling","outcome_unknown","completed","failed"]},"failure_code":{"type":"string","enum":["capture_failed","profile_busy","profile_too_large","profile_capacity"]},"bytes":{"type":"integer","minimum":0,"maximum":2097152},"accepted_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"},"completed_at":{"type":"string","format":"date-time"},"replay":{"type":"boolean"}}}
     CoreOperatingProduct: {"type": "object", "properties": {"id": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 5}, "package_id": {"type": "integer", "format": "int64", "minimum": 1}, "name": {"type": "string"}, "description": {"type": "string"}, "ai_context": {"type": "string"}, "product_reference": {"type": "string"}, "enabled": {"type": "boolean"}, "version": {"type": "integer", "format": "int64", "minimum": 1}, "updated_at": {"type": "string", "format": "date-time"}}}
     CoreOperatingPrompt: {"type": "object", "properties": {"draft": {"type": "string"}, "published_id": {"type": "integer", "format": "int64"}, "published_body": {"type": "string"}, "version": {"type": "integer", "format": "int64", "minimum": 1}}}
