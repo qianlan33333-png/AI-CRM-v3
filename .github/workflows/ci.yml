@@ -125,7 +125,8 @@ jobs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Bound the full serial race suite plus setup/vet; each package keeps its 15m timeout.
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:16
