@@ -101,7 +101,18 @@ async function exerciseGroupManagement(cdp) {
   }
   // Reload to exercise persisted memberships and select only the current page.
   await cdp.call('Page.reload');
-  await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2 && !document.querySelector('input[aria-label=\"选择当前页全部素材\"]')?.disabled",`${kind} selectable rows`);
+  await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2 && !document.querySelector('[aria-label=\"选择当前页全部素材\"],[aria-label=\"全选当前页素材\"]')?.disabled",`${kind} selectable rows`);
+  if(kind==='image') {
+   await cdp.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+   const layout=await value(cdp,`(()=>{const box=document.querySelector('input[aria-label^="选择素材 "]');const row=box.closest('tr');const bar=document.querySelector('[data-material-group-actions]');const search=document.querySelector('[data-image-library-query]');const transfer=[...bar.querySelectorAll('button')].find(b=>b.textContent==='转移分组');return {left:row.cells[0].contains(box)&&box.parentElement.firstElementChild===box,pure:!row.cells[1].querySelector('button,input,select'),inline:bar.parentElement===search.parentElement,disabled:transfer.disabled}})()`);
+   if(!Object.values(layout).every(Boolean))throw Error('compact image selection layout '+JSON.stringify(layout));
+   const compactImage=await cdp.call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+   await fs.writeFile(path.join(path.dirname(screenshot),'media-compact-selection.png'),Buffer.from(compactImage.data,'base64'));
+   await value(cdp,`document.querySelector('[aria-label="全选当前页素材"]').click();true`);
+   if(!await value(cdp,`[...document.querySelectorAll('input[aria-label^="选择素材 "]')].every(b=>b.checked)`))throw Error('select current image page failed');
+   await value(cdp,`document.querySelector('[aria-label="全选当前页素材"]').click();true`);
+   if(!await value(cdp,`[...document.querySelectorAll('input[aria-label^="选择素材 "]')].every(b=>!b.checked)`))throw Error('clear current image selection failed');
+  }
   await value(cdp,"(()=>{const checkbox=document.querySelector('input[aria-label^=\"选择素材 \"]');const row=checkbox.closest('tr,[data-material-library-id]');[...row.querySelectorAll('button')].find(b=>b.textContent.trim()==='编辑').click();return true})()");
   await wait(cdp,"Boolean(document.querySelector('[data-material-group-select]'))",`${kind} edit group selector`);
   if(Number(await value(cdp,"document.querySelector('[data-material-group-select]').value"))!==groupID)throw Error(`${kind} edit lost existing group`);
@@ -109,7 +120,7 @@ async function exerciseGroupManagement(cdp) {
   await wait(cdp,"!document.querySelector('[data-material-group-select]')",`${kind} edit saved with group`);
   await cdp.call('Page.reload');
   await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2",`${kind} edited group readback`);
-  await value(cdp,"document.querySelector('input[aria-label=\"选择当前页全部素材\"]').click();[...document.querySelectorAll('button')].find(b=>b.textContent==='移动到分组'&&!b.hidden).click();true");
+  await value(cdp,"document.querySelector('[aria-label=\"选择当前页全部素材\"],[aria-label=\"全选当前页素材\"]').click();[...document.querySelectorAll('button')].find(b=>['移动到分组','转移分组'].includes(b.textContent)&&!b.hidden).click();true");
   await wait(cdp,"Boolean(document.querySelector('dialog[open] select'))",`${kind} batch move dialog`);
   await value(cdp,"document.querySelector('dialog[open] select').value='';document.querySelector('dialog[open] form').requestSubmit();true");
   await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.some(g=>g.id===${groupID}&&g.count===0))`,`${kind} batch ungroup persisted`);

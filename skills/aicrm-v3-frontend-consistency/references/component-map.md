@@ -199,3 +199,5 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 ### 素材分组管理
 
 `web/v3/materialGroupManagement.ts`：三个素材工作台共用分组目录、分组表单、单个/当前页批量移动与所属分组选择；组合 `MaterialGroupSidebar`、`pageHeaderActions` 和 `selectionDialog`。Media API 独占领域写入。不得把元数据分组操作当作 Provider 素材刷新。
+
+图片素材页通过 `GroupManagement` 可选 toolbar 与 selectionSlot 复用同一批量选择状态：勾选在缩略图前、所属分组纯文本、搜索栏内全选/转移；附件与小程序默认布局不变。
