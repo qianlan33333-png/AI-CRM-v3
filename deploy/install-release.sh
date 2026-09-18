@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Privileged Python hooks must not mutate the immutable package with import
+# caches; its success receipt and cleanup both verify the complete file set.
+export PYTHONDONTWRITEBYTECODE=1
 
 archive="${1:-}"
 release_sha="${2:-}"
@@ -327,6 +330,7 @@ for standard_component_asset in \
   }
 done
 test -f "$release_dir/release-files.sha256"
+test -f "$release_dir/deploy/record-release-success.py"
 # Privileged deployment hooks must never execute application-writable code.
 # Seal the package before its final checksum verification, including resumes.
 chown -R root:root "$release_dir"
@@ -363,6 +367,13 @@ if [[ -n "$release_run_number" && -e "$last_successful_run_file" ]]; then
   fi
 elif [[ -z "$release_run_number" ]]; then
   echo "installing release ${release_sha} without a CI run number; serialized but not stale-run guarded" >&2
+fi
+
+# Revoke an interrupted success claim before changing env/current/services.
+# This only restores root publication metadata; it never starts the failed SHA.
+if ! python3 "$release_dir/deploy/record-release-success.py" --sha "$release_sha" --revoke-incomplete; then
+  echo "release success metadata recovery_required" >&2
+  exit 18
 fi
 
 if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
@@ -618,6 +629,16 @@ fi
 if ! systemctl enable --now aicrm-hxc-dashboard-refresh.timer; then
   rollback
   exit 12
+fi
+# A same-schema package is a rollback only after this observer verifies the
+# real API readiness and both process images. It inherits the same fd 9 lock.
+success_receipt_args=(--sha "$release_sha")
+if [[ -n "$release_run_number" ]]; then
+  success_receipt_args+=(--run-number "$release_run_number")
+fi
+if ! python3 "$release_dir/deploy/record-release-success.py" "${success_receipt_args[@]}"; then
+  rollback
+  exit 18
 fi
 if [[ -n "$release_run_number" ]]; then
   next_run_file="$(mktemp "${last_successful_run_file}.XXXXXX")"

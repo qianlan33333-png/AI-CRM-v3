@@ -16,8 +16,11 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 from urllib.parse import parse_qs, unquote, urlsplit
+
+sys.dont_write_bytecode = True
 
 ROOT = Path("/opt/aicrm")
 RESULT = Path("/var/lib/aicrm-maintenance/release-cleanup.json")

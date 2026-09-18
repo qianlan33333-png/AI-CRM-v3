@@ -18,11 +18,18 @@ class CleanupTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        # Tests run without root; production has fixed uid/gid 0, never an env override.
+        self.uid = patch.object(cleanup, "ROOT_UID", os.getuid())
+        self.gid = patch.object(cleanup, "ROOT_GID", os.getgid())
+        self.uid.start(); self.gid.start()
+        self.addCleanup(self.uid.stop); self.addCleanup(self.gid.stop)
         (self.root / "releases").mkdir()
+        (self.root / cleanup.SUCCESS_DIRECTORY).mkdir(mode=0o700)
         self.names = [f"{n:040x}" for n in range(1, 5)]
         self.migration = b"CREATE TABLE example(id bigint);\n"
         for i, name in enumerate(self.names):
             self.package(name, i)
+            self.receipt(name, i + 1)
         (self.root / "current").symlink_to(self.root / "releases" / self.names[-1])
         self.schema = self.root / "schema.json"
         self.schema.write_text(json.dumps({"current_sha": self.names[-1], "captured_at": cleanup.utcnow().isoformat(),
@@ -50,6 +57,96 @@ class CleanupTests(unittest.TestCase):
     def plan(self):
         return cleanup.inventory(self.root, self.schema, [])
 
+    def receipt(self, name, sequence):
+        package = cleanup.verified_package(self.root / "releases" / name)
+        value = {"version": 1, "release_sha": name, "sequence": sequence,
+                 "succeeded_at": cleanup.utcnow().isoformat(), "run_number": None,
+                 "api_pid": 1001, "worker_pid": 1002,
+                 **{key: package[key] for key in ("manifest_sha256", "package_digest", "binary_sha256", "schema_digest")}}
+        path = self.root / cleanup.SUCCESS_DIRECTORY / (name + ".json")
+        path.write_text(json.dumps(value)); path.chmod(0o600)
+        return path
+
+    def test_same_schema_without_observed_success_cannot_supply_rollbacks(self):
+        for path in (self.root / cleanup.SUCCESS_DIRECTORY).iterdir():
+            path.unlink()
+        plan = self.plan()
+        self.assertEqual(plan["rollback_releases"], [])
+        self.assertEqual(plan["candidate_count"], 0)
+        self.assertTrue(plan["blockers"])
+
+    def test_success_sequence_not_package_mtime_selects_rollbacks(self):
+        self.receipt(self.names[0], 10)
+        # Touching a never-run/newer-looking package cannot make it a rollback.
+        for file in (self.root / "releases" / self.names[1]).rglob("*"):
+            os.utime(file, None)
+        plan = self.plan()
+        self.assertEqual(plan["rollback_releases"], [self.names[0], self.names[2]])
+        self.assertEqual([e["name"] for e in plan["entries"] if e["action"] == "delete"], [self.names[1]])
+
+    def test_success_receipt_is_bound_to_all_hashes_and_release(self):
+        name = self.names[2]
+        package = cleanup.verified_package(self.root / "releases" / name)
+        path = self.root / cleanup.SUCCESS_DIRECTORY / (name + ".json")
+        original = path.read_text()
+        for field in ("release_sha", "manifest_sha256", "package_digest", "binary_sha256", "schema_digest"):
+            with self.subTest(field=field):
+                value = json.loads(original); value[field] = "0" * len(value[field])
+                path.write_text(json.dumps(value))
+                with self.assertRaises(cleanup.Refuse):
+                    cleanup.verified_success(self.root, package)
+        path.write_text(original)
+        # Updating both package contents and its manifest still invalidates the original receipt.
+        binary = self.root / "releases" / name / "bin/aicrm"
+        binary.write_bytes(b"later different program")
+        manifest = binary.parent.parent / "release-files.sha256"
+        manifest.write_text(manifest.read_text().replace(package["binary_sha256"], cleanup.digest_file(binary)))
+        with self.assertRaisesRegex(cleanup.Refuse, "package_mismatch"):
+            cleanup.verified_success(self.root, cleanup.verified_package(binary.parent.parent))
+
+    def test_success_receipt_rejects_fake_shape_owner_modes_and_links(self):
+        name = self.names[2]
+        package = cleanup.verified_package(self.root / "releases" / name)
+        path = self.root / cleanup.SUCCESS_DIRECTORY / (name + ".json")
+        original = path.read_text()
+        for text in ('{"success":true}', original[:-1] + ',"sequence":999}', original.replace('"sequence": 3', '"sequence": true')):
+            path.write_text(text)
+            with self.assertRaises(cleanup.Refuse): cleanup.verified_success(self.root, package)
+        path.write_text(original)
+        for mode in (0o644, 0o666):
+            path.chmod(mode)
+            with self.assertRaises(cleanup.Refuse): cleanup.verified_success(self.root, package)
+        path.chmod(0o600)
+        real_fstat = cleanup.os.fstat
+        def wrong_owner(fd):
+            info = real_fstat(fd)
+            values = list(info); values[4] = info.st_uid + 1
+            return os.stat_result(values)
+        with patch.object(cleanup.os, "fstat", side_effect=wrong_owner):
+            with self.assertRaisesRegex(cleanup.Refuse, "untrusted"): cleanup.verified_success(self.root, package)
+        alias = path.with_name("alias")
+        os.link(path, alias)
+        with self.assertRaises(cleanup.Refuse): cleanup.verified_success(self.root, package)
+        alias.unlink()
+        path.rename(alias); path.symlink_to(alias)
+        with self.assertRaises((cleanup.Refuse, OSError)): cleanup.verified_success(self.root, package)
+
+    def test_writable_success_directory_and_duplicate_sequence_fail_closed(self):
+        directory = self.root / cleanup.SUCCESS_DIRECTORY
+        directory.chmod(0o777)
+        self.assertEqual(self.plan()["candidate_count"], 0)
+        directory.chmod(0o700)
+        self.receipt(self.names[0], 3)
+        with self.assertRaisesRegex(cleanup.Refuse, "duplicate"): self.plan()
+
+    def test_receipt_disappearing_after_plan_blocks_delete_and_history_survives_cleanup(self):
+        plan = self.plan()
+        path = self.root / cleanup.SUCCESS_DIRECTORY / (self.names[2] + ".json")
+        path.unlink()
+        (self.root / cleanup.SUCCESS_DIRECTORY / (self.names[0] + ".json")).unlink()
+        with self.assertRaises(cleanup.Refuse): cleanup.apply_plan(self.root, self.schema, plan, [])
+        self.assertTrue(all((self.root / "releases" / n).exists() for n in self.names))
+
     def test_only_verified_unreferenced_releases_delete_and_replay_is_noop(self):
         plan = self.plan()
         self.assertEqual(plan["candidate_count"], 1)
@@ -58,6 +155,7 @@ class CleanupTests(unittest.TestCase):
         result = cleanup.apply_plan(self.root, self.schema, plan, [])
         self.assertEqual([v["name"] for v in result["deleted"]], self.names[:1])
         self.assertFalse((self.root / "releases" / self.names[0]).exists())
+        self.assertTrue((self.root / cleanup.SUCCESS_DIRECTORY / (self.names[0] + ".json")).is_file())
         for name, value in before.items():
             self.assertEqual(cleanup.verified_package(self.root / "releases" / name), value)
         replay = cleanup.apply_plan(self.root, self.schema, plan, [])

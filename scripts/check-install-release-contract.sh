@@ -5,6 +5,7 @@ installer="deploy/install-release.sh"
 ci_workflow=".github/workflows/ci.yml"
 quality_lanes="scripts/ci/quality_lanes.py"
 release_builder="scripts/run-donor-view-consumers.sh"
+grep -qxF 'export PYTHONDONTWRITEBYTECODE=1' "$installer" || { echo "release hooks must not add unregistered Python cache files" >&2; exit 1; }
 canonical_backend_full_go_test() {
   grep -qF 'scripts/ci/quality_lanes.py backend' "$ci_workflow" &&
     grep -qF '"go", "test", "-p", "1", "-race", "-count=1", "-timeout=15m", "./..."' "$quality_lanes"
@@ -28,6 +29,15 @@ grep -qF 'for _ in $(seq 1 30); do' "$installer" || { echo "effects worker activ
 grep -qF '[[ "$(readlink -f "/proc/${effects_worker_pid}/exe")" == "$release_dir/bin/aicrm" ]]' "$installer" || {
   echo "effects worker executable must match the activated release" >&2; exit 1;
 }
+grep -qxF 'test -f "$release_dir/deploy/record-release-success.py"' "$installer" || { echo "release must include its success observer" >&2; exit 1; }
+receipt_line="$(grep -nF 'if ! python3 "$release_dir/deploy/record-release-success.py" "${success_receipt_args[@]}"; then' "$installer" | cut -d: -f1)"
+marker_line="$(grep -nF '  next_run_file="$(mktemp "${last_successful_run_file}.XXXXXX")"' "$installer" | cut -d: -f1)"
+cleanup_line="$(grep -nF 'if ! python3 "$release_dir/deploy/post-release-retention.py" --sha "$release_sha"; then' "$installer" | cut -d: -f1)"
+test -n "$receipt_line" && test "$receipt_line" -gt "$active_line" && test "$receipt_line" -lt "$marker_line" && test "$receipt_line" -lt "$cleanup_line" || { echo "verified success receipt must precede success marker and cleanup" >&2; exit 1; }
+test "$(sed -n "$((receipt_line + 1))p" "$installer")" = '  rollback' && test "$(sed -n "$((receipt_line + 2))p" "$installer")" = '  exit 18' || { echo "unverified success receipt must fail and roll back release" >&2; exit 1; }
+recovery_line="$(grep -nF 'if ! python3 "$release_dir/deploy/record-release-success.py" --sha "$release_sha" --revoke-incomplete; then' "$installer" | cut -d: -f1)"
+env_line="$(grep -nF "if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$'" "$installer" | cut -d: -f1)"
+test -n "$recovery_line" && test "$recovery_line" -lt "$env_line" || { echo "success publication recovery must precede environment and service changes" >&2; exit 1; }
 
 for contract in \
   "deploy/aicrm.service:api" \

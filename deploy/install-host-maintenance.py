@@ -8,6 +8,8 @@ import stat
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+
 SOURCE = Path(__file__).resolve().parent
 HELPERS = Path("/usr/local/libexec/aicrm-retention")
 RESULTS = Path("/var/lib/aicrm-maintenance")

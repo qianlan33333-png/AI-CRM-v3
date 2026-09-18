@@ -40,6 +40,12 @@
     }
   },
   "filesystem_prefixes": {
+    "/opt/aicrm/release-success": {
+      "owner": "release",
+      "scope": "subtree",
+      "policy": "never_delete_by_retention",
+      "reason": "Root-only minimal successful-release receipts and permanent monotonic sequence evidence. Package deletion never removes these receipts; only a still-existing verified package with a matching receipt can be a rollback candidate."
+    },
     "/etc/aicrm": {
       "owner": "platform",
       "scope": "subtree",

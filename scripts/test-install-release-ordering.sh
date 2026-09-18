@@ -377,6 +377,16 @@ import os
 with open(os.environ["AICRM_TEST_LOG"], "a") as log:
     log.write("release-cleanup:" + os.environ["AICRM_TEST_LABEL"] + "\n")
 PY
+  cat > "$release/deploy/record-release-success.py" <<'PY'
+import os
+import sys
+with open(os.environ["AICRM_TEST_LOG"], "a") as log:
+    log.write(("receipt-recovery:" if "--revoke-incomplete" in sys.argv else "success-receipt:") + os.environ["AICRM_TEST_LABEL"] + "\n")
+if "--revoke-incomplete" in sys.argv:
+    sys.exit(1 if os.environ.get("AICRM_TEST_FAIL_RECEIPT_RECOVERY") == "1" else 0)
+if os.environ.get("AICRM_TEST_FAIL_SUCCESS_RECEIPT") == "1":
+    sys.exit(1)
+PY
   if [[ -n "$missing_release_file" ]]; then
     rm -f -- "$release/$missing_release_file"
   fi
@@ -530,8 +540,16 @@ cmp -s "$test_root/env-before-busy" "$test_root/etc-aicrm/aicrm.env" || fail "re
 [[ ! -s "$test_root/install.log.systemctl" && -f "/tmp/aicrm-${sha_one}.tar.gz" ]] || fail "recovery-required installer changed services or consumed archive"
 rm "$test_root/etc-aicrm/.ops-runtime-recovery.json"
 
+if AICRM_TEST_FAIL_RECEIPT_RECOVERY=1 run_release "$sha_one" 100 recovery-failed; then
+  fail "unrecoverable success receipt unexpectedly allowed release"
+fi
+cmp -s "$test_root/env-before-busy" "$test_root/etc-aicrm/aicrm.env" || fail "failed receipt recovery changed runtime configuration"
+[[ ! -L "$test_root/aicrm/current" && ! -s "$test_root/install.log.systemctl" ]] || fail "failed receipt recovery changed current or services"
+[[ ! -e "$test_root/aicrm/last-successful-run-number" ]] || fail "failed receipt recovery advanced success marker"
+make_release "$sha_one"
+
 run_release "$sha_one" 100 initial 1
-[[ "$(grep -E '^(host-install|migration|release-cleanup):initial$' "$test_root/install.log" | tr '\n' ' ')" == 'host-install:initial migration:initial release-cleanup:initial ' ]] || fail "maintenance install/migration/success cleanup ordering changed"
+[[ "$(grep -E '^(host-install|migration|success-receipt|release-cleanup):initial$' "$test_root/install.log" | tr '\n' ' ')" == 'host-install:initial migration:initial success-receipt:initial release-cleanup:initial ' ]] || fail "maintenance install/migration/success receipt/cleanup ordering changed"
 [[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "successful run did not persist its run number"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_one" ]] || fail "initial release was not activated"
@@ -557,10 +575,22 @@ if PATH="$test_root/bin:$PATH" \
 fi
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "failed run advanced the deployment marker"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_manual" ]] || fail "failed run did not roll back"
-if grep -Eq '^release-cleanup:(failed|stale)$' "$test_root/install.log"; then
-  fail "failed or stale release ran post-success cleanup"
+if grep -Eq '^(success-receipt|release-cleanup):(failed|stale)$' "$test_root/install.log"; then
+  fail "failed or stale release claimed success or ran cleanup"
 fi
 [[ -x "$test_root/aicrm/current/bin/aicrm-operation-cycle-runner" && -x "$test_root/aicrm/current/bin/aicrm-operation-cycle-result" ]] || fail "rollback did not retain the previous OperationCycle runner artifacts"
+
+# A healthy HTTP status alone cannot advance the deployment marker: the real
+# observer also checks the exact API/worker images and installed schema.
+make_release "$sha_failed"
+if AICRM_TEST_FAIL_SUCCESS_RECEIPT=1 run_release "$sha_failed" 101 receipt-failed; then
+  fail "unverified successful-release receipt unexpectedly succeeded"
+fi
+[[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "unverified receipt advanced deployment marker"
+[[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_manual" ]] || fail "unverified receipt did not roll back"
+if grep -q '^release-cleanup:receipt-failed$' "$test_root/install.log"; then
+  fail "unverified release ran cleanup"
+fi
 
 PATH="$test_root/bin:$PATH" \
   AICRM_TEST_LOCK_DIR="$test_root/install.lock" \

@@ -27,6 +27,12 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 PACKAGE_ROOTS = {"bin", "web", "migrations", "deploy", "components"}
 PROTECTED_PARTS = {"backup", "backups", "secret", "secrets", "uploads", "exports", "business", "pgdata", "data", ".git"}
 PROTECTED_SUFFIXES = {".pem", ".key", ".dump", ".backup", ".p12", ".pfx"}
+ROOT_UID = 0
+ROOT_GID = 0
+SUCCESS_DIRECTORY = "release-success"
+SUCCESS_PENDING = ".publication-pending.json"
+SUCCESS_KEYS = {"version", "release_sha", "manifest_sha256", "package_digest", "binary_sha256",
+                "schema_digest", "succeeded_at", "sequence", "run_number", "api_pid", "worker_pid"}
 
 
 class Refuse(RuntimeError):
@@ -60,10 +66,117 @@ def require_regular(path: Path):
     return info
 
 
+def require_control_directory(path: Path, private=False):
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or path.resolve() != path or info.st_uid != ROOT_UID
+            or info.st_gid != ROOT_GID or stat.S_IMODE(info.st_mode) & 0o022
+            or (private and stat.S_IMODE(info.st_mode) != 0o700)):
+        raise Refuse("untrusted_release_control_directory")
+
+
+def read_private_receipt_json(root: Path, filename: str) -> dict:
+    """Only the root installer's fixed, private directory is an evidence source."""
+    require_control_directory(root)
+    directory = root / SUCCESS_DIRECTORY
+    require_control_directory(directory, private=True)
+    path = directory / filename
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != ROOT_UID
+                or info.st_gid != ROOT_GID or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384):
+            raise Refuse("untrusted_release_success_receipt")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(16385)
+        if len(raw) > 16384:
+            raise Refuse("invalid_release_success_receipt")
+        def unique_object(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise Refuse("invalid_release_success_receipt")
+                value[key] = item
+            return value
+        value = json.loads(raw, object_pairs_hook=unique_object)
+        after = path.lstat()
+        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise Refuse("release_success_receipt_changed")
+        return value
+    except (ValueError, TypeError, KeyError):
+        raise Refuse("invalid_release_success_receipt") from None
+    finally:
+        os.close(descriptor)
+
+
+def validate_success_receipt(value, name=None):
+    try:
+        if (not isinstance(value, dict) or set(value) != SUCCESS_KEYS or type(value["version"]) is not int
+                or value["version"] != 1 or not isinstance(value["release_sha"], str)
+                or not SHA.fullmatch(value["release_sha"]) or (name is not None and value["release_sha"] != name)
+                or any(not isinstance(value[key], str) or not HEX.fullmatch(value[key])
+                       for key in ("manifest_sha256", "package_digest", "binary_sha256", "schema_digest"))
+                or any(type(value[key]) is not int or value[key] <= 0 for key in ("sequence", "api_pid", "worker_pid"))
+                or value["api_pid"] == value["worker_pid"]
+                or (value["run_number"] is not None and (not isinstance(value["run_number"], str)
+                    or not re.fullmatch(r"[1-9][0-9]*", value["run_number"])) )):
+            raise Refuse("invalid_release_success_receipt")
+        succeeded = dt.datetime.fromisoformat(value["succeeded_at"])
+        if succeeded.tzinfo is None or succeeded > utcnow() + dt.timedelta(seconds=60):
+            raise Refuse("invalid_release_success_time")
+        return value
+    except (ValueError, TypeError, KeyError):
+        raise Refuse("invalid_release_success_receipt") from None
+
+
+def read_success_receipt(root: Path, name: str) -> dict:
+    if not SHA.fullmatch(name):
+        raise Refuse("invalid_success_release")
+    return validate_success_receipt(read_private_receipt_json(root, name + ".json"), name)
+
+
+def read_pending_success(root: Path, filename=SUCCESS_PENDING) -> dict:
+    if filename != SUCCESS_PENDING and not re.fullmatch(r"revoked-[1-9][0-9]*-[0-9a-f]{40}\.json", filename):
+        raise Refuse("invalid_success_journal_name")
+    value = read_private_receipt_json(root, filename)
+    if not isinstance(value, dict) or set(value) != {"version", "candidate", "previous"} or type(value["version"]) is not int or value["version"] != 1:
+        raise Refuse("invalid_success_publication_journal")
+    candidate = validate_success_receipt(value["candidate"])
+    if filename != SUCCESS_PENDING and filename != f"revoked-{candidate['sequence']}-{candidate['release_sha']}.json":
+        raise Refuse("invalid_success_revocation_binding")
+    if value["previous"] is not None:
+        previous = validate_success_receipt(value["previous"], candidate["release_sha"])
+        if previous["sequence"] >= candidate["sequence"] or any(previous[key] != candidate[key] for key in ("manifest_sha256", "package_digest", "binary_sha256", "schema_digest")):
+            raise Refuse("invalid_previous_success_binding")
+    return value
+
+
+def verified_success(root: Path, package: dict) -> dict:
+    if os.path.lexists(root / SUCCESS_DIRECTORY / SUCCESS_PENDING):
+        raise Refuse("release_success_publication_incomplete")
+    require_control_directory(root / "releases")
+    require_sealed_package(root / "releases" / package["name"])
+    value = read_success_receipt(root, package["name"])
+    if any(value[key] != package[key] for key in ("manifest_sha256", "package_digest", "binary_sha256", "schema_digest")):
+        raise Refuse("release_success_package_mismatch")
+    return value
+
+
+def require_sealed_package(path: Path):
+    require_control_directory(path)
+    for directory, dirs, files in os.walk(path, followlinks=False):
+        for name in dirs:
+            require_control_directory(Path(directory) / name)
+        for name in files:
+            info = require_regular(Path(directory) / name)
+            if info.st_uid != ROOT_UID or info.st_gid != ROOT_GID or stat.S_IMODE(info.st_mode) & 0o022:
+                raise Refuse("unsealed_release_package")
+
+
 def verified_package(path: Path) -> dict:
     if not SHA.fullmatch(path.name) or path.is_symlink() or not path.is_dir():
         raise Refuse("unknown_release_directory")
     root_stat = path.stat()
+    require_regular(path / "release.env")
     manifest = path / "release-files.sha256"
     require_regular(manifest)
     expected = {}
@@ -126,12 +239,18 @@ def verified_package(path: Path) -> dict:
         raise Refuse("missing_package_content")
     return {"name": path.name, "bytes": bytes_total, "manifest_sha256": digest_file(manifest),
             "inode": root_stat.st_ino, "device": root_stat.st_dev, "newest_file_ns": newest_file_ns,
+            "binary_sha256": expected["bin/aicrm"],
+            "package_digest": canonical_digest({"release_sha": path.name, "files": expected}),
             "schema_digest": canonical_digest(sorted(migrations, key=lambda x: x["version"]))}
 
 
 def schema_snapshot(path: Path, current: str) -> tuple[dict, str]:
     require_regular(path)
     value = json.loads(path.read_text())
+    return validated_schema_snapshot(value, current)
+
+
+def validated_schema_snapshot(value: dict, current: str) -> tuple[dict, str]:
     if value.get("current_sha") != current:
         raise Refuse("schema_current_release_mismatch")
     try:
@@ -255,7 +374,7 @@ def check_ready(current: str):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open("http://127.0.0.1:8080/readyz", timeout=5) as response:
             value = json.loads(response.read(65536))
-        if value.get("release_sha") != current:
+        if value.get("status") != "ready" or value.get("release_sha") != current:
             raise Refuse("readyz_release_mismatch")
     except Refuse:
         raise
@@ -285,6 +404,8 @@ def inventory(root: Path, schema_file: Path, explicit_protected: list[str]) -> d
     releases = root / "releases"
     if root.is_symlink() or not root.is_dir() or releases.is_symlink() or not releases.is_dir():
         raise Refuse("invalid_release_root")
+    if os.path.lexists(root / SUCCESS_DIRECTORY / SUCCESS_PENDING):
+        raise Refuse("release_success_publication_incomplete")
     current_path = (root / "current").resolve(strict=True)
     if current_path.parent != releases or not SHA.fullmatch(current_path.name):
         raise Refuse("current_is_not_a_managed_release")
@@ -306,10 +427,22 @@ def inventory(root: Path, schema_file: Path, explicit_protected: list[str]) -> d
             entries.append({"name": path.name, "action": "protect", "reason": reason})
     if current not in verified or verified[current]["schema_digest"] != installed_digest:
         raise Refuse("current_package_or_installed_schema_unverified")
-    rollback = sorted((v for name, v in verified.items() if name != current and v["schema_digest"] == installed_digest), key=lambda v: (v["newest_file_ns"], v["name"]), reverse=True)[:2]
+    successful = {}
+    for name, package in verified.items():
+        if name == current or package["schema_digest"] != installed_digest:
+            continue
+        try:
+            successful[name] = verified_success(root, package)
+        except (OSError, ValueError, Refuse):
+            pass  # No historical success evidence means no rollback claim.
+    # A duplicate monotonic sequence cannot be produced by the locked writer.
+    sequences = [value["sequence"] for value in successful.values()]
+    if len(sequences) != len(set(sequences)):
+        raise Refuse("duplicate_release_success_sequence")
+    rollback = [verified[name] for name in sorted(successful, key=lambda name: successful[name]["sequence"], reverse=True)[:2]]
     blockers = []
     if len(rollback) != 2:
-        blockers.append("two_schema_compatible_verified_rollback_releases_required")
+        blockers.append("two_successful_schema_compatible_verified_rollback_releases_required")
     protected |= {v["name"] for v in rollback}
     for name, value in sorted(verified.items()):
         value = dict(value)
