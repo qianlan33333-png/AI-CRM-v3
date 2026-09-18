@@ -139,7 +139,7 @@ FROM windows`, latestHour, baseline, now).Scan(&expected, &prepared, &missing, &
 		o.Status, o.Code = "uncovered", "hourly_notification_unaccepted"
 	case completed == nil:
 		o.Status, o.Code = "unknown", "first_scan_pending"
-	case now.Sub(*completed) > 10*time.Minute:
+	case now.Sub(*completed) > 75*time.Minute:
 		o.Status, o.Code = "stale", "scan_completion_stale"
 	case catalogCount != int64(len(ids)) || resultCount != catalogCount:
 		o.Status, o.Code = "warning", "inspection_check_count_mismatch"
