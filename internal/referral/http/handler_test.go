@@ -11,6 +11,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	referraldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/domain"
 	referralport "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/port"
 )
@@ -92,10 +93,10 @@ func (sessionStub) Resolve(context.Context, string) (referralport.TrustedSession
 	return referralport.TrustedSessionActor{CustomerID: 9, IdentityID: 8, Channel: "h5_official_account", AppID: "oa", AppScope: "wechat-app:oa", OccurredAt: time.Now()}, nil
 }
 
-type bridgeStub struct{}
+type bridgeStub struct{ err error }
 
-func (bridgeStub) BridgePaymentSession(context.Context, string) (string, time.Time, error) {
-	return "dist_" + strings.Repeat("a", 43), time.Now().Add(time.Hour), nil
+func (s bridgeStub) BridgePaymentSession(context.Context, string) (string, time.Time, error) {
+	return "dist_" + strings.Repeat("a", 43), time.Now().Add(time.Hour), s.err
 }
 
 type namesStub struct{}
@@ -177,6 +178,19 @@ func TestFirstReferralBridgeNeedsTrustedPaymentSessionButNoPriorDistributionCSRF
 	}
 	if !session || !csrf {
 		t.Fatalf("bridge did not issue both browser credentials: %v", response.Result().Cookies())
+	}
+}
+
+func TestReferralBridgeClassifiesInvalidTrustedPaymentSessionAsUnauthorized(t *testing.T) {
+	handler := referralTestHandler(t, &publicStub{})
+	handler.bridge = bridgeStub{err: distributionport.ErrUnauthorized}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/referral/session/bridge", nil)
+	request.Header.Set("Origin", "https://crm.example.test")
+	request.AddCookie(&http.Cookie{Name: "aicrm_payment_session", Value: "payment-session"})
+	response := httptest.NewRecorder()
+	handler.ServePublicHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "payment_session_required") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

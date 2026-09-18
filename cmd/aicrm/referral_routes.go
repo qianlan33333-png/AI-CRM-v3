@@ -39,3 +39,18 @@ func mountReferral(next, public, admin http.Handler) http.Handler {
 		}
 	})
 }
+
+// mountSecuredReferral applies the host's browser boundary only to Referral's
+// own public and admin endpoints. Referral is mounted after the main router's
+// security layer so wrapping the individual handlers prevents the new routes
+// from becoming an exception, while preserving every pre-existing route's
+// behavior.
+func mountSecuredReferral(next, public, admin http.Handler, publicOrigin string, h5Origins ...string) http.Handler {
+	secure := func(handler http.Handler) http.Handler {
+		if handler == nil {
+			handler = referralUnavailableHandler{}
+		}
+		return securityHeaders(rejectCrossSiteUnsafeRequests(handler, canonicalOrigin(publicOrigin), h5Origins...))
+	}
+	return mountReferral(next, secure(public), secure(admin))
+}

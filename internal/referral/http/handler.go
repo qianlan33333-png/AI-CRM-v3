@@ -275,6 +275,10 @@ func (h *Handler) bridgeSession(w http.ResponseWriter, r *http.Request) {
 	}
 	token, expiresAt, err := h.bridge.BridgePaymentSession(r.Context(), paymentCookie.Value)
 	if err != nil {
+		if errors.Is(err, distributionport.ErrUnauthorized) {
+			writeError(w, http.StatusUnauthorized, "payment_session_required")
+			return
+		}
 		resultError(w, err)
 		return
 	}
@@ -1174,7 +1178,7 @@ func methodIfNeeded(w http.ResponseWriter, r *http.Request, allow string) {
 }
 func resultError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, referralport.ErrUnauthorized):
+	case errors.Is(err, referralport.ErrUnauthorized), errors.Is(err, distributionport.ErrUnauthorized):
 		writeError(w, http.StatusUnauthorized, "referral_session_required")
 	case errors.Is(err, referralport.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found")

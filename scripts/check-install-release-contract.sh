@@ -123,6 +123,7 @@ for migration_contract in \
   '0176_survey_single_submission_claims.sql:Survey single submission claims' \
   '0177_survey_operation_legacy_parity.sql:Survey operation legacy parity' \
   '0181_hxc_dashboard_views.sql:Basic dashboard views and scoped sharing' \
+  '0183_referral_core.sql:Referral campaign core' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
