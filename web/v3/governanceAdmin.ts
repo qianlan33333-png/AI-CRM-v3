@@ -45,7 +45,7 @@ function isRetentionCoverage(v: unknown): v is RetentionCoverage {
   const keys = new Set<string>();
   if (!v.items.every((item: unknown) => {
     if (!record(item) || !['kind', 'name', 'owner', 'policy', 'reason', 'source', 'cleanup_entrypoint', 'policy_id', 'coverage_status', 'gap_code', 'authorization_expiry'].every((key) => typeof item[key] === 'string')
-      || !Object.hasOwn(resourceKinds, String(item.kind)) || !Object.hasOwn(resourcePolicies, String(item.policy)) || !Object.hasOwn(resourceStates, String(item.coverage_status))
+      || !Object.prototype.hasOwnProperty.call(resourceKinds, String(item.kind)) || !Object.prototype.hasOwnProperty.call(resourcePolicies, String(item.policy)) || !Object.prototype.hasOwnProperty.call(resourceStates, String(item.coverage_status))
       || !item.name || !item.owner || !item.reason || !item.source || !['owner_security_ttl', 'not_assessed'].includes(String(item.authorization_expiry))) return false;
     const key = `${item.kind}:${item.name}`; if (keys.has(key)) return false; keys.add(key); return true;
   })) return false;
