@@ -37,7 +37,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
       }
       if (url.pathname === "/api/admin/ai-audience/templates") return json({ items: [{ key: "active_contacts", label: "活跃客户", description: "筛选最近有互动的客户", available: true }] });
       if (url.pathname === "/api/admin/ai-audience/packages" && method === "GET") {
-        return json({ items: [{ id: 13, code: "audience-073da67f778402ce", name: "近30天活跃客户", lifecycle: "paused", version: 2, member_count: 23460, published_at: "2026-09-04T08:30:00Z", readiness: "not_ready" }], total: 1, limit: 100, offset: 0 });
+        return json({ items: [{ id: 13, code: "audience-073da67f778402ce", name: "近30天活跃客户", membership_mode: "rule", lifecycle: "paused", version: 2, member_count: 23460, published_at: "2026-09-04T08:30:00Z", readiness: "not_ready" }], total: 1, limit: 100, offset: 0 });
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/precheck" && method === "POST") {
         precheckAttempts += 1;
@@ -61,8 +61,13 @@ await wait();
 
 const document = dom.window.document;
 document.querySelector("#createPackageBtn").click();
-if (document.querySelector("#packageCreateTemplate option").textContent !== "活跃客户" || document.querySelector("#packageCreateTemplate").value !== "active_contacts" || !document.querySelector("#packageTemplateHelp").textContent.includes("最近有互动")) throw new Error("template must show Chinese label/description while preserving its API key");
+if (document.querySelector("#packageCreateTemplate") || !document.querySelector("#packageCreateGroup") || !document.querySelector("#packageFormHelp").textContent.includes("空人群包")) throw new Error("new package must be an empty AI container without a template");
 document.querySelector("#cancelPackageBtn").click();
+document.querySelector('[data-action="edit"][data-package-id="13"]').click();
+if (document.querySelector('#packageCreateName').value !== '近30天活跃客户' || document.querySelector('#packageModalTitle').textContent !== '编辑人群包') throw new Error('list edit failed to hydrate');
+document.querySelector('#packageCreateName').value = '取消的改名';
+document.querySelector('#cancelPackageBtn').click();
+if (requests.some(r => r.method === 'PATCH')) throw new Error('cancel edited persistent state');
 const row = document.querySelector("#audRows tr");
 const renderedCount = row?.querySelectorAll("td")[1]?.textContent.trim();
 if (!row || Number(renderedCount) !== 23460) {

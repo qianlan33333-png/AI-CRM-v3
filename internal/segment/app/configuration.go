@@ -103,6 +103,7 @@ type GroupCommand struct {
 
 type PackageCreateCommand struct {
 	Name, TemplateKey string
+	CreationMode      string `json:",omitempty"`
 	GroupID           *int64
 	Actor             int64
 	MutationActor     segmentport.MutationActor `json:"-"`
@@ -289,9 +290,16 @@ func (s *Service) CreatePackage(ctx context.Context, command PackageCreateComman
 	if actorErr != nil {
 		return segmentdomain.Package{}, ErrInvalid
 	}
-	definition, err := DefaultDefinition(command.TemplateKey)
-	if err != nil {
+	var definition json.RawMessage
+	if command.CreationMode != "" && command.CreationMode != "empty" || command.CreationMode == "empty" && command.TemplateKey != "" {
 		return segmentdomain.Package{}, ErrInvalid
+	}
+	if command.CreationMode != "empty" {
+		var err error
+		definition, err = DefaultDefinition(command.TemplateKey)
+		if err != nil {
+			return segmentdomain.Package{}, ErrInvalid
+		}
 	}
 	now := s.now().UTC()
 	code, err := packageCodeForMutationActor(actor, command.IdempotencyKey)
@@ -304,7 +312,7 @@ func (s *Service) CreatePackage(ctx context.Context, command PackageCreateComman
 			item, createErr = s.store.CreatePackage(tx, item)
 			createErr = atPersistenceStage("create_package_record", createErr)
 		}
-		if createErr == nil {
+		if createErr == nil && command.CreationMode != "empty" {
 			configuration, configErr := segmentdomain.NewConfigurationVersionWithActor(item.ID, 1, definition, "", "manual", actor.StaffID, string(actor.Kind), actor.Reference, now)
 			if configErr == nil {
 				configuration, configErr = s.store.CreateConfigurationVersion(tx, configuration)
@@ -373,7 +381,7 @@ func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segm
 			if codeErr == nil {
 				copied, codeErr = s.store.CreatePackage(tx, copied)
 			}
-			if codeErr == nil {
+			if codeErr == nil && source.CurrentConfigurationVersionID != nil {
 				sourceConfiguration, configErr := s.store.CurrentConfiguration(tx, source.ID)
 				if configErr == nil && isCoreDefinition(sourceConfiguration.Definition) {
 					return nil, segmentstore.MutationFact{}, ErrConflict
@@ -412,6 +420,9 @@ func (s *Service) TransitionPackage(ctx context.Context, command VersionCommand,
 	now := s.now().UTC()
 	result, err := s.mutate(ctx, string(target)+"_package", actor, command.IdempotencyKey, mutationPayload(string(target)+"_package", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, transitionErr := s.store.LockPackage(tx, command.ID)
+		if transitionErr == nil && target == segmentdomain.Active && item.CurrentConfigurationVersionID == nil {
+			transitionErr = ErrNotReady
+		}
 		if transitionErr == nil {
 			transitionErr = item.TransitionWithActor(target, command.ExpectedVersion, actor.StaffID, string(actor.Kind), actor.Reference, now)
 		}
@@ -449,6 +460,9 @@ func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCom
 	now := s.now().UTC()
 	result, err := s.mutate(ctx, "put_configuration", actor, command.IdempotencyKey, mutationPayload("put_configuration", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, putErr := s.store.LockPackage(tx, command.PackageID)
+		if putErr == nil && item.CurrentConfigurationVersionID == nil {
+			putErr = ErrConflict
+		}
 		if guard, ok := s.store.(interface {
 			ValidateCoreConfiguration(context.Context, int64, []byte) error
 		}); ok && putErr == nil {

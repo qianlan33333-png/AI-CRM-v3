@@ -34,12 +34,13 @@
           <h3>基础配置</h3>
           <span class="ai-pill">可保存</span>
         </div>
+        <p id="membershipModeNotice" class="ai-label"></p><a id="coreProductConfigLink" class="ai-btn soft" href="/admin/automation-conversion?tab=products" hidden>前往核心产品配置</a>
         <div class="ai-form-grid">
           <div class="ai-field full">
             <label class="ai-label" for="packageNameInput">人群包名称</label>
             <input class="ai-input" id="packageNameInput" value="">
           </div>
-          <div class="ai-field full">
+          <div data-rule-config class="ai-field full">
             <label class="ai-label" for="packageDefinitionInput">筛选逻辑简述</label>
             <textarea class="ai-textarea" id="packageDefinitionInput"></textarea>
           </div>
@@ -47,26 +48,26 @@
             <label class="ai-label" for="packageGroupSelect">所属分组</label>
             <select class="ai-select" id="packageGroupSelect"><option value="ungrouped">未分组</option></select>
           </div>
-          <div class="ai-field">
+          <div data-rule-config class="ai-field">
             <label class="ai-label" for="incrementalSelect">增量刷新</label>
             <select class="ai-select" id="incrementalSelect">
               <option value="off">关闭</option>
               <option value="incremental_3m">每 3 分钟</option>
             </select>
           </div>
-          <div class="ai-field">
+          <div data-rule-config class="ai-field">
             <label class="ai-label" for="dailySelect">每日快照</label>
             <select class="ai-select" id="dailySelect">
               <option value="off">关闭</option>
               <option value="daily_0200">每日 2:00</option>
             </select>
           </div>
-          <p class="ai-label full" id="refreshScheduleNote" aria-live="polite"></p>
+          <p data-rule-config class="ai-label full" id="refreshScheduleNote" aria-live="polite"></p>
           <div class="ai-btns full" id="legacyRefreshScheduleActions" hidden>
             <button class="ai-btn soft" id="replaceLegacyScheduleWithManualBtn" type="button">改为手动刷新</button>
           </div>
         </div>
-        <section class="template-config-card" aria-label="模板筛选条件">
+        <section data-rule-config class="template-config-card" aria-label="模板筛选条件">
           <div class="template-config-head">
             <h4>模板与筛选条件</h4>
             <span class="ai-pill gray" id="templateVersionBadge">历史配置</span>

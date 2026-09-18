@@ -201,3 +201,6 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 `web/v3/materialGroupManagement.ts`：三个素材工作台共用分组目录、分组表单、单个/当前页批量移动与所属分组选择；组合 `MaterialGroupSidebar`、`pageHeaderActions` 和 `selectionDialog`。Media API 独占领域写入。不得把元数据分组操作当作 Provider 素材刷新。
 
 图片素材页通过 `GroupManagement` 可选 toolbar 与 selectionSlot 复用同一批量选择状态：勾选在缩略图前、所属分组纯文本、搜索栏内全选/转移；附件与小程序默认布局不变。
+
+### 管理端搜索单选
+`internal/webshell/static/admin_console/admin_search_select.js`：核心产品销售商品关联使用原生搜索输入、单选与分页加载。调用方注入受权目录 loader，组件不写领域数据。保留选择、清空、失败重试、键盘/IME 和选中项回显；Segment `/core/product-options` 通过 ProductOptionReader 读取普通/周期商品。

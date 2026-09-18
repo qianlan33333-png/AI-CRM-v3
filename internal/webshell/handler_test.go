@@ -128,7 +128,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"当前分组暂无人群包",
 				"admin_console.js",
 				"admin_audience.css",
-				"admin_audience_detail.js?v=audience-chinese-v2",
+				"admin_audience_detail.js?v=audience-empty-ai-v3",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -151,9 +151,9 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"成员列表",
 				"发送记录",
 				"admin_audience_detail.css",
-				"admin_audience_detail.js?v=audience-chinese-v2",
+				"admin_audience_detail.js?v=audience-empty-ai-v3",
 				"template_parameter_form.js?v=dd8-frozen-ab63c644",
-				"admin_audience_template_host.js?v=prd05-template-host-v1",
+				"admin_audience_template_host.js?v=prd05-template-empty-v2",
 			},
 			notContain: []string{
 				"功能待接入",
