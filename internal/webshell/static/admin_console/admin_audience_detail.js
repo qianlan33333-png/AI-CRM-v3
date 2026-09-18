@@ -209,7 +209,7 @@
       byID("selectedGroupMeta").textContent = `${rows.length} 个人群包 · 每页 ${state.pageSize} 个`;
       byID("groupActions").hidden = state.groupID === null;
       byID("audRows").innerHTML = visible.length ? visible.map((item) => `<tr>
-        <td><div class="aud-name-cell"><a class="aud-name" href="/admin/automation-conversion/packages/${item.id}"><span class="aud-dot${item.lifecycle === "active" ? "" : " muted"}"></span>${escapeHTML(item.name)}</a><span class="aud-template-tag">${escapeHTML(item.code)}</span></div></td>
+        <td><div class="aud-name-cell"><a class="aud-name" href="/admin/automation-conversion/packages/${item.id}"><span class="aud-dot${item.lifecycle === "active" ? "" : " muted"}"></span>${escapeHTML(item.name)}</a><span class="aud-template-tag">人群包编号 ${Number(item.id)}</span></div></td>
         <td class="aud-strong">${Number(item.member_count || 0)}</td><td>${formatTime(item.published_at)}</td><td><span class="aud-pill${item.lifecycle === "active" ? "" : " gray"}">${lifecycleLabel(item.lifecycle)}</span></td>
         <td><div class="aud-actions" style="justify-content:flex-end"><button class="aud-btn" data-action="${item.lifecycle === "active" ? "pause" : "activate"}" data-package-id="${item.id}">${item.lifecycle === "active" ? "暂停" : "激活"}</button><button class="aud-btn" data-action="copy" data-package-id="${item.id}">复制</button><button class="aud-btn danger" data-action="archive" data-package-id="${item.id}">归档</button></div></td>
       </tr>`).join("") : `<tr><td class="aud-empty" colspan="5">当前分组暂无人群包</td></tr>`;
@@ -323,7 +323,13 @@
     const packageModal = byID("packageModal");
     byID("createPackageBtn").addEventListener("click", () => {
       byID("packageCreateName").value = "";
-      byID("packageCreateTemplate").innerHTML = state.templates.map((item) => `<option value="${escapeHTML(item.key)}">${escapeHTML(item.key)}</option>`).join("");
+      byID("packageCreateTemplate").innerHTML = state.templates.map((item) => `<option value="${escapeHTML(item.key)}">${escapeHTML(item.label || "未命名筛选方式")}</option>`).join("");
+      const updateTemplateHelp = () => {
+        const selected = state.templates.find(item => item.key === byID("packageCreateTemplate").value);
+        byID("packageTemplateHelp").textContent = selected?.description || "创建后可进一步设置筛选条件；用于智能推荐时，在核心产品中绑定此人群包。";
+      };
+      byID("packageCreateTemplate").onchange = updateTemplateHelp;
+      updateTemplateHelp();
       packageModal.hidden = false;
       byID("packageCreateName").focus();
     });
