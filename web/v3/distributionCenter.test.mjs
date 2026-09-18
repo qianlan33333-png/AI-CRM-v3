@@ -28,6 +28,7 @@ assert.match(dom.window.document.body.textContent, /售价 ¥199\.00/, 'promotio
 assert.match(dom.window.document.body.textContent, /预计佣金 ¥6\.62（3\.33%）/, 'promotion card must render estimated commission and rate');
 assert.equal(dom.window.document.querySelector('.distribution-product img'), null, 'promotion card must not reserve a cover column');
 assert.doesNotMatch(dom.window.document.querySelector('.distribution-product')?.textContent || '', /等待.*天|分销员编号|协议：|已启用/, 'promotion card must omit non-selling facts');
+assert.equal(dom.window.document.querySelector('[data-testid="distribution-referral-entry"]')?.getAttribute('href'), '/referral', 'distribution navigation must expose the independent referral campaign entry');
 [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '复制分销链接').click();
 await waitFor(() => calls.some((call) => call.path.endsWith('/promotion-credentials')), 'promotion credential did not use the real API');
 await waitFor(() => dom.window.document.querySelector('dialog'), 'promotion dialog did not render');

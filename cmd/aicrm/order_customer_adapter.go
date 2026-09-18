@@ -24,6 +24,24 @@ func (adapter orderCustomerDisplayNameAdapter) DisplayNames(ctx context.Context,
 	return result, err
 }
 
+// referralCustomerProfileAdapter is a presentation-only Customer Port bridge.
+// Referral calls it only after its own application has selected canonical
+// customer IDs, so it cannot be used as a directory search or identity matcher.
+type referralCustomerProfileAdapter struct {
+	uow    platformport.UnitOfWork
+	reader customerport.DirectoryPublicProfileReader
+}
+
+func (adapter referralCustomerProfileAdapter) PublicProfiles(ctx context.Context, ids []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.DirectoryPublicProfile, error) {
+	var result map[customerdomain.CustomerID]customerport.DirectoryPublicProfile
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		result, readErr = adapter.reader.PublicProfiles(tx, ids)
+		return readErr
+	})
+	return result, err
+}
+
 // orderCustomerContactDisplayAdapter is the Order-specific read bridge for
 // Customer's presentation-safe directory projection. It does not resolve an
 // identity or read Customer tables from Order; the owning Customer Port does

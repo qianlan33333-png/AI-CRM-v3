@@ -78,6 +78,11 @@ const entryPoints = {
   distributionCenter: path.join(repository, 'web', 'v3', 'distributionCenter.ts'),
   distributionAdmin: path.join(repository, 'web', 'v3', 'distributionAdmin.ts'),
   distributionStyles: path.join(repository, 'web', 'v3', 'distribution.css'),
+  // Referral is a public campaign surface plus an embedded CRM admin root.
+  // Its own stylesheet keeps mobile campaign presentation outside Distribution.
+  referralCenter: path.join(repository, 'web', 'v3', 'referralCenter.ts'),
+  referralAdmin: path.join(repository, 'web', 'v3', 'referralAdmin.ts'),
+  referralStyles: path.join(repository, 'web', 'v3', 'referral.css'),
   // Public Product/payment presentation is independent from admin assets and
   // is mounted only through Product's narrow anonymous manifest closure.
   publicCommerceHost: path.join(repository, 'web', 'v3', 'publicCommerceHost.ts'),
@@ -236,7 +241,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (['dashboardShare', 'productWorkspace', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost', 'distributionCenter', 'distributionAdmin', 'distributionStyles', 'surveyPublicHost', 'surveyPublicStyles', 'surveyOperationsHost', 'surveyOperationsStyles', 'publicCommerceHost', 'publicCommerceStyles', 'overviewAdmin', 'overviewStyles', 'navigationHost', 'automationContentHost', 'automationContentStyles'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'pageHeaderActionHost' || name === 'sidebarHost' || name === 'sidebarPresentationStyles' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'materialLibraryHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost' || name === 'surveyHost') continue;
+  if (['dashboardShare', 'productWorkspace', 'surfaceFeedbackHost', 'surfaceFeedbackStyles', 'presentationStyles', 'actionFeedbackStyles', 'sharedDetailDrawerStyles', 'selectionDialogStyles', 'confirmationDialogHost', 'confirmationDialogStyles', 'sharedVisualTokens', 'componentStatesStyles', 'componentStatesHost', 'productDistributionStyles', 'memberGridFeedbackHost', 'distributionCenter', 'distributionAdmin', 'distributionStyles', 'referralCenter', 'referralAdmin', 'referralStyles', 'surveyPublicHost', 'surveyPublicStyles', 'surveyOperationsHost', 'surveyOperationsStyles', 'publicCommerceHost', 'publicCommerceStyles', 'overviewAdmin', 'overviewStyles', 'navigationHost', 'automationContentHost', 'automationContentStyles'].includes(name) || name === 'adminSessionHost' || name === 'standardComponentsHost' || name === 'adminDateTimeHost' || name === 'aiAssistantHost' || name === 'pageHeaderActionHost' || name === 'sidebarHost' || name === 'sidebarPresentationStyles' || name === 'sidebarStandardOverlay' || name === 'sidebarStandardStyles' || name === 'customerHost' || name === 'materialSaveHost' || name === 'imageLibraryFilterHost' || name === 'materialLibraryHost' || name === 'orderHost' || name === 'couponHost' || name === 'radarHost' || name === 'openPlatformHost' || name === 'groupopsHost' || name === 'groupopsStyles' || name === 'h5AuthHost' || name === 'surveyHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -540,6 +545,15 @@ fs.writeFileSync(path.join(dist, 'distribution', 'index.html'), distributionPubl
 fs.writeFileSync(path.join(dist, 'admin', 'distribution.html'), distributionAdminHTML);
 manifest.release_files['distribution/index.html'] = metadataFor(Buffer.from(distributionPublicHTML));
 manifest.release_files['admin/distribution.html'] = metadataFor(Buffer.from(distributionAdminHTML));
+
+const referralCenter = manifest.entries.referralCenter;
+const referralAdmin = manifest.entries.referralAdmin;
+const referralStyles = manifest.entries.referralStyles;
+if (typeof referralCenter !== 'string' || typeof referralAdmin !== 'string' || typeof referralStyles !== 'string') throw new Error('referral frontend entries are absent from manifest');
+const referralPublicHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>裂变活动 · AI-CRM</title><link rel="stylesheet" href="../${referralStyles}"></head><body data-ui-surface="referral"><main id="referral-root" aria-live="polite"></main><script type="module" src="../${referralCenter}"></script></body></html>\n`;
+fs.mkdirSync(path.join(dist, 'referral'), { recursive: true });
+fs.writeFileSync(path.join(dist, 'referral', 'index.html'), referralPublicHTML);
+manifest.release_files['referral/index.html'] = metadataFor(Buffer.from(referralPublicHTML));
 
 // The frozen admin documents remain immutable source evidence. Their release
 // copies are the composition-owned admin surface, so apply the reviewed

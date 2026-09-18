@@ -438,7 +438,7 @@ function render(): void {
     const receiverAction = readinessAction(); if (receiverAction) readiness.append(action(...receiverAction));
   }
   if (showReadiness) head.append(readiness); root.append(head);
-  const tabs = el('nav'); tabs.className = 'distribution-tabs'; for (const [key, label] of [['products', '推广商品'], ['earnings', '我的收益']] as const) { const button = action(label, () => { tab = key; render(); }, `distribution-tab${tab === key ? ' active' : ''}`); button.setAttribute('aria-current', tab === key ? 'page' : 'false'); tabs.append(button); } root.append(tabs);
+  const tabs = el('nav'); tabs.className = 'distribution-tabs'; for (const [key, label] of [['products', '推广商品'], ['earnings', '我的收益']] as const) { const button = action(label, () => { tab = key; render(); }, `distribution-tab${tab === key ? ' active' : ''}`); button.setAttribute('aria-current', tab === key ? 'page' : 'false'); tabs.append(button); } const referral = el('a', '裂变活动'); referral.href = '/referral'; referral.className = 'distribution-tab'; referral.dataset.testid = 'distribution-referral-entry'; tabs.append(referral); root.append(tabs);
   root.append(tab === 'products' ? productView() : earningsView()); const notice = el('p'); notice.dataset.distributionMessage = ''; notice.className = 'distribution-message'; root.append(notice);
 }
 function readinessAction(): [string, () => void | Promise<void>, string?] | undefined {

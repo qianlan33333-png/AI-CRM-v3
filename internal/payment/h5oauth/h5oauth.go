@@ -32,6 +32,13 @@ var ErrIdentityConflict = errors.New("payment H5 OAuth identities require review
 var returnPathPattern = regexp.MustCompile(`^/(?:p/[^/?#]+|pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
 var distributionApplicationReturnPathPattern = regexp.MustCompile(`^/distribution\?product_id=([1-9][0-9]*)&product_type=(standard_product|service_period)$`)
 
+// A Referral return keeps just the server-issued opaque invitation capability
+// across the WeChat login redirect.  The canonical query order is part of the
+// security boundary: it prevents an OAuth return from becoming a generic
+// browser-controlled next URL.
+var referralReturnPathPattern = regexp.MustCompile(`^/referral\?campaign=([1-9][0-9]*)&invite=(rfi_[A-Za-z0-9_-]{43})$`)
+var referralCampaignReturnPathPattern = regexp.MustCompile(`^/referral\?campaign=([1-9][0-9]*)$`)
+
 // A promotion credential is an opaque, fixed-size Distribution capability.
 // It may follow the public standard-product or service-period route, but no
 // other query key is allowed on an OAuth return. Keeping this separate from
@@ -153,6 +160,17 @@ func safe(value string, maximum int) bool {
 func validReturnPath(value string) bool {
 	if value == "/distribution" {
 		return true
+	}
+	if value == "/referral" {
+		return true
+	}
+	if matches := referralReturnPathPattern.FindStringSubmatch(value); matches != nil {
+		campaignID, err := strconv.ParseInt(matches[1], 10, 64)
+		return err == nil && campaignID > 0
+	}
+	if matches := referralCampaignReturnPathPattern.FindStringSubmatch(value); matches != nil {
+		campaignID, err := strconv.ParseInt(matches[1], 10, 64)
+		return err == nil && campaignID > 0
 	}
 	// A distributor application can carry only the immutable public product
 	// reference. Keep the raw canonical form closed: it rejects duplicate or

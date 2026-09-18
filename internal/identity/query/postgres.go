@@ -31,6 +31,7 @@ var _ identityport.ExternalIdentityValueReader = PostgreSQL{}
 var _ identityport.OutboundWeComIdentityReader = PostgreSQL{}
 var _ identityport.CanonicalLineageReader = PostgreSQL{}
 var _ identityport.CanonicalCustomerRootsReader = PostgreSQL{}
+var _ identityport.TrustedCanonicalCustomerReader = PostgreSQL{}
 var _ identityport.AdminRadarVisitorIdentityReader = PostgreSQL{}
 var _ identityport.VerifiedOutboundPhoneReader = PostgreSQL{}
 
@@ -62,6 +63,37 @@ func (PostgreSQL) VerifiedWeComIdentityForCustomer(ctx context.Context, customer
 		return "", false, nil
 	}
 	return values[0], true, nil
+}
+
+// HasActiveVerifiedIdentity supplies a deliberately value-free assurance check
+// for a Customer root selected by another bounded workflow (for example, an
+// administrator assigning a campaign captain). Callers remain responsible for
+// verifying that the requested ID is the canonical root; this query never
+// follows a merge or exposes a usable external identity.
+func (PostgreSQL) HasActiveVerifiedIdentity(ctx context.Context, customerID customerdomain.CustomerID) (bool, error) {
+	if customerID < 1 {
+		return false, ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	var trusted bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM customers customer
+		WHERE customer.id=$1 AND customer.status='active'
+		  AND EXISTS (
+			SELECT 1 FROM customer_identities identity
+			WHERE identity.customer_id=customer.id
+			  AND identity.assurance='verified'
+			  AND identity.status='active'
+		  )
+	)`, customerID).Scan(&trusted)
+	if err != nil {
+		return false, err
+	}
+	return trusted, nil
 }
 
 func NewPostgreSQL(phoneVault ...*identitysecure.PhoneVault) PostgreSQL {
