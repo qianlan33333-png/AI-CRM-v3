@@ -465,6 +465,14 @@ function render(): void {
     metric("活动参与", campaign.participants.toLocaleString("zh-CN")),
   );
   host.append(stats);
+  if (campaign.status !== "active") {
+    const unavailable = element(
+      "p",
+      `当前${statusText(campaign.status)}，暂不能参加或邀请好友。`,
+    );
+    unavailable.className = "referral-message";
+    host.append(unavailable);
+  }
   const tabs = element("div");
   tabs.className = "referral-sections";
   tabs.append(homeCard(), leaderCard(), detailCard(), rulesCard());
@@ -474,13 +482,18 @@ function render(): void {
   message.dataset.referralMessage = "";
   host.append(message);
   const inviteButton = button(
-    "邀请好友",
-    () => void openInvite(),
+    me?.participant
+      ? "邀请好友"
+      : me?.isCaptain && me.captainTeam
+        ? "加入战队并邀请"
+        : "参加活动并邀请",
+    () => void (me?.participant ? openInvite() : beginParticipation()),
     "referral-invite-fab",
   );
   inviteButton.dataset.testid = "referral-invite";
   inviteButton.disabled =
-    campaign.status !== "active" || !me?.participant || !me.invitationAvailable;
+    campaign.status !== "active" ||
+    (me?.participant !== undefined && me.participant !== null && !me.invitationAvailable);
   host.append(inviteButton);
 }
 function homeCard(): HTMLElement {
@@ -655,11 +668,19 @@ function detailCard(): HTMLElement {
   section.className = "referral-card";
   const title = element("div");
   title.className = "referral-card-title";
-  title.append(
-    element("h2", "邀请明细"),
-    button("查看明细", () => void openInvitations(), "referral-quiet"),
+  const details = button(
+    me?.participant ? "查看明细" : "参加后查看",
+    () => void (me?.participant ? openInvitations() : beginParticipation()),
+    "referral-quiet",
   );
+  title.append(element("h2", "邀请明细"), details);
   section.append(title);
+  if (!me?.participant) {
+    section.append(
+      element("p", "确认参加活动后，可在这里查看你直接邀请的好友。"),
+    );
+    return section;
+  }
   if (invitationRows) {
     const list = element("div");
     list.className = "referral-invitation-list";
@@ -769,7 +790,7 @@ async function confirmJoin(
         );
         dialog.close();
         await reload();
-        setTimeout(() => setMessage("已确认参加活动。"), 0);
+        await openInvite();
       } catch (error) {
         submitting = false;
         confirm.disabled = false;
@@ -787,6 +808,56 @@ async function confirmJoin(
     confirm,
     button("暂不参加", () => dialog.close(), "referral-quiet"),
   );
+  dialog.append(card);
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+}
+async function beginParticipation(): Promise<void> {
+  if (!campaign) return;
+  if (campaign.status !== "active") {
+    setMessage(`当前${statusText(campaign.status)}，暂不能参加。`, true);
+    return;
+  }
+  if (me?.isCaptain && me.captainTeam) {
+    await confirmJoin(me.captainTeam.id, true);
+    return;
+  }
+  const inviteToken = new URL(location.href).searchParams.get("invite");
+  if (inviteToken && /^rfi_[A-Za-z0-9_-]{43}$/.test(inviteToken)) {
+    await confirmJoin();
+    return;
+  }
+  const teams = campaign.teams || [];
+  if (teams.length === 0) {
+    setMessage("管理员尚未配置可选战队，暂不能参加。", true);
+    return;
+  }
+  if (teams.length === 1) {
+    await confirmJoin(teams[0].id);
+    return;
+  }
+  const dialog = document.createElement("dialog");
+  dialog.className = "referral-dialog";
+  dialog.dataset.testid = "referral-team-select-dialog";
+  const card = element("section");
+  card.append(
+    element("h2", "选择战队"),
+    element("p", "选择战队后还需确认活动规则；确认参加后才能邀请好友。"),
+  );
+  for (const team of teams) {
+    card.append(
+      button(
+        team.name,
+        () => {
+          dialog.close();
+          void confirmJoin(team.id);
+        },
+        "referral-team-choice",
+      ),
+    );
+  }
+  card.append(button("暂不参加", () => dialog.close(), "referral-quiet"));
   dialog.append(card);
   dialog.addEventListener("close", () => dialog.remove());
   document.body.append(dialog);
@@ -897,6 +968,13 @@ async function renderInviteDialog(): Promise<void> {
 async function openInvitations(append = false): Promise<void> {
   if (!campaign) return;
   if (append && !invitationCursor) return;
+  if (!me?.participant) {
+    invitationRows = [];
+    invitationCursor = "";
+    render();
+    setMessage("确认参加活动后，可查看你直接邀请的好友。");
+    return;
+  }
   try {
     const query = new URLSearchParams({ limit: "50" });
     if (append) query.set("cursor", invitationCursor);

@@ -359,8 +359,14 @@ func (s *Service) IssueInvitation(ctx context.Context, command referralport.Issu
 			return referralport.ErrCampaignUnavailable
 		}
 		participation, partErr := s.store.ReadParticipationWithin(tx, campaign.ID, command.Actor.CustomerID, false)
-		if partErr != nil || participation.State != referraldomain.ParticipationActive {
-			return referralport.ErrUnauthorized
+		if partErr != nil {
+			if errors.Is(partErr, referralport.ErrNotFound) {
+				return referralport.ErrParticipationRequired
+			}
+			return partErr
+		}
+		if participation.State != referraldomain.ParticipationActive {
+			return referralport.ErrParticipationRequired
 		}
 		expiresAt = now.Add(invitationTTL)
 		if campaign.EndsAt.Before(expiresAt) {
@@ -475,8 +481,19 @@ func (s *Service) ListMyInvites(ctx context.Context, actor referralport.TrustedS
 	var values []referralport.InviteItem
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
+		// The actor has already been authenticated by the shared verified
+		// browser session. A missing participation means this customer has no
+		// invitation details yet; it is not a failed login. Read the campaign
+		// first so an unknown campaign remains a real not-found result, and do
+		// not hide store failures behind an authorization error.
+		if _, err = s.store.ReadCampaignWithin(tx, campaignID, false); err != nil {
+			return err
+		}
 		if _, err = s.store.ReadParticipationWithin(tx, campaignID, actor.CustomerID, false); err != nil {
-			return referralport.ErrUnauthorized
+			if errors.Is(err, referralport.ErrNotFound) {
+				return nil
+			}
+			return err
 		}
 		values, err = s.store.ListInviteItemsWithin(tx, campaignID, actor.CustomerID, offset, limit+1)
 		return err
