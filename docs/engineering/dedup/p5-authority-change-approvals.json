@@ -1750,6 +1750,28 @@
         {
           "path": "api/openapi.yaml",
           "base_sha256": "3e9871284b98d58489656d463e89b13be02d7e816f78c593340635ab46696329",
+          "head_sha256": "831310222caf7f8c40b2c61851c67a837661a7ff860b6c11cd59d760255eeb76"
+        },
+        {
+          "path": "web/donor-sources/source-index.json",
+          "base_sha256": "7ae90fdfcfe47cad4f6fc0b54768f2afd2eb27d07c1f1e17b56230f91c244e60",
+          "head_sha256": "dd1ae93ccca50ea37f7ed4f270401a80625e0eece4cbb527c12f8ca6a287c77d"
+        },
+        {
+          "path": "web/donor-sources/source-lock.json",
+          "base_sha256": "bff78af8959431e69cc1eb6e2d4aff76a27fe5cbfbec3cb525d8417648eecd69",
+          "head_sha256": "312f75865752896031dc1605b09bf0a00be02c3a2e889ba7d3ac45272bcdff2d"
+        }
+      ],
+      "reason": "Integrate actor-bound inspection receipts and explicit retention coverage after the concurrent audience operations API release. Preserve the current main API and frozen donor behavior.",
+      "review_reference": "User authorized full runtime governance implementation and continued work. docs/plans/2026-09-18-governance-acceptance-corrections.md and docs/plans/2026-09-18-retention-coverage-design.md define scope. This source declaration is not independent approval; exact-head full CI remains required."
+    },
+    {
+      "base_commit": "f488616309957113b9583143654e7797cc40dc66",
+      "changes": [
+        {
+          "path": "api/openapi.yaml",
+          "base_sha256": "3e9871284b98d58489656d463e89b13be02d7e816f78c593340635ab46696329",
           "head_sha256": "3e6056f76216ddb8215316c939be4cbc4e96c66df62908572c55bbc4a0af5a4c"
         },
         {
@@ -1763,8 +1785,8 @@
           "head_sha256": "114da85c58d14d835aaaf8b881a4e08a6d2ba237a2e989f4a606bff0320ad369"
         }
       ],
-      "reason": "Expose audited permanent governance episodes and explicit coverage outcome metrics while preserving the current audience API and prior governance corrections.",
-      "review_reference": "User authorized complete runtime governance and continued implementation. docs/plans/2026-09-18-governance-outcomes.md defines facts, permissions and acceptance. This declaration is not independent approval; current-head full CI remains required."
+      "reason": "Integrate the authorized governance outcomes capability with the current audience API and prior governance outcomes. Preserve frozen donor and existing business behavior.",
+      "review_reference": "User authorized full governance implementation and continued work. docs/plans/2026-09-18-governance-outcomes.md defines scope. This source declaration is not independent approval; exact-head complete CI remains required."
     }
   ]
 }

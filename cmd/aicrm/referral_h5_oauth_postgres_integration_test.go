@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +75,7 @@ func TestPostgreSQLReferralH5OAuthReturnRoundTrip(t *testing.T) {
 
 	invite := "rfi_" + strings.Repeat("A", 43)
 	var consumedState string
+	var paymentSession string
 	for _, returnPath := range []string{
 		"/referral?campaign=1",
 		"/referral?campaign=1&invite=" + invite,
@@ -100,6 +103,7 @@ func TestPostgreSQLReferralH5OAuthReturnRoundTrip(t *testing.T) {
 		if len(cookies) != 1 || cookies[0].Name != "aicrm_payment_session" || !cookies[0].Secure || !cookies[0].HttpOnly || !strings.HasPrefix(cookies[0].Value, "pays_") || len(cookies[0].Value) != 48 {
 			t.Fatalf("callback did not issue one valid trusted session cookie")
 		}
+		paymentSession = cookies[0].Value
 	}
 	if transport.calls != 4 {
 		t.Fatalf("provider calls=%d want 4", transport.calls)
@@ -135,6 +139,103 @@ func TestPostgreSQLReferralH5OAuthReturnRoundTrip(t *testing.T) {
 	}
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM referral_relationship_history`).Scan(&relationshipChanges); err != nil || relationshipChanges != 0 {
 		t.Fatalf("OAuth callback unexpectedly changed Referral attribution count=%d err=%v", relationshipChanges, err)
+	}
+
+	// Create only the activity fixture after the real OAuth callback. The
+	// customer assigned as captain comes from the provider-verified Payment
+	// session, then all Referral reads and the explicit join below use public
+	// HTTP and the bridge-issued browser cookie.
+	paymentDigest := sha256.Sum256([]byte(paymentSession))
+	var customerID, campaignID, teamID int64
+	if err = application.pool.Native().QueryRow(ctx, `SELECT payer_customer_id FROM payment_sessions WHERE token_digest=$1`, paymentDigest[:]).Scan(&customerID); err != nil || customerID < 1 {
+		t.Fatalf("OAuth payment session customer=%d err=%v", customerID, err)
+	}
+	now := time.Now().UTC()
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO referral_campaigns(name,description,reward_rules,state,starts_at,ends_at,version,created_by,created_at,updated_at) VALUES('真实OAuth队长活动','','','active',$1,$2,1,0,$3,$3) RETURNING id`, now.Add(-time.Hour), now.Add(time.Hour), now).Scan(&campaignID); err != nil {
+		t.Fatal(err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `INSERT INTO referral_teams(campaign_id,name,captain_customer_id,version,created_at,updated_at) VALUES($1,'真实OAuth测试队',$2,1,$3,$3) RETURNING id`, campaignID, customerID, now).Scan(&teamID); err != nil {
+		t.Fatal(err)
+	}
+
+	bridgeRequest := httptest.NewRequest(http.MethodPost, "/api/v1/referral/session/bridge", nil)
+	bridgeRequest.Header.Set("Origin", cfg.PublicOrigin)
+	bridgeRequest.AddCookie(&http.Cookie{Name: "aicrm_payment_session", Value: paymentSession})
+	bridgeResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(bridgeResponse, bridgeRequest)
+	if bridgeResponse.Code != http.StatusCreated {
+		t.Fatalf("trusted payment-to-referral bridge status=%d", bridgeResponse.Code)
+	}
+	var browserSession, csrf string
+	for _, cookie := range bridgeResponse.Result().Cookies() {
+		switch cookie.Name {
+		case "aicrm_distribution_session":
+			browserSession = cookie.Value
+		case "aicrm_distribution_csrf":
+			csrf = cookie.Value
+		}
+	}
+	if browserSession == "" || csrf == "" {
+		t.Fatal("trusted bridge did not issue Referral browser session and CSRF proof")
+	}
+	publicRequest := func(method, path, body string, mutate bool) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.AddCookie(&http.Cookie{Name: "aicrm_distribution_session", Value: browserSession})
+		if mutate {
+			request.Header.Set("Origin", cfg.PublicOrigin)
+			request.Header.Set("X-Distribution-CSRF", csrf)
+			request.Header.Set("Idempotency-Key", "real-oauth-referral-journey-key")
+			request.AddCookie(&http.Cookie{Name: "aicrm_distribution_csrf", Value: csrf})
+			request.Header.Set("Content-Type", "application/json")
+		}
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		return response
+	}
+	meResponse := publicRequest(http.MethodGet, fmt.Sprintf("/api/v1/referral/campaigns/%d/me", campaignID), "", false)
+	if meResponse.Code != http.StatusOK {
+		t.Fatalf("trusted OAuth referral me status=%d body=%s", meResponse.Code, meResponse.Body.String())
+	}
+	var me map[string]any
+	if err = json.Unmarshal(meResponse.Body.Bytes(), &me); err != nil || me["is_captain"] != true || me["participation"] != nil || me["captain_team"] == nil {
+		t.Fatalf("unjoined trusted OAuth captain me=%v err=%v", me, err)
+	}
+	beforeDetails := publicRequest(http.MethodGet, fmt.Sprintf("/api/v1/referral/campaigns/%d/invitations?limit=50", campaignID), "", false)
+	if beforeDetails.Code != http.StatusOK {
+		t.Fatalf("unjoined trusted OAuth invitation details status=%d body=%s", beforeDetails.Code, beforeDetails.Body.String())
+	}
+	var detailPage map[string]any
+	if err = json.Unmarshal(beforeDetails.Body.Bytes(), &detailPage); err != nil {
+		t.Fatalf("unjoined trusted OAuth invitation details=%v err=%v", detailPage, err)
+	}
+	items, itemsOK := detailPage["items"].([]any)
+	if !itemsOK || len(items) != 0 {
+		t.Fatalf("unjoined trusted OAuth invitation detail items=%v", detailPage["items"])
+	}
+	beforeIssue := publicRequest(http.MethodPost, fmt.Sprintf("/api/v1/referral/campaigns/%d/invite", campaignID), "", true)
+	if beforeIssue.Code != http.StatusForbidden || !strings.Contains(beforeIssue.Body.String(), "referral_participation_required") {
+		t.Fatalf("unjoined trusted OAuth invitation issue status=%d body=%s", beforeIssue.Code, beforeIssue.Body.String())
+	}
+	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM referral_participations WHERE campaign_id=$1`, campaignID).Scan(&participations); err != nil || participations != 0 {
+		t.Fatalf("OAuth and details reads unexpectedly joined a Referral campaign count=%d err=%v", participations, err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM referral_relationship_history WHERE customer_id=$1`, customerID).Scan(&relationshipChanges); err != nil || relationshipChanges != 0 {
+		t.Fatalf("OAuth and details reads unexpectedly changed attribution count=%d err=%v", relationshipChanges, err)
+	}
+	joinedResponse := publicRequest(http.MethodPost, fmt.Sprintf("/api/v1/referral/campaigns/%d/participations", campaignID), fmt.Sprintf(`{"team_id":%d}`, teamID), true)
+	if joinedResponse.Code != http.StatusOK {
+		t.Fatalf("explicit trusted OAuth captain join status=%d body=%s", joinedResponse.Code, joinedResponse.Body.String())
+	}
+	afterDetails := publicRequest(http.MethodGet, fmt.Sprintf("/api/v1/referral/campaigns/%d/invitations?limit=50", campaignID), "", false)
+	if afterDetails.Code != http.StatusOK {
+		t.Fatalf("joined trusted OAuth invitation details status=%d body=%s", afterDetails.Code, afterDetails.Body.String())
+	}
+	issued := publicRequest(http.MethodPost, fmt.Sprintf("/api/v1/referral/campaigns/%d/invite", campaignID), "", true)
+	if issued.Code != http.StatusOK || !strings.Contains(issued.Body.String(), "/referral/invite/rfi_") {
+		t.Fatalf("joined trusted OAuth invitation issue status=%d body=%s", issued.Code, issued.Body.String())
+	}
+	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM referral_score_events WHERE campaign_id=$1`, campaignID).Scan(&relationshipChanges); err != nil || relationshipChanges != 0 {
+		t.Fatalf("direct captain join unexpectedly created score facts count=%d err=%v", relationshipChanges, err)
 	}
 }
 
