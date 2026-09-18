@@ -214,7 +214,7 @@ class ImageLibraryHost {
     this.dialogLayer = document.createElement("section");
     this.dialogLayer.dataset.imageLibraryDialogLayer = "true";
     this.workspace.append(this.toolbarNode, this.stateNode, this.cardsNode, this.paginationNode);
- this.groupManager=new GroupManagement("image",this.workspace);
+ this.groupManager=new GroupManagement("image",this.workspace,this.toolbarNode);
     const layout = materialGroupLayout();
     layout.style.padding = '0'; layout.style.overflow = 'visible';
     layout.append(this.groupSidebar.element, this.workspace);
@@ -339,7 +339,7 @@ class ImageLibraryHost {
     input.placeholder = "搜索素材名或标签";
     input.dataset.imageLibraryQuery = "true";
     input.setAttribute("aria-label", "搜索图片素材");
-    input.style.cssText = "flex:1 1 240px;min-width:0";
+    input.style.cssText = "flex:1 1 240px;min-width:160px;max-width:420px";
     input.addEventListener("input", () => this.commitSearch(input.value));
     this.queryInput = input;
     const refresh = button("刷新");
@@ -503,7 +503,7 @@ class ImageLibraryHost {
     actions.append(edit);
     row.append(identity, size, time, state, actions);
     const groupCell=cell();row.insertBefore(groupCell,row.children[1]||null);
-    const numericID=Number(String(item.resourceId||'').replace(/^image:/,''));if(numericID>0)bindMaterialGroup(row,numericID,groupCell);
+    const numericID=Number(String(item.resourceId||'').replace(/^image:/,''));if(numericID>0)bindMaterialGroup(row,numericID,groupCell,identityWrap);
     return row;
   }
 

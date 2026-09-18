@@ -49,6 +49,16 @@ export class GroupManagement {
     this.moveDialog([...this.selected.values()]),
   );
   private all = document.createElement("input");
+  private selectAll = btn("全选", () => {
+    this.prune();
+    const checked = this.rows.size > 0 && this.selected.size === this.rows.size;
+    for (const { member, checkbox } of this.rows.values()) {
+      checkbox.checked = !checked;
+      if (!checked) this.selected.set(member.id, member);
+      else this.selected.delete(member.id);
+    }
+    this.updateCount();
+  });
   private generation = 0;
   private memberQueue = new Map<
     number,
@@ -96,6 +106,7 @@ export class GroupManagement {
   constructor(
     readonly kind: MediaKind,
     content: HTMLElement,
+    private readonly toolbar?: HTMLElement,
   ) {
     active = this;
     this.bar.className = "admin-filter-bar";
@@ -113,7 +124,13 @@ export class GroupManagement {
       }
       this.updateCount();
     });
-    content.prepend(this.bar);
+    if (toolbar) {
+      this.bar.className = "material-group-batch-actions";
+      this.bar.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap";
+      this.move.textContent = "转移分组";
+      this.selectAll.setAttribute("aria-label", "全选当前页素材");
+      toolbar.firstElementChild?.after(this.bar);
+    } else content.prepend(this.bar);
   }
   async load(): Promise<Group[]> {
     const response = await request(paths[this.kind] + "/groups");
@@ -163,7 +180,13 @@ export class GroupManagement {
   private updateCount(): void {
     this.prune();
     this.count.textContent = `已选 ${this.selected.size} 项`;
-    this.move.hidden = !this.canWrite || !this.selected.size;
+    this.count.hidden = Boolean(this.toolbar) && this.selected.size === 0;
+    this.move.hidden = !this.canWrite || (!this.toolbar && !this.selected.size);
+    this.move.disabled = !this.selected.size;
+    this.selectAll.disabled = !this.canWrite || !this.rows.size;
+    const allSelected = this.rows.size > 0 && this.selected.size === this.rows.size;
+    this.selectAll.textContent = allSelected ? "取消全选" : "全选";
+    this.selectAll.setAttribute("aria-pressed", String(allSelected));
     this.all.checked =
       this.rows.size > 0 && this.selected.size === this.rows.size;
     this.all.indeterminate = this.selected.size > 0 && !this.all.checked;
@@ -182,7 +205,7 @@ export class GroupManagement {
       (new URL(location.href).searchParams.has("material_group")
         ? "未分组"
         : "全部分组");
-    this.bar.replaceChildren(label);
+    this.bar.replaceChildren(...(this.toolbar ? [] : [label]));
     if (this.canWrite) {
       const group = this.current();
       if (group)
@@ -190,7 +213,7 @@ export class GroupManagement {
           btn("编辑组名", () => this.nameDialog(group)),
           btn("删除分组", () => this.deleteDialog(group)),
         );
-      this.bar.append(this.all, this.count, this.move);
+      this.bar.append(this.toolbar ? this.selectAll : this.all, this.move, this.count);
     }
     this.updateCount();
   }
@@ -367,6 +390,7 @@ export class GroupManagement {
     node: HTMLElement,
     id: number,
     groupCell: HTMLElement,
+    selectionSlot?: HTMLElement,
   ): Promise<void> {
     if (groupCell.dataset.groupManagementBound === String(id)) return;
     groupCell.dataset.groupManagementBound = String(id);
@@ -388,9 +412,15 @@ export class GroupManagement {
       groupCell.replaceChildren();
       const text = document.createElement("span");
       text.textContent = member.category || "未分组";
-      groupCell.append(checkbox, text);
-      if (this.canWrite)
-        groupCell.append(btn("移动", () => this.moveDialog([member])));
+      if (selectionSlot) {
+        checkbox.style.cssText = "flex:0 0 auto;width:16px;height:16px;margin:0;cursor:pointer";
+        selectionSlot.prepend(checkbox);
+        groupCell.append(text);
+      } else {
+        groupCell.append(checkbox, text);
+        if (this.canWrite)
+          groupCell.append(btn("移动", () => this.moveDialog([member])));
+      }
       this.rows.set(id, { member, node, checkbox });
       this.updateCount();
       node.addEventListener(
@@ -421,8 +451,9 @@ export function bindMaterialGroup(
   node: HTMLElement,
   id: number,
   cell: HTMLElement,
+  selectionSlot?: HTMLElement,
 ): void {
-  void active?.bind(node, id, cell);
+  void active?.bind(node, id, cell, selectionSlot);
 }
 
 // Only augment the live Media create/edit dialogs. No donor source changes.
