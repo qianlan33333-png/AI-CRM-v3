@@ -538,6 +538,16 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	// CPU artifacts share the process-retention policy. Sampling is available
+	// only when both observation and its physical cleanup are explicitly on.
+	opsCPUProfiles, err := adminops.NewCPUProfileService(pool.Native(), platformdiagnostics.NewCPUProfiler(), cfg.ReleaseSHA, cfg.Role == platformconfig.RoleAPI && cfg.Ops.Enabled && cfg.Ops.RetentionEnabled)
+	if err != nil {
+		return fail(err)
+	}
+	opsCPUProfileHTTP, err := adminops.NewCPUProfileHandler(opsCPUProfiles, opsSecurity{requestSecurity})
+	if err != nil {
+		return fail(err)
+	}
 	opsProvider, err := adminopsprovider.NewFeishu(adminopsprovider.FeishuConfig{Enabled: cfg.Ops.NotificationEnabled, TargetRef: cfg.Ops.TargetRef, WebhookURL: cfg.Ops.WebhookURL, SigningSecret: cfg.Ops.SigningSecret}, opsInspections)
 	if err != nil {
 		return fail(err)
@@ -2289,7 +2299,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	handler = mountOpsGovernance(handler, opsInspectionHTTP, opsRetentionHTTP)
+	handler = mountOpsGovernance(handler, opsInspectionHTTP, opsRetentionHTTP, opsCPUProfileHTTP)
 	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountOpenPlatformUI(handler, shellHandler, authentication)
 	handler = mountMemberGridUI(handler, memberGridUI)

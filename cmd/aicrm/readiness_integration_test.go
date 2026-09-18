@@ -42,7 +42,7 @@ func TestCurrentReleaseReadinessRequiresAppliedMigrationsPostgreSQL(t *testing.T
 		insertReadinessMigration(t, ctx, pool, version)
 	}
 	handler := currentReleaseReadinessHandler(t, pool, config)
-	for _, missing := range []string{"0124", "0149", "0150", "0151", "0152", "0153", "0155", "0156", "0157", "0158", "0159", "0160", "0161", "0164", "0170", "0171", "0172", "0173", "0174", "0175", "0176", "0177", "0183", "0185", "0186", "0187", "0188", "0189"} {
+	for _, missing := range []string{"0124", "0149", "0150", "0151", "0152", "0153", "0155", "0156", "0157", "0158", "0159", "0160", "0161", "0164", "0170", "0171", "0172", "0173", "0174", "0175", "0176", "0177", "0183", "0185", "0186", "0187", "0188", "0189", "0190"} {
 
 		if !containsMigration(required, missing) {
 			t.Fatalf("runtime-required migration list omitted %s", missing)
@@ -101,7 +101,7 @@ func TestCurrentReleaseReadinessAllowsDisabledOptionalProjectionsPostgreSQL(t *t
 			t.Fatalf("disabled projection unexpectedly requires migration %s", version)
 		}
 	}
-	for _, version := range []string{"0186", "0187", "0188", "0189"} {
+	for _, version := range []string{"0186", "0187", "0188", "0189", "0190"} {
 		if !containsMigration(requiredCurrentReleaseMigrations(config), version) {
 			t.Fatalf("disabled providers must still require governance migration %s", version)
 		}

@@ -135,4 +135,50 @@ for (const response of [{ body: { checks: [], issues: [] }, code: 200, expected:
   h.dom.window.close();
 }
 
-console.log('governanceAdmin: unknown/stale, response fencing, CAS, authorization, and report drawer PASS');
+const profiles = (enabled = true, items = []) => ({ enabled, items, target: 'api', duration_seconds: 5, worker_coverage: 'not_supported' });
+{
+  const h = setup(); h.pending.shift().respond(overview()); await flush();
+  h.tab('profiles');
+  assert.equal(h.pending[0].url, '/api/admin/ops-diagnostics/cpu-profiles');
+  h.pending.shift().respond(profiles(false)); await flush();
+  const capture = () => [...h.dom.window.document.querySelectorAll('[data-page-header-actions="governance"] button')].find(b => /采样/.test(b.textContent));
+  assert.equal(capture().disabled, true);
+  assert.match(h.root.textContent, /API.*5 秒.*Worker 进程尚未覆盖/s);
+  h.tab('profiles'); h.pending.shift().respond(profiles()); await flush();
+  capture().click();
+  const first = h.pending.shift();
+  assert.equal(first.init.method, 'POST');
+  assert.deepEqual(JSON.parse(first.init.body), {});
+  assert.equal(first.init.headers.get('X-CSRF-Token'), 'fixture-csrf');
+  const key = first.init.headers.get('Idempotency-Key');
+  assert.ok(key);
+  assert.equal(capture().disabled, true, 'one in-flight profile at a time');
+  capture().click(); assert.equal(h.pending.length, 0);
+  first.respond({}, 503); await flush();
+  assert.equal(capture().textContent, '查看上次采样结果');
+  capture().click();
+  const replay = h.pending.shift();
+  assert.equal(replay.init.headers.get('Idempotency-Key'), key, 'uncertain result must reuse its accepted command');
+  h.tab('reports'); h.pending.shift().respond({ items: [] }); await flush();
+  const content = h.root.textContent;
+  replay.respond({ state: 'completed', id: 'a'.repeat(32) }); await flush();
+  assert.equal(h.root.textContent, content, 'late capture cannot overwrite current navigation');
+  assert.equal(h.pending.length, 0);
+  h.dom.window.close();
+}
+{
+  const h = setup(); h.pending.shift().respond(overview()); await flush();
+  h.tab('profiles');
+  h.pending.shift().respond(profiles(true, [
+    { id: 'a'.repeat(32), state: 'completed', release_sha: 'version-a', accepted_at: at, expires_at: '2099-01-01T00:00:00Z', bytes: 128 },
+    { id: '../../outside', state: 'completed', expires_at: '2099-01-01T00:00:00Z' },
+    { id: 'b'.repeat(32), state: 'completed', expires_at: '2000-01-01T00:00:00Z' },
+    { id: 'c'.repeat(32), state: 'outcome_unknown', expires_at: '2099-01-01T00:00:00Z' },
+  ])); await flush();
+  const links = [...h.root.querySelectorAll('a[download]')];
+  assert.equal(links.length, 1, 'only completed, current, opaque IDs may link to downloads');
+  assert.equal(links[0].getAttribute('href'), '/api/admin/ops-diagnostics/cpu-profiles/' + 'a'.repeat(32) + '/download');
+  assert.match(h.root.textContent, /version-a/);
+  h.dom.window.close();
+}
+console.log('governanceAdmin: unknown/stale, response fencing, CAS, authorization, profile idempotency, and report drawer PASS');

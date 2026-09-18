@@ -1,6 +1,6 @@
 # 受控 API CPU 采样补充计划
 
-本项补齐已批准运行治理计划的性能排障要求。尚未集成、部署或完成生产验收。
+本项补齐已批准运行治理计划的性能排障要求。入口集成中；完整 CI、部署和生产验收分别留证。
 
 ## 业务判断与边界
 
@@ -27,4 +27,4 @@ POST `/api/admin/ops-diagnostics/cpu-profiles` 接受空对象和 Idempotency-Ke
 
 ## 根集成与验收
 
-集成配置开关、API 路由、治理界面、OpenAPI 来源声明、0190 readiness/installer 和数据分类登记后，才可声称入口交付。不得复用旧 DiagnosticSnapshot 的 key/status 投影冒充 profile。必须执行真实五秒 CPU profile 的标准解析、标签 Secret 注入、取消/并发/大小/文件路径保护测试；真实 PostgreSQL 接受与限额/容量/幂等/720h/权限及完成事务失败测试；最后干净 HEAD 的完整 CI 和管理员浏览器旅程。工作区专项不能代替生产验收。
+仅当 API 角色、运行巡查及过程清理均已启用才接受采样，复用现有开关，不增加定时任务。集成 API 路由、治理界面、OpenAPI 来源声明、0190 readiness/installer 和数据分类登记后，才可声称入口交付。不得复用旧 DiagnosticSnapshot 的 key/status 投影冒充 profile。必须执行真实五秒 CPU profile 的标准解析、标签 Secret 注入、取消/并发/大小/文件路径保护测试；真实 PostgreSQL 接受与限额/容量/幂等/720h/权限及完成事务失败测试；最后干净 HEAD 的完整 CI 和管理员浏览器旅程。工作区专项不能代替生产验收。

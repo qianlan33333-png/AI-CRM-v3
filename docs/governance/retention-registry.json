@@ -288,6 +288,7 @@
     }
   },
   "tables": {
+    "adminops_cpu_profile_receipts": {"owner": "adminops", "source": "migrations/0190_adminops_cpu_profiles.sql", "policy": "permanent", "reason": "Minimal immutable administrator CPU-profile acceptance and completion receipt prevents replay after 720-hour artifact expiry; no raw profile bytes, labels or stacks are stored."},
     "access_machine_audit": {"owner": "access", "policy": "permanent", "cleanup": "disabled", "reason": "保存领域业务对象、成员/归属关系、内容或来源凭据，Owner 读取/写入及引用关系持续使用；年龄本身不能使该业务事实失效。 核验字段：machine_client_id, actor_admin_user_id, action, outcome, details。", "source": "migrations/0096_open_platform.sql", "classification_evidence": "docs/governance/retention-classification-review.json#tables/access_machine_audit"},
     "access_machine_client_grants": {"owner": "access", "policy": "permanent", "cleanup": "disabled", "reason": "保存领域业务对象、成员/归属关系、内容或来源凭据，Owner 读取/写入及引用关系持续使用；年龄本身不能使该业务事实失效。 核验字段：machine_client_id, capability。", "source": "migrations/0096_open_platform.sql", "classification_evidence": "docs/governance/retention-classification-review.json#tables/access_machine_client_grants"},
     "access_machine_clients": {"owner": "access", "policy": "permanent", "cleanup": "disabled", "reason": "保存长期业务账户、分享/集成配置或密钥引用；授权撤销/轮换由 Owner 规则控制，不能用过程日志30天策略破坏现有访问合同。 核验字段：client_id, corp_id, auth_version, display_name, purpose, secret_hash, credential_hint, audiences。", "source": "migrations/0096_open_platform.sql", "classification_evidence": "docs/governance/retention-classification-review.json#tables/access_machine_clients"},

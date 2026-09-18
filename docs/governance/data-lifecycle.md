@@ -150,3 +150,7 @@ sudo python3 /opt/aicrm/current/deploy/configure-ops-runtime.py --sha <installed
 ```
 
 脚本只重启API与effects-worker，同时核对readiness的SHA、两个真实进程exe及当前发布链接。变更前先落盘root 0600事务恢复记录；配置替换后报错或SIGINT/SIGTERM会恢复原始字节、重新启动并验收原版本。SIGKILL等遗留记录阻断后续启用和发布，只允许 `--mode recover --sha <same-installed-sha>` 恢复；第三方配置变更或不同SHA拒绝自动覆盖。原配置正文仅存在受保护的短期恢复记录，不进入输出；成功或已验证恢复后删除记录。该记录是本次配置事务的崩溃恢复状态，不是另建备份体系。不支持的多行配置格式在写入前拒绝，其他配置原字节保留。安装器与此入口共用同一内核文件锁，锁忙时保留包并退出，不杀其他持有者。其他 Provider 写开关不变。`--mode disable --retention off` 关闭治理调度和发送；已经持久化的清理任务执行时也重新检查禁用开关，避免只停新增调度却继续运行旧清理任务。禁用不会撤回已接受的 Provider 效果，也不能改变已发生的业务事实。
+
+## 受控 CPU 采样补充
+
+`adminops_cpu_profile_receipts` 由 AdminOps 永久保留最小操作与防重收据，不保存原始 profile。净化后的 CPU 样本只进入已登记的 `/var/lib/aicrm/process-diagnostics`，遵守现有 720 小时宿主清理；在线列表、详情和下载到期即拒绝。仅 API 角色且巡查与过程清理均启用时，超级管理员可显式触发固定 5 秒采样。单文件 2 MiB、全局存量 64 MiB，同时约束数据库预留和实际目录占用；Worker CPU 采样未覆盖。

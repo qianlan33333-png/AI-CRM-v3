@@ -128,6 +128,7 @@ for migration_contract in \
   '0187_adminops_notification_effect.sql:AdminOps notification external effect' \
   '0188_adminops_retention.sql:AdminOps retention' \
   '0189_owner_process_retention.sql:Owner process retention' \
+  '0190_adminops_cpu_profiles.sql:CPU profile audit receipts' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \

@@ -4,9 +4,9 @@ import { openDetailDrawer } from './shared/ui/detailDrawer';
 type Check = { id: string; owner: string; title: string; scope?: string; status: string; code: string; observed_at: string; metrics: Record<string, number> };
 type Issue = { id: number; check_id: string; code: string; status: string; severity: string; version: number; first_seen: string; last_seen: string; occurrences: number };
 type Overview = { fresh: boolean; observed_at: string; latest?: { id: number; release_sha: string; completed_at?: string }; checks: Check[]; issues: Issue[] };
-type Tab = 'overview' | 'checks' | 'issues' | 'reports' | 'diagnostics' | 'retention';
+type Tab = 'overview' | 'checks' | 'issues' | 'reports' | 'diagnostics' | 'profiles' | 'retention';
 const root = document.querySelector<HTMLElement>('#governance-admin-root');
-const labels: Record<Tab, string> = { overview: '治理总览', checks: '检查详情', issues: '问题跟踪', reports: '巡查报告', diagnostics: '错误聚合', retention: '数据生命周期' };
+const labels: Record<Tab, string> = { overview: '治理总览', checks: '检查详情', issues: '问题跟踪', reports: '巡查报告', diagnostics: '错误聚合', profiles: '性能采样', retention: '数据生命周期' };
 const statusLabels: Record<string, string> = { ok: '正常', warning: '需关注', critical: '严重', unknown: '未知', uncovered: '未覆盖', stale: '过期', open: '待处理', acknowledged: '已确认', resolved: '已恢复', queued: '待发送', executed: '飞书已接受', outcome_unknown: '发送结果未知', final_failed: '发送失败', disabled: '发送未启用' };
 let tab: Tab = 'overview';
 let serial = 0;
@@ -14,6 +14,9 @@ let diagnosticQuery = new URLSearchParams(location.search).get('correlation') ||
 if (diagnosticQuery) tab = 'diagnostics';
 let overview: Overview | null = null;
 let acceptedScan: {job: number; previousRun: number} | null = null;
+let profilesEnabled = false;
+let profileBusy = false;
+let profileRequestKey: string | null = null;
 const esc = (v: unknown): string => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const date = (v: unknown): string => typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
 const badge = (s: string): string => `<span class="governance-status" data-status="${esc(s)}">${esc(statusLabels[s] || s)}</span>`;
@@ -28,15 +31,15 @@ function csrf(): string {
   return '';
 }
 class AccessError extends Error {}
-async function request(path: string, method = 'GET', body?: unknown): Promise<unknown> {
+async function request(path: string, method = 'GET', body?: unknown, requestKey?: string): Promise<unknown> {
   const headers = new Headers({ Accept: 'application/json' });
-  if (method !== 'GET') { headers.set('Content-Type', 'application/json'); headers.set('X-CSRF-Token', csrf()); headers.set('Idempotency-Key', crypto.randomUUID()); }
+  if (method !== 'GET') { headers.set('Content-Type', 'application/json'); headers.set('X-CSRF-Token', csrf()); headers.set('Idempotency-Key', requestKey || crypto.randomUUID()); }
   const response = await fetch(path, { method, headers, credentials: 'same-origin', cache: 'no-store', body: body === undefined ? undefined : JSON.stringify(body) });
   if (response.status === 401 || response.status === 403) throw new AccessError('需要超级管理员权限，请确认登录身份。');
   if (!response.ok) {
     const diagnosticID = response.headers.get('X-AICRM-Diagnostic-ID');
     const suffix = diagnosticID && /^[a-f0-9]{32}$/.test(diagnosticID) ? ` 排查编号：${diagnosticID}` : '';
-    throw new Error((response.status === 409 ? '记录已更新，请刷新后操作。' : '读取或操作失败，请稍后重试。') + suffix);
+    throw new Error((response.status === 409 ? '记录已更新或另一操作正在执行，请刷新后查看。' : response.status === 429 ? '已达到本小时次数或存储限额，请稍后再试。' : response.status === 410 ? '采样已超过 30 天，详情和文件不再提供。' : '读取或操作失败，请稍后重试。') + suffix);
   }
   return response.json();
 }
@@ -52,6 +55,7 @@ function storageEvidence(value: unknown): string {
 function metrics(c: Check): string { return Object.entries(c.metrics || {}).map(([name, value]) => `${esc(name)}：${esc(value)}`).join('<br>') || '—'; }
 function layout(content: string): void {
   if (!root) return;
+  renderHeader();
   root.innerHTML = `<nav class="governance-tabs" aria-label="运行治理">${Object.entries(labels).map(([key, title]) => `<button type="button" class="admin-button" data-tab="${key}" aria-current="${tab === key ? 'page' : 'false'}">${title}</button>`).join('')}</nav><div class="governance-content" aria-live="polite">${acceptedScan ? `<p class="governance-note" role="status">巡查已受理，任务 ${acceptedScan.job}，等待执行结果。可刷新查看最新结果。</p>` : ""}${content}</div>`;
   root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((button) => button.addEventListener('click', () => { tab = button.dataset.tab as Tab; void refresh(); }));
 }
@@ -64,6 +68,7 @@ function overviewContent(data: Overview): string {
 }
 async function refresh(): Promise<void> {
   const id = ++serial; const selected = tab;
+  if (selected === 'profiles') profilesEnabled = false;
   layout('<p class="governance-empty" role="status">正在读取治理数据…</p>');
   try {
     if (['overview', 'checks', 'issues'].includes(selected)) {
@@ -87,7 +92,7 @@ async function refresh(): Promise<void> {
       }
       return;
     }
-    const path = selected === 'reports' ? '/api/admin/ops-inspections/reports' : selected === 'diagnostics' ? `/api/admin/ops-diagnostics${diagnosticQuery ? `?correlation=${encodeURIComponent(diagnosticQuery)}` : ''}` : '/api/admin/ops-retention';
+    const path = selected === 'reports' ? '/api/admin/ops-inspections/reports' : selected === 'profiles' ? '/api/admin/ops-diagnostics/cpu-profiles' : selected === 'diagnostics' ? `/api/admin/ops-diagnostics${diagnosticQuery ? `?correlation=${encodeURIComponent(diagnosticQuery)}` : ''}` : '/api/admin/ops-retention';
     const data = await request(path);
     if (id !== serial) return;
     if (!record(data) || !Array.isArray(data.items)) throw new Error('返回数据不完整，请稍后重试。');
@@ -99,6 +104,11 @@ async function refresh(): Promise<void> {
       layout(`<form class="governance-query"><label>页面排查编号 <input name="correlation" value="${esc(diagnosticQuery)}" maxlength="128" autocomplete="off" placeholder="粘贴报错时的排查编号"></label><button class="admin-button" type="submit">定位问题</button><button class="admin-button" type="button" data-clear-query>查看全部</button></form>${table(['错误类别 / 路由', '关联摘要', '版本', '关联任务 / 效果', '次数 / 首次 / 最近'], items.map((v) => [`${esc(v.code || v.error_code)}<br>${esc(v.route_template || '—')}`, esc(v.correlation_digest), esc(v.release_sha), `${esc(v.job_ref || '—')} / ${esc(v.effect_ref || '—')}`, `${esc(v.occurrences ?? 1)}<br>${esc(date(v.first_seen || v.occurred_at))}<br>${esc(date(v.last_seen || v.occurred_at))}`]))}`);
       root?.querySelector<HTMLFormElement>('form')?.addEventListener('submit', (event) => { event.preventDefault(); const value = root.querySelector<HTMLInputElement>('[name="correlation"]')?.value.trim() || ''; if (value && !/^[a-f0-9]{32}$/.test(value)) { showError(new Error('排查编号应为 32 位字母和数字。')); return; } diagnosticQuery = value; void refresh(); });
       root?.querySelector('[data-clear-query]')?.addEventListener('click', () => { diagnosticQuery = ''; void refresh(); });
+    } else if (selected === 'profiles') {
+      if (typeof data.enabled !== 'boolean' || data.target !== 'api' || data.duration_seconds !== 5 || data.worker_coverage !== 'not_supported') throw new Error('采样范围未确认，暂时无法启动。');
+      profilesEnabled = data.enabled;
+      const states: Record<string, string> = { sampling: '正在采样', outcome_unknown: '结果未知', completed: '已完成', failed: '采样失败' };
+      layout(`<p>采集当前 API 服务的 5 秒 CPU 性能样本，用于定位耗时函数。Worker 进程尚未覆盖。</p><p>每人每小时最多 3 次，全局每小时最多 6 次；文件和在线详情 30 天后到期。</p>${profilesEnabled ? '' : '<p class="governance-note">采样暂未启用。需要先启用运行巡查与过程清理。</p>'}${profileBusy ? '<p role="status">正在采样，请稍候…</p>' : ''}${table(['采样编号 / 状态', '运行版本', '采样时间 / 到期时间', '文件', '操作'], items.map((v) => [esc(v.id) + '<br>' + esc(states[String(v.state)] || '未知'), esc(v.release_sha), esc(date(v.accepted_at)) + '<br>' + esc(date(v.expires_at)), typeof v.bytes === 'number' ? esc(v.bytes) + ' 字节' : '未知', v.state === 'completed' && typeof v.id === 'string' && /^[a-f0-9]{32}$/.test(v.id) && typeof v.expires_at === 'string' && Date.parse(v.expires_at) > Date.now() ? `<a class="admin-button" href="/api/admin/ops-diagnostics/cpu-profiles/${v.id}/download" download>下载样本</a>` : esc(v.failure_code || '暂无可下载文件')]))}`);
     } else {
       const history = await request('/api/admin/ops-retention/runs');
       if (id !== serial) return;
@@ -109,7 +119,19 @@ async function refresh(): Promise<void> {
   } catch (error) { if (id === serial) showError(error); }
 }
 function showError(error: unknown): void { if (error instanceof AccessError) overview = null; layout(`<p class="governance-error" role="alert">${esc(error instanceof Error ? error.message : '操作失败')}</p>`); }
-if (root) {
-  mountPageHeaderActions('governance', [{ label: '刷新', variant: 'secondary', onClick: refresh }, { label: '立即巡查', variant: 'primary', onClick: async () => { const current = serial; try { const result = await request('/api/admin/ops-inspections/runs', 'POST', {}); if (current === serial) { if (record(result) && result.state === 'accepted' && typeof result.job_id === 'number') acceptedScan = {job: result.job_id, previousRun: overview?.latest?.id || 0}; await refresh(); } } catch (error) { if (current === serial) showError(error); } } }]);
-  void refresh();
+function renderHeader(): void {
+  mountPageHeaderActions('governance', [{ label: '刷新', variant: 'secondary', onClick: refresh }, tab === 'profiles' ? { label: profileRequestKey ? '查看上次采样结果' : '采样 5 秒', variant: 'primary', disabled: !profilesEnabled || profileBusy, onClick: async () => {
+    const current = serial;
+    profileRequestKey ||= crypto.randomUUID();
+    profileBusy = true;
+    renderHeader();
+    try {
+      const result = await request('/api/admin/ops-diagnostics/cpu-profiles', 'POST', {}, profileRequestKey);
+      if (!record(result) || !['sampling', 'outcome_unknown', 'completed', 'failed'].includes(String(result.state))) throw new Error('采样结果未确认，请查看上次结果。');
+      if (result.state === 'completed' || result.state === 'failed') profileRequestKey = null;
+      if (current === serial) await refresh();
+    } catch (error) { if (current === serial) showError(error); }
+    finally { profileBusy = false; renderHeader(); }
+  } } : { label: '立即巡查', variant: 'primary', onClick: async () => { const current = serial; try { const result = await request('/api/admin/ops-inspections/runs', 'POST', {}); if (current === serial) { if (record(result) && result.state === 'accepted' && typeof result.job_id === 'number') acceptedScan = {job: result.job_id, previousRun: overview?.latest?.id || 0}; await refresh(); } } catch (error) { if (current === serial) showError(error); } } }]);
 }
+if (root) void refresh();
