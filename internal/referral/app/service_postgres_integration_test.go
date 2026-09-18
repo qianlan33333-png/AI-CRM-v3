@@ -709,7 +709,7 @@ func referralPostgreSQLPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate referral migrations")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0183_referral_core.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0185_referral_core.sql"} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			pool.Close()
