@@ -24,15 +24,13 @@ async function wait(cdp, expression, label) {
   try { if(await value(cdp,expression)) return; }
   catch(error) {
    // Polling may race a document commit; never retry actions or assertions.
-   if(error.code!==-32000 || !/context.*(destroyed|not found)|Cannot find context/i.test(error.message)) throw error;
+   if(error.code!==-32000 || !/context.*(destroyed|not found)|Cannot find context|Inspected target navigated or closed/i.test(error.message)) throw error;
   }
   await sleep(100);
  }
  throw new Error(`${label}: ${await value(cdp,"JSON.stringify({path:location.pathname,title:document.title,body:document.body.innerText.slice(-2400),requests:window.__mediaRefreshRequests||[]})")}`);
 }
-async function navigate(cdp, url) {
- const previous=(await cdp.call('Page.getFrameTree')).frameTree.frame.loaderId;
- await cdp.call(url ? 'Page.navigate' : 'Page.reload', url ? {url} : {});
+async function waitForNewDocument(cdp, previous) {
  let committed=false;
  for(let i=0;i<150;i++) {
   const current=(await cdp.call('Page.getFrameTree')).frameTree.frame.loaderId;
@@ -41,6 +39,20 @@ async function navigate(cdp, url) {
  }
  if(!committed) throw new Error('navigation did not commit a new document');
  await wait(cdp,"document.readyState !== 'loading'",'new document ready');
+}
+
+// location.href can change while the old document still contains its buttons.
+// Wait for a new loader before reading DOM after an action that navigates.
+// The action itself is executed exactly once, never retried.
+async function submitAndNavigate(cdp, expression) {
+ const previous=(await cdp.call('Page.getFrameTree')).frameTree.frame.loaderId;
+ await value(cdp, expression);
+ await waitForNewDocument(cdp, previous);
+}
+async function navigate(cdp, url) {
+ const previous=(await cdp.call('Page.getFrameTree')).frameTree.frame.loaderId;
+ await cdp.call(url ? 'Page.navigate' : 'Page.reload', url ? {url} : {});
+ await waitForNewDocument(cdp, previous);
 }
 
 async function assertImageLibraryLayout(cdp, width, height) {
@@ -105,7 +117,7 @@ async function exerciseGroupManagement(cdp) {
   await navigate(cdp,`${baseURL}/admin/materials?tab=${tab}`);
   await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组'&&!b.disabled))",`${kind} group controls`);
   await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组').click();true");
-  await value(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix)};document.querySelector('dialog[open] form').requestSubmit();true`);
+  await submitAndNavigate(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix)};document.querySelector('dialog[open] form').requestSubmit();true`);
   await wait(cdp,`new URL(location.href).searchParams.get('material_group')===${JSON.stringify(prefix)} && Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名'))`,`${kind} empty group retained`);
   const groupID=await value(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.find(g=>g.name===${JSON.stringify(prefix)}).id)`);
   for(let n=0;n<2;n++) {
@@ -146,14 +158,14 @@ async function exerciseGroupManagement(cdp) {
   await wait(cdp,"document.querySelectorAll('input[aria-label^=\"选择素材 \"]').length===2",`${kind} edited group readback`);
   await value(cdp,"document.querySelector('[aria-label=\"选择当前页全部素材\"],[aria-label=\"全选当前页素材\"]').click();[...document.querySelectorAll('button')].find(b=>['移动到分组','转移分组'].includes(b.textContent)&&!b.hidden).click();true");
   await wait(cdp,"Boolean(document.querySelector('dialog[open] select'))",`${kind} batch move dialog`);
-  await value(cdp,"document.querySelector('dialog[open] select').value='';document.querySelector('dialog[open] form').requestSubmit();true");
+  await submitAndNavigate(cdp,"document.querySelector('dialog[open] select').value='';document.querySelector('dialog[open] form').requestSubmit();true");
   await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>b.items.some(g=>g.id===${groupID}&&g.count===0))`,`${kind} batch ungroup persisted`);
   await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名'))",`${kind} empty group edit`);
   await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='编辑组名').click();true");
-  await value(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix+'-改名')};document.querySelector('dialog[open] form').requestSubmit();true`);
+  await submitAndNavigate(cdp,`document.querySelector('dialog[open] input').value=${JSON.stringify(prefix+'-改名')};document.querySelector('dialog[open] form').requestSubmit();true`);
   await wait(cdp,`new URL(location.href).searchParams.get('material_group')===${JSON.stringify(prefix+'-改名')} && Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='删除分组'))`,`${kind} renamed group selected`);
   await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='删除分组').click();true");
-  await value(cdp,"document.querySelector('dialog[open] form').requestSubmit();true");
+  await submitAndNavigate(cdp,"document.querySelector('dialog[open] form').requestSubmit();true");
   await wait(cdp,`new URL(location.href).searchParams.get('tab')===${JSON.stringify(tab)} && new URL(location.href).searchParams.get('material_group')==='' && !document.querySelector('dialog[open]')`,`${kind} deletion returns to same tab ungrouped`);
   await wait(cdp,`fetch(${JSON.stringify(api+'/groups')}).then(r=>r.json()).then(b=>!b.items.some(g=>g.id===${groupID}))`,`${kind} group deleted readback`);
  }
@@ -164,13 +176,13 @@ try {
  browser=spawn(binary(),["--headless=new","--no-sandbox","--remote-debugging-port=0",`--user-data-dir=${profile}`,"--no-first-run","--no-default-browser-check","--disable-background-networking","--ignore-certificate-errors","--allow-insecure-localhost","about:blank"],{stdio:["ignore","ignore","pipe"]}); browser.stderr.on("data",c=>{stderr=(stderr+c).slice(-2048);});
  const tab=await (await fetch(`${await devtools(profile)}/json/new?about:blank`,{method:"PUT"})).json(); const socket=new WebSocket(tab.webSocketDebuggerUrl); await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",reject,{once:true});}); cdp=new CDP(socket); await cdp.call("Page.enable"); await cdp.call("Runtime.enable");
  await navigate(cdp,`${baseURL}/login?next=%2Fadmin%2Fimage-library`); await wait(cdp,"Boolean(document.querySelector('form[action=\"/login\"] input[name=login_csrf_token]'))","login page");
- await value(cdp,`(()=>{document.querySelector('input[name=username]').value=${JSON.stringify(username)};document.querySelector('input[name=password]').value=${JSON.stringify(password)};document.querySelector('form[action="/login"]').requestSubmit();return true})()`);
+ await submitAndNavigate(cdp,`(()=>{document.querySelector('input[name=username]').value=${JSON.stringify(username)};document.querySelector('input[name=password]').value=${JSON.stringify(password)};document.querySelector('form[action="/login"]').requestSubmit();return true})()`);
  await wait(cdp,"location.pathname==='/admin/materials'&&document.body?.dataset.page==='images'&&document.title.includes('素材库')","material workspace title");
  await wait(cdp,"Boolean(document.querySelector('[data-image-library-query]')&&document.querySelector('[data-image-library-cards]'))",'V3 image library controls');
  await wait(cdp,"Boolean([...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组'&&!b.disabled))",'group create ready');
  await value(cdp,"[...document.querySelectorAll('button')].find(b=>b.textContent==='新增分组').click();true");
  await wait(cdp,"Boolean(document.querySelector('dialog[open] input'))",'group name dialog');
- await value(cdp,"document.querySelector('dialog[open] input').value='浏览器分组';document.querySelector('dialog[open] form').requestSubmit();true");
+ await submitAndNavigate(cdp,"document.querySelector('dialog[open] input').value='浏览器分组';document.querySelector('dialog[open] form').requestSubmit();true");
  await wait(cdp,"new URL(location.href).searchParams.get('material_group')==='浏览器分组'&&Boolean(document.querySelector('[data-material-group-value=\"category:浏览器分组\"]'))",'empty group creation persists');
  await value(cdp,"document.querySelector('[data-material-group-value=\"\"]').click();true");
  await value(cdp,"(()=>{const fetcher=window.fetch.bind(window);window.__mediaRefreshRequests=[];window.fetch=async(...args)=>{const response=await fetcher(...args);window.__mediaRefreshRequests.push(`${args[1]?.method||'GET'} ${typeof args[0]==='string'?args[0]:args[0].url} ${response.status} ${await response.clone().text()}`);return response};return true})()");
