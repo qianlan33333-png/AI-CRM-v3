@@ -13,3 +13,5 @@ GitHub reference: [existing V1 Operation Catalog](https://github.com/qianlan3333
 验收：真实 OAuth token 与最外层 Host 路由、授权目录、未授权/只读/越权拒绝、重复上报仅一条、状态更新、数据库回读。文档同步 OpenAPI 和标准控制台目录。XC R1/R2/R3 的实际地址/凭据/回流证据单独跟踪，不误报 S5。
 
 本地证据：`/tmp/core-api-tests-final.log`、`/tmp/core-api-oauth.log`（真实组合服务＋OAuth＋PostgreSQL）、`/tmp/core-api-domains.log`、`/tmp/core-api-frontend.log`、`/tmp/core-api-openapi.log`。fast/compile 见 `/tmp/core-api-fast-final.log`、`/tmp/core-api-compile-final.log`。这些是专项证据，不替代完整 CI 或生产验收。
+
+回归稳定性修复：CI 的素材刷新旅程复现导航期间 CDP 错误及旧 DOM 按钮误判。提交分组变更后等待新 loader 和文档就绪；只读轮询兼容导航瞬时错误，写动作不重试，原断言全部保留。本地修复前 8 次重复中复现两类错误，修复后完整旅程连续 8 次通过（`/tmp/core-api-media-repro-repeat.log`、`/tmp/core-api-media-fixed.log`）。仅测试同步，不涉及 OneID 或生产持久化。
