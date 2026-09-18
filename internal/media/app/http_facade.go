@@ -241,3 +241,29 @@ func (f *httpFacade) ListMiniProgramsInGroup(c context.Context, l, o int, e bool
 	}
 	return s.ListMiniProgramsInGroup(c, l, o, e, q, g)
 }
+
+// GroupManagement owns stable group commands separately from legacy category adapters.
+type GroupCommand = mediastore.GroupCommand
+type GroupManagement interface {
+	ManageMaterialGroup(context.Context, string, string, int64, string, GroupCommand) (map[string]any, error)
+}
+
+func (f *httpFacade) ManageMaterialGroup(c context.Context, k, op string, a int64, key string, cmd GroupCommand) (map[string]any, error) {
+	s, ok := f.store.(GroupManagement)
+	if !ok {
+		return nil, ErrHTTPInvalid
+	}
+	return s.ManageMaterialGroup(c, k, op, a, key, cmd)
+}
+
+type GroupMemberReader interface {
+	MaterialGroupMembers(context.Context, string, []int64) ([]map[string]any, error)
+}
+
+func (f *httpFacade) MaterialGroupMembers(c context.Context, k string, ids []int64) ([]map[string]any, error) {
+	s, ok := f.store.(GroupMemberReader)
+	if !ok {
+		return nil, ErrHTTPInvalid
+	}
+	return s.MaterialGroupMembers(c, k, ids)
+}

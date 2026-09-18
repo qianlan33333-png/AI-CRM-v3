@@ -16,7 +16,11 @@ function domFor(page, markup, fetcher) {
   return new JSDOM(`<!doctype html><body data-page="${page}"><header class="admin-topbar"><div class="admin-topbar-head"><h1>素材库</h1></div><div class="admin-topbar-meta"></div></header><main id="stage" data-material-library-workspace="true">${markup}</main></body>`, {
     url: `https://test.invalid/admin/materials?tab=${page === 'attach' ? 'attachments' : 'miniprograms'}`,
     runScripts: 'outside-only', pretendToBeVisual: true,
-    beforeParse(window) { window.Response = Response; window.Headers = Headers; window.Request = Request; window.fetch = fetcher; },
+    beforeParse(window) { window.Response = Response; window.Headers = Headers; window.Request = Request; window.fetch = async (input,init) => {
+ const url=new URL(typeof input==='string'?input:input.url,'https://test.invalid');
+ if(url.pathname.endsWith('/group-members'))return response({items:url.searchParams.get('ids').split(',').map(id=>({id:Number(id),version:1,group_id:null,category:''}))});
+ return fetcher(input,init);
+ }; },
   });
 }
 
@@ -49,7 +53,7 @@ async function settle() { await sleep(); await sleep(); }
     assert.equal(topbarUpload, dom.window.document.querySelector('#upload'), 'the original attachment upload control is moved, not recreated');
     topbarUpload.click(); assert.equal(uploads, 1, 'the original attachment upload callback remains connected');
     assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector('#stage [data-material-library-header-hidden]')).display, 'none', 'the duplicate donor attachment title is not visible');
-    assert.deepEqual([...dom.window.document.querySelectorAll('thead th')].slice(0, 8).map((cell) => cell.textContent), ['名称', '标签', '类型', '大小', '创建时间', '启用状态', '组别', '操作'], 'attachment table exposes its actual workspace fields');
+    assert.deepEqual([...dom.window.document.querySelectorAll('thead th')].slice(0, 8).map((cell) => cell.textContent), ['名称', '标签', '类型', '大小', '创建时间', '启用状态', '所属分组', '操作'], 'attachment table exposes its actual workspace fields');
     const row = dom.window.document.querySelector('tbody tr');
     assert.equal(row.cells[3].textContent, '408 KB');
     assert.equal(row.cells[5].textContent, '启用');
@@ -399,7 +403,7 @@ for (const page of ['attach', 'mpLib']) {
   const dom = domFor(page, '<section></section>', async input => {
     const url = new URL(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url, 'https://test.invalid');
     calls.push(url.pathname);
-    if (url.pathname.endsWith('/groups')) return response({items:[{name:'',count:2},{name:'课程',count:3}]});
+    if (url.pathname.endsWith('/groups')) return response({items:[{id:0,name:'',version:0,count:2},{id:1,name:'课程',version:1,count:3}],can_write:true});
     return response({items:[],total:0,limit:100,offset:0});
   });
   try {

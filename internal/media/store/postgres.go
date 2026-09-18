@@ -133,6 +133,7 @@ WHERE operation=$3 AND actor_admin_user_id=$4 AND idempotency_key_digest=$5`, re
 }
 
 type ImageInput struct {
+	GroupID                                           *int64 `json:"group_id,omitempty"`
 	FileName, MIME, Name, Description, Tags, Category string
 	Content                                           []byte
 	Width, Height                                     int32
@@ -209,6 +210,9 @@ func (r *Repository) CreateImage(ctx context.Context, actor int64, key string, i
 	if err != nil {
 		return nil, err
 	}
+	if input.GroupID != nil {
+		command, _ = json.Marshal([]any{json.RawMessage(command), input.GroupID})
+	}
 	var out map[string]any
 	err = r.Within(ctx, func(txctx context.Context) error {
 		replay, owned, err := r.reserve(txctx, "image.create", "image", actor, key, string(command))
@@ -230,7 +234,18 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) RETURNING id,created_at,updat
 		if err != nil {
 			return err
 		}
+		groupName := ""
+		if input.GroupID != nil {
+			groupName, err = r.applyGroupID(txctx, "image", id, input.GroupID)
+			if err != nil {
+				return err
+			}
+		}
 		out = imageMap(id, input.FileName, input.Name, input.Description, input.Tags, input.Category, input.MIME, int64(len(input.Content)), input.Width, input.Height, input.Enabled, created, updated)
+		if input.GroupID != nil {
+			out["group_id"] = input.GroupID
+			out["category"] = groupName
+		}
 		if input.Enabled {
 			if err = r.acceptMaterialPreparationWithin(txctx, "image:"+strconv.FormatInt(id, 10)); err != nil {
 				return err
@@ -432,6 +447,20 @@ func (r *Repository) UpdateImage(ctx context.Context, id, actor int64, key strin
 		if err != nil {
 			return err
 		}
+		if _, hasGroup := patch["group_id"]; hasGroup {
+			expected, ok := patch["expected_version"].(float64)
+			if !ok || expected < 1 || expected != float64(int64(expected)) {
+				return ErrInvalid
+			}
+			var current int64
+			if err = tx.QueryRow(txctx, `SELECT version FROM media_images WHERE id=$1`, id).Scan(&current); err != nil {
+				return err
+			}
+			if current != int64(expected) {
+				return ErrConflict
+			}
+		}
+
 		wasEnabled := enabled
 		if v, ok := patch["name"].(string); ok {
 			name = strings.TrimSpace(v)
@@ -473,7 +502,23 @@ func (r *Repository) UpdateImage(ctx context.Context, id, actor int64, key strin
 		if err = tx.QueryRow(txctx, `UPDATE media_images SET name=$2,description=$3,tags=$4,category=$5,enabled=$6,updated_by=$7,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING updated_at`, id, name, description, tags, category, enabled, actor).Scan(&updated); err != nil {
 			return err
 		}
+		groupName := ""
+		groupValue, hasGroup := patch["group_id"]
+		if hasGroup {
+			gid, e := groupIDValue(groupValue)
+			if e != nil {
+				return e
+			}
+			groupName, err = r.applyGroupID(txctx, "image", id, gid)
+			if err != nil {
+				return err
+			}
+		}
 		out = imageMap(id, file, name, description, tags, category, mime, size, width, height, enabled, created, updated)
+		if hasGroup {
+			out["group_id"] = groupValue
+			out["category"] = groupName
+		}
 		if !wasEnabled && enabled {
 			if err = r.acceptMaterialPreparationWithin(txctx, "image:"+strconv.FormatInt(id, 10)); err != nil {
 				return err
@@ -603,6 +648,7 @@ func (r *Repository) resolveReferenceConflict(ctx context.Context, kind string, 
 }
 
 type AttachmentInput struct {
+	GroupID                     *int64 `json:"group_id,omitempty"`
 	FileName, Name, Description string
 	Tags                        []string
 	Content                     []byte
@@ -662,7 +708,18 @@ func (r *Repository) CreateAttachment(ctx context.Context, actor int64, key stri
 		if err != nil {
 			return err
 		}
+		groupName := ""
+		if input.GroupID != nil {
+			groupName, err = r.applyGroupID(txctx, "attachment", id, input.GroupID)
+			if err != nil {
+				return err
+			}
+		}
 		out = attachmentMap(id, input.FileName, input.Name, input.Description, "application/pdf", tags, int64(len(input.Content)), input.Enabled, version, created, updated)
+		if input.GroupID != nil {
+			out["group_id"] = input.GroupID
+			out["category"] = groupName
+		}
 		out["created_by"], out["updated_by"] = actor, actor
 		if input.Enabled {
 			if err = r.acceptMaterialPreparationWithin(txctx, "attachment:"+strconv.FormatInt(id, 10)); err != nil {
@@ -829,7 +886,23 @@ func (r *Repository) UpdateAttachment(ctx context.Context, id, actor int64, key 
 		if err != nil {
 			return err
 		}
+		groupName := ""
+		groupValue, hasGroup := patch["group_id"]
+		if hasGroup {
+			gid, e := groupIDValue(groupValue)
+			if e != nil {
+				return e
+			}
+			groupName, err = r.applyGroupID(txctx, "attachment", id, gid)
+			if err != nil {
+				return err
+			}
+		}
 		out = attachmentMap(id, f, n, d, m, tags, size, enabled, version, c, u)
+		if hasGroup {
+			out["group_id"] = groupValue
+			out["category"] = groupName
+		}
 		out["created_by"], out["updated_by"] = createdBy, actor
 		if !wasEnabled && enabled {
 			if err = r.acceptMaterialPreparationWithin(txctx, "attachment:"+strconv.FormatInt(id, 10)); err != nil {
@@ -955,7 +1028,23 @@ func (r *Repository) CreateMiniProgram(ctx context.Context, actor int64, key str
 		if err = replaceLocalImageReference(txctx, "media.miniprogram.thumbnail", id, nil, thumb); err != nil {
 			return err
 		}
+		groupName := ""
+		groupValue, hasGroup := input["group_id"]
+		if hasGroup {
+			gid, e := groupIDValue(groupValue)
+			if e != nil {
+				return e
+			}
+			groupName, err = r.applyGroupID(txctx, "miniprogram", id, gid)
+			if err != nil {
+				return err
+			}
+		}
 		out = miniMap(id, n, a, p, t, thumb, enabled, version, actor, actor, c, u)
+		if hasGroup {
+			out["group_id"] = groupValue
+			out["category"] = groupName
+		}
 		out["_changed"] = true
 		return r.complete(txctx, "miniprogram.create", "miniprogram", actor, key, id, out, "media.miniprogram.created")
 	})
@@ -1013,6 +1102,16 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		if err != nil {
 			return err
 		}
+		if _, hasGroup := input["group_id"]; hasGroup {
+			expected, ok := input["expected_version"].(float64)
+			if !ok || expected < 1 || expected != float64(int64(expected)) {
+				return ErrInvalid
+			}
+			if version != int64(expected) {
+				return ErrConflict
+			}
+		}
+
 		oldName, oldAppID, oldPage, oldTitle, oldEnabled, oldThumb := n, a, p, t, enabled, thumb
 		if v, ok := input["name"].(string); ok {
 			n = strings.TrimSpace(v)
@@ -1054,7 +1153,8 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		if n == "" || a == "" || p == "" || t == "" || len(n) > 200 || len(a) > 120 || len(p) > 500 || len(t) > 200 {
 			return ErrInvalid
 		}
-		if n == oldName && a == oldAppID && p == oldPage && t == oldTitle && enabled == oldEnabled && sameOptionalID(thumb, oldThumb) {
+		_, groupSupplied := input["group_id"]
+		if !groupSupplied && n == oldName && a == oldAppID && p == oldPage && t == oldTitle && enabled == oldEnabled && sameOptionalID(thumb, oldThumb) {
 			out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, updatedBy, c, u)
 			out["_changed"] = false
 			return r.complete(txctx, "miniprogram.update", "miniprogram", actor, key, id, out, "media.miniprogram.update_noop")
@@ -1066,7 +1166,23 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		if err = replaceLocalImageReference(txctx, "media.miniprogram.thumbnail", id, oldThumb, thumb); err != nil {
 			return err
 		}
+		groupName := ""
+		groupValue, hasGroup := input["group_id"]
+		if hasGroup {
+			gid, e := groupIDValue(groupValue)
+			if e != nil {
+				return e
+			}
+			groupName, err = r.applyGroupID(txctx, "miniprogram", id, gid)
+			if err != nil {
+				return err
+			}
+		}
 		out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, actor, c, u)
+		if hasGroup {
+			out["group_id"] = groupValue
+			out["category"] = groupName
+		}
 		out["_changed"] = true
 		return r.complete(txctx, "miniprogram.update", "miniprogram", actor, key, id, out, "media.miniprogram.updated")
 	})
@@ -1357,6 +1473,7 @@ func (r *Repository) ArchiveGroupInvite(ctx context.Context, id, actor int64, ke
 }
 
 type AttachmentUploadInput struct {
+	GroupID                             *int64 `json:"group_id,omitempty"`
 	FileName, Name, Description, Digest string
 	Size                                int64
 	Enabled                             bool
@@ -1387,6 +1504,19 @@ func (r *Repository) InitiateAttachmentUpload(ctx context.Context, actor int64, 
 		err = tx.QueryRow(txctx, `INSERT INTO media_attachment_uploads(actor_admin_user_id,idempotency_key_digest,file_name,name,description,expected_size,expected_digest,enabled,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()+interval '1 hour') RETURNING id`, actor, digest(key), input.FileName, input.Name, input.Description, input.Size, input.Digest, input.Enabled).Scan(&uploadID)
 		if err != nil {
 			return err
+		}
+		if input.GroupID != nil {
+			var kind string
+			err = tx.QueryRow(txctx, `SELECT kind FROM media_material_groups WHERE id=$1 FOR SHARE`, *input.GroupID).Scan(&kind)
+			if err == pgx.ErrNoRows || (err == nil && kind != "attachment") {
+				return ErrInvalid
+			}
+			if err != nil {
+				return err
+			}
+			if _, err = tx.Exec(txctx, `UPDATE media_attachment_uploads SET group_id=$1 WHERE id=$2`, input.GroupID, uploadID); err != nil {
+				return err
+			}
 		}
 		return r.complete(txctx, "attachment.upload.initiate", "upload", actor, key, uploadID, map[string]any{"upload_id": uploadID}, "media.attachment_upload_initiated")
 	})
@@ -1468,8 +1598,8 @@ func (r *Repository) CompleteAttachmentUpload(ctx context.Context, uploadID, act
 		var fileName, name, description, expectedDigest string
 		var expectedSize int64
 		var enabled bool
-		var existing *int64
-		err = tx.QueryRow(txctx, `SELECT file_name,name,description,expected_size,expected_digest,enabled,completed_attachment_id FROM media_attachment_uploads WHERE id=$1 AND actor_admin_user_id=$2 AND expires_at>clock_timestamp() FOR UPDATE`, uploadID, actor).Scan(&fileName, &name, &description, &expectedSize, &expectedDigest, &enabled, &existing)
+		var existing, uploadGroupID *int64
+		err = tx.QueryRow(txctx, `SELECT file_name,name,description,expected_size,expected_digest,enabled,completed_attachment_id,(to_jsonb(media_attachment_uploads)->>'group_id')::bigint FROM media_attachment_uploads WHERE id=$1 AND actor_admin_user_id=$2 AND expires_at>clock_timestamp() FOR UPDATE`, uploadID, actor).Scan(&fileName, &name, &description, &expectedSize, &expectedDigest, &enabled, &existing, &uploadGroupID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -1522,6 +1652,12 @@ func (r *Repository) CompleteAttachmentUpload(ctx context.Context, uploadID, act
 		if err != nil {
 			return err
 		}
+		if uploadGroupID != nil {
+			if _, err = r.applyGroupID(txctx, "attachment", attachmentID, uploadGroupID); err != nil {
+				return err
+			}
+		}
+
 		if _, err = tx.Exec(txctx, `UPDATE media_attachment_uploads SET completed_attachment_id=$2 WHERE id=$1`, uploadID, attachmentID); err != nil {
 			return err
 		}

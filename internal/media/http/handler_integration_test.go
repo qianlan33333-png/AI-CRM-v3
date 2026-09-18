@@ -305,7 +305,7 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	}
 }
 
-func newHTTPIntegrationRepository(t *testing.T, url string) (*mediastore.Repository, func(), *pgxpool.Pool) {
+func newHTTPIntegrationRepository(t *testing.T, url string, beforeManagement ...func(*pgxpool.Pool)) (*mediastore.Repository, func(), *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	admin, err := pgxpool.New(ctx, url)
@@ -342,6 +342,16 @@ func newHTTPIntegrationRepository(t *testing.T, url string) (*mediastore.Reposit
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, string(groupSQL)); err != nil {
+		t.Fatal(err)
+	}
+	for _, seed := range beforeManagement {
+		seed(native)
+	}
+	managementSQL, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0182_media_group_management.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(managementSQL)); err != nil {
 		t.Fatal(err)
 	}
 	pool, err := platformpostgres.Wrap(native, time.Second)
@@ -487,7 +497,7 @@ func TestMaterialGroupsPersistFilterAndRejectStaleWrites(t *testing.T) {
 			t.Fatal("grouped material appeared in ungrouped")
 		}
 		facets := responseJSON(t, call("GET", base+"/groups", "", "", false), 200)
-		if len(facets["items"].([]any)) != 1 {
+		if len(facets["items"].([]any)) != 2 {
 			t.Fatal("group facets missing")
 		}
 	}
