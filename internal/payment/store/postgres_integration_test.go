@@ -636,3 +636,63 @@ func TestPostgreSQLDistributionOAuthReturnMigrationKeepsApplicationContextClosed
 		}
 	}
 }
+
+func TestPostgreSQLReferralOAuthReturnMigrationClosesStatePersistenceBoundary(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, file, _, _ := runtime.Caller(0)
+	migrationRoot := filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations")
+	for _, name := range []string{"0142_payment_h5_product_return_path.sql", "0162_payment_h5_distribution_return_path.sql"} {
+		body, err := os.ReadFile(filepath.Join(migrationRoot, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+	preMigration := "/referral?campaign=7"
+	preDigest := sha256.Sum256([]byte("referral-before-migration"))
+	if _, err := pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, preDigest[:], preMigration); err == nil {
+		t.Fatalf("Referral return path unexpectedly passed pre-0191 constraint: %q", preMigration)
+	}
+	body, err := os.ReadFile(filepath.Join(migrationRoot, "0191_payment_h5_referral_return_path.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, string(body)); err != nil {
+		t.Fatal(err)
+	}
+	token := "rfi_" + strings.Repeat("A", 43)
+	for index, path := range []string{
+		"/pay/course-7",
+		"/distribution?product_id=7&product_type=standard_product",
+		"/referral",
+		"/referral?campaign=7",
+		"/referral?campaign=7&invite=" + token,
+		"/referral?campaign=9223372036854775807&invite=" + token,
+	} {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("referral-valid-%d", index)))
+		if _, err = pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err != nil {
+			t.Fatalf("valid return path %q: %v", path, err)
+		}
+	}
+	for index, path := range []string{
+		"https://evil.example/referral?campaign=7",
+		"/referral/",
+		"/referral?campaign=0",
+		"/referral?campaign=9223372036854775808",
+		"/referral?invite=" + token,
+		"/referral?campaign=7&invite=rfi_short",
+		"/referral?invite=" + token + "&campaign=7",
+		"/referral?campaign=7&invite=" + token + "&next=/admin",
+		"/referral?campaign=7&invite=" + token + "#fragment",
+		"/referral?campaign=7%26invite=" + token,
+	} {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("referral-invalid-%d", index)))
+		if _, err = pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,now()+interval '10 minutes',now())`, digest[:], path); err == nil {
+			t.Fatalf("unsafe Referral return path accepted: %q", path)
+		}
+	}
+}
