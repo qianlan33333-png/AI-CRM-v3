@@ -100,7 +100,7 @@ function button(label: string, kind: "primary" | "secondary" | "danger" = "secon
   return node;
 }
 
-function field(label: string, input: HTMLInputElement): HTMLLabelElement {
+function field(label: string, input: HTMLInputElement | HTMLSelectElement): HTMLLabelElement {
   const wrap = document.createElement("label");
   wrap.className = "admin-field";
   const title = document.createElement("span");
