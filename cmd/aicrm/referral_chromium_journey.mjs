@@ -102,7 +102,7 @@ try {
     await evaluate("document.querySelector('#referral-rule-check').click(); document.querySelector('[data-testid=referral-confirm-join]').click()");
     await wait("document.querySelector('[data-testid=referral-invite]')?.disabled === false && !document.querySelector('[data-testid=referral-accept-dialog]')");
     const pageImage=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(screenshots,`campaign-${index?430:375}.png`),Buffer.from(pageImage.data,'base64'));
-    for(const period of ['day','week','total']) {
+  for(const period of ['day','all']) {
       await evaluate(`(()=>{const el=document.querySelector('[data-testid=referral-leaderboard-period]');el.value='${period}';el.dispatchEvent(new Event('change'));})()`);
       await sleep(200);
       await wait("document.querySelector('[data-testid=referral-leaderboard]')?.textContent.includes('1')");
