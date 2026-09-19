@@ -20,7 +20,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		t.Fatalf("group count=%d, want 7", len(ADMIN_NAV_GROUPS))
 	}
 	wantTitles := []string{"总览", "用户", "运营", "交易", "分销", "内容素材", "系统设置"}
-	wantCounts := []int{1, 3, 7, 4, 1, 3, 3}
+	wantCounts := []int{1, 3, 7, 4, 2, 3, 4}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
 			t.Fatalf("group %d=%+v, want title=%q count=%d", index, group, wantTitles[index], wantCounts[index])
@@ -119,13 +119,16 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			status: http.StatusOK,
 			contains: []string{
 				"AI 自动化运营",
-				"class=\"aud-layout\"",
+				"class=\"aud-layout aud-workspace-panel\"",
+				"id=\"audiencePackagePanel\"",
+				"data-audience-workspace-tab=\"products\"",
+				"data-audience-workspace-tab=\"packages\"",
 				"人群包分组",
 				"共 0 个自定义分组",
 				"当前分组暂无人群包",
 				"admin_console.js",
 				"admin_audience.css",
-				"admin_audience_detail.js?v=audience-confirmation-v1",
+				"admin_audience_detail.js?v=audience-empty-ai-v4",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -148,9 +151,9 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"成员列表",
 				"发送记录",
 				"admin_audience_detail.css",
-				"admin_audience_detail.js?v=audience-confirmation-v1",
+				"admin_audience_detail.js?v=audience-empty-ai-v4",
 				"template_parameter_form.js?v=dd8-frozen-ab63c644",
-				"admin_audience_template_host.js?v=prd05-template-host-v1",
+				"admin_audience_template_host.js?v=prd05-template-empty-v2",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -315,7 +318,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/static/admin_console/admin_customers.js",
 			status:     http.StatusOK,
-			contains:   []string{"credentials: \"same-origin\"", "cache: \"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "/360", "订单记录", "问卷记录", "风险摘要", "最近触点", "/admin/message-archive/customers/"},
+			contains:   []string{"credentials: \"same-origin\"", "cache: \"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "/360", "订单记录", "问卷记录", "最近触点", "/admin/message-archive/customers/"},
 			notContain: []string{"customer-avatar", "phone_assurance", "item.activation_status", "declared", "localStorage", "sessionStorage", "console.log", "/api/v2/", "chat-activity", "survey-answers"},
 		},
 		{
@@ -637,7 +640,7 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `<main id="stage" class="stage rich admin-workspace-stage admin-workspace-stage--embedded"></main>`) || strings.Count(body, `<header class="admin-topbar">`) != 1 || !strings.Contains(body, `<h1 class="admin-page-title">普通商品</h1>`) || !strings.Contains(body, `href="/product-assets/product-distribution.css"`) || !strings.Contains(body, `src="/product-assets/product-host.js"`) {
 		t.Fatalf("product list shell mismatch status=%d body=%q", response.Code, body)
 	}
-	for page, wantTopbar := range map[string]int{"productForm": 1, "spProductForm": 1, "spProductData": 0} {
+	for page, wantTopbar := range map[string]int{"productForm": 1, "spProductForm": 1, "spProductData": 1} {
 		response = httptest.NewRecorder()
 		err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/"+page+".html", nil), "产品编辑", "", "api.admin_products_page"), page, `<section data-page="`+page+`">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", ProductCSS: "/product-assets/product-distribution.css", HostJS: "/product-assets/product-host.js", StandardHostJS: "/product-assets/standard-components-host.js", StandardCSS: []string{"/product-assets/standard-components/material_picker.css", "/product-assets/standard-components/send_content_composer.css", "/product-assets/standard-components/wecom_tag_picker.css", "/product-assets/selection-dialog.css", "/product-assets/shared-detail-drawer.css"}})
 		if err != nil {

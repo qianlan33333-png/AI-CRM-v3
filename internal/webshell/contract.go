@@ -63,6 +63,7 @@ type AdminNavGroup struct {
 // paths only; they do not imply that the corresponding business capability is
 // implemented.
 var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
+	"api.admin_ops_governance":                         {"api.admin_ops_governance", "/admin/ops"},
 	"api.admin_console_dashboard":                      {"api.admin_console_dashboard", "/admin"},
 	"api.admin_operating_overview":                     {"api.admin_operating_overview", AdminRootPath},
 	"api.admin_console_customers":                      {"api.admin_console_customers", "/admin/customers"},
@@ -93,6 +94,7 @@ var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.admin_orders_page":                            {"api.admin_orders_page", "/admin/orders"},
 	"api.admin_wechat_pay_products_page":               {"api.admin_wechat_pay_products_page", "/admin/wechat-pay/products"},
 	"api.admin_service_period_products_page":           {"api.admin_service_period_products_page", "/admin/service-period-products"},
+	"api.admin_referral_page":                          {"api.admin_referral_page", "/admin/referral"},
 	"api.admin_distribution_page":                      {"api.admin_distribution_page", "/admin/distribution"},
 	"api.admin_coupons_page":                           {"api.admin_coupons_page", "/admin/coupons"},
 	"api.admin_alipay_transactions_page":               {"api.admin_alipay_transactions_page", "/admin/alipay/transactions"},
