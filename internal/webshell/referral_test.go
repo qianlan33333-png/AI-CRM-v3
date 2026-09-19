@@ -38,7 +38,7 @@ func TestReferralShellUsesCRMAndCompleteManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, route := range []string{"/referral?campaign=1&invite=rfi_test", "/referral/", "/admin/referral"} {
+	for _, route := range []string{"/referral?campaign=1&invite=rfi_test", "/referral/", "/admin/referral", "/admin/referral/settings"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, route, nil))
 		if response.Code != http.StatusOK {
@@ -46,7 +46,7 @@ func TestReferralShellUsesCRMAndCompleteManifest(t *testing.T) {
 		}
 		if strings.Contains(route, "/admin/") {
 			body := response.Body.String()
-			if !strings.Contains(body, `id="referral-admin-root"`) || strings.Count(body, `<main`) != 1 || !strings.Contains(body, `src="/assets/referral.js"`) {
+			if !strings.Contains(body, `admin_search_select.js?v=search-select-v2`) || !strings.Contains(body, `id="referral-admin-root"`) || strings.Count(body, `<main`) != 1 || !strings.Contains(body, `src="/assets/referral.js"`) {
 				t.Fatalf("missing single CRM shell: %s", body)
 			}
 		}

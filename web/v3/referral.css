@@ -861,3 +861,161 @@ body:has(#referral-root) {
     grid-template-columns: 96px minmax(0, 1fr);
   }
 }
+.referral-admin-settings-page {
+  min-height: calc(100vh - 48px);
+  padding: 24px 32px;
+  background: #f5f6f8;
+  color: #182230;
+}
+.referral-admin-settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+.referral-admin-settings-header h2 {
+  margin: 2px 0 0;
+  font-size: 24px;
+}
+.referral-admin-settings-header p {
+  margin: 0;
+  color: #667085;
+  font-size: 13px;
+}
+.referral-admin-settings-form {
+  display: grid;
+  gap: 16px;
+  max-width: 1080px;
+}
+.referral-admin-settings-section {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 24px;
+  padding: 20px 24px;
+  background: #fff;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+}
+.referral-admin-settings-section h3 {
+  grid-column: 1/-1;
+  margin: 0;
+  font-size: 16px;
+}
+.referral-admin-settings-section > p {
+  grid-column: 1/-1;
+  margin: -8px 0 2px;
+  color: #667085;
+  font-size: 13px;
+}
+.referral-admin-settings-section .referral-admin-field {
+  min-width: 0;
+}
+.referral-admin-settings-section textarea {
+  min-height: 120px;
+}
+.referral-admin-settings-section:has(textarea) .referral-admin-field {
+  grid-column: span 1;
+}
+.referral-admin-settings-page .referral-admin-message {
+  max-width: 1080px;
+}
+.referral-admin-settings-page .referral-admin-actions {
+  justify-content: flex-end;
+}
+@media (max-width: 760px) {
+  .referral-admin-settings-page {
+    padding: 16px;
+  }
+  .referral-admin-settings-section {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+  .referral-admin-settings-section .referral-admin-field {
+    grid-column: auto;
+  }
+  .referral-admin-settings-header {
+    display: block;
+  }
+  .referral-admin-settings-header .referral-admin-actions {
+    margin-top: 12px;
+  }
+}
+
+.referral-admin-settings-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 14px;
+  border-radius: 50%;
+  background: var(--brand, #1677ff);
+  color: white;
+  font-size: 16px;
+}
+.referral-admin-settings-section .referral-admin-field select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line, #d0d5dd);
+  border-radius: 6px;
+  padding: 8px;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+.referral-admin-settings-section [hidden] {
+  display: none;
+}
+.referral-admin-settings-section:has(textarea) .referral-admin-field {
+  grid-column: 1/-1;
+}
+.referral-admin-settings-section textarea {
+  min-height: 72px;
+}
+.referral-admin-settings-header,
+.referral-admin-settings-form {
+  max-width: 1200px;
+}
+.referral-admin-settings-section .referral-admin-field {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+.referral-admin-settings-section:first-child
+  .referral-admin-field:nth-of-type(-n + 2),
+.referral-admin-settings-section:not(:first-child) .referral-admin-field {
+  grid-column: 1/-1;
+}
+.referral-admin-settings-section .admin-search-select {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.referral-admin-settings-section .admin-search-select button {
+  border: 1px solid var(--line, #d0d5dd);
+  border-radius: 6px;
+  padding: 7px 14px;
+  background: white;
+  color: var(--text, #182230);
+  cursor: pointer;
+  margin-right: 8px;
+}
+.referral-admin-settings-section .admin-search-select p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2, #667085);
+}
+.referral-admin-settings-section .referral-admin-field > select {
+  max-width: 340px;
+  height: 38px;
+}
+.referral-admin-settings-section:has(textarea) .referral-admin-field {
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .referral-admin-settings-section .referral-admin-field {
+    grid-template-columns: 1fr;
+  }
+}

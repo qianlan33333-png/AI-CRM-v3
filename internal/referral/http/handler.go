@@ -11,6 +11,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	"io"
 	"net/http"
 	"net/url"
@@ -47,6 +48,8 @@ type RequestSecurity interface {
 }
 
 type Config struct {
+	ProductOptions    productport.ProductOptionReader
+	ProductTargets    productport.ProductTargetReader
 	Public            referralport.PublicApplication
 	Admin             referralport.AdminApplication
 	Sessions          SessionResolver
@@ -62,6 +65,8 @@ type Config struct {
 }
 
 type Handler struct {
+	productOptions                                productport.ProductOptionReader
+	productTargets                                productport.ProductTargetReader
 	public                                        referralport.PublicApplication
 	admin                                         referralport.AdminApplication
 	sessions                                      SessionResolver
@@ -89,7 +94,7 @@ func NewHandler(config Config) (*Handler, error) {
 	if len(allowed) == 0 {
 		return nil, referralport.ErrUnavailable
 	}
-	return &Handler{public: config.Public, admin: config.Admin, sessions: config.Sessions, bridge: config.Bridge, names: config.Names, profiles: config.Profiles, security: config.Security, cookieSecure: config.CookieSecure, allowedOrigins: allowed, sessionCookieName: config.SessionCookieName, csrfCookieName: config.CSRFCookieName, csrfHeader: config.CSRFHeader}, nil
+	return &Handler{productOptions: config.ProductOptions, productTargets: config.ProductTargets, public: config.Public, admin: config.Admin, sessions: config.Sessions, bridge: config.Bridge, names: config.Names, profiles: config.Profiles, security: config.Security, cookieSecure: config.CookieSecure, allowedOrigins: allowed, sessionCookieName: config.SessionCookieName, csrfCookieName: config.CSRFCookieName, csrfHeader: config.CSRFHeader}, nil
 }
 
 func (h *Handler) ServePublicHTTP(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +137,8 @@ func (h *Handler) ServeAdminHTTP(w http.ResponseWriter, r *http.Request) {
 	actor := principal.InternalID
 	parts := split(tail)
 	switch {
+	case r.Method == http.MethodGet && tail == "product-options":
+		h.listProductOptions(w, r)
 	case r.Method == http.MethodGet && tail == "campaigns":
 		h.listAdminCampaigns(w, r)
 	case r.Method == http.MethodPost && tail == "campaigns":
@@ -1640,9 +1647,71 @@ func resultError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "captain_already_assigned")
 	case errors.Is(err, referralport.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, "idempotency_conflict")
+	case errors.Is(err, referralport.ErrCampaignConfigLocked):
+		writeError(w, http.StatusConflict, "campaign_config_locked")
+	case errors.Is(err, referralport.ErrInvalidRequest):
+		writeError(w, http.StatusBadRequest, "invalid_request")
 	case errors.Is(err, referralport.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "unavailable")
 	}
+}
+
+// listProductOptions shares the Referral admin authorization boundary and reads
+// only Product's bounded, canonical selection projection.
+func (h *Handler) listProductOptions(w http.ResponseWriter, r *http.Request) {
+	if h.productOptions == nil || h.productTargets == nil {
+		resultError(w, referralport.ErrUnavailable)
+		return
+	}
+	if raw := r.URL.Query().Get("product_id"); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		kind := productport.ProductOptionType(r.URL.Query().Get("product_type"))
+		if err != nil || id < 1 || (kind != productport.ProductOptionStandard && kind != productport.ProductOptionServicePeriod) {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		item, err := h.productTargets.ReadProductTarget(r.Context(), kind, productport.ID(id))
+		if err != nil {
+			if errors.Is(err, productport.ErrSaleableProductNotFound) {
+				writeError(w, 404, "not_found")
+			} else {
+				resultError(w, referralport.ErrUnavailable)
+			}
+			return
+		}
+		writeJSON(w, 200, item)
+		return
+	}
+	limit, offset := 50, 0
+	var err error
+	if v := r.URL.Query().Get("limit"); v != "" {
+		limit, err = strconv.Atoi(v)
+		if err != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		offset, err = strconv.Atoi(v)
+		if err != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+	}
+	if limit < 1 || limit > 100 || offset < 0 || offset > 1000000 {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	page, err := h.productOptions.ListProductOptions(r.Context(), productport.ProductOptionQuery{Q: r.URL.Query().Get("q"), ProductType: productport.ProductOptionAll, Limit: int32(limit), Offset: int32(offset)})
+	if err != nil {
+		if errors.Is(err, productport.ErrInvalidProductOptionQuery) {
+			writeError(w, 400, "invalid_request")
+		} else {
+			resultError(w, referralport.ErrUnavailable)
+		}
+		return
+	}
+	writeJSON(w, 200, page)
 }

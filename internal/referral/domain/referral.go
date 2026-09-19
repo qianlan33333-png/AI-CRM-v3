@@ -193,17 +193,17 @@ func (c Campaign) UpdateWithConfig(expectedVersion int64, name, coverURL, descri
 	if expectedVersion != c.Version {
 		return Campaign{}, ErrVersion
 	}
-	if (c.State != CampaignDraft && c.State != CampaignScheduled) || c.EffectiveState(at) == CampaignActive || c.EffectiveState(at) == CampaignEnded {
+	if c.State == CampaignDisabled || c.EffectiveState(at) == CampaignEnded {
 		return Campaign{}, ErrTransition
 	}
 	config = config.normalized()
 	if !config.Valid() {
 		return Campaign{}, ErrInvalid
 	}
-	if config.TeamMode != c.Config().TeamMode && !at.Before(c.StartsAt) {
+	if !at.Before(c.StartsAt) && (config != c.Config() || !startsAt.Equal(c.StartsAt) || !endsAt.Equal(c.EndsAt)) {
 		return Campaign{}, ErrTransition
 	}
-	if config.TeamMode != c.Config().TeamMode && !at.Before(startsAt.UTC()) {
+	if config != c.Config() && !at.Before(startsAt.UTC()) {
 		return Campaign{}, ErrTransition
 	}
 	next := c
@@ -284,7 +284,6 @@ type Participation struct {
 func (p Participation) Valid() bool {
 	return p.ID > 0 && p.CampaignID > 0 && p.CustomerID > 0 && p.TeamID >= 0 && p.InvitationID >= 0 &&
 		p.InviterCustomerID >= 0 && p.InviterTeamID >= 0 && p.State.Valid() && !p.JoinedAt.IsZero() &&
-		((p.TeamID > 0) || (p.InvitationID == 0 && p.InviterCustomerID == 0 && p.InviterTeamID == 0)) &&
 		((p.InvitationID == 0 && p.InviterCustomerID == 0 && p.InviterTeamID == 0) ||
 			(p.InvitationID > 0 && p.InviterCustomerID > 0 && p.InviterTeamID >= 0))
 }

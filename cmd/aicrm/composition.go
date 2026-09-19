@@ -1625,6 +1625,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		if referralService != nil && referralAdminService != nil {
 			referralHandler, referralErr := referralhttp.NewHandler(referralhttp.Config{
+				ProductOptions:    productCatalog,
+				ProductTargets:    productTargets,
 				Public:            referralService,
 				Admin:             referralAdminService,
 				Sessions:          trustedBrowserSessions,
