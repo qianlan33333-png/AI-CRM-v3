@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "4f37b01b1221000e996f2245dca3757da9e18423bd81c27d33fadbe1c3f17fd8",
+  "registry_sha256": "d80ae4a47ec1754c6cbcf6a4880df569c2facae283cd6462c152f0947ccef361",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -4685,6 +4685,45 @@
     },
     {
       "kind": "table",
+      "name": "referral_product_activity_contexts",
+      "owner": "referral",
+      "policy": "permanent",
+      "reason": "服务端签发的活动上下文是订单归因和销售事实的不可变来源；过期状态由活动规则控制，不能物理删除。",
+      "source": "migrations/0197_referral_activity_config.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
+      "name": "referral_product_sale_checkouts",
+      "owner": "referral",
+      "policy": "permanent",
+      "reason": "保存订单创建时冻结的活动、商品和推广归因事实，供支付事件重放和审计使用。",
+      "source": "migrations/0197_referral_activity_config.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
+      "name": "referral_product_sale_events",
+      "owner": "referral",
+      "policy": "permanent",
+      "reason": "销售计分与退款冲正是追加式业务事实，必须保留原始付款和冲正证据。",
+      "source": "migrations/0197_referral_activity_config.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
       "name": "referral_relationship_history",
       "owner": "referral",
       "policy": "permanent",
@@ -4729,6 +4768,19 @@
       "policy": "permanent",
       "reason": "保存领域业务对象、成员/归属关系、内容或来源凭据，Owner 读取/写入及引用关系持续使用；年龄本身不能使该业务事实失效。 核验字段：reward_id, score_event_id, reason, occurred_at。",
       "source": "migrations/0185_referral_core.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
+      "name": "referral_sales_facts",
+      "owner": "referral",
+      "policy": "permanent",
+      "reason": "销售榜的可重建事实及退款投影，历史活动和对账需要长期保留。",
+      "source": "migrations/0197_referral_activity_config.sql",
       "cleanup_entrypoint": "",
       "policy_id": "",
       "coverage_status": "protected",
