@@ -197,7 +197,8 @@ func TestPostgreSQLInspectionSelfCountsCompletedChecksAndIgnoresCurrentRun(t *te
 	if o.Code != "inspection_check_count_mismatch" || o.Metrics["latest_missing_checks"] != 1 || o.Metrics["latest_result_checks"] != int64(len(InspectionCatalog())-1) || o.Metrics["latest_completion_age_seconds"] != 300 {
 		t.Fatalf("running/future scan replaced completed evidence: %+v", o)
 	}
-	now = now.Add(6 * time.Minute)
+	now = now.Add(71 * time.Minute)
+	selfHealthReport(t, pool, "hourly", "executed", now.Truncate(time.Hour).Add(-time.Hour), now)
 	o = selfHealthRead(t, s, now)
 	if o.Status != "stale" || o.Code != "scan_completion_stale" {
 		t.Fatalf("old completion was green: %+v", o)

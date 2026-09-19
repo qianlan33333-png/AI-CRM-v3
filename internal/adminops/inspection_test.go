@@ -31,7 +31,7 @@ func TestInspectionObservationNeverMakesMissingOrInvalidEvidenceGreen(t *testing
 	now := time.Now().UTC()
 	def := InspectionCatalog()[0]
 	for _, input := range []opsport.CheckObservation{
-		{Status: "ok", Code: "observed", ObservedAt: now.Add(-11 * time.Minute)},
+		{Status: "ok", Code: "observed", ObservedAt: now.Add(-76 * time.Minute)},
 		{Status: "ok", Code: "observed"},
 		{Status: "ok", Code: "user@example.com", ObservedAt: now},
 		{Status: "ok", Code: "observed", ObservedAt: now, Metrics: map[string]int64{"phone:123": 1}},
@@ -43,6 +43,13 @@ func TestInspectionObservationNeverMakesMissingOrInvalidEvidenceGreen(t *testing
 	}
 	if len(InspectionCatalog()) < 20 {
 		t.Fatal("coverage directory unexpectedly shrank")
+	}
+}
+
+func TestInspectionPeriodicJobsUseOnlyHourlyPoll(t *testing.T) {
+	jobs := InspectionPeriodicJobs()
+	if len(jobs) != 1 {
+		t.Fatalf("periodic jobs=%d, want one hourly poll", len(jobs))
 	}
 }
 
@@ -166,7 +173,7 @@ func TestPostgreSQLInspectionsPersistUnknownReplayAndIssueCAS(t *testing.T) {
 	if e = pool.QueryRow(context.Background(), `SELECT status FROM adminops_inspection_issues WHERE id=$1`, issue.ID).Scan(&state); e != nil || state != "resolved" {
 		t.Fatalf("fresh recovery=%s %v", state, e)
 	}
-	now = now.Add(11 * time.Minute)
+	now = now.Add(76 * time.Minute)
 	overview, e = s.Overview(context.Background())
 	if e != nil || overview.Fresh {
 		t.Fatalf("stale overview=%+v %v", overview, e)
@@ -455,7 +462,7 @@ func TestPostgreSQLInspectionCriticalAndRecoveryAreMergedAndDeduplicated(t *test
 		collectors = append(collectors, opsport.CollectorFunc{ID: id, Read: func(context.Context, time.Time) (opsport.CheckObservation, error) {
 			observed := now
 			if stale {
-				observed = now.Add(-11 * time.Minute)
+				observed = now.Add(-76 * time.Minute)
 			}
 			return opsport.CheckObservation{Status: status, Code: "invariant_violation", ObservedAt: observed}, nil
 		}})

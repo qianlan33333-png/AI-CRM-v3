@@ -70,10 +70,10 @@ func (w *ReportWorker) Work(ctx context.Context, j *river.Job[OpsReportJobArgs])
 	return e
 }
 func InspectionPeriodicJobs() []*river.PeriodicJob {
+	// Production uses one durable hourly poll. The report worker performs the
+	// scan and freezes the previous complete hour in the same River lane; there
+	// is no separate five-minute inspection loop.
 	return []*river.PeriodicJob{
-		river.NewPeriodicJob(river.PeriodicInterval(5*time.Minute), func() (river.JobArgs, *river.InsertOpts) {
-			return InspectionJobArgs{Slot: time.Now().UTC().Truncate(5 * time.Minute)}, &river.InsertOpts{Queue: InspectionQueue, MaxAttempts: 5, UniqueOpts: river.UniqueOpts{ByArgs: true, ByPeriod: 5 * time.Minute}}
-		}, &river.PeriodicJobOpts{ID: "adminops-inspection-v1", RunOnStart: true}),
 		river.NewPeriodicJob(opsHourlySchedule{}, func() (river.JobArgs, *river.InsertOpts) {
 			return OpsReportJobArgs{Hour: time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)}, &river.InsertOpts{Queue: InspectionQueue, MaxAttempts: 5, UniqueOpts: river.UniqueOpts{ByArgs: true, ByPeriod: time.Hour}}
 		}, &river.PeriodicJobOpts{ID: "adminops-hourly-report-v1", RunOnStart: false}),
