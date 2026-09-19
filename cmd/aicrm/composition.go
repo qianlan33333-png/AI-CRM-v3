@@ -1581,11 +1581,15 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	var referralAdmin http.Handler = referralUnavailableHandler{}
 	var referralService *referralapp.Service
 	var referralAdminService *referralapp.AdminService
+	var referralPaidConsumer orderport.PaidEventConsumer
+	var referralRefundConsumer orderport.RefundSettlementConsumer
 	if cfg.Referral.TokenDataKey != "" {
 		referralService, err = referralapp.NewService(uow, referralRepository, cfg.PublicOrigin, cfg.Referral.TokenDataKey, referralCampaignCloseEnqueuer, auditService, platformoutbox.NewPostgreSQL())
 		if err != nil {
 			return fail(err)
 		}
+		referralPaidConsumer = referralService
+		referralRefundConsumer = referralService
 		referralAdminService, err = referralapp.NewAdminService(uow, referralRepository, referralCanonicalCustomerVerifier{resolver: canonicalCustomerAdapter{reader: queries}, identities: queries}, referralCampaignCloseEnqueuer, auditService, platformoutbox.NewPostgreSQL())
 		if err != nil {
 			return fail(err)
@@ -1641,6 +1645,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	var distributionPublic http.Handler = distributionUnavailableHandler{}
 	var distributionAdmin http.Handler = distributionUnavailableHandler{}
 	var distributionCommissionConsumer orderport.PaidEventConsumer
+	var distributionRefundConsumer orderport.RefundSettlementConsumer
 	if cfg.WeChatPay.Enabled && cfg.WeChatPay.AppID != "" && cfg.WeChatPay.AppScope != "" {
 		if trustedBrowserSessions == nil || trustedPaymentSessionBridge == nil {
 			return fail(errors.New("distribution trusted Payment session bridge is unavailable"))
@@ -1648,6 +1653,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		qualificationService, distributionErr := distributionapp.NewQualificationService(queries, orderService, paymentService)
 		if distributionErr != nil {
 			return fail(distributionErr)
+		}
+		if referralService != nil {
+			if distributionErr = referralService.SetPurchaseQualificationReader(qualificationService); distributionErr != nil {
+				return fail(distributionErr)
+			}
 		}
 		registration, distributionErr := distributionapp.NewRegistrationService(uow, distributionRepository, paymentService)
 		if distributionErr != nil {
@@ -1711,9 +1721,15 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(distributionErr)
 		}
 		distributionCommissionConsumer = commissionService
+		distributionRefundConsumer = refundService
 	}
-	if err = orderService.SetPaidEventConsumer(orderPaidEventFanout{commerce: commercePushService, purchase: paidPurchaseActions, distribution: distributionCommissionConsumer}); err != nil {
+	if err = orderService.SetPaidEventConsumer(orderPaidEventFanout{commerce: commercePushService, purchase: paidPurchaseActions, distribution: distributionCommissionConsumer, referral: referralPaidConsumer}); err != nil {
 		return fail(err)
+	}
+	if distributionRefundConsumer != nil || referralRefundConsumer != nil {
+		if err = orderService.SetRefundSettlementConsumer(orderRefundSettlementFanout{distribution: distributionRefundConsumer, referral: referralRefundConsumer}); err != nil {
+			return fail(err)
+		}
 	}
 	couponPublicHandler, err := couponhttp.NewPublicHandler(couponPublic, couponCheckout, paymentSession, productTargets, uow)
 	if err != nil {

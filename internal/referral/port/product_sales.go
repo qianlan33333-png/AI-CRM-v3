@@ -86,6 +86,15 @@ type ProductSaleContext struct {
 	ExpiresAt             time.Time
 }
 
+type ProductActivityContext struct {
+	ContextDigest [sha256.Size]byte
+	CampaignID, ProductID int64
+	ProductType string
+	SalesMetric SalesMetric
+	State string
+	ExpiresAt, CreatedAt time.Time
+}
+
 // ProductSaleContextReader is a Referral-owned lookup used by the checkout
 // coordinator. The raw activity token stays at the trusted boundary; only its
 // digest and the resulting campaign/product facts are frozen in Order.

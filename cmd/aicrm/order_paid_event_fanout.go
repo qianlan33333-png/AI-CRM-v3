@@ -15,6 +15,7 @@ type orderPaidEventFanout struct {
 	commerce     orderport.PaidEventConsumer
 	purchase     orderport.PaidEventConsumer
 	distribution orderport.PaidEventConsumer
+	referral     orderport.PaidEventConsumer
 }
 
 func (f orderPaidEventFanout) ConsumePaidEventWithin(ctx context.Context, event orderport.PaidEvent) error {
@@ -28,7 +29,12 @@ func (f orderPaidEventFanout) ConsumePaidEventWithin(ctx context.Context, event 
 		return err
 	}
 	if f.distribution != nil {
-		return f.distribution.ConsumePaidEventWithin(ctx, event)
+		if err := f.distribution.ConsumePaidEventWithin(ctx, event); err != nil {
+			return err
+		}
+	}
+	if f.referral != nil {
+		return f.referral.ConsumePaidEventWithin(ctx, event)
 	}
 	return nil
 }

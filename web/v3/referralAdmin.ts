@@ -19,6 +19,11 @@ type Campaign = {
   teams: number;
   introduction: string;
   reward: string;
+  teamMode: "team" | "individual";
+  qualificationMode: "free_signup" | "product_purchase";
+  productID: number;
+  productType: string;
+  leaderboardMetric: "invites" | "sales";
 };
 type Tab =
   | "campaigns"
@@ -88,22 +93,12 @@ function rewardPeriod(value: string, dateValue: string): string {
   if (value === "total") return "total";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return "";
   if (value === "day") return `day:${dateValue}`;
-  if (value !== "week") return "";
-  const date = new Date(`${dateValue}T00:00:00Z`);
-  if (Number.isNaN(date.valueOf())) return "";
-  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
-  const year = date.getUTCFullYear();
-  const firstThursday = new Date(Date.UTC(year, 0, 4));
-  const week =
-    1 + Math.round((date.valueOf() - firstThursday.valueOf()) / 604800000);
-  return `week:${year}-W${String(week).padStart(2, "0")}`;
+  return "";
 }
 function rewardPeriodLabel(value: string): string {
   if (value === "total") return "总榜";
   const day = /^day:(\d{4}-\d{2}-\d{2})$/.exec(value);
   if (day) return `日榜（${day[1]}，北京时间）`;
-  const week = /^week:(\d{4}-W\d{2})$/.exec(value);
-  if (week) return `周榜（${week[1]}，北京时间）`;
   return value || "—";
 }
 let tab: Tab = "campaigns";
@@ -220,6 +215,11 @@ function parseCampaign(raw: unknown): Campaign {
     teams: int(row.team_count),
     introduction: str(row.description),
     reward: str(row.reward_rules),
+    teamMode: row.team_mode === "individual" ? "individual" : "team",
+    qualificationMode: row.qualification_mode === "product_purchase" ? "product_purchase" : "free_signup",
+    productID: int(row.product_id),
+    productType: str(row.product_type),
+    leaderboardMetric: row.leaderboard_metric === "sales" ? "sales" : "invites",
   };
 }
 function node<K extends keyof HTMLElementTagNameMap>(
@@ -975,6 +975,29 @@ function openCampaignForm(existing?: Campaign): void {
   reward.append(rewards);
   form.insertBefore(intro, feedback);
   form.insertBefore(reward, feedback);
+  const selectField = (label: string, name: string, options: Array<[string, string]>, value: string) => {
+    const field = node("label");
+    field.className = "referral-admin-field";
+    field.append(node("span", label));
+    const select = document.createElement("select");
+    select.name = name;
+    for (const [optionValue, optionLabel] of options) {
+      const option = node("option", optionLabel);
+      option.value = optionValue;
+      option.selected = optionValue === value;
+      select.append(option);
+    }
+    field.append(select);
+    return field;
+  };
+  const teamMode = selectField("战队模式", "战队模式", [["team", "开启（仅作汇总）"], ["individual", "关闭"]], existing?.teamMode || "team");
+  const qualificationMode = selectField("参加条件", "参加条件", [["free_signup", "登录报名"], ["product_purchase", "购买指定商品"]], existing?.qualificationMode || "free_signup");
+  const metric = selectField("排行榜指标", "排行榜指标", [["invites", "有效邀请人数"], ["sales", "销售金额"]], existing?.leaderboardMetric || "invites");
+  form.insertBefore(teamMode, feedback);
+  form.insertBefore(qualificationMode, feedback);
+  form.insertBefore(input("资格商品 ID", existing?.productID ? String(existing.productID) : "", "number", false), feedback);
+  form.insertBefore(input("资格商品类型（standard_product/service_period）", existing?.productType || "", "text", false), feedback);
+  form.insertBefore(metric, feedback);
   const controls = node("div");
   controls.className = "referral-admin-actions";
   const save = action(
@@ -1003,6 +1026,11 @@ function openCampaignForm(existing?: Campaign): void {
         description: fieldValue(form, "活动介绍"),
         reward_rules: fieldValue(form, "奖励说明"),
         cover_url: fieldValue(form, "封面 URL"),
+        team_mode: fieldValue(form, "战队模式"),
+        qualification_mode: fieldValue(form, "参加条件"),
+        product_id: Number(fieldValue(form, "资格商品 ID") || 0),
+        product_type: fieldValue(form, "资格商品类型（standard_product/service_period）"),
+        leaderboard_metric: fieldValue(form, "排行榜指标"),
       };
       const scope = `campaign:${existing?.id || "new"}`;
       try {
@@ -1234,7 +1262,6 @@ function openAwardForm(): void {
   for (const [value, label] of [
     ["total", "总榜"],
     ["day", "日榜"],
-    ["week", "周榜"],
   ] as const) {
     const option = node("option", label);
     option.value = value;

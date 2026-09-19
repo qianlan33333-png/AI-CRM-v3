@@ -5,7 +5,9 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +25,8 @@ import (
 	referralport "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/port"
 	referralstore "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/store"
 )
+
+var cryptoRandRead = rand.Read
 
 const invitationTTL = 30 * 24 * time.Hour
 
@@ -58,6 +62,37 @@ type serviceStore interface {
 	ListInviteItemsWithin(context.Context, int64, int64, int32, int32) ([]referralport.InviteItem, error)
 	LeaderboardRowsWithin(context.Context, int64, referralport.LeaderboardKind, int64, time.Time, time.Time, int32, int32, int64, int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error)
 	ListSalesLeaderboardRowsWithin(context.Context, int64, referralport.LeaderboardKind, int64, time.Time, time.Time, int32, int32, int64, int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error)
+	InsertProductActivityContextWithin(context.Context, referralport.ProductActivityContext) error
+}
+
+// IssueProductActivityContext mints an opaque, same-origin checkout context.
+// It is deliberately separate from invitation credentials and contains no
+// customer supplied identity or redirect URL.
+func (s *Service) IssueProductActivityContext(ctx context.Context, actor referralport.TrustedSessionActor, campaignID int64, idempotencyKey string) (string, error) {
+	if s == nil || !actor.Valid() || campaignID < 1 || !validKey(idempotencyKey) {
+		return "", referralport.ErrConflict
+	}
+	var token string
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		campaign, err := s.store.ReadCampaignWithin(tx, campaignID, true)
+		if err != nil {
+			return err
+		}
+		if campaign.Config().QualificationMode != referraldomain.QualificationProductPurchase || !campaign.AcceptingAt(s.now().UTC()) {
+			return referralport.ErrCampaignUnavailable
+		}
+		if err := s.checkPurchaseQualification(tx, campaign, actor.CustomerID); err != nil {
+			return err
+		}
+		buf := make([]byte, 32)
+		if _, err := cryptoRandRead(buf); err != nil {
+			return referralport.ErrUnavailable
+		}
+		token = "rpa_" + base64.RawURLEncoding.EncodeToString(buf)
+		digest := sha256.Sum256([]byte(token))
+		return s.store.InsertProductActivityContextWithin(tx, referralport.ProductActivityContext{ContextDigest: digest, CampaignID: campaign.ID, ProductID: campaign.ProductID, ProductType: campaign.ProductType, SalesMetric: referralport.SalesMetricAmount, State: "active", ExpiresAt: campaign.EndsAt, CreatedAt: s.now().UTC()})
+	})
+	return token, err
 }
 
 type Service struct {
@@ -279,9 +314,6 @@ func (s *Service) JoinCampaign(ctx context.Context, command referralport.JoinCam
 			return referralport.ErrCampaignUnavailable
 		}
 		config := campaign.Config()
-		if config.TeamMode == referraldomain.TeamModeTeam && command.InvitationToken == "" && command.TeamID < 1 {
-			return referralport.ErrConflict
-		}
 		if config.TeamMode == referraldomain.TeamModeIndividual && command.TeamID != 0 {
 			return referralport.ErrConflict
 		}
@@ -312,12 +344,10 @@ func (s *Service) JoinCampaign(ctx context.Context, command referralport.JoinCam
 				teamID, inviterTeamID = inviter.TeamID, inviter.TeamID
 			}
 			invitationID, inviterCustomerID = invitation.ID, invitation.InviterCustomerID
-		} else {
-			if config.TeamMode == referraldomain.TeamModeTeam {
-				team, teamErr := s.store.ReadTeamWithin(tx, teamID, false)
-				if teamErr != nil || team.CampaignID != campaign.ID {
-					return referralport.ErrConflict
-				}
+		} else if config.TeamMode == referraldomain.TeamModeTeam && teamID > 0 {
+			team, teamErr := s.store.ReadTeamWithin(tx, teamID, false)
+			if teamErr != nil || team.CampaignID != campaign.ID {
+				return referralport.ErrConflict
 			}
 		}
 		participation, insertErr := s.store.InsertParticipationWithin(tx, referraldomain.Participation{CampaignID: campaign.ID, CustomerID: command.Actor.CustomerID, TeamID: teamID, InvitationID: invitationID, InviterCustomerID: inviterCustomerID, InviterTeamID: inviterTeamID, State: referraldomain.ParticipationActive, JoinedAt: now})

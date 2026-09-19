@@ -14,6 +14,18 @@ import (
 
 const productSaleEventColumns = `id,campaign_id,order_id,order_version,product_id,product_type,product_code,product_name,product_version,COALESCE(participation_id,0),COALESCE(team_id,0),COALESCE(promoter_customer_id,0),COALESCE(promotion_credential_ref,''),COALESCE(policy_version,0),commission_rate_basis_points,wait_days,buyer_customer_id,beneficiary_customer_id,kind,amount_delta_minor,order_count_delta,source_paid_event_id,COALESCE(reverses_sale_event_id,0),refund_receipt_key,source_digest,occurred_at`
 
+func (r *Repository) InsertProductActivityContextWithin(ctx context.Context, value referralport.ProductActivityContext) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if value.ContextDigest == ([sha256.Size]byte{}) || value.CampaignID < 1 || value.ProductID < 1 || (value.ProductType != "standard_product" && value.ProductType != "service_period") || !value.SalesMetric.Valid() || value.State != "active" || value.ExpiresAt.IsZero() || value.CreatedAt.IsZero() {
+		return ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO referral_product_activity_contexts(context_digest,campaign_id,product_id,product_type,sales_metric,state,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, value.ContextDigest[:], value.CampaignID, value.ProductID, value.ProductType, string(value.SalesMetric), value.State, value.ExpiresAt.UTC(), value.CreatedAt.UTC())
+	return mapError(err)
+}
+
 func (r *Repository) ReadProductSaleContextWithin(ctx context.Context, digest [sha256.Size]byte, productID int64, productType string, at time.Time) (referralport.ProductSaleContext, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
@@ -134,7 +146,7 @@ func (r *Repository) InsertProductSaleEventWithin(ctx context.Context, value ref
 	if err != nil {
 		return referraldomain.ProductSaleEvent{}, err
 	}
-	if value.ID != 0 || !value.Valid() {
+	if value.ID < 0 || !value.Valid() {
 		return referraldomain.ProductSaleEvent{}, ErrInvalid
 	}
 	return scanProductSaleEvent(tx.QueryRow(ctx, `INSERT INTO referral_product_sale_events(campaign_id,order_id,order_version,product_id,product_type,product_code,product_name,product_version,participation_id,team_id,promoter_customer_id,promotion_credential_ref,policy_version,commission_rate_basis_points,wait_days,buyer_customer_id,beneficiary_customer_id,kind,amount_delta_minor,order_count_delta,source_paid_event_id,reverses_sale_event_id,refund_receipt_key,source_digest,occurred_at)

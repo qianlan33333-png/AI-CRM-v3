@@ -223,11 +223,35 @@ func (h *Handler) campaignTail(w http.ResponseWriter, r *http.Request, tail stri
 		h.leaderboard(w, r, campaignID)
 	case "invite":
 		h.issueInvitation(w, r, campaignID)
+	case "product-context":
+		h.productContext(w, r, campaignID)
 	case "participations":
 		h.joinCampaign(w, r, campaignID)
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) productContext(w http.ResponseWriter, r *http.Request, campaignID int64) {
+	if r.Method != http.MethodPost || r.URL.RawQuery != "" || r.ContentLength > 0 {
+		method(w, http.MethodPost)
+		return
+	}
+	actor, ok := h.sessionActor(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	token, err := h.public.IssueProductActivityContext(r.Context(), actor, campaignID, key)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "aicrm_referral_activity_context", Value: token, Path: "/", HttpOnly: true, Secure: h.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: time.Now().UTC().Add(24 * time.Hour)})
+	writeJSON(w, http.StatusCreated, map[string]any{"expires_at": time.Now().UTC().Add(24 * time.Hour)})
 }
 
 func (h *Handler) invitationHandoff(w http.ResponseWriter, r *http.Request, token string) {
