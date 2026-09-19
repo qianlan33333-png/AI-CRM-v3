@@ -1590,6 +1590,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		}
 		referralPaidConsumer = referralService
 		referralRefundConsumer = referralService
+		// Product activity checkout facts are owned by Referral and must be
+		// frozen in the same Order/Payment transaction as the checkout
+		// snapshot.  Bind the coordinator whenever Referral is enabled; this
+		// remains independent of Distribution so an organic activity purchase
+		// can still create its participant and sale fact.
+		if err = orderService.SetProductSaleCheckoutCoordinator(referralService); err != nil {
+			return fail(err)
+		}
 		referralAdminService, err = referralapp.NewAdminService(uow, referralRepository, referralCanonicalCustomerVerifier{resolver: canonicalCustomerAdapter{reader: queries}, identities: queries}, referralCampaignCloseEnqueuer, auditService, platformoutbox.NewPostgreSQL())
 		if err != nil {
 			return fail(err)

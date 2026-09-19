@@ -2,12 +2,12 @@
 -- alongside the immutable checkout snapshot. The opaque value is hashed by
 -- Order before persistence; Referral resolves it through its stable Port.
 ALTER TABLE order_checkout_snapshots
-  ADD COLUMN referral_activity_context_digest BYTEA,
+  ADD COLUMN referral_activity_context_digest BYTEA NOT NULL DEFAULT decode(repeat('00', 32), 'hex'),
   ADD COLUMN promotion_context_digest BYTEA NOT NULL DEFAULT decode(repeat('00', 32), 'hex');
 
 ALTER TABLE order_checkout_snapshots
   ADD CONSTRAINT order_checkout_snapshots_referral_activity_context_digest_check
-  CHECK (referral_activity_context_digest IS NULL OR octet_length(referral_activity_context_digest)=32);
+  CHECK (octet_length(referral_activity_context_digest)=32);
 
 ALTER TABLE order_checkout_snapshots
   ADD CONSTRAINT order_checkout_snapshots_promotion_context_digest_check
