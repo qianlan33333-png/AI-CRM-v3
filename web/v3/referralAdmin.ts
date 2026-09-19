@@ -1153,13 +1153,11 @@ function openCampaignForm(existing?: Campaign): void {
   page.append(form);
   form.addEventListener("submit", (event) => event.preventDefault());
   host.replaceChildren(page);
-  history.pushState(
-    {},
-    "",
-    existing
-      ? `/admin/referral/settings?campaign=${existing.id}`
-      : "/admin/referral/settings",
-  );
+  const settingsURL = existing
+    ? `/admin/referral/settings?campaign=${existing.id}`
+    : "/admin/referral/settings";
+  if (location.pathname + location.search !== settingsURL)
+    history.pushState({}, "", settingsURL);
   const started =
     existing &&
     (existing.status === "active" ||
@@ -1232,6 +1230,11 @@ function openCampaignForm(existing?: Campaign): void {
           `campaign:${existing?.id || "new"}`,
         );
         keys.delete(`campaign:${existing?.id || "new"}`);
+        if (!existing) {
+          selected = undefined;
+          tab = "campaigns";
+          clearActivityRecordContext();
+        }
         history.replaceState(
           {},
           "",
@@ -1252,9 +1255,27 @@ function openCampaignForm(existing?: Campaign): void {
     "referral-admin-primary",
   );
   save.dataset.testid = "referral-admin-save-campaign";
+  if (existing?.status === "ended" || existing?.status === "disabled") {
+    feedback.textContent = "活动已结束或停用，配置仅供查看。";
+    form
+      .querySelectorAll("input, select, textarea, button")
+      .forEach((control) => {
+        (control as HTMLInputElement).disabled = true;
+      });
+    save.disabled = true;
+  }
   actions.append(
     action("取消", () => {
-      history.pushState({}, "", "/admin/referral");
+      selected = existing;
+      tab = existing ? "overview" : "campaigns";
+      clearActivityRecordContext();
+      history.pushState(
+        {},
+        "",
+        existing
+          ? `/admin/referral?campaign=${existing.id}`
+          : "/admin/referral",
+      );
       void reload();
     }),
     save,

@@ -13,6 +13,7 @@ for(const active of [false,true]) {
  const dom=new JSDOM('<section id="referral-admin-root"></section>',{url:'https://crm.example/admin/referral/settings?campaign=2',runScripts:'dangerously',beforeParse(w){ w.Headers=Headers; w.Response=Response; w.fetch=async (input,init={})=>{ const u=new URL(String(input),'https://crm.example'); if(init.method==='PUT'){writes.push(JSON.parse(init.body));return json({...campaign,...writes.at(-1),version:3});} if(u.pathname.endsWith('/product-options'))return json({items:[{id:51,code:'122331',name:'测试',product_type:'standard_product'}],total:1}); if(u.pathname.endsWith('/campaigns'))return json({items:[campaign]}); if(u.pathname.endsWith('/campaigns/2'))return json(campaign);return json({items:[]});}; }});
  dom.window.eval(picker); dom.window.eval(bundle);
  await wait(()=>dom.window.document.querySelector('[data-testid="referral-admin-settings-page"]'));
+ assert.equal(dom.window.history.length,1,"direct settings load must not create duplicate history entries");
  const doc=dom.window.document;
  await wait(()=>doc.body.textContent.includes('122331'));
  assert.equal(doc.querySelector('dialog'),null);
