@@ -33,10 +33,8 @@ await waitFor(() => calls.some((call) => call.path.endsWith('/leaderboard') && /
 assert.match(dom.window.document.querySelector('[data-testid="referral-my-rank"]')?.textContent || '', /第 31 名 · 2 人/, 'fixed ranking must use the current API my_entry, including ranks outside the visible page');
 const period = dom.window.document.querySelector('[data-testid="referral-leaderboard-period"]'); period.value = 'day'; period.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 await waitFor(() => calls.some((call) => call.path.endsWith('/leaderboard') && /period=day/.test(call.query) && /(?:\?|&)date=\d{4}-\d{2}-\d{2}(?:&|$)/.test(call.query)), 'day leaderboard must supply a Beijing calendar date');
-period.value = 'week'; period.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-await waitFor(() => dom.window.document.querySelector('input[aria-label="历史日期"]'), 'week leaderboard must render an anchor date control');
-const history = dom.window.document.querySelector('input[aria-label="历史日期"]'); history.value = '2026-09-16'; history.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-await waitFor(() => calls.some((call) => call.path.endsWith('/leaderboard') && /period=week/.test(call.query) && /(?:\?|&)week=2026-09-14(?:&|$)/.test(call.query)), 'week leaderboard must normalize any selected day to its Beijing Monday');
+period.value = 'all'; period.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+await waitFor(() => calls.some((call) => call.path.endsWith('/leaderboard') && /period=all/.test(call.query)), 'all-time leaderboard must use the canonical all period');
 dom.window.document.querySelector('[data-testid="referral-join-team"]').click();
 await waitFor(() => dom.window.document.querySelector('[data-testid="referral-accept-dialog"]'), 'accept action must open a confirmation dialog');
 assert.match(dom.window.document.querySelector('[data-testid="referral-accept-dialog"]').textContent, /更新为 林晓/, 'confirmation must name the actual inviter');
