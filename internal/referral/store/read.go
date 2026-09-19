@@ -433,13 +433,17 @@ func (r *Repository) LeaderboardRowsWithin(ctx context.Context, campaignID int64
 // cumulative successful refunds. It intentionally has a separate query from
 // invitation score events so a sales campaign can never silently display
 // invite counts when its sales facts are unavailable.
-func (r *Repository) ListSalesLeaderboardRowsWithin(ctx context.Context, campaignID int64, kind referralport.LeaderboardKind, teamID int64, start, end time.Time, offset, limit int32, viewerCustomerID, viewerTeamID int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error) {
+func (r *Repository) ListSalesLeaderboardRowsWithin(ctx context.Context, campaignID int64, kind referralport.LeaderboardKind, metric referraldomain.LeaderboardMetric, teamID int64, start, end time.Time, offset, limit int32, viewerCustomerID, viewerTeamID int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	if campaignID < 1 || !kind.Valid() || !start.Before(end) || offset < 0 || limit < 1 || limit > 101 || (kind == referralport.LeaderboardInTeam && teamID < 1) {
+	if campaignID < 1 || !kind.Valid() || !start.Before(end) || offset < 0 || limit < 1 || limit > 101 || (kind == referralport.LeaderboardInTeam && teamID < 1) || (metric != referraldomain.LeaderboardSalesAmount && metric != referraldomain.LeaderboardSalesOrders) {
 		return nil, nil, ErrInvalid
+	}
+	scoreExpr, orderExpr := "sum(net_minor)", "sum(net_minor) DESC,count(*) DESC"
+	if metric == referraldomain.LeaderboardSalesOrders {
+		scoreExpr, orderExpr = "count(*)", "count(*) DESC,sum(net_minor) DESC"
 	}
 	base := `WITH active_sales AS (
         SELECT promoter_customer_id,COALESCE(team_id,0) AS team_id,COALESCE(t.name,'') AS team_name,
@@ -451,8 +455,8 @@ func (r *Repository) ListSalesLeaderboardRowsWithin(ctx context.Context, campaig
 	switch kind {
 	case referralport.LeaderboardPersonal:
 		query = base + `), ranked AS (
-            SELECT row_number() OVER (ORDER BY sum(net_minor) DESC,count(*) DESC,max(paid_at) ASC,promoter_customer_id ASC)::bigint AS rank,
-                   0::bigint AS score,promoter_customer_id AS customer_id,0::bigint AS team_id,''::text AS team_name,
+	            SELECT row_number() OVER (ORDER BY ` + orderExpr + `,max(paid_at) ASC,promoter_customer_id ASC)::bigint AS rank,
+	                   ` + scoreExpr + `::bigint AS score,promoter_customer_id AS customer_id,0::bigint AS team_id,''::text AS team_name,
                    sum(net_minor)::bigint AS sales_amount_minor,count(*)::bigint AS sales_order_count,max(paid_at) AS first_reached_at
             FROM active_sales GROUP BY promoter_customer_id
         ) SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $4 LIMIT $5`
@@ -461,8 +465,8 @@ func (r *Repository) ListSalesLeaderboardRowsWithin(ctx context.Context, campaig
 		ownArgs = []any{campaignID, start.UTC(), end.UTC(), viewerCustomerID}
 	case referralport.LeaderboardInTeam:
 		query = base + ` AND f.team_id=$4), ranked AS (
-            SELECT row_number() OVER (ORDER BY sum(net_minor) DESC,count(*) DESC,max(paid_at) ASC,promoter_customer_id ASC)::bigint AS rank,
-                   0::bigint AS score,promoter_customer_id AS customer_id,team_id,max(team_name) AS team_name,
+	            SELECT row_number() OVER (ORDER BY ` + orderExpr + `,max(paid_at) ASC,promoter_customer_id ASC)::bigint AS rank,
+	                   ` + scoreExpr + `::bigint AS score,promoter_customer_id AS customer_id,team_id,max(team_name) AS team_name,
                    sum(net_minor)::bigint AS sales_amount_minor,count(*)::bigint AS sales_order_count,max(paid_at) AS first_reached_at
             FROM active_sales GROUP BY promoter_customer_id,team_id
         ) SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $5 LIMIT $6`
@@ -471,8 +475,8 @@ func (r *Repository) ListSalesLeaderboardRowsWithin(ctx context.Context, campaig
 		ownArgs = []any{campaignID, start.UTC(), end.UTC(), teamID, viewerCustomerID}
 	case referralport.LeaderboardTeam:
 		query = base + ` AND f.team_id IS NOT NULL), ranked AS (
-            SELECT row_number() OVER (ORDER BY sum(net_minor) DESC,count(*) DESC,max(paid_at) ASC,team_id ASC)::bigint AS rank,
-                   0::bigint AS score,0::bigint AS customer_id,team_id,max(team_name) AS team_name,
+	            SELECT row_number() OVER (ORDER BY ` + orderExpr + `,max(paid_at) ASC,team_id ASC)::bigint AS rank,
+	                   ` + scoreExpr + `::bigint AS score,0::bigint AS customer_id,team_id,max(team_name) AS team_name,
                    sum(net_minor)::bigint AS sales_amount_minor,count(*)::bigint AS sales_order_count,max(paid_at) AS first_reached_at
             FROM active_sales GROUP BY team_id
         ) SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $4 LIMIT $5`

@@ -23,7 +23,7 @@ type Campaign = {
   qualificationMode: "free_signup" | "product_purchase";
   productID: number;
   productType: string;
-  leaderboardMetric: "invites" | "sales";
+  leaderboardMetric: "invites" | "sales_amount" | "sales_orders";
 };
 type Tab =
   | "campaigns"
@@ -219,7 +219,12 @@ function parseCampaign(raw: unknown): Campaign {
     qualificationMode: row.qualification_mode === "product_purchase" ? "product_purchase" : "free_signup",
     productID: int(row.product_id),
     productType: str(row.product_type),
-    leaderboardMetric: row.leaderboard_metric === "sales" ? "sales" : "invites",
+    leaderboardMetric:
+      row.leaderboard_metric === "sales_orders"
+        ? "sales_orders"
+        : row.leaderboard_metric === "sales" || row.leaderboard_metric === "sales_amount"
+          ? "sales_amount"
+          : "invites",
   };
 }
 function node<K extends keyof HTMLElementTagNameMap>(
@@ -992,7 +997,7 @@ function openCampaignForm(existing?: Campaign): void {
   };
   const teamMode = selectField("战队模式", "战队模式", [["team", "开启（仅作汇总）"], ["individual", "关闭"]], existing?.teamMode || "team");
   const qualificationMode = selectField("参加条件", "参加条件", [["free_signup", "登录报名"], ["product_purchase", "购买指定商品"]], existing?.qualificationMode || "free_signup");
-  const metric = selectField("排行榜指标", "排行榜指标", [["invites", "有效邀请人数"], ["sales", "销售金额"]], existing?.leaderboardMetric || "invites");
+  const metric = selectField("排行榜指标", "排行榜指标", [["invites", "有效邀请人数"], ["sales_amount", "有效销售金额"], ["sales_orders", "有效订单数"]], existing?.leaderboardMetric || "invites");
   form.insertBefore(teamMode, feedback);
   form.insertBefore(qualificationMode, feedback);
   form.insertBefore(input("资格商品 ID", existing?.productID ? String(existing.productID) : "", "number", false), feedback);

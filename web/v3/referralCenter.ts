@@ -14,7 +14,7 @@ type Campaign = {
   status: string;
   teamMode: "team" | "individual";
   qualificationMode: "free_signup" | "product_purchase";
-  leaderboardMetric: "invites" | "sales";
+  leaderboardMetric: "invites" | "sales_amount" | "sales_orders";
   teamCount: number;
   participants: number;
   invitations: number;
@@ -227,7 +227,12 @@ function parseCampaign(raw: unknown): Campaign {
     status: str(row.effective_state || row.state || row.status),
     teamMode: row.team_mode === "individual" ? "individual" : "team",
     qualificationMode: row.qualification_mode === "product_purchase" ? "product_purchase" : "free_signup",
-    leaderboardMetric: row.leaderboard_metric === "sales" ? "sales" : "invites",
+    leaderboardMetric:
+      row.leaderboard_metric === "sales_orders"
+        ? "sales_orders"
+        : row.leaderboard_metric === "sales" || row.leaderboard_metric === "sales_amount"
+          ? "sales_amount"
+          : "invites",
     teamCount: num(row.team_count),
     participants: num(row.participant_count),
     invitations: num(row.invitation_count || row.valid_invitation_count),
@@ -654,8 +659,10 @@ function leaderCard(): HTMLElement {
         item.teamName || (board === "team" ? "战队" : "未加入战队"),
       ),
     );
-    const value = campaign?.leaderboardMetric === "sales"
-      ? `${item.salesAmountMinor > 0 ? `¥${(item.salesAmountMinor / 100).toFixed(2)}` : "¥0.00"} · ${item.salesOrderCount} 单`
+    const value = campaign?.leaderboardMetric !== "invites"
+      ? campaign?.leaderboardMetric === "sales_orders"
+        ? `${item.salesOrderCount} 单`
+        : `${item.salesAmountMinor > 0 ? `¥${(item.salesAmountMinor / 100).toFixed(2)}` : "¥0.00"}`
       : `${item.score} 人`;
     row.append(name, element("span", value));
     list.append(row);
@@ -666,7 +673,7 @@ function leaderCard(): HTMLElement {
     const mine = element("div");
     mine.className = "referral-my-rank";
     mine.dataset.testid = "referral-my-rank";
-    mine.textContent = `${board === "team" ? "我的战队排名" : "我的排名"}：第 ${myLeaderboard.rank} 名 · ${campaign?.leaderboardMetric === "sales" ? `¥${(myLeaderboard.salesAmountMinor / 100).toFixed(2)} · ${myLeaderboard.salesOrderCount} 单` : `${myLeaderboard.score} 人`}`;
+    mine.textContent = `${board === "team" ? "我的战队排名" : "我的排名"}：第 ${myLeaderboard.rank} 名 · ${campaign?.leaderboardMetric !== "invites" ? (campaign?.leaderboardMetric === "sales_orders" ? `${myLeaderboard.salesOrderCount} 单` : `¥${(myLeaderboard.salesAmountMinor / 100).toFixed(2)}`) : `${myLeaderboard.score} 人`}`;
     section.append(mine);
   }
   return section;

@@ -61,7 +61,7 @@ type serviceStore interface {
 	CountDirectInvitationsWithin(context.Context, int64, int64) (int64, error)
 	ListInviteItemsWithin(context.Context, int64, int64, int32, int32) ([]referralport.InviteItem, error)
 	LeaderboardRowsWithin(context.Context, int64, referralport.LeaderboardKind, int64, time.Time, time.Time, int32, int32, int64, int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error)
-	ListSalesLeaderboardRowsWithin(context.Context, int64, referralport.LeaderboardKind, int64, time.Time, time.Time, int32, int32, int64, int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error)
+	ListSalesLeaderboardRowsWithin(context.Context, int64, referralport.LeaderboardKind, referraldomain.LeaderboardMetric, int64, time.Time, time.Time, int32, int32, int64, int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error)
 	InsertProductActivityContextWithin(context.Context, referralport.ProductActivityContext) error
 }
 
@@ -627,8 +627,8 @@ func (s *Service) Leaderboard(ctx context.Context, query referralport.Leaderboar
 	var mine *referralport.LeaderboardEntry
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
-		if campaign.Config().LeaderboardMetric == referraldomain.LeaderboardSales {
-			items, mine, err = s.store.ListSalesLeaderboardRowsWithin(tx, query.CampaignID, query.Kind, query.TeamID, start, end, offset, query.Limit+1, query.ViewerCustomerID, query.ViewerTeamID)
+		if campaign.Config().LeaderboardMetric != referraldomain.LeaderboardInvites {
+			items, mine, err = s.store.ListSalesLeaderboardRowsWithin(tx, query.CampaignID, query.Kind, campaign.Config().LeaderboardMetric, query.TeamID, start, end, offset, query.Limit+1, query.ViewerCustomerID, query.ViewerTeamID)
 		} else {
 			items, mine, err = s.store.LeaderboardRowsWithin(tx, query.CampaignID, query.Kind, query.TeamID, start, end, offset, query.Limit+1, query.ViewerCustomerID, query.ViewerTeamID)
 		}
