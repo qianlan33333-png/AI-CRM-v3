@@ -142,6 +142,12 @@ func (s *AdminService) UpdateCampaign(ctx context.Context, command referralport.
 		now := s.now().UTC()
 		next, err := current.UpdateWithConfig(command.ExpectedVersion, command.Name, command.CoverURL, command.Description, command.RewardRules, command.StartsAt, command.EndsAt, updateCampaignConfig(current, command), now)
 		if err != nil {
+			if errors.Is(err, referraldomain.ErrTransition) {
+				return referralport.ErrCampaignConfigLocked
+			}
+			if errors.Is(err, referraldomain.ErrInvalid) {
+				return referralport.ErrInvalidRequest
+			}
 			return mapDomainError(err)
 		}
 		result, err = s.store.UpdateCampaignWithin(tx, next, current.Version)

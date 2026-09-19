@@ -14,10 +14,12 @@ import (
 )
 
 var (
-	ErrNotFound     = errors.New("referral record not found")
-	ErrConflict     = errors.New("referral command conflict")
-	ErrUnavailable  = errors.New("referral unavailable")
-	ErrUnauthorized = errors.New("referral unauthorized")
+	ErrNotFound             = errors.New("referral record not found")
+	ErrCampaignConfigLocked = errors.New("referral campaign configuration locked")
+	ErrInvalidRequest       = errors.New("invalid referral request")
+	ErrConflict             = errors.New("referral command conflict")
+	ErrUnavailable          = errors.New("referral unavailable")
+	ErrUnauthorized         = errors.New("referral unauthorized")
 	// ErrParticipationRequired means a trusted customer has not yet confirmed
 	// this campaign (or their participation is no longer active). It is a
 	// business prerequisite for issuing an invitation, never an authentication

@@ -193,6 +193,7 @@
   <script type="module" src="{{.AIAssistantAssets.PageHeaderActionHostJS}}"></script>
   {{end}}
   {{if .Distribution}}
+  <script defer src="/static/admin_console/admin_search_select.js?v=search-select-v2"></script>
   <link rel="stylesheet" href="{{.DistributionAssets.CSS}}">
 	<link rel="stylesheet" href="{{.DistributionAssets.DetailDrawerCSS}}">
   {{with presentationAssets}}{{if .ConfirmationDialogCSS}}<link rel="stylesheet" href="{{.ConfirmationDialogCSS}}">{{end}}{{if .ConfirmationDialogScript}}<script type="module" src="{{.ConfirmationDialogScript}}"></script>{{end}}{{end}}

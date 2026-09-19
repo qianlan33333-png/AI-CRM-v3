@@ -764,14 +764,14 @@ async function confirmJoin(
     card.append(
       element(
         "p",
-        `接受后，你的当前邀请归属将更新为 ${invitationPreview?.inviterName || "该邀请人"}，并自动加入${invitationPreview?.teamName || "对方"}战队。本活动的战队和成绩不会因之后的归属变更而改变。`,
+        `接受后，你的当前邀请归属将更新为 ${invitationPreview?.inviterName || "该邀请人"}，${campaign.teamMode === "team" && invitationPreview?.teamName ? `并加入${invitationPreview.teamName}战队。` : "以个人身份参与。"}本活动的战队和成绩不会因之后的归属变更而改变。`,
       ),
     );
   else
     card.append(
       element(
         "p",
-        `确认后将加入 ${team?.name || "所选战队"}，活动期间不能更换战队。`,
+        team ? `确认后将加入 ${team.name}，活动期间不能更换战队。` : "确认后以个人身份参加活动，可邀请好友并计入个人排行。",
       ),
     );
   const accepted = document.createElement("input");
@@ -834,6 +834,10 @@ async function beginParticipation(): Promise<void> {
     setMessage(`当前${statusText(campaign.status)}，暂不能参加。`, true);
     return;
   }
+  if (campaign.teamMode === "individual") {
+    await confirmJoin();
+    return;
+  }
   if (me?.isCaptain && me.captainTeam) {
     await confirmJoin(me.captainTeam.id, true);
     return;
@@ -845,7 +849,7 @@ async function beginParticipation(): Promise<void> {
   }
   const teams = campaign.teams || [];
   if (teams.length === 0) {
-    setMessage("管理员尚未配置可选战队，暂不能参加。", true);
+    await confirmJoin();
     return;
   }
   if (teams.length === 1) {

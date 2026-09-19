@@ -232,7 +232,7 @@ func (s *Service) PreviewInvitation(ctx context.Context, token string) (referral
 		if participation.State != referraldomain.ParticipationActive {
 			return referralport.ErrInvitationInvalid
 		}
-		if campaign.Config().TeamMode == referraldomain.TeamModeTeam {
+		if campaign.Config().TeamMode == referraldomain.TeamModeTeam && participation.TeamID > 0 {
 			team, err = s.store.ReadTeamWithin(tx, participation.TeamID, false)
 			if err != nil || team.CampaignID != campaign.ID {
 				return referralport.ErrInvitationInvalid
@@ -346,7 +346,7 @@ func (s *Service) JoinCampaign(ctx context.Context, command referralport.JoinCam
 			if inviterErr != nil || inviter.State != referraldomain.ParticipationActive {
 				return referralport.ErrInvitationInvalid
 			}
-			if config.TeamMode == referraldomain.TeamModeTeam {
+			if config.TeamMode == referraldomain.TeamModeTeam && inviter.TeamID > 0 {
 				team, teamErr := s.store.ReadTeamWithin(tx, inviter.TeamID, false)
 				if teamErr != nil || team.CampaignID != campaign.ID {
 					return referralport.ErrInvitationInvalid

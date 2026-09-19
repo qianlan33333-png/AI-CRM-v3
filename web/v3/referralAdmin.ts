@@ -165,6 +165,8 @@ function errorText(status: number, raw: unknown): string {
     captain_already_assigned: "该客户已是本活动其他战队的队长。",
     idempotency_conflict: "本次提交内容已变化，请重新打开表单后重试。",
     invalid_request: "提交内容无效，未执行操作。",
+    campaign_config_locked:
+      "活动规则已锁定，可修改名称、封面、介绍与奖励说明；参与规则和时间不可变更。",
     not_found: "记录不存在或已不可见。",
     unavailable: "服务暂时不可用，未执行操作。",
     duplicate_award: "同一项人工发奖已登记，未重复写入。",
@@ -216,13 +218,17 @@ function parseCampaign(raw: unknown): Campaign {
     introduction: str(row.description),
     reward: str(row.reward_rules),
     teamMode: row.team_mode === "individual" ? "individual" : "team",
-    qualificationMode: row.qualification_mode === "product_purchase" ? "product_purchase" : "free_signup",
+    qualificationMode:
+      row.qualification_mode === "product_purchase"
+        ? "product_purchase"
+        : "free_signup",
     productID: int(row.product_id),
     productType: str(row.product_type),
     leaderboardMetric:
       row.leaderboard_metric === "sales_orders"
         ? "sales_orders"
-        : row.leaderboard_metric === "sales" || row.leaderboard_metric === "sales_amount"
+        : row.leaderboard_metric === "sales" ||
+            row.leaderboard_metric === "sales_amount"
           ? "sales_amount"
           : "invites",
   };
@@ -800,7 +806,8 @@ function recordsTable(): HTMLElement {
   return table;
 }
 function captainJoinURL(): string {
-  if (!selected || selected.id < 1) throw new Error("活动不存在，不能生成参加入口。");
+  if (!selected || selected.id < 1)
+    throw new Error("活动不存在，不能生成参加入口。");
   const url = new URL("/referral", location.origin);
   url.searchParams.set("campaign", String(selected.id));
   return url.toString();
@@ -833,7 +840,8 @@ function openCaptainJoinEntry(team: Row): void {
       },
       {
         label: "保存二维码",
-        onClick: () => downloadQr(url, `referral-captain-${selected!.id}-${name}.svg`),
+        onClick: () =>
+          downloadQr(url, `referral-captain-${selected!.id}-${name}.svg`),
       },
     ],
   });
@@ -946,124 +954,338 @@ function dialog(title: string): {
   return { modal, form, feedback };
 }
 function openCampaignForm(existing?: Campaign): void {
-  const view = dialog(existing ? "编辑活动" : "新建活动");
-  const { modal, form, feedback } = view;
-  form.prepend(
-    input("名称", existing?.name || "", "text", true),
-    input("封面 URL", existing?.coverURL || ""),
-    input(
+  const page = node("section");
+  page.className = "referral-admin-settings-page";
+  page.dataset.testid = "referral-admin-settings-page";
+  const header = node("header");
+  header.className = "referral-admin-settings-header";
+  const title = node("div");
+  title.append(
+    node("p", "运营 / 裂变活动"),
+    node("h2", existing ? "编辑活动" : "新建活动"),
+  );
+  const actions = node("div");
+  actions.className = "referral-admin-actions";
+  const feedback = node("p");
+  feedback.className = "referral-admin-message";
+  feedback.dataset.testid = "referral-admin-form-message";
+  header.append(title, actions);
+  page.append(header, feedback);
+  const form = document.createElement("form");
+  form.className = "referral-admin-settings-form";
+  const section = (titleText: string, description: string) => {
+    const x = node("section");
+    x.className = "referral-admin-settings-section";
+    const heading = node("h3");
+    const step = node("span", String(form.children.length + 1));
+    step.className = "referral-admin-settings-step";
+    heading.append(step, document.createTextNode(titleText));
+    x.append(heading, node("p", description));
+    form.append(x);
+    return x;
+  };
+  const field = (
+    label: string,
+    name: string,
+    value: string,
+    type = "text",
+    required = false,
+  ) => {
+    const x = node("label");
+    x.className = "referral-admin-field";
+    x.append(node("span", label));
+    const i = document.createElement("input");
+    i.name = name;
+    i.type = type;
+    i.value = value;
+    i.required = required;
+    x.append(i);
+    return x;
+  };
+  const basic = section(
+    "基本信息",
+    "活动名称、封面和有效时间。时间统一按北京时间填写。",
+  );
+  basic.append(
+    field("名称", "名称", existing?.name || "", "text", true),
+    field("封面 URL", "封面 URL", existing?.coverURL || ""),
+    field(
+      "开始时间（北京时间）",
       "开始时间（北京时间）",
       existing?.startAt ? beijingDateTimeLocal(existing.startAt) : "",
       "datetime-local",
       true,
     ),
-    input(
+    field(
+      "结束时间（北京时间）",
       "结束时间（北京时间）",
       existing?.endAt ? beijingDateTimeLocal(existing.endAt) : "",
       "datetime-local",
       true,
     ),
   );
-  const intro = node("label");
-  intro.className = "referral-admin-field";
-  intro.append(node("span", "活动介绍"));
-  const text = document.createElement("textarea");
-  text.name = "活动介绍";
-  text.value = existing?.introduction || "";
-  intro.append(text);
-  const reward = node("label");
-  reward.className = "referral-admin-field";
-  reward.append(node("span", "奖励说明"));
-  const rewards = document.createElement("textarea");
-  rewards.name = "奖励说明";
-  rewards.value = existing?.reward || "";
-  reward.append(rewards);
-  form.insertBefore(intro, feedback);
-  form.insertBefore(reward, feedback);
-  const selectField = (label: string, name: string, options: Array<[string, string]>, value: string) => {
-    const field = node("label");
-    field.className = "referral-admin-field";
-    field.append(node("span", label));
-    const select = document.createElement("select");
-    select.name = name;
-    for (const [optionValue, optionLabel] of options) {
-      const option = node("option", optionLabel);
-      option.value = optionValue;
-      option.selected = optionValue === value;
-      select.append(option);
+  const rules = section("参加条件", "先确定谁可以参加，再配置商品资格。");
+  const select = (
+    label: string,
+    name: string,
+    opts: Array<[string, string]>,
+    value: string,
+  ) => {
+    const x = node("label");
+    x.className = "referral-admin-field";
+    x.append(node("span", label));
+    const e = document.createElement("select");
+    e.name = name;
+    for (const [v, t] of opts) {
+      const o = node("option", t);
+      o.value = v;
+      o.selected = v === value;
+      e.append(o);
     }
-    field.append(select);
-    return field;
+    x.append(e);
+    return x;
   };
-  const teamMode = selectField("战队模式", "战队模式", [["team", "开启（仅作汇总）"], ["individual", "关闭"]], existing?.teamMode || "team");
-  const qualificationMode = selectField("参加条件", "参加条件", [["free_signup", "登录报名"], ["product_purchase", "购买指定商品"]], existing?.qualificationMode || "free_signup");
-  const metric = selectField("排行榜指标", "排行榜指标", [["invites", "有效邀请人数"], ["sales_amount", "有效销售金额"], ["sales_orders", "有效订单数"]], existing?.leaderboardMetric || "invites");
-  form.insertBefore(teamMode, feedback);
-  form.insertBefore(qualificationMode, feedback);
-  form.insertBefore(input("资格商品 ID", existing?.productID ? String(existing.productID) : "", "number", false), feedback);
-  form.insertBefore(input("资格商品类型（standard_product/service_period）", existing?.productType || "", "text", false), feedback);
-  form.insertBefore(metric, feedback);
-  const controls = node("div");
-  controls.className = "referral-admin-actions";
+  const qualification = select(
+    "参加条件",
+    "参加条件",
+    [
+      ["free_signup", "登录报名"],
+      ["product_purchase", "购买指定商品"],
+    ],
+    existing?.qualificationMode || "free_signup",
+  );
+  rules.append(qualification);
+  const productField = node("label");
+  productField.className = "referral-admin-field";
+  productField.append(node("span", "资格商品"));
+  type ProductPicker = { element: HTMLElement; readonly value: string };
+  const factory = (
+    window as unknown as {
+      AICRMSearchSelect: (options: {
+        value: string;
+        label: string;
+        emptyLabel: string;
+        initialLabel: string;
+        initialQuery: string;
+        loadPage: (
+          query: string,
+          offset: number,
+        ) => Promise<{
+          items: { value: string; label: string }[];
+          total: number;
+        }>;
+      }) => ProductPicker;
+    }
+  ).AICRMSearchSelect;
+  const productPicker = factory({
+    value: existing?.productID
+      ? `${existing.productID}:${existing.productType}`
+      : "",
+    label: "资格商品",
+    emptyLabel: "请选择商品",
+    initialLabel: "当前绑定商品",
+    initialQuery: "",
+    loadPage: async (query, offset) => {
+      const payload = obj(
+        await api(
+          `/product-options?q=${encodeURIComponent(query)}&offset=${offset}&limit=50`,
+        ),
+      );
+      const raw = Array.isArray(payload.items) ? payload.items : [];
+      return {
+        total: int(payload.total),
+        items: raw.map((item) => {
+          const row = obj(item);
+          return {
+            value: `${int(row.id)}:${str(row.product_type)}`,
+            label: `${str(row.name)} · ${str(row.code)} · ${str(row.product_type) === "service_period" ? "周期商品" : "普通商品"}`,
+          };
+        }),
+      };
+    },
+  });
+  productPicker.element.dataset.testid = "referral-product-select";
+  const productControls = document.createElement("fieldset");
+  productControls.className = "referral-admin-product-controls";
+  productControls.append(productPicker.element);
+  productField.append(productControls);
+  rules.append(productField);
+  const team = section(
+    "战队与排行",
+    "战队只用于归属与统计，不影响正式参与资格。",
+  );
+  team.append(
+    select(
+      "战队模式",
+      "战队模式",
+      [
+        ["team", "开启（仅作汇总）"],
+        ["individual", "关闭"],
+      ],
+      existing?.teamMode || "team",
+    ),
+    select(
+      "排行榜指标",
+      "排行榜指标",
+      [
+        ["invites", "有效邀请人数"],
+        ["sales_amount", "有效销售金额"],
+        ["sales_orders", "有效订单数"],
+      ],
+      existing?.leaderboardMetric || "invites",
+    ),
+  );
+  const copy = section(
+    "活动介绍与奖励说明",
+    "向参与者说明活动规则、奖励和注意事项。",
+  );
+  const area = (label: string, name: string, value: string) => {
+    const x = node("label");
+    x.className = "referral-admin-field";
+    x.append(node("span", label));
+    const e = document.createElement("textarea");
+    e.name = name;
+    e.value = value;
+    x.append(e);
+    return x;
+  };
+  copy.append(
+    area("活动介绍", "活动介绍", existing?.introduction || ""),
+    area("奖励说明", "奖励说明", existing?.reward || ""),
+  );
+  page.append(form);
+  form.addEventListener("submit", (event) => event.preventDefault());
+  host.replaceChildren(page);
+  const settingsURL = existing
+    ? `/admin/referral/settings?campaign=${existing.id}`
+    : "/admin/referral/settings";
+  if (location.pathname + location.search !== settingsURL)
+    history.pushState({}, "", settingsURL);
+  const started =
+    existing &&
+    (existing.status === "active" ||
+      existing.status === "ended" ||
+      existing.status === "disabled");
+  const qualificationSelect = qualification.querySelector("select")!;
+  const syncProduct = () => {
+    productField.hidden = qualificationSelect.value !== "product_purchase";
+  };
+  qualificationSelect.addEventListener("change", syncProduct);
+  syncProduct();
+
+  if (started) {
+    productControls.disabled = true;
+    feedback.textContent =
+      "活动已开始，参加条件、资格商品、战队模式和排行榜指标已锁定。";
+    feedback.dataset.error = "true";
+    form.querySelectorAll("select, input[type=datetime-local]").forEach((e) => {
+      (e as HTMLInputElement).disabled = true;
+    });
+  }
   const save = action(
     existing ? "保存配置" : "创建活动",
     async () => {
-      const name = fieldValue(form, "名称");
-      const startAt = fieldValue(form, "开始时间（北京时间）");
-      const endAt = fieldValue(form, "结束时间（北京时间）");
-      if (!name || !startAt || !endAt) {
+      const value = (name: string) => fieldValue(form, name);
+      const start = beijingDateTimeISO(value("开始时间（北京时间）")),
+        end = beijingDateTimeISO(value("结束时间（北京时间）"));
+      const selectedProduct = productPicker.value.split(":");
+      if (!value("名称") || !start || !end) {
         feedback.textContent = "请完整填写名称和活动时间。";
-        feedback.dataset.error = "true";
-        return;
-      }
-      const startsAt = beijingDateTimeISO(startAt);
-      const endsAt = beijingDateTimeISO(endAt);
-      if (!startsAt || !endsAt) {
-        feedback.textContent = "活动时间必须按北京时间填写。";
         feedback.dataset.error = "true";
         return;
       }
       const body = {
         ...(existing ? { expected_version: existing.version } : {}),
-        name,
-        starts_at: startsAt,
-        ends_at: endsAt,
-        description: fieldValue(form, "活动介绍"),
-        reward_rules: fieldValue(form, "奖励说明"),
-        cover_url: fieldValue(form, "封面 URL"),
-        team_mode: fieldValue(form, "战队模式"),
-        qualification_mode: fieldValue(form, "参加条件"),
-        product_id: Number(fieldValue(form, "资格商品 ID") || 0),
-        product_type: fieldValue(form, "资格商品类型（standard_product/service_period）"),
-        leaderboard_metric: fieldValue(form, "排行榜指标"),
+        name: value("名称"),
+        starts_at: started ? existing!.startAt : start,
+        ends_at: started ? existing!.endAt : end,
+        description: value("活动介绍"),
+        reward_rules: value("奖励说明"),
+        cover_url: value("封面 URL"),
+        team_mode: value("战队模式"),
+        qualification_mode: value("参加条件"),
+        product_id:
+          value("参加条件") === "product_purchase"
+            ? Number(selectedProduct[0] || 0)
+            : 0,
+        product_type:
+          value("参加条件") === "product_purchase"
+            ? selectedProduct[1] || ""
+            : "",
+        leaderboard_metric: value("排行榜指标"),
       };
-      const scope = `campaign:${existing?.id || "new"}`;
+      if (
+        start >= end ||
+        (body.qualification_mode === "product_purchase" &&
+          (!Number.isSafeInteger(body.product_id) ||
+            body.product_id < 1 ||
+            !body.product_type))
+      ) {
+        feedback.textContent =
+          start >= end ? "结束时间必须晚于开始时间。" : "请选择活动指定商品。";
+        feedback.dataset.error = "true";
+        return;
+      }
+      save.disabled = true;
       try {
         await api(
           existing ? `/campaigns/${existing.id}` : "/campaigns",
           { method: existing ? "PUT" : "POST", body: JSON.stringify(body) },
-          scope,
+          `campaign:${existing?.id || "new"}`,
         );
-        keys.delete(scope);
-        modal.close();
+        keys.delete(`campaign:${existing?.id || "new"}`);
+        if (!existing) {
+          selected = undefined;
+          tab = "campaigns";
+          clearActivityRecordContext();
+        }
+        history.replaceState(
+          {},
+          "",
+          existing
+            ? `/admin/referral?campaign=${existing.id}`
+            : "/admin/referral",
+        );
         await reload();
         message(existing ? "活动配置已保存。" : "活动已创建。");
       } catch (error) {
         feedback.textContent =
           error instanceof Error ? error.message : "保存失败。";
         feedback.dataset.error = "true";
+      } finally {
+        save.disabled = false;
       }
     },
     "referral-admin-primary",
   );
   save.dataset.testid = "referral-admin-save-campaign";
-  controls.append(
+  if (existing?.status === "ended" || existing?.status === "disabled") {
+    feedback.textContent = "活动已结束或停用，配置仅供查看。";
+    form
+      .querySelectorAll("input, select, textarea, button")
+      .forEach((control) => {
+        (control as HTMLInputElement).disabled = true;
+      });
+    save.disabled = true;
+  }
+  actions.append(
+    action("取消", () => {
+      selected = existing;
+      tab = existing ? "overview" : "campaigns";
+      clearActivityRecordContext();
+      history.pushState(
+        {},
+        "",
+        existing
+          ? `/admin/referral?campaign=${existing.id}`
+          : "/admin/referral",
+      );
+      void reload();
+    }),
     save,
-    action("取消", () => modal.close()),
   );
-  form.append(controls);
-  modal.showModal();
 }
+
 function customerPicker(
   label: string,
   initial?: { id: number; name: string },
@@ -1391,10 +1613,10 @@ function recordItems(raw: Row): Row[] {
   return Array.isArray(raw.items)
     ? raw.items.map(obj)
     : tab === "teams" && Array.isArray(raw.team_summaries)
-        ? raw.team_summaries.map(obj)
-        : tab === "teams" && Array.isArray(raw.teams)
-          ? raw.teams.map(obj)
-          : [];
+      ? raw.team_summaries.map(obj)
+      : tab === "teams" && Array.isArray(raw.teams)
+        ? raw.teams.map(obj)
+        : [];
 }
 function readDailyMetrics(raw: Row): void {
   dailyMetrics =
@@ -1503,6 +1725,19 @@ async function reload(): Promise<void> {
   } finally {
     if (revision === serial) loading = false;
   }
-  render();
+  if (location.pathname === "/admin/referral/settings") {
+    const campaignID = int(new URL(location.href).searchParams.get("campaign"));
+    if (campaignID > 0 && !selected) {
+      render();
+      message("活动不存在或无权访问。", true);
+      return;
+    }
+    openCampaignForm(campaignID > 0 ? selected : undefined);
+  } else render();
 }
+window.addEventListener("popstate", () => {
+  selected = undefined;
+  tab = "campaigns";
+  void reload();
+});
 void reload();

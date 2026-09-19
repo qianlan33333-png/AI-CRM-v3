@@ -81,7 +81,7 @@ func (r *Repository) InsertCampaignWithin(ctx context.Context, value referraldom
 	if !value.ValidForInsert() {
 		return referraldomain.Campaign{}, ErrInvalid
 	}
-	return scanCampaign(tx.QueryRow(ctx, `INSERT INTO referral_campaigns(name,cover_url,description,reward_rules,state,starts_at,ends_at,version,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+campaignColumns, value.Name, value.CoverURL, value.Description, value.RewardRules, string(value.State), value.StartsAt.UTC(), value.EndsAt.UTC(), value.Version, value.CreatedBy, value.CreatedAt.UTC(), value.UpdatedAt.UTC()))
+	return scanCampaign(tx.QueryRow(ctx, `INSERT INTO referral_campaigns(name,cover_url,description,reward_rules,state,starts_at,ends_at,version,created_by,created_at,updated_at,team_mode,qualification_mode,product_id,product_type,leaderboard_metric) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING `+campaignColumns, value.Name, value.CoverURL, value.Description, value.RewardRules, string(value.State), value.StartsAt.UTC(), value.EndsAt.UTC(), value.Version, value.CreatedBy, value.CreatedAt.UTC(), value.UpdatedAt.UTC(), value.Config().TeamMode, value.Config().QualificationMode, value.Config().ProductID, value.Config().ProductType, value.Config().LeaderboardMetric))
 }
 
 func (r *Repository) ReadCampaignWithin(ctx context.Context, campaignID int64, lock bool) (referraldomain.Campaign, error) {
@@ -107,7 +107,7 @@ func (r *Repository) UpdateCampaignWithin(ctx context.Context, value referraldom
 	if !value.Valid() || expectedVersion < 1 || value.Version != expectedVersion+1 {
 		return referraldomain.Campaign{}, ErrInvalid
 	}
-	updated, err := scanCampaign(tx.QueryRow(ctx, `UPDATE referral_campaigns SET name=$2,cover_url=$3,description=$4,reward_rules=$5,state=$6,starts_at=$7,ends_at=$8,version=$9,updated_at=$10 WHERE id=$1 AND version=$11 RETURNING `+campaignColumns, value.ID, value.Name, value.CoverURL, value.Description, value.RewardRules, string(value.State), value.StartsAt.UTC(), value.EndsAt.UTC(), value.Version, value.UpdatedAt.UTC(), expectedVersion))
+	updated, err := scanCampaign(tx.QueryRow(ctx, `UPDATE referral_campaigns SET name=$2,cover_url=$3,description=$4,reward_rules=$5,state=$6,starts_at=$7,ends_at=$8,version=$9,updated_at=$10,team_mode=$12,qualification_mode=$13,product_id=$14,product_type=$15,leaderboard_metric=$16 WHERE id=$1 AND version=$11 RETURNING `+campaignColumns, value.ID, value.Name, value.CoverURL, value.Description, value.RewardRules, string(value.State), value.StartsAt.UTC(), value.EndsAt.UTC(), value.Version, value.UpdatedAt.UTC(), expectedVersion, value.Config().TeamMode, value.Config().QualificationMode, value.Config().ProductID, value.Config().ProductType, value.Config().LeaderboardMetric))
 	if err == referralport.ErrNotFound {
 		return referraldomain.Campaign{}, referralport.ErrConflict
 	}
@@ -208,10 +208,12 @@ func (r *Repository) InsertParticipationWithin(ctx context.Context, value referr
 	if err != nil {
 		return referraldomain.Participation{}, err
 	}
-	if value.ID != 0 || value.CampaignID < 1 || value.CustomerID < 1 || value.TeamID < 0 || value.State != referraldomain.ParticipationActive || value.JoinedAt.IsZero() || (value.TeamID == 0 && (value.InvitationID != 0 || value.InviterCustomerID != 0 || value.InviterTeamID != 0)) || (value.TeamID > 0 && value.InvitationID == 0 && (value.InviterCustomerID != 0 || value.InviterTeamID != 0)) || (value.InvitationID > 0 && (value.InviterCustomerID < 1 || value.InviterTeamID < 1)) {
+	candidate := value
+	candidate.ID = 1
+	if value.ID != 0 || !candidate.Valid() || value.State != referraldomain.ParticipationActive {
 		return referraldomain.Participation{}, ErrInvalid
 	}
-	return scanParticipation(tx.QueryRow(ctx, `INSERT INTO referral_participations(campaign_id,customer_id,team_id,invitation_id,inviter_customer_id,inviter_team_id,state,joined_at) VALUES($1,$2,$3,NULLIF($4,0),NULLIF($5,0),NULLIF($6,0),$7,$8) RETURNING `+participationColumns, value.CampaignID, value.CustomerID, value.TeamID, value.InvitationID, value.InviterCustomerID, value.InviterTeamID, string(value.State), value.JoinedAt.UTC()))
+	return scanParticipation(tx.QueryRow(ctx, `INSERT INTO referral_participations(campaign_id,customer_id,team_id,invitation_id,inviter_customer_id,inviter_team_id,state,joined_at) VALUES($1,$2,NULLIF($3,0),NULLIF($4,0),NULLIF($5,0),NULLIF($6,0),$7,$8) RETURNING `+participationColumns, value.CampaignID, value.CustomerID, value.TeamID, value.InvitationID, value.InviterCustomerID, value.InviterTeamID, string(value.State), value.JoinedAt.UTC()))
 }
 
 func (r *Repository) ReverseParticipationWithin(ctx context.Context, value referraldomain.Participation) (referraldomain.Participation, error) {
@@ -358,10 +360,10 @@ func (r *Repository) InsertScoreEventWithin(ctx context.Context, value referrald
 	if err != nil {
 		return referraldomain.ScoreEvent{}, err
 	}
-	if value.ID != 0 || value.CampaignID < 1 || value.ParticipationID < 1 || value.InviterCustomerID < 1 || value.TeamID < 1 || !value.Kind.Valid() || value.OccurredAt.IsZero() {
+	if value.ID != 0 || value.CampaignID < 1 || value.ParticipationID < 1 || value.InviterCustomerID < 1 || value.TeamID < 0 || !value.Kind.Valid() || value.OccurredAt.IsZero() {
 		return referraldomain.ScoreEvent{}, ErrInvalid
 	}
-	return scanScoreEvent(tx.QueryRow(ctx, `INSERT INTO referral_score_events(campaign_id,participation_id,inviter_customer_id,team_id,kind,delta,reverses_score_event_id,reason,occurred_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,0),$8,$9) RETURNING `+scoreEventColumns, value.CampaignID, value.ParticipationID, value.InviterCustomerID, value.TeamID, string(value.Kind), value.Delta, value.ReversesScoreEventID, value.Reason, value.OccurredAt.UTC()))
+	return scanScoreEvent(tx.QueryRow(ctx, `INSERT INTO referral_score_events(campaign_id,participation_id,inviter_customer_id,team_id,kind,delta,reverses_score_event_id,reason,occurred_at) VALUES($1,$2,$3,NULLIF($4,0),$5,$6,NULLIF($7,0),$8,$9) RETURNING `+scoreEventColumns, value.CampaignID, value.ParticipationID, value.InviterCustomerID, value.TeamID, string(value.Kind), value.Delta, value.ReversesScoreEventID, value.Reason, value.OccurredAt.UTC()))
 }
 
 func (r *Repository) ReadCreditScoreEventByParticipationWithin(ctx context.Context, participationID int64, lock bool) (referraldomain.ScoreEvent, error) {
