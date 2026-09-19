@@ -124,6 +124,7 @@ type Service struct {
 	paidEvents                 orderport.PaidEventConsumer
 	refundEvents               orderport.RefundSettlementConsumer
 	attribution                orderport.CheckoutAttributionCoordinator
+	productSaleAttribution     orderport.ProductSaleCheckoutCoordinator
 	historicalEvidenceVerifier historicalQualificationEvidenceVerifier
 	now                        func() time.Time
 }
@@ -183,6 +184,17 @@ func (s *Service) SetCheckoutAttributionCoordinator(coordinator orderport.Checko
 	return nil
 }
 
+// SetProductSaleCheckoutCoordinator binds the product-activity recorder. It
+// receives the same transaction as Distribution attribution and persists only
+// its own domain facts through the injected port.
+func (s *Service) SetProductSaleCheckoutCoordinator(coordinator orderport.ProductSaleCheckoutCoordinator) error {
+	if s == nil || coordinator == nil {
+		return orderport.ErrConflict
+	}
+	s.productSaleAttribution = coordinator
+	return nil
+}
+
 func NewService(uow platformport.UnitOfWork, store Store) *Service {
 	return &Service{uow: uow, store: store, now: time.Now}
 }
@@ -223,7 +235,7 @@ func (s *Service) ReadCheckoutSnapshotWithin(ctx context.Context, orderID int64)
 }
 
 func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderport.PaymentOrderCommand) (domain.Snapshot, error) {
-	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validPostPurchaseAction(command.PostPurchaseAction) || !validPromotionContext(command.PromotionContext) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
+	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validPostPurchaseAction(command.PostPurchaseAction) || !validPromotionContext(command.PromotionContext) || !validReferralActivityContext(command.ReferralActivityContext) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
 		return domain.Snapshot{}, orderport.ErrConflict
 	}
 	productID := command.ProductID
@@ -291,18 +303,33 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 		return domain.Snapshot{}, classify(err)
 	}
 	checkout.OrderID = persisted.Snapshot().ID
-	if command.PromotionContext != "" && s.attribution != nil {
-		attribution, attributionErr := s.attribution.RecordCheckoutAttributionWithin(ctx, orderport.CheckoutAttributionCommand{
+	var attribution orderport.CheckoutAttributionResult
+	if (command.PromotionContext != "" || command.ReferralActivityContext != "") && s.attribution != nil {
+		var attributionErr error
+		attribution, attributionErr = s.attribution.RecordCheckoutAttributionWithin(ctx, orderport.CheckoutAttributionCommand{
 			OrderID: persisted.Snapshot().ID, OrderItemLine: 1, ProductID: command.ProductID,
 			ProductType: command.ProductType, ProductCode: command.ProductCode, ProductName: command.ProductName, PayerCustomerID: command.PayerCustomerID,
 			BeneficiaryCustomerID: command.BeneficiaryCustomerID, PromotionContext: command.PromotionContext,
-			ItemPaidMinor: checkout.PayableAmountMinor, OccurredAt: input.CreatedAt,
+			ReferralActivityContext: command.ReferralActivityContext,
+			ItemPaidMinor:           checkout.PayableAmountMinor, OccurredAt: input.CreatedAt,
 		})
 		if attributionErr != nil {
 			return domain.Snapshot{}, classify(attributionErr)
 		}
 		if attribution.ProfitSharingRequired {
 			checkout.ProfitSharingRequired = true
+		}
+	}
+	if command.ReferralActivityContext != "" && s.productSaleAttribution != nil {
+		if err = s.productSaleAttribution.RecordProductSaleCheckoutAttributionWithin(ctx, orderport.ProductSaleCheckoutContextCommand{
+			OrderID: persisted.Snapshot().ID, OrderVersion: persisted.Snapshot().Version, ProductID: command.ProductID,
+			ProductType: command.ProductType, ProductCode: command.ProductCode, ProductName: command.ProductName, ProductVersion: command.ProductVersion,
+			PromotionCustomerID: attribution.PromoterCustomerID, PromotionCredentialRef: attribution.PromotionCredentialRef, PolicyVersion: attribution.PolicyVersion,
+			CommissionRateBasisPoints: attribution.CommissionRateBasisPoints, WaitDays: attribution.WaitDays, BuyerCustomerID: command.PayerCustomerID,
+			BeneficiaryCustomerID: command.BeneficiaryCustomerID, PromotionContext: command.PromotionContext, ReferralActivityContext: command.ReferralActivityContext,
+			OccurredAt: input.CreatedAt,
+		}); err != nil {
+			return domain.Snapshot{}, classify(err)
 		}
 	}
 	// The checkout snapshot is an immutable sale fact. Attribution is evaluated
@@ -449,6 +476,12 @@ func (s *Service) reserveCheckout(ctx context.Context, command orderport.Payment
 		postPurchaseAction = []byte(`{}`)
 	}
 	snapshot := orderport.CheckoutSnapshot{ProductType: command.ProductType, ProductID: command.ProductID, ProductCode: command.ProductCode, ProductName: command.ProductName, ProductVersion: command.ProductVersion, ServicePeriodDurationDays: command.ServicePeriodDurationDays, GrossAmountMinor: command.UnitAmountMinor, PayableAmountMinor: command.UnitAmountMinor, Currency: command.Currency, PostPurchaseAction: postPurchaseAction, ReservedAt: at}
+	if command.ReferralActivityContext != "" {
+		snapshot.ReferralActivityContextDigest = sha256.Sum256([]byte(command.ReferralActivityContext))
+	}
+	if command.PromotionContext != "" {
+		snapshot.PromotionContextDigest = sha256.Sum256([]byte(command.PromotionContext))
+	}
 	if s.coupons == nil {
 		return snapshot, nil
 	}
@@ -1103,6 +1136,10 @@ func ready(service *Service) bool {
 
 func validKey(value string) bool {
 	return value == strings.TrimSpace(value) && len(value) >= 16 && len(value) <= 200
+}
+
+func validReferralActivityContext(value string) bool {
+	return len(value) <= 512 && value == strings.TrimSpace(value) && strings.IndexFunc(value, func(r rune) bool { return r < 0x21 || r > 0x7e }) < 0
 }
 func validScope(value string) bool {
 	return value == strings.TrimSpace(value) && len(value) >= 1 && len(value) <= 200

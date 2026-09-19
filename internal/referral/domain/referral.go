@@ -15,6 +15,94 @@ var (
 	ErrVersion    = errors.New("referral version conflict")
 )
 
+// TeamMode controls whether new participation facts may carry a team
+// grouping.  Teams are an aggregation dimension only; they do not grant
+// authority, invitation privileges, or rewards.
+type TeamMode string
+
+const (
+	TeamModeTeam       TeamMode = "team"
+	TeamModeIndividual TeamMode = "individual"
+)
+
+func (m TeamMode) Valid() bool { return m == TeamModeTeam || m == TeamModeIndividual }
+
+// QualificationMode describes the server-side prerequisite for joining an
+// activity.  ProductPurchase requires a trusted, refund-checked purchase of
+// the exact configured product.
+type QualificationMode string
+
+const (
+	QualificationFreeSignup      QualificationMode = "free_signup"
+	QualificationProductPurchase QualificationMode = "product_purchase"
+)
+
+func (m QualificationMode) Valid() bool {
+	return m == QualificationFreeSignup || m == QualificationProductPurchase
+}
+
+type LeaderboardMetric string
+
+const (
+	LeaderboardInvites     LeaderboardMetric = "invites"
+	LeaderboardSalesAmount LeaderboardMetric = "sales_amount"
+	LeaderboardSalesOrders LeaderboardMetric = "sales_orders"
+	// LeaderboardSales is retained as a source-compatible alias for older
+	// persisted drafts; new writes normalize it to amount-based sales.
+	LeaderboardSales LeaderboardMetric = LeaderboardSalesAmount
+)
+
+func (m LeaderboardMetric) Valid() bool {
+	return m == LeaderboardInvites || m == LeaderboardSalesAmount || m == LeaderboardSalesOrders || m == LeaderboardMetric("sales")
+}
+
+const (
+	ProductTypeStandard      = "standard_product"
+	ProductTypeServicePeriod = "service_period"
+)
+
+// CampaignConfig is kept inside Referral as an opaque product reference. It
+// deliberately does not import Product, Order, Payment, or Distribution.
+type CampaignConfig struct {
+	TeamMode          TeamMode
+	QualificationMode QualificationMode
+	ProductID         int64
+	ProductType       string
+	LeaderboardMetric LeaderboardMetric
+}
+
+func DefaultCampaignConfig() CampaignConfig {
+	return CampaignConfig{TeamMode: TeamModeTeam, QualificationMode: QualificationFreeSignup, LeaderboardMetric: LeaderboardInvites}
+}
+
+func (c CampaignConfig) normalized() CampaignConfig {
+	defaults := DefaultCampaignConfig()
+	if c.TeamMode == "" {
+		c.TeamMode = defaults.TeamMode
+	}
+	if c.QualificationMode == "" {
+		c.QualificationMode = defaults.QualificationMode
+	}
+	if c.LeaderboardMetric == "" {
+		c.LeaderboardMetric = defaults.LeaderboardMetric
+	}
+	if c.LeaderboardMetric == LeaderboardMetric("sales") {
+		c.LeaderboardMetric = LeaderboardSalesAmount
+	}
+	return c
+}
+
+func (c CampaignConfig) Valid() bool {
+	c = c.normalized()
+	if !c.TeamMode.Valid() || !c.QualificationMode.Valid() || !c.LeaderboardMetric.Valid() {
+		return false
+	}
+	if c.QualificationMode == QualificationProductPurchase {
+		return c.ProductID > 0 && (c.ProductType == ProductTypeStandard || c.ProductType == ProductTypeServicePeriod)
+	}
+	return c.ProductID == 0 && c.ProductType == ""
+}
+
 type CampaignState string
 
 const (
@@ -45,13 +133,22 @@ type Campaign struct {
 	Version                     int64
 	CreatedBy                   int64
 	CreatedAt, UpdatedAt        time.Time
+	TeamMode                    TeamMode
+	QualificationMode           QualificationMode
+	ProductID                   int64
+	ProductType                 string
+	LeaderboardMetric           LeaderboardMetric
+}
+
+func (c Campaign) Config() CampaignConfig {
+	return CampaignConfig{TeamMode: c.TeamMode, QualificationMode: c.QualificationMode, ProductID: c.ProductID, ProductType: c.ProductType, LeaderboardMetric: c.LeaderboardMetric}.normalized()
 }
 
 func (c Campaign) Valid() bool {
 	return c.ID > 0 && validText(c.Name, 200, true) && validText(c.CoverURL, 2000, false) &&
 		validText(c.Description, 5000, false) && validText(c.RewardRules, 5000, false) && c.State.Valid() &&
 		!c.StartsAt.IsZero() && !c.EndsAt.IsZero() && c.EndsAt.After(c.StartsAt) && c.Version > 0 &&
-		c.CreatedBy >= 0 && !c.CreatedAt.IsZero() && !c.UpdatedAt.Before(c.CreatedAt)
+		c.CreatedBy >= 0 && !c.CreatedAt.IsZero() && !c.UpdatedAt.Before(c.CreatedAt) && c.Config().Valid()
 }
 
 func (c Campaign) ValidForInsert() bool {
@@ -86,15 +183,33 @@ func (c Campaign) EffectiveState(at time.Time) CampaignState {
 }
 
 func (c Campaign) Update(expectedVersion int64, name, coverURL, description, rewardRules string, startsAt, endsAt time.Time, at time.Time) (Campaign, error) {
+	return c.UpdateWithConfig(expectedVersion, name, coverURL, description, rewardRules, startsAt, endsAt, c.Config(), at)
+}
+
+// UpdateWithConfig applies the CAS update and enforces the immutable team
+// mode boundary. A started campaign cannot be made editable by moving its
+// start time into the future.
+func (c Campaign) UpdateWithConfig(expectedVersion int64, name, coverURL, description, rewardRules string, startsAt, endsAt time.Time, config CampaignConfig, at time.Time) (Campaign, error) {
 	if expectedVersion != c.Version {
 		return Campaign{}, ErrVersion
 	}
 	if (c.State != CampaignDraft && c.State != CampaignScheduled) || c.EffectiveState(at) == CampaignActive || c.EffectiveState(at) == CampaignEnded {
 		return Campaign{}, ErrTransition
 	}
+	config = config.normalized()
+	if !config.Valid() {
+		return Campaign{}, ErrInvalid
+	}
+	if config.TeamMode != c.Config().TeamMode && !at.Before(c.StartsAt) {
+		return Campaign{}, ErrTransition
+	}
+	if config.TeamMode != c.Config().TeamMode && !at.Before(startsAt.UTC()) {
+		return Campaign{}, ErrTransition
+	}
 	next := c
 	next.Name, next.CoverURL, next.Description, next.RewardRules = name, coverURL, description, rewardRules
 	next.StartsAt, next.EndsAt, next.Version, next.UpdatedAt = startsAt.UTC(), endsAt.UTC(), c.Version+1, at.UTC()
+	next.TeamMode, next.QualificationMode, next.ProductID, next.ProductType, next.LeaderboardMetric = config.TeamMode, config.QualificationMode, config.ProductID, config.ProductType, config.LeaderboardMetric
 	if at.IsZero() || at.Before(c.UpdatedAt) || !next.Valid() {
 		return Campaign{}, ErrInvalid
 	}
@@ -167,10 +282,11 @@ type Participation struct {
 }
 
 func (p Participation) Valid() bool {
-	return p.ID > 0 && p.CampaignID > 0 && p.CustomerID > 0 && p.TeamID > 0 && p.InvitationID >= 0 &&
+	return p.ID > 0 && p.CampaignID > 0 && p.CustomerID > 0 && p.TeamID >= 0 && p.InvitationID >= 0 &&
 		p.InviterCustomerID >= 0 && p.InviterTeamID >= 0 && p.State.Valid() && !p.JoinedAt.IsZero() &&
+		((p.TeamID > 0) || (p.InvitationID == 0 && p.InviterCustomerID == 0 && p.InviterTeamID == 0)) &&
 		((p.InvitationID == 0 && p.InviterCustomerID == 0 && p.InviterTeamID == 0) ||
-			(p.InvitationID > 0 && p.InviterCustomerID > 0 && p.InviterTeamID > 0))
+			(p.InvitationID > 0 && p.InviterCustomerID > 0 && p.InviterTeamID >= 0))
 }
 
 type InvitationState string
@@ -240,7 +356,7 @@ type ScoreEvent struct {
 }
 
 func (e ScoreEvent) Valid() bool {
-	if e.ID < 1 || e.CampaignID < 1 || e.ParticipationID < 1 || e.InviterCustomerID < 1 || e.TeamID < 1 || !e.Kind.Valid() || e.OccurredAt.IsZero() {
+	if e.ID < 1 || e.CampaignID < 1 || e.ParticipationID < 1 || e.InviterCustomerID < 1 || e.TeamID < 0 || !e.Kind.Valid() || e.OccurredAt.IsZero() {
 		return false
 	}
 	if e.Kind == ScoreCredit {
@@ -257,6 +373,47 @@ const (
 )
 
 func (s RewardState) Valid() bool { return s == RewardRecorded || s == RewardNeedsReview }
+
+// SalesFact is the immutable checkout attribution snapshot owned by Referral.
+// Order/Payment/Distribution supply the trusted source facts through the
+// stable port; no Referral query reads their tables. Refund totals are a
+// cumulative, CAS-updated projection while OriginalPaidMinor is immutable.
+type SalesFact struct {
+	ID, CampaignID, OrderID, ProductID, PromoterCustomerID, TeamID int64
+	OrderItemLine                                                  int32
+	ProductType, SourceReference                                   string
+	OriginalPaidMinor, SuccessfulRefundMinor                       int64
+	PaidAt, CreatedAt, UpdatedAt                                   time.Time
+	Version                                                        int64
+}
+
+func (s SalesFact) NetPaidMinor() int64 { return s.OriginalPaidMinor - s.SuccessfulRefundMinor }
+
+func (s SalesFact) Valid() bool {
+	return s.ID > 0 && s.CampaignID > 0 && s.OrderID > 0 && s.OrderItemLine > 0 && s.ProductID > 0 && s.PromoterCustomerID > 0 && s.TeamID >= 0 &&
+		(s.ProductType == ProductTypeStandard || s.ProductType == ProductTypeServicePeriod) && s.SourceReference == strings.TrimSpace(s.SourceReference) && len(s.SourceReference) >= 1 && len(s.SourceReference) <= 200 &&
+		s.OriginalPaidMinor > 0 && s.SuccessfulRefundMinor >= 0 && s.SuccessfulRefundMinor <= s.OriginalPaidMinor && !s.PaidAt.IsZero() && !s.CreatedAt.IsZero() && !s.UpdatedAt.Before(s.CreatedAt) && s.Version > 0
+}
+
+func (s SalesFact) ValidForInsert() bool {
+	if s.ID != 0 || s.Version != 1 {
+		return false
+	}
+	probe := s
+	probe.ID = 1
+	return probe.Valid()
+}
+
+func (s SalesFact) ApplySuccessfulRefund(expectedVersion, delta int64, at time.Time) (SalesFact, error) {
+	if !s.Valid() || expectedVersion != s.Version || delta <= 0 || s.SuccessfulRefundMinor+delta > s.OriginalPaidMinor || at.IsZero() || at.Before(s.UpdatedAt) {
+		return SalesFact{}, ErrInvalid
+	}
+	next := s
+	next.SuccessfulRefundMinor += delta
+	next.Version++
+	next.UpdatedAt = at.UTC()
+	return next, nil
+}
 
 type RewardRecord struct {
 	ID, CampaignID, CustomerID, ScoreEventID int64

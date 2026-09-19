@@ -22,6 +22,7 @@ type adminStore interface {
 	AppendOperationReceiptWithin(context.Context, string, string, string, [sha256.Size]byte, string, int64, time.Time) error
 	InsertCampaignWithin(context.Context, referraldomain.Campaign) (referraldomain.Campaign, error)
 	ReadCampaignWithin(context.Context, int64, bool) (referraldomain.Campaign, error)
+	HasTeamParticipationWithin(context.Context, int64) (bool, error)
 	UpdateCampaignWithin(context.Context, referraldomain.Campaign, int64) (referraldomain.Campaign, error)
 	InsertTeamWithin(context.Context, referraldomain.Team) (referraldomain.Team, error)
 	ReadTeamWithin(context.Context, int64, bool) (referraldomain.Team, error)
@@ -94,7 +95,8 @@ func (s *AdminService) CreateCampaign(ctx context.Context, command referralport.
 			return readErr
 		}
 		now := s.now().UTC()
-		candidate := referraldomain.Campaign{Name: command.Name, CoverURL: command.CoverURL, Description: command.Description, RewardRules: command.RewardRules, State: referraldomain.CampaignDraft, StartsAt: command.StartsAt.UTC(), EndsAt: command.EndsAt.UTC(), Version: 1, CreatedBy: command.ActorAdminID, CreatedAt: now, UpdatedAt: now}
+		config := createCampaignConfig(command)
+		candidate := referraldomain.Campaign{Name: command.Name, CoverURL: command.CoverURL, Description: command.Description, RewardRules: command.RewardRules, State: referraldomain.CampaignDraft, StartsAt: command.StartsAt.UTC(), EndsAt: command.EndsAt.UTC(), Version: 1, CreatedBy: command.ActorAdminID, CreatedAt: now, UpdatedAt: now, TeamMode: config.TeamMode, QualificationMode: config.QualificationMode, ProductID: config.ProductID, ProductType: config.ProductType, LeaderboardMetric: config.LeaderboardMetric}
 		if !candidate.ValidForInsert() {
 			return referralport.ErrConflict
 		}
@@ -138,7 +140,7 @@ func (s *AdminService) UpdateCampaign(ctx context.Context, command referralport.
 			return err
 		}
 		now := s.now().UTC()
-		next, err := current.Update(command.ExpectedVersion, command.Name, command.CoverURL, command.Description, command.RewardRules, command.StartsAt, command.EndsAt, now)
+		next, err := current.UpdateWithConfig(command.ExpectedVersion, command.Name, command.CoverURL, command.Description, command.RewardRules, command.StartsAt, command.EndsAt, updateCampaignConfig(current, command), now)
 		if err != nil {
 			return mapDomainError(err)
 		}
@@ -184,6 +186,15 @@ func (s *AdminService) SetCampaignState(ctx context.Context, command referralpor
 		current, err := s.store.ReadCampaignWithin(tx, command.CampaignID, true)
 		if err != nil {
 			return err
+		}
+		if current.Config().TeamMode == referraldomain.TeamModeIndividual && command.Target == referraldomain.CampaignActive {
+			hasTeam, teamErr := s.store.HasTeamParticipationWithin(tx, current.ID)
+			if teamErr != nil {
+				return teamErr
+			}
+			if hasTeam {
+				return referralport.ErrConflict
+			}
 		}
 		now := s.now().UTC()
 		next, err := current.Transition(command.ExpectedVersion, command.Target, now)
@@ -245,19 +256,6 @@ func (s *AdminService) CreateTeam(ctx context.Context, command referralport.Crea
 		case referraldomain.CampaignDraft, referraldomain.CampaignScheduled, referraldomain.CampaignActive:
 		default:
 			return referralport.ErrCampaignTeamLocked
-		}
-		// Serialize captain assignment with the first activity participation for
-		// this customer. A person who has already joined any activity team cannot
-		// later be retrofitted as a captain of another immutable team.
-		if err = s.store.LockParticipationWithin(tx, campaign.ID, command.CaptainCustomerID); err != nil {
-			return err
-		}
-		if participation, participationErr := s.store.ReadParticipationWithin(tx, campaign.ID, command.CaptainCustomerID, false); participationErr == nil {
-			if participation.ID > 0 {
-				return referralport.ErrCaptainIneligible
-			}
-		} else if !errors.Is(participationErr, referralport.ErrNotFound) {
-			return participationErr
 		}
 		candidate := referraldomain.Team{CampaignID: campaign.ID, Name: command.Name, LogoURL: command.LogoURL, CaptainCustomerID: command.CaptainCustomerID, Version: 1, CreatedAt: now, UpdatedAt: now}
 		if !candidate.ValidForInsert() {
@@ -748,6 +746,9 @@ func (s *AdminService) adminCampaignSummary(ctx context.Context, campaign referr
 	if err != nil {
 		return referralport.CampaignSummary{}, err
 	}
+	if campaign.Config().TeamMode == referraldomain.TeamModeIndividual {
+		counts.TeamCount = 0
+	}
 	return referralport.CampaignSummary{Campaign: campaign, EffectiveState: campaign.EffectiveState(s.now().UTC()), ParticipantCount: counts.ParticipantCount, InvitationCount: counts.InvitationCount, TeamCount: counts.TeamCount}, nil
 }
 func (s *AdminService) adminCampaignView(ctx context.Context, campaign referraldomain.Campaign) (referralport.CampaignView, error) {
@@ -760,13 +761,15 @@ func (s *AdminService) adminCampaignView(ctx context.Context, campaign referrald
 	var daily []referralport.CampaignDailyMetric
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
-		teams, err = s.store.ListTeamsWithin(tx, campaign.ID)
-		if err != nil {
-			return err
-		}
-		teamSummaries, err = s.store.ListAdminTeamSummariesWithin(tx, campaign.ID)
-		if err != nil {
-			return err
+		if campaign.Config().TeamMode == referraldomain.TeamModeTeam {
+			teams, err = s.store.ListTeamsWithin(tx, campaign.ID)
+			if err != nil {
+				return err
+			}
+			teamSummaries, err = s.store.ListAdminTeamSummariesWithin(tx, campaign.ID)
+			if err != nil {
+				return err
+			}
 		}
 		daily, err = s.store.CampaignDailyMetricsWithin(tx, campaign.ID)
 		return err
@@ -812,10 +815,36 @@ func mapDomainError(err error) error {
 	return err
 }
 func campaignCreatePayload(c referralport.CreateCampaignCommand) [sha256.Size]byte {
-	return digestStrings("create", c.Name, c.CoverURL, c.Description, c.RewardRules, c.StartsAt.UTC().Format(time.RFC3339Nano), c.EndsAt.UTC().Format(time.RFC3339Nano))
+	return digestStrings("create", c.Name, c.CoverURL, c.Description, c.RewardRules, c.StartsAt.UTC().Format(time.RFC3339Nano), c.EndsAt.UTC().Format(time.RFC3339Nano), string(c.TeamMode), string(c.QualificationMode), strconv.FormatInt(c.ProductID, 10), c.ProductType, string(c.LeaderboardMetric))
 }
 func campaignUpdatePayload(c referralport.UpdateCampaignCommand) [sha256.Size]byte {
-	return digestStrings("update", strconv.FormatInt(c.CampaignID, 10), strconv.FormatInt(c.ExpectedVersion, 10), c.Name, c.CoverURL, c.Description, c.RewardRules, c.StartsAt.UTC().Format(time.RFC3339Nano), c.EndsAt.UTC().Format(time.RFC3339Nano))
+	return digestStrings("update", strconv.FormatInt(c.CampaignID, 10), strconv.FormatInt(c.ExpectedVersion, 10), c.Name, c.CoverURL, c.Description, c.RewardRules, c.StartsAt.UTC().Format(time.RFC3339Nano), c.EndsAt.UTC().Format(time.RFC3339Nano), string(c.TeamMode), string(c.QualificationMode), strconv.FormatInt(c.ProductID, 10), c.ProductType, string(c.LeaderboardMetric))
+}
+
+func createCampaignConfig(c referralport.CreateCampaignCommand) referraldomain.CampaignConfig {
+	return referraldomain.CampaignConfig{TeamMode: c.TeamMode, QualificationMode: c.QualificationMode, ProductID: c.ProductID, ProductType: c.ProductType, LeaderboardMetric: c.LeaderboardMetric}
+}
+
+func updateCampaignConfig(current referraldomain.Campaign, c referralport.UpdateCampaignCommand) referraldomain.CampaignConfig {
+	config := current.Config()
+	// Zero-valued fields are omitted by legacy clients and therefore preserve
+	// the current configuration. Explicit mode values replace it atomically.
+	if c.TeamMode != "" {
+		config.TeamMode = c.TeamMode
+	}
+	if c.QualificationMode != "" {
+		config.QualificationMode = c.QualificationMode
+		if c.QualificationMode == referraldomain.QualificationFreeSignup {
+			config.ProductID, config.ProductType = 0, ""
+		}
+	}
+	if c.ProductID != 0 || c.ProductType != "" {
+		config.ProductID, config.ProductType = c.ProductID, c.ProductType
+	}
+	if c.LeaderboardMetric != "" {
+		config.LeaderboardMetric = c.LeaderboardMetric
+	}
+	return config
 }
 func statePayload(c referralport.SetCampaignStateCommand) [sha256.Size]byte {
 	return digestStrings("state", strconv.FormatInt(c.CampaignID, 10), strconv.FormatInt(c.ExpectedVersion, 10), string(c.Target))

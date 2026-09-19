@@ -12,6 +12,9 @@ type Campaign = {
   endAt: string;
   reward: string;
   status: string;
+  teamMode: "team" | "individual";
+  qualificationMode: "free_signup" | "product_purchase";
+  leaderboardMetric: "invites" | "sales_amount" | "sales_orders";
   teamCount: number;
   participants: number;
   invitations: number;
@@ -34,6 +37,8 @@ type Leader = {
   avatarURL: string;
   teamName: string;
   score: number;
+  salesAmountMinor: number;
+  salesOrderCount: number;
   mine: boolean;
 };
 
@@ -83,8 +88,8 @@ let me: Me | undefined;
 let campaigns: Campaign[] = [];
 let leaderboard: Leader[] = [];
 let myLeaderboard: Leader | undefined;
-let board: "team" | "personal" | "in_team" = "team";
-let period: "total" | "week" | "day" = "total";
+let board: "team" | "personal" | "in_team" = "personal";
+let period: "total" | "day" = "total";
 let historyDate = "";
 let invite: { url: string; qrPayload: string; shareText: string } | undefined;
 let invitationRows:
@@ -110,21 +115,11 @@ function beijingDate(): string {
     fields.find((field) => field.type === kind)?.value || "";
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
-function monday(value: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return monday(beijingDate());
-  const date = new Date(
-    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
-  );
-  if (Number.isNaN(date.valueOf())) return monday(beijingDate());
-  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
-  return date.toISOString().slice(0, 10);
-}
 function leaderboardDate(): string {
   const value = /^\d{4}-\d{2}-\d{2}$/.test(historyDate)
     ? historyDate
     : beijingDate();
-  return period === "week" ? monday(value) : value;
+  return value;
 }
 function referralCSRF(): string {
   for (const part of document.cookie.split(";")) {
@@ -230,6 +225,14 @@ function parseCampaign(raw: unknown): Campaign {
     endAt: str(row.end_at || row.ends_at),
     reward: str(row.reward_description || row.reward_rules),
     status: str(row.effective_state || row.state || row.status),
+    teamMode: row.team_mode === "individual" ? "individual" : "team",
+    qualificationMode: row.qualification_mode === "product_purchase" ? "product_purchase" : "free_signup",
+    leaderboardMetric:
+      row.leaderboard_metric === "sales_orders"
+        ? "sales_orders"
+        : row.leaderboard_metric === "sales" || row.leaderboard_metric === "sales_amount"
+          ? "sales_amount"
+          : "invites",
     teamCount: num(row.team_count),
     participants: num(row.participant_count),
     invitations: num(row.invitation_count || row.valid_invitation_count),
@@ -275,6 +278,8 @@ function parseLeader(raw: unknown): Leader {
     avatarURL: str(entry.avatar_url),
     teamName: str(entry.team_name),
     score: num(entry.score),
+    salesAmountMinor: num(entry.sales_amount_minor),
+    salesOrderCount: num(entry.sales_order_count),
     mine: entry.mine === true,
   };
 }
@@ -439,6 +444,7 @@ function render(): void {
     renderCampaignList();
     return;
   }
+  if (campaign.teamMode === "individual") board = "personal";
   host.replaceChildren(nav());
   const header = element("header");
   header.className = "referral-hero";
@@ -453,7 +459,7 @@ function render(): void {
   copy.append(
     element("span", remaining(campaign)),
     element("h1", campaign.name),
-    element("p", campaign.introduction || "邀请好友参加活动，和战队一起冲榜。"),
+    element("p", campaign.introduction || (campaign.qualificationMode === "product_purchase" ? "购买指定商品后即可参与推广和冲榜。" : "邀请好友参加活动，和好友一起冲榜。")),
   );
   header.append(copy);
   host.append(header);
@@ -502,13 +508,13 @@ function homeCard(): HTMLElement {
   const title = element("div");
   title.className = "referral-card-title";
   title.append(
-    element("h2", "我的战队"),
+    element("h2", campaign?.teamMode === "team" ? "我的战队" : "我的活动"),
     element("span", campaign ? remaining(campaign) : ""),
   );
   section.append(title);
   if (me?.participant) {
     section.append(
-      element("strong", me.participant.teamName),
+      element("strong", campaign?.teamMode === "team" && me.participant.teamID ? me.participant.teamName : "已参加活动"),
       element(
         "p",
         `已于 ${dateText(me.participant.joinedAt)} 加入。本活动的战队和邀请成绩已锁定。`,
@@ -548,6 +554,11 @@ function homeCard(): HTMLElement {
       );
       accept.dataset.testid = "referral-join-team";
       section.append(accept);
+    } else if (campaign?.teamMode === "individual") {
+      section.append(element("p", campaign.qualificationMode === "product_purchase" ? "支付成功后会自动参加活动。" : "确认参加活动后即可获得自己的邀请入口。"));
+      const join = button("确认参加活动", () => void beginParticipation(), "referral-primary");
+      join.dataset.testid = "referral-join-individual";
+      section.append(join);
     } else {
       section.append(
         element("p", "选择战队并确认参加后，即可获得自己的邀请入口。"),
@@ -587,11 +598,11 @@ function leaderCard(): HTMLElement {
   const boardSelect = document.createElement("select");
   boardSelect.dataset.testid = "referral-leaderboard-board";
   boardSelect.setAttribute("aria-label", "榜单类型");
-  for (const [value, label] of [
-    ["team", "战队榜"],
-    ["personal", "个人榜"],
-    ["in_team", "队内榜"],
-  ] as const) {
+  const boardOptions = campaign?.teamMode === "team"
+    ? (["team", "personal", "in_team"] as const)
+    : (["personal"] as const);
+  for (const value of boardOptions) {
+    const label = value === "team" ? "战队榜" : value === "in_team" ? "队内榜" : "个人榜";
     const option = element("option", label);
     option.value = value;
     option.selected = board === value;
@@ -606,7 +617,6 @@ function leaderCard(): HTMLElement {
   periodSelect.setAttribute("aria-label", "榜单周期");
   for (const [value, label] of [
     ["total", "总榜"],
-    ["week", "周榜"],
     ["day", "日榜"],
   ] as const) {
     const option = element("option", label);
@@ -649,7 +659,12 @@ function leaderCard(): HTMLElement {
         item.teamName || (board === "team" ? "战队" : "未加入战队"),
       ),
     );
-    row.append(name, element("span", `${item.score} 人`));
+    const value = campaign?.leaderboardMetric !== "invites"
+      ? campaign?.leaderboardMetric === "sales_orders"
+        ? `${item.salesOrderCount} 单`
+        : `${item.salesAmountMinor > 0 ? `¥${(item.salesAmountMinor / 100).toFixed(2)}` : "¥0.00"}`
+      : `${item.score} 人`;
+    row.append(name, element("span", value));
     list.append(row);
   }
   if (!leaderboard.length) list.append(empty("当前周期还没有可展示的排名。"));
@@ -658,7 +673,7 @@ function leaderCard(): HTMLElement {
     const mine = element("div");
     mine.className = "referral-my-rank";
     mine.dataset.testid = "referral-my-rank";
-    mine.textContent = `${board === "team" ? "我的战队排名" : "我的排名"}：第 ${myLeaderboard.rank} 名 · ${myLeaderboard.score} 人`;
+    mine.textContent = `${board === "team" ? "我的战队排名" : "我的排名"}：第 ${myLeaderboard.rank} 名 · ${campaign?.leaderboardMetric !== "invites" ? (campaign?.leaderboardMetric === "sales_orders" ? `${myLeaderboard.salesOrderCount} 单` : `¥${(myLeaderboard.salesAmountMinor / 100).toFixed(2)}`) : `${myLeaderboard.score} 人`}`;
     section.append(mine);
   }
   return section;
@@ -1018,7 +1033,7 @@ async function loadLeaderboard(): Promise<void> {
   if (period !== "total") {
     const anchor = leaderboardDate();
     historyDate = anchor;
-    params.set(period === "week" ? "week" : "date", anchor);
+    params.set("date", anchor);
   }
   try {
     const raw = obj(
@@ -1066,6 +1081,9 @@ async function reload(): Promise<void> {
     if (version !== loadVersion) return;
     campaign = parseCampaign(response[0]);
     me = parseMe(response[1]);
+    if (campaign.qualificationMode === "product_purchase" && me.participant) {
+      try { await api(`/campaigns/${campaign.id}/product-context`, { method: "POST" }, `product-context:${campaign.id}`); } catch { /* checkout remains ordinary until context is ready */ }
+    }
     if (response[2]) {
       const preview = obj(response[2]);
       invitationPreview = {

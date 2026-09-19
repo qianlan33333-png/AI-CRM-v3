@@ -152,6 +152,24 @@ func (r *Repository) MyParticipationWithin(ctx context.Context, campaignID, cust
 	return r.ReadParticipationWithin(ctx, campaignID, customerID, false)
 }
 
+// HasTeamParticipationWithin is used when an activity is switched to
+// individual mode. Existing team facts remain immutable audit history, so a
+// publish to individual is allowed only when no participation has a team.
+func (r *Repository) HasTeamParticipationWithin(ctx context.Context, campaignID int64) (bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	if campaignID < 1 {
+		return false, ErrInvalid
+	}
+	var found bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM referral_participations WHERE campaign_id=$1 AND team_id IS NOT NULL)`, campaignID).Scan(&found); err != nil {
+		return false, mapError(err)
+	}
+	return found, nil
+}
+
 func (r *Repository) CurrentRelationshipAtWithin(ctx context.Context, customerID int64, at time.Time) (referraldomain.Relationship, bool, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
@@ -283,7 +301,7 @@ func (r *Repository) ListAdminReferralsWithin(ctx context.Context, campaignID in
 	if campaignID < 1 || offset < 0 || limit < 1 || limit > 101 {
 		return nil, ErrInvalid
 	}
-	const adminParticipationColumns = `p.id,p.campaign_id,p.customer_id,p.team_id,COALESCE(p.invitation_id,0),COALESCE(p.inviter_customer_id,0),COALESCE(p.inviter_team_id,0),p.state,p.joined_at`
+	const adminParticipationColumns = `p.id,p.campaign_id,p.customer_id,COALESCE(p.team_id,0),COALESCE(p.invitation_id,0),COALESCE(p.inviter_customer_id,0),COALESCE(p.inviter_team_id,0),p.state,p.joined_at`
 	rows, err := tx.Query(ctx, `SELECT `+adminParticipationColumns+`,c.name,COALESCE((SELECT id FROM referral_score_events e WHERE e.participation_id=p.id AND e.kind='credit'),0),COALESCE((SELECT sum(delta) FROM referral_score_events e WHERE e.participation_id=p.id),0)
         FROM referral_participations p JOIN referral_campaigns c ON c.id=p.campaign_id
         WHERE p.campaign_id=$1 ORDER BY p.joined_at DESC,p.id DESC OFFSET $2 LIMIT $3`, campaignID, offset, limit)
@@ -334,8 +352,8 @@ func (r *Repository) LeaderboardRowsWithin(ctx context.Context, campaignID int64
 	switch kind {
 	case referralport.LeaderboardPersonal:
 		query = `WITH active_credits AS (
-            SELECT e.inviter_customer_id,e.team_id,t.name AS team_name,e.occurred_at,e.id
-            FROM referral_score_events e JOIN referral_teams t ON t.id=e.team_id
+		    SELECT e.inviter_customer_id,e.team_id,COALESCE(t.name,'') AS team_name,e.occurred_at,e.id
+		    FROM referral_score_events e LEFT JOIN referral_teams t ON t.id=e.team_id
             WHERE e.campaign_id=$1 AND e.kind='credit' AND e.occurred_at >= $2 AND e.occurred_at < $3
               AND NOT EXISTS (SELECT 1 FROM referral_score_events r WHERE r.kind='reversal' AND r.reverses_score_event_id=e.id)
         ), ranked AS (
@@ -401,6 +419,97 @@ func (r *Repository) LeaderboardRowsWithin(ctx context.Context, campaignID int64
 	}
 	var own referralport.LeaderboardEntry
 	err = tx.QueryRow(ctx, ownQuery, ownArgs...).Scan(&own.Rank, &own.Score, &own.CustomerID, &own.TeamID, &own.TeamName, &own.FirstReachedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return items, nil, nil
+	}
+	if err != nil {
+		return nil, nil, mapError(err)
+	}
+	own.Mine = true
+	return items, &own, nil
+}
+
+// ListSalesLeaderboardRowsWithin ranks paid attribution snapshots after
+// cumulative successful refunds. It intentionally has a separate query from
+// invitation score events so a sales campaign can never silently display
+// invite counts when its sales facts are unavailable.
+func (r *Repository) ListSalesLeaderboardRowsWithin(ctx context.Context, campaignID int64, kind referralport.LeaderboardKind, metric referraldomain.LeaderboardMetric, teamID int64, start, end time.Time, offset, limit int32, viewerCustomerID, viewerTeamID int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if campaignID < 1 || !kind.Valid() || !start.Before(end) || offset < 0 || limit < 1 || limit > 101 || (kind == referralport.LeaderboardInTeam && teamID < 1) || (metric != referraldomain.LeaderboardSalesAmount && metric != referraldomain.LeaderboardSalesOrders) {
+		return nil, nil, ErrInvalid
+	}
+	scoreExpr, orderExpr := "sum(net_minor)", "sum(net_minor) DESC,count(*) DESC"
+	if metric == referraldomain.LeaderboardSalesOrders {
+		scoreExpr, orderExpr = "count(*)", "count(*) DESC,sum(net_minor) DESC"
+	}
+	base := `WITH active_sales AS (
+        SELECT promoter_customer_id,COALESCE(team_id,0) AS team_id,COALESCE(t.name,'') AS team_name,
+               (original_paid_minor-successful_refund_minor)::bigint AS net_minor,paid_at
+        FROM referral_sales_facts f LEFT JOIN referral_teams t ON t.id=f.team_id
+        WHERE f.campaign_id=$1 AND f.paid_at >= $2 AND f.paid_at < $3 AND f.original_paid_minor>f.successful_refund_minor`
+	var query, ownQuery string
+	var args, ownArgs []any
+	switch kind {
+	case referralport.LeaderboardPersonal:
+		query = base + `), ranked AS (
+	            SELECT row_number() OVER (ORDER BY ` + orderExpr + `,max(paid_at) ASC,promoter_customer_id ASC)::bigint AS rank,
+	                   ` + scoreExpr + `::bigint AS score,promoter_customer_id AS customer_id,0::bigint AS team_id,''::text AS team_name,
+                   sum(net_minor)::bigint AS sales_amount_minor,count(*)::bigint AS sales_order_count,max(paid_at) AS first_reached_at
+            FROM active_sales GROUP BY promoter_customer_id
+        ) SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $4 LIMIT $5`
+		ownQuery = strings.Replace(query, `SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $4 LIMIT $5`, `SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked WHERE customer_id=$4`, 1)
+		args = []any{campaignID, start.UTC(), end.UTC(), offset, limit}
+		ownArgs = []any{campaignID, start.UTC(), end.UTC(), viewerCustomerID}
+	case referralport.LeaderboardInTeam:
+		query = base + ` AND f.team_id=$4), ranked AS (
+	            SELECT row_number() OVER (ORDER BY ` + orderExpr + `,max(paid_at) ASC,promoter_customer_id ASC)::bigint AS rank,
+	                   ` + scoreExpr + `::bigint AS score,promoter_customer_id AS customer_id,team_id,max(team_name) AS team_name,
+                   sum(net_minor)::bigint AS sales_amount_minor,count(*)::bigint AS sales_order_count,max(paid_at) AS first_reached_at
+            FROM active_sales GROUP BY promoter_customer_id,team_id
+        ) SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $5 LIMIT $6`
+		ownQuery = strings.Replace(query, `SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $5 LIMIT $6`, `SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked WHERE customer_id=$5`, 1)
+		args = []any{campaignID, start.UTC(), end.UTC(), teamID, offset, limit}
+		ownArgs = []any{campaignID, start.UTC(), end.UTC(), teamID, viewerCustomerID}
+	case referralport.LeaderboardTeam:
+		query = base + ` AND f.team_id IS NOT NULL), ranked AS (
+	            SELECT row_number() OVER (ORDER BY ` + orderExpr + `,max(paid_at) ASC,team_id ASC)::bigint AS rank,
+	                   ` + scoreExpr + `::bigint AS score,0::bigint AS customer_id,team_id,max(team_name) AS team_name,
+                   sum(net_minor)::bigint AS sales_amount_minor,count(*)::bigint AS sales_order_count,max(paid_at) AS first_reached_at
+            FROM active_sales GROUP BY team_id
+        ) SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $4 LIMIT $5`
+		ownQuery = strings.Replace(query, `SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked ORDER BY rank OFFSET $4 LIMIT $5`, `SELECT rank,score,customer_id,team_id,team_name,sales_amount_minor,sales_order_count,first_reached_at FROM ranked WHERE team_id=$4`, 1)
+		args = []any{campaignID, start.UTC(), end.UTC(), offset, limit}
+		ownArgs = []any{campaignID, start.UTC(), end.UTC(), viewerTeamID}
+	}
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, nil, mapError(err)
+	}
+	defer rows.Close()
+	items := make([]referralport.LeaderboardEntry, 0, limit)
+	for rows.Next() {
+		var item referralport.LeaderboardEntry
+		if err = rows.Scan(&item.Rank, &item.Score, &item.CustomerID, &item.TeamID, &item.TeamName, &item.SalesAmountMinor, &item.SalesOrderCount, &item.FirstReachedAt); err != nil {
+			return nil, nil, mapError(err)
+		}
+		item.Mine = kind != referralport.LeaderboardTeam && item.CustomerID == viewerCustomerID
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, nil, mapError(err)
+	}
+	viewerKey := viewerCustomerID
+	if kind == referralport.LeaderboardTeam {
+		viewerKey = viewerTeamID
+	}
+	if viewerKey < 1 {
+		return items, nil, nil
+	}
+	var own referralport.LeaderboardEntry
+	err = tx.QueryRow(ctx, ownQuery, ownArgs...).Scan(&own.Rank, &own.Score, &own.CustomerID, &own.TeamID, &own.TeamName, &own.SalesAmountMinor, &own.SalesOrderCount, &own.FirstReachedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return items, nil, nil
 	}
@@ -480,9 +589,9 @@ func validAdminInvitationFilter(query referralport.AdminInvitationQuery) bool {
 	return query.CampaignID > 0 && query.TeamID >= 0 && query.InviterCustomerID >= 0 && (query.State == "" || query.State.Valid())
 }
 
-const adminParticipationColumns = `p.id,p.campaign_id,p.customer_id,p.team_id,COALESCE(p.invitation_id,0),COALESCE(p.inviter_customer_id,0),COALESCE(p.inviter_team_id,0),p.state,p.joined_at`
-const adminParticipantTeamColumns = `t.id,t.campaign_id,t.name,t.logo_url,t.captain_customer_id,t.version,t.created_at,t.updated_at`
-const adminInviterTeamColumns = `it.id,it.campaign_id,it.name,it.logo_url,it.captain_customer_id,it.version,it.created_at,it.updated_at`
+const adminParticipationColumns = `p.id,p.campaign_id,p.customer_id,COALESCE(p.team_id,0),COALESCE(p.invitation_id,0),COALESCE(p.inviter_customer_id,0),COALESCE(p.inviter_team_id,0),p.state,p.joined_at`
+const adminParticipantTeamColumns = `COALESCE(t.id,0),COALESCE(t.campaign_id,0),COALESCE(t.name,''),COALESCE(t.logo_url,''),COALESCE(t.captain_customer_id,0),COALESCE(t.version,0),COALESCE(t.created_at,'epoch'::timestamptz),COALESCE(t.updated_at,'epoch'::timestamptz)`
+const adminInviterTeamColumns = `COALESCE(it.id,0),COALESCE(it.campaign_id,0),COALESCE(it.name,''),COALESCE(it.logo_url,''),COALESCE(it.captain_customer_id,0),COALESCE(it.version,0),COALESCE(it.created_at,'epoch'::timestamptz),COALESCE(it.updated_at,'epoch'::timestamptz)`
 
 func scanAdminParticipant(row rowScanner) (referralport.AdminParticipantRecord, error) {
 	var value referralport.AdminParticipantRecord
@@ -496,7 +605,8 @@ func scanAdminParticipant(row rowScanner) (referralport.AdminParticipantRecord, 
 		return referralport.AdminParticipantRecord{}, mapError(err)
 	}
 	value.Participation.State = referraldomain.ParticipationState(participationState)
-	if !value.Participation.Valid() || !value.Team.Valid() || value.Team.ID != value.Participation.TeamID || value.Team.CampaignID != value.Participation.CampaignID || value.InviterCustomerID != value.Participation.InviterCustomerID || value.DirectInvitationCount < 0 {
+	teamOK := value.Participation.TeamID == 0 && value.Team.ID == 0 || value.Team.Valid() && value.Team.ID == value.Participation.TeamID && value.Team.CampaignID == value.Participation.CampaignID
+	if !value.Participation.Valid() || !teamOK || value.InviterCustomerID != value.Participation.InviterCustomerID || value.DirectInvitationCount < 0 {
 		return referralport.AdminParticipantRecord{}, referralport.ErrUnavailable
 	}
 	return value, nil
@@ -517,9 +627,9 @@ func scanAdminInvitation(row rowScanner) (referralport.AdminInvitationRecord, er
 	value.Participation.State = referraldomain.ParticipationState(participationState)
 	value.InviterCustomerID = value.Participation.InviterCustomerID
 	value.InviterTeamID = value.Participation.InviterTeamID
-	if !value.Participation.Valid() || value.Participation.InvitationID < 1 || !value.InviterTeam.Valid() || !value.ParticipantTeam.Valid() ||
-		value.InviterTeam.ID != value.InviterTeamID || value.ParticipantTeam.ID != value.Participation.TeamID ||
-		value.InviterTeam.CampaignID != value.Participation.CampaignID || value.ParticipantTeam.CampaignID != value.Participation.CampaignID ||
+	inviterTeamOK := value.InviterTeamID == 0 && value.InviterTeam.ID == 0 || value.InviterTeam.Valid() && value.InviterTeam.ID == value.InviterTeamID && value.InviterTeam.CampaignID == value.Participation.CampaignID
+	participantTeamOK := value.Participation.TeamID == 0 && value.ParticipantTeam.ID == 0 || value.ParticipantTeam.Valid() && value.ParticipantTeam.ID == value.Participation.TeamID && value.ParticipantTeam.CampaignID == value.Participation.CampaignID
+	if !value.Participation.Valid() || value.Participation.InvitationID < 1 || !inviterTeamOK || !participantTeamOK ||
 		(value.ScoreState != "valid" && value.ScoreState != "reversed" && value.ScoreState != "none") {
 		return referralport.AdminInvitationRecord{}, referralport.ErrUnavailable
 	}
@@ -533,7 +643,7 @@ func adminParticipantSQL(query referralport.AdminParticipantQuery, after *AdminJ
          WHERE e.campaign_id=p.campaign_id AND e.inviter_customer_id=p.customer_id AND e.kind='credit'
            AND NOT EXISTS (SELECT 1 FROM referral_score_events r WHERE r.kind='reversal' AND r.reverses_score_event_id=e.id))
         FROM referral_participations p
-        JOIN referral_teams t ON t.id=p.team_id
+		LEFT JOIN referral_teams t ON t.id=p.team_id
 	        WHERE p.campaign_id=$1
 	          AND ($2::bigint=0 OR p.team_id=$2)
 	          AND ($3::text='' OR p.state=$3)`
@@ -559,8 +669,8 @@ func adminInvitationSQL(query referralport.AdminInvitationQuery, after *AdminJoi
           ELSE 'none'
         END AS score_state
         FROM referral_participations p
-        JOIN referral_teams it ON it.id=p.inviter_team_id
-        JOIN referral_teams t ON t.id=p.team_id
+		LEFT JOIN referral_teams it ON it.id=p.inviter_team_id
+		LEFT JOIN referral_teams t ON t.id=p.team_id
         WHERE p.campaign_id=$1
           AND p.invitation_id IS NOT NULL
           AND ($2::bigint=0 OR p.team_id=$2)

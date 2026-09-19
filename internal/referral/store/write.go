@@ -208,7 +208,7 @@ func (r *Repository) InsertParticipationWithin(ctx context.Context, value referr
 	if err != nil {
 		return referraldomain.Participation{}, err
 	}
-	if value.ID != 0 || value.CampaignID < 1 || value.CustomerID < 1 || value.TeamID < 1 || value.State != referraldomain.ParticipationActive || value.JoinedAt.IsZero() || (value.InvitationID == 0 && (value.InviterCustomerID != 0 || value.InviterTeamID != 0)) || (value.InvitationID > 0 && (value.InviterCustomerID < 1 || value.InviterTeamID < 1)) {
+	if value.ID != 0 || value.CampaignID < 1 || value.CustomerID < 1 || value.TeamID < 0 || value.State != referraldomain.ParticipationActive || value.JoinedAt.IsZero() || (value.TeamID == 0 && (value.InvitationID != 0 || value.InviterCustomerID != 0 || value.InviterTeamID != 0)) || (value.TeamID > 0 && value.InvitationID == 0 && (value.InviterCustomerID != 0 || value.InviterTeamID != 0)) || (value.InvitationID > 0 && (value.InviterCustomerID < 1 || value.InviterTeamID < 1)) {
 		return referraldomain.Participation{}, ErrInvalid
 	}
 	return scanParticipation(tx.QueryRow(ctx, `INSERT INTO referral_participations(campaign_id,customer_id,team_id,invitation_id,inviter_customer_id,inviter_team_id,state,joined_at) VALUES($1,$2,$3,NULLIF($4,0),NULLIF($5,0),NULLIF($6,0),$7,$8) RETURNING `+participationColumns, value.CampaignID, value.CustomerID, value.TeamID, value.InvitationID, value.InviterCustomerID, value.InviterTeamID, string(value.State), value.JoinedAt.UTC()))

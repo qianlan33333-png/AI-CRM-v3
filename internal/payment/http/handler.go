@@ -768,7 +768,11 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, PromotionContext: body.PromotionContext, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	activityContext := ""
+	if activityCookie, cookieErr := request.Cookie(paymentport.ReferralActivityCookieName); cookieErr == nil && validReferralActivityContext(activityCookie.Value) {
+		activityContext = activityCookie.Value
+	}
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, PromotionContext: body.PromotionContext, ReferralActivityContext: activityContext, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return
@@ -781,6 +785,14 @@ func validPromotionContext(value string) bool {
 		return true
 	}
 	if len(value) != 47 || !strings.HasPrefix(value, "dpc_") {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value[4:])
+	return err == nil && len(raw) == 32
+}
+
+func validReferralActivityContext(value string) bool {
+	if len(value) != 47 || !strings.HasPrefix(value, "rpa_") {
 		return false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(value[4:])

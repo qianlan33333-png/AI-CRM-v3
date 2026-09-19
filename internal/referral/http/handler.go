@@ -223,11 +223,35 @@ func (h *Handler) campaignTail(w http.ResponseWriter, r *http.Request, tail stri
 		h.leaderboard(w, r, campaignID)
 	case "invite":
 		h.issueInvitation(w, r, campaignID)
+	case "product-context":
+		h.productContext(w, r, campaignID)
 	case "participations":
 		h.joinCampaign(w, r, campaignID)
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) productContext(w http.ResponseWriter, r *http.Request, campaignID int64) {
+	if r.Method != http.MethodPost || r.URL.RawQuery != "" || r.ContentLength > 0 {
+		method(w, http.MethodPost)
+		return
+	}
+	actor, ok := h.sessionActor(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	token, err := h.public.IssueProductActivityContext(r.Context(), actor, campaignID, key)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "aicrm_referral_activity_context", Value: token, Path: "/", HttpOnly: true, Secure: h.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: time.Now().UTC().Add(24 * time.Hour)})
+	writeJSON(w, http.StatusCreated, map[string]any{"expires_at": time.Now().UTC().Add(24 * time.Hour)})
 }
 
 func (h *Handler) invitationHandoff(w http.ResponseWriter, r *http.Request, token string) {
@@ -546,7 +570,7 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request, actor i
 	if !ok {
 		return
 	}
-	value, err := h.admin.CreateCampaign(r.Context(), referralport.CreateCampaignCommand{ActorAdminID: actor, Name: body.Name, CoverURL: body.CoverURL, Description: body.Description, RewardRules: body.RewardRules, StartsAt: body.StartsAt, EndsAt: body.EndsAt, IdempotencyKey: key})
+	value, err := h.admin.CreateCampaign(r.Context(), referralport.CreateCampaignCommand{ActorAdminID: actor, Name: body.Name, CoverURL: body.CoverURL, Description: body.Description, RewardRules: body.RewardRules, StartsAt: body.StartsAt, EndsAt: body.EndsAt, TeamMode: body.TeamMode, QualificationMode: body.QualificationMode, ProductID: body.ProductID, ProductType: body.ProductType, LeaderboardMetric: body.LeaderboardMetric, IdempotencyKey: key})
 	if err != nil {
 		resultError(w, err)
 		return
@@ -571,7 +595,7 @@ func (h *Handler) updateCampaign(w http.ResponseWriter, r *http.Request, raw str
 	if !ok {
 		return
 	}
-	value, err := h.admin.UpdateCampaign(r.Context(), referralport.UpdateCampaignCommand{CampaignID: campaignID, ExpectedVersion: body.ExpectedVersion, ActorAdminID: actor, Name: body.Name, CoverURL: body.CoverURL, Description: body.Description, RewardRules: body.RewardRules, StartsAt: body.StartsAt, EndsAt: body.EndsAt, IdempotencyKey: key})
+	value, err := h.admin.UpdateCampaign(r.Context(), referralport.UpdateCampaignCommand{CampaignID: campaignID, ExpectedVersion: body.ExpectedVersion, ActorAdminID: actor, Name: body.Name, CoverURL: body.CoverURL, Description: body.Description, RewardRules: body.RewardRules, StartsAt: body.StartsAt, EndsAt: body.EndsAt, TeamMode: body.TeamMode, QualificationMode: body.QualificationMode, ProductID: body.ProductID, ProductType: body.ProductType, LeaderboardMetric: body.LeaderboardMetric, IdempotencyKey: key})
 	if err != nil {
 		resultError(w, err)
 		return
@@ -1002,13 +1026,18 @@ func (h *Handler) revokeInvitation(w http.ResponseWriter, r *http.Request, raw s
 }
 
 type campaignInput struct {
-	ExpectedVersion int64     `json:"expected_version"`
-	Name            string    `json:"name"`
-	CoverURL        string    `json:"cover_url"`
-	Description     string    `json:"description"`
-	RewardRules     string    `json:"reward_rules"`
-	StartsAt        time.Time `json:"starts_at"`
-	EndsAt          time.Time `json:"ends_at"`
+	ExpectedVersion   int64                            `json:"expected_version"`
+	Name              string                           `json:"name"`
+	CoverURL          string                           `json:"cover_url"`
+	Description       string                           `json:"description"`
+	RewardRules       string                           `json:"reward_rules"`
+	StartsAt          time.Time                        `json:"starts_at"`
+	EndsAt            time.Time                        `json:"ends_at"`
+	TeamMode          referraldomain.TeamMode          `json:"team_mode"`
+	QualificationMode referraldomain.QualificationMode `json:"qualification_mode"`
+	ProductID         int64                            `json:"product_id"`
+	ProductType       string                           `json:"product_type"`
+	LeaderboardMetric referraldomain.LeaderboardMetric `json:"leaderboard_metric"`
 }
 
 func (v campaignInput) valid() bool {
@@ -1016,11 +1045,13 @@ func (v campaignInput) valid() bool {
 		v.CoverURL == strings.TrimSpace(v.CoverURL) && len(v.CoverURL) <= 2000 &&
 		v.Description == strings.TrimSpace(v.Description) && len(v.Description) <= 5000 &&
 		v.RewardRules == strings.TrimSpace(v.RewardRules) && len(v.RewardRules) <= 5000 &&
-		!v.StartsAt.IsZero() && !v.EndsAt.IsZero() && v.EndsAt.After(v.StartsAt)
+		!v.StartsAt.IsZero() && !v.EndsAt.IsZero() && v.EndsAt.After(v.StartsAt) &&
+		referraldomain.CampaignConfig{TeamMode: v.TeamMode, QualificationMode: v.QualificationMode, ProductID: v.ProductID, ProductType: v.ProductType, LeaderboardMetric: v.LeaderboardMetric}.Valid()
 }
 
 func campaign(value referraldomain.Campaign) map[string]any {
-	return map[string]any{"id": value.ID, "name": value.Name, "cover_url": value.CoverURL, "description": value.Description, "reward_rules": value.RewardRules, "state": value.State, "starts_at": value.StartsAt.UTC(), "ends_at": value.EndsAt.UTC(), "version": value.Version, "created_at": value.CreatedAt.UTC(), "updated_at": value.UpdatedAt.UTC()}
+	config := value.Config()
+	return map[string]any{"id": value.ID, "name": value.Name, "cover_url": value.CoverURL, "description": value.Description, "reward_rules": value.RewardRules, "state": value.State, "starts_at": value.StartsAt.UTC(), "ends_at": value.EndsAt.UTC(), "version": value.Version, "created_at": value.CreatedAt.UTC(), "updated_at": value.UpdatedAt.UTC(), "team_mode": config.TeamMode, "qualification_mode": config.QualificationMode, "product_id": config.ProductID, "product_type": config.ProductType, "leaderboard_metric": config.LeaderboardMetric}
 }
 
 func campaignSummary(value referralport.CampaignSummary) map[string]any {
@@ -1075,6 +1106,10 @@ func myCampaign(value referralport.MyCampaign) map[string]any {
 
 func leaderboardEntry(value referralport.LeaderboardEntry, profile customerport.DirectoryPublicProfile) map[string]any {
 	response := map[string]any{"rank": value.Rank, "score": value.Score, "team_name": value.TeamName, "first_reached_at": value.FirstReachedAt.UTC(), "mine": value.Mine}
+	if value.SalesAmountMinor > 0 || value.SalesOrderCount > 0 {
+		response["sales_amount_minor"] = value.SalesAmountMinor
+		response["sales_order_count"] = value.SalesOrderCount
+	}
 	if profile.DisplayName != "" {
 		response["display_name"] = profile.DisplayName
 		response["avatar_url"] = profile.AvatarURL
@@ -1286,12 +1321,15 @@ var shanghai, _ = time.LoadLocation("Asia/Shanghai")
 func leaderboardQuery(r *http.Request, campaignID int64) (referralport.LeaderboardQuery, bool) {
 	values := r.URL.Query()
 	for key, entries := range values {
-		if (key != "kind" && key != "period" && key != "date" && key != "week" && key != "team_id" && key != "cursor" && key != "limit") || len(entries) != 1 {
+		if (key != "kind" && key != "period" && key != "date" && key != "team_id" && key != "cursor" && key != "limit") || len(entries) != 1 {
 			return referralport.LeaderboardQuery{}, false
 		}
 	}
 	kind := referralport.LeaderboardKind(values.Get("kind"))
 	period := referralport.LeaderboardPeriod(values.Get("period"))
+	if period == referralport.LeaderboardPeriod("total") {
+		period = referralport.LeaderboardAll
+	}
 	if !kind.Valid() || !period.Valid() {
 		return referralport.LeaderboardQuery{}, false
 	}
@@ -1310,24 +1348,11 @@ func leaderboardQuery(r *http.Request, campaignID int64) (referralport.Leaderboa
 		return referralport.LeaderboardQuery{}, false
 	}
 	switch period {
-	case referralport.LeaderboardTotal:
-		return query, values.Get("date") == "" && values.Get("week") == ""
+	case referralport.LeaderboardAll:
+		return query, values.Get("date") == ""
 	case referralport.LeaderboardDay:
-		if values.Get("week") != "" {
-			return referralport.LeaderboardQuery{}, false
-		}
 		anchor, err := time.ParseInLocation("2006-01-02", values.Get("date"), shanghai)
 		if err != nil {
-			return referralport.LeaderboardQuery{}, false
-		}
-		query.Anchor = anchor
-		return query, true
-	case referralport.LeaderboardWeek:
-		if values.Get("date") != "" {
-			return referralport.LeaderboardQuery{}, false
-		}
-		anchor, err := time.ParseInLocation("2006-01-02", values.Get("week"), shanghai)
-		if err != nil || anchor.Weekday() != time.Monday {
 			return referralport.LeaderboardQuery{}, false
 		}
 		query.Anchor = anchor

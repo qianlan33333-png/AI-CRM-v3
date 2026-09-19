@@ -46,6 +46,11 @@ type PaymentReconciliationPreview struct {
 // no adapter may treat it as a customer or identity claim.
 const TrustedSessionCookieName = "aicrm_payment_session"
 
+// ReferralActivityCookieName is written by the trusted product-activity entry
+// handler. Checkout never accepts campaign IDs or promoter IDs in JSON; an
+// unknown/invalid cookie simply produces an ordinary purchase.
+const ReferralActivityCookieName = "aicrm_referral_activity_context"
+
 // CheckoutSessionBinding is an opaque, non-identity marker derived only from
 // the HttpOnly Payment session. Public pages retain it with a recovery
 // checkpoint, never the session token itself. A marker is useful only when
@@ -75,6 +80,9 @@ type CreateCommand struct {
 	// does not parse it; it is frozen into idempotent checkout facts and passed
 	// to Order's same-UoW attribution coordinator by composition.
 	PromotionContext string
+	// ReferralActivityContext is a separate opaque activity token. Payment
+	// carries it unchanged to Order; Referral resolves it in its own store.
+	ReferralActivityContext string
 	// ProfitSharingRequired is an internal-only result from that coordinator's
 	// authoritative attribution preparation. Public HTTP handlers must not bind
 	// it directly from browser input.

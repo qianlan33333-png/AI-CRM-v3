@@ -45,18 +45,19 @@ func transaction(ctx context.Context) (pgx.Tx, error) {
 
 type rowScanner interface{ Scan(...any) error }
 
-const campaignColumns = `id,name,cover_url,description,reward_rules,state,starts_at,ends_at,version,created_by,created_at,updated_at`
+const campaignColumns = `id,name,cover_url,description,reward_rules,state,starts_at,ends_at,version,created_by,created_at,updated_at,team_mode,qualification_mode,product_id,product_type,leaderboard_metric`
 const teamColumns = `id,campaign_id,name,logo_url,captain_customer_id,version,created_at,updated_at`
-const participationColumns = `id,campaign_id,customer_id,team_id,COALESCE(invitation_id,0),COALESCE(inviter_customer_id,0),COALESCE(inviter_team_id,0),state,joined_at`
+const participationColumns = `id,campaign_id,customer_id,COALESCE(team_id,0),COALESCE(invitation_id,0),COALESCE(inviter_customer_id,0),COALESCE(inviter_team_id,0),state,joined_at`
 const invitationColumns = `id,campaign_id,inviter_customer_id,token_digest,state,created_at,expires_at,revoked_at`
 const relationshipColumns = `id,customer_id,referrer_customer_id,source_campaign_id,invitation_id,version,effective_at`
-const scoreEventColumns = `id,campaign_id,participation_id,inviter_customer_id,team_id,delta,kind,COALESCE(reverses_score_event_id,0),reason,occurred_at`
+const scoreEventColumns = `id,campaign_id,participation_id,inviter_customer_id,COALESCE(team_id,0),delta,kind,COALESCE(reverses_score_event_id,0),reason,occurred_at`
 const rewardColumns = `id,campaign_id,customer_id,COALESCE(score_event_id,0),period,reward,evidence_reference,state,recorded_by,recorded_at`
+const salesFactColumns = `id,campaign_id,order_id,order_item_line,product_id,product_type,promoter_customer_id,COALESCE(team_id,0),original_paid_minor,successful_refund_minor,source_reference,paid_at,version,created_at,updated_at`
 
 func scanCampaign(row rowScanner) (referraldomain.Campaign, error) {
 	var value referraldomain.Campaign
 	var state string
-	err := row.Scan(&value.ID, &value.Name, &value.CoverURL, &value.Description, &value.RewardRules, &state, &value.StartsAt, &value.EndsAt, &value.Version, &value.CreatedBy, &value.CreatedAt, &value.UpdatedAt)
+	err := row.Scan(&value.ID, &value.Name, &value.CoverURL, &value.Description, &value.RewardRules, &state, &value.StartsAt, &value.EndsAt, &value.Version, &value.CreatedBy, &value.CreatedAt, &value.UpdatedAt, &value.TeamMode, &value.QualificationMode, &value.ProductID, &value.ProductType, &value.LeaderboardMetric)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return referraldomain.Campaign{}, referralport.ErrNotFound
 	}
@@ -169,6 +170,21 @@ func scanReward(row rowScanner) (referraldomain.RewardRecord, error) {
 	value.State = referraldomain.RewardState(state)
 	if !value.Valid() {
 		return referraldomain.RewardRecord{}, referralport.ErrUnavailable
+	}
+	return value, nil
+}
+
+func scanSalesFact(row rowScanner) (referraldomain.SalesFact, error) {
+	var value referraldomain.SalesFact
+	err := row.Scan(&value.ID, &value.CampaignID, &value.OrderID, &value.OrderItemLine, &value.ProductID, &value.ProductType, &value.PromoterCustomerID, &value.TeamID, &value.OriginalPaidMinor, &value.SuccessfulRefundMinor, &value.SourceReference, &value.PaidAt, &value.Version, &value.CreatedAt, &value.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return referraldomain.SalesFact{}, referralport.ErrNotFound
+	}
+	if err != nil {
+		return referraldomain.SalesFact{}, mapError(err)
+	}
+	if !value.Valid() {
+		return referraldomain.SalesFact{}, referralport.ErrUnavailable
 	}
 	return value, nil
 }

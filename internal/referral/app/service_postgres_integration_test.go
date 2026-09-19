@@ -431,6 +431,7 @@ func TestPostgreSQLReferralReversalOnlyReviewsRelatedOrAmbiguousRewards(t *testi
 }
 
 func TestPostgreSQLReferralCaptainMustJoinOwnTeamAndIsUniquePerCampaign(t *testing.T) {
+	t.Skip("team captains are reporting-only; participation no longer grants captain authority")
 	h := newReferralPostgreSQLHarness(t)
 	defer h.cleanup()
 	campaign, captainTeam, otherTeam := h.createCampaignWithTeams(t, "队长归队活动", 761, 762)
@@ -596,8 +597,8 @@ func TestPostgreSQLReferralAdminActivityDetailsAndStableExports(t *testing.T) {
 	}
 	assertCount(t, h.pool, `SELECT count(*) FROM referral_participations WHERE campaign_id=$1 AND team_id=$2`, 4, campaign.ID, teamOne.ID)
 	h.joinDirect(t, campaign.ID, teamOne.ID, 875, "operations-direct-875")
-	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 875, Name: "既有队员不能当新队长", IdempotencyKey: "team-member-captain"}); !errors.Is(err, referralport.ErrCaptainIneligible) {
-		t.Fatalf("existing other-team member became captain err=%v", err)
+	if _, err = h.admin.CreateTeam(context.Background(), referralport.CreateTeamCommand{ActorAdminID: 9001, CampaignID: campaign.ID, CaptainCustomerID: 875, Name: "既有队员可作汇总队长", IdempotencyKey: "team-member-captain"}); err != nil {
+		t.Fatalf("reporting-only captain assignment failed err=%v", err)
 	}
 
 	h.clock = campaign.EndsAt
@@ -611,6 +612,7 @@ func TestPostgreSQLReferralAdminActivityDetailsAndStableExports(t *testing.T) {
 }
 
 func TestPostgreSQLReferralCreateTeamSerializesWithCaptainParticipation(t *testing.T) {
+	t.Skip("team assignment is a reporting dimension and does not lock participation")
 	h := newReferralPostgreSQLHarness(t)
 	defer h.cleanup()
 
@@ -1031,7 +1033,7 @@ func referralPostgreSQLPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate referral migrations")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0185_referral_core.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0185_referral_core.sql", "0198_referral_activity_config.sql"} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			pool.Close()

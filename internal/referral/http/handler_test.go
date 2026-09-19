@@ -48,6 +48,9 @@ func (s *publicStub) ListMyInvites(context.Context, referralport.TrustedSessionA
 func (s *publicStub) Leaderboard(context.Context, referralport.LeaderboardQuery) (referralport.LeaderboardPage, error) {
 	return referralport.LeaderboardPage{}, nil
 }
+func (s *publicStub) IssueProductActivityContext(context.Context, referralport.TrustedSessionActor, int64, string) (string, error) {
+	return "rpa_test", nil
+}
 
 type adminStub struct{}
 
