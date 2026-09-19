@@ -44,11 +44,17 @@ func (m QualificationMode) Valid() bool {
 type LeaderboardMetric string
 
 const (
-	LeaderboardInvites LeaderboardMetric = "invites"
-	LeaderboardSales   LeaderboardMetric = "sales"
+	LeaderboardInvites     LeaderboardMetric = "invites"
+	LeaderboardSalesAmount LeaderboardMetric = "sales_amount"
+	LeaderboardSalesOrders LeaderboardMetric = "sales_orders"
+	// LeaderboardSales is retained as a source-compatible alias for older
+	// persisted drafts; new writes normalize it to amount-based sales.
+	LeaderboardSales LeaderboardMetric = LeaderboardSalesAmount
 )
 
-func (m LeaderboardMetric) Valid() bool { return m == LeaderboardInvites || m == LeaderboardSales }
+func (m LeaderboardMetric) Valid() bool {
+	return m == LeaderboardInvites || m == LeaderboardSalesAmount || m == LeaderboardSalesOrders || m == LeaderboardMetric("sales")
+}
 
 const (
 	ProductTypeStandard      = "standard_product"
@@ -79,6 +85,9 @@ func (c CampaignConfig) normalized() CampaignConfig {
 	}
 	if c.LeaderboardMetric == "" {
 		c.LeaderboardMetric = defaults.LeaderboardMetric
+	}
+	if c.LeaderboardMetric == LeaderboardMetric("sales") {
+		c.LeaderboardMetric = LeaderboardSalesAmount
 	}
 	return c
 }

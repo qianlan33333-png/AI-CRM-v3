@@ -127,6 +127,14 @@ func (s *Service) consumeProductSalePaidWithin(ctx context.Context, event referr
 		if checkout.PromotionCustomerID > 0 && (checkout.PromotionCustomerID == checkout.BuyerCustomerID || checkout.PromotionCustomerID == checkout.BeneficiaryCustomerID) {
 			return nil
 		}
+		// A bound product purchase without a frozen promoter is still a valid
+		// activity entry, but it is not a sale attributed to anyone.  Keep the
+		// participant fact above and leave the sales ledger untouched; creating a
+		// zero-promoter sale would pollute the sales leaderboard and could later
+		// be mistaken for a payable distribution.
+		if checkout.PromotionCustomerID == 0 {
+			return nil
+		}
 		credit := referraldomain.ProductSaleEvent{CampaignID: checkout.CampaignID, OrderID: event.OrderID, OrderVersion: event.OrderVersion, ProductID: event.ProductID, ProductType: event.ProductType, ProductCode: checkout.ProductCode, ProductName: checkout.ProductName, ProductVersion: checkout.ProductVersion, ParticipationID: participation.ID, TeamID: participation.TeamID, PromoterCustomerID: checkout.PromotionCustomerID, PromotionCredentialRef: checkout.PromotionCredentialRef, PolicyVersion: checkout.PolicyVersion, CommissionRateBasisPoints: checkout.CommissionRateBasisPoints, WaitDays: checkout.WaitDays, BuyerCustomerID: event.BuyerCustomerID, BeneficiaryCustomerID: event.BeneficiaryCustomerID, Kind: referraldomain.ProductSaleCredit, AmountDeltaMinor: event.PaidAmountMinor, OrderCountDelta: 1, SourcePaidEventID: event.PaidEventID, Currency: event.Currency, SourceDigest: event.SourceDigest, OccurredAt: event.OccurredAt.UTC()}
 		if _, err = store.InsertProductSaleEventWithin(ctx, credit); err != nil {
 			if errors.Is(err, referralport.ErrConflict) {

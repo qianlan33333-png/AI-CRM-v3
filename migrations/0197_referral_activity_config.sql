@@ -12,7 +12,7 @@ ALTER TABLE referral_campaigns
 ALTER TABLE referral_campaigns
     ADD CONSTRAINT referral_campaigns_team_mode_check CHECK (team_mode IN ('team','individual')),
     ADD CONSTRAINT referral_campaigns_qualification_mode_check CHECK (qualification_mode IN ('free_signup','product_purchase')),
-    ADD CONSTRAINT referral_campaigns_leaderboard_metric_check CHECK (leaderboard_metric IN ('invites','sales')),
+    ADD CONSTRAINT referral_campaigns_leaderboard_metric_check CHECK (leaderboard_metric IN ('invites','sales','sales_amount','sales_orders')),
     ADD CONSTRAINT referral_campaigns_product_target_check CHECK (
         (qualification_mode = 'free_signup' AND product_id = 0 AND product_type = '') OR
         (qualification_mode = 'product_purchase' AND product_id > 0 AND product_type IN ('standard_product','service_period'))

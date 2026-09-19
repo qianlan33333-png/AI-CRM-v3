@@ -81,16 +81,26 @@ func (s *Service) IssueProductActivityContext(ctx context.Context, actor referra
 		if campaign.Config().QualificationMode != referraldomain.QualificationProductPurchase || !campaign.AcceptingAt(s.now().UTC()) {
 			return referralport.ErrCampaignUnavailable
 		}
-		if err := s.checkPurchaseQualification(tx, campaign, actor.CustomerID); err != nil {
-			return err
-		}
+		// The activity context is the server-issued bridge from the activity
+		// page to the bound product checkout.  It must be issuable before the
+		// first purchase; requiring an existing purchase here would make a
+		// product-qualified activity circular (the buyer could never reach the
+		// checkout that grants qualification).  Qualification is enforced when
+		// the paid event is consumed and the participant is created.
 		buf := make([]byte, 32)
 		if _, err := cryptoRandRead(buf); err != nil {
 			return referralport.ErrUnavailable
 		}
 		token = "rpa_" + base64.RawURLEncoding.EncodeToString(buf)
 		digest := sha256.Sum256([]byte(token))
-		return s.store.InsertProductActivityContextWithin(tx, referralport.ProductActivityContext{ContextDigest: digest, CampaignID: campaign.ID, ProductID: campaign.ProductID, ProductType: campaign.ProductType, SalesMetric: referralport.SalesMetricAmount, State: "active", ExpiresAt: campaign.EndsAt, CreatedAt: s.now().UTC()})
+		metric := referralport.SalesMetricAmount
+		if campaign.Config().LeaderboardMetric != referraldomain.LeaderboardInvites {
+			// The activity config currently distinguishes invite versus sales
+			// leaderboards; sales defaults to amount for the product context until
+			// the persisted amount/order metric is exposed as its own field.
+			metric = referralport.SalesMetricAmount
+		}
+		return s.store.InsertProductActivityContextWithin(tx, referralport.ProductActivityContext{ContextDigest: digest, CampaignID: campaign.ID, ProductID: campaign.ProductID, ProductType: campaign.ProductType, SalesMetric: metric, State: "active", ExpiresAt: campaign.EndsAt, CreatedAt: s.now().UTC()})
 	})
 	return token, err
 }
