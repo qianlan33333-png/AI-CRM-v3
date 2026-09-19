@@ -680,6 +680,10 @@ RETURNING id,order_id,order_version,source_digest,occurred_at`, snapshot.ID, sna
 	checkout, checkoutErr := r.ReadCheckoutSnapshot(ctx, event.OrderID)
 	if checkoutErr == nil {
 		event.CheckoutProductID, event.CheckoutGrossAmountMinor = checkout.ProductID, checkout.GrossAmountMinor
+		event.CheckoutProductType = checkout.ProductType
+		event.CheckoutPayableAmountMinor = checkout.PayableAmountMinor
+		event.ReferralActivityContextDigest = checkout.ReferralActivityContextDigest
+		event.PromotionContextDigest = checkout.PromotionContextDigest
 	} else if !errors.Is(checkoutErr, orderport.ErrNotFound) {
 		return orderport.PaidEvent{}, false, checkoutErr
 	}

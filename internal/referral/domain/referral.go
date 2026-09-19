@@ -275,6 +275,7 @@ type Participation struct {
 func (p Participation) Valid() bool {
 	return p.ID > 0 && p.CampaignID > 0 && p.CustomerID > 0 && p.TeamID >= 0 && p.InvitationID >= 0 &&
 		p.InviterCustomerID >= 0 && p.InviterTeamID >= 0 && p.State.Valid() && !p.JoinedAt.IsZero() &&
+		((p.TeamID > 0) || (p.InvitationID == 0 && p.InviterCustomerID == 0 && p.InviterTeamID == 0)) &&
 		((p.InvitationID == 0 && p.InviterCustomerID == 0 && p.InviterTeamID == 0) ||
 			(p.InvitationID > 0 && p.InviterCustomerID > 0 && p.InviterTeamID >= 0))
 }

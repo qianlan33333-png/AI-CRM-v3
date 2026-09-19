@@ -326,7 +326,12 @@ type PaymentOrderCommand struct {
 	// PromotionContext is an opaque, server-carried promotion credential.  It
 	// has no customer, amount, policy or receiver semantics. Order freezes any
 	// accepted attribution through its injected coordinator in this same UoW.
-	PromotionContext           string
+	PromotionContext string
+	// ReferralActivityContext is an opaque, server-issued product activity
+	// context. It is never interpreted by Order or accepted from a public
+	// amount/identity field; Order hashes and freezes it with the checkout so
+	// Referral can later resolve the exact activity without reading Order data.
+	ReferralActivityContext    string
 	ActorScope, IdempotencyKey string
 }
 
@@ -342,6 +347,7 @@ type CheckoutAttributionCommand struct {
 	PayerCustomerID, BeneficiaryCustomerID int64
 	ItemPaidMinor                          int64
 	PromotionContext                       string
+	ReferralActivityContext                string
 	OccurredAt                             time.Time
 }
 
@@ -353,10 +359,39 @@ type CheckoutAttributionCommand struct {
 type CheckoutAttributionResult struct {
 	Attributed            bool
 	ProfitSharingRequired bool
+	// The following are server-derived facts for a composed Referral product
+	// activity coordinator. Zero means no accepted Distribution promoter.
+	PromoterCustomerID        int64
+	PromotionCredentialRef    string
+	PolicyVersion             int64
+	CommissionRateBasisPoints int32
+	WaitDays                  int32
 }
 
 type CheckoutAttributionCoordinator interface {
 	RecordCheckoutAttributionWithin(context.Context, CheckoutAttributionCommand) (CheckoutAttributionResult, error)
+}
+
+// ProductSaleCheckoutCoordinator freezes an opaque product-activity context
+// beside Distribution attribution. It is a second injected seam so Order
+// remains the only owner of checkout facts while Referral owns its own rows.
+type ProductSaleCheckoutContextCommand struct {
+	OrderID, OrderVersion, ProductID          int64
+	ProductType                               string
+	ProductCode, ProductName                  string
+	ProductVersion                            int64
+	PromotionCustomerID                       int64
+	PromotionCredentialRef                    string
+	PolicyVersion                             int64
+	CommissionRateBasisPoints                 int32
+	WaitDays                                  int32
+	BuyerCustomerID, BeneficiaryCustomerID    int64
+	PromotionContext, ReferralActivityContext string
+	OccurredAt                                time.Time
+}
+
+type ProductSaleCheckoutCoordinator interface {
+	RecordProductSaleCheckoutAttributionWithin(context.Context, ProductSaleCheckoutContextCommand) error
 }
 
 // CheckoutSnapshot is an Order-owned, immutable record of a native checkout.
@@ -379,8 +414,12 @@ type CheckoutSnapshot struct {
 	CouponClaimID, CouponID   int64
 	CouponRuleVersion         int64
 	ProfitSharingRequired     bool
-	PostPurchaseAction        json.RawMessage
-	ReservedAt                time.Time
+	// ReferralActivityContextDigest is the SHA-256 of the opaque activity
+	// context supplied at checkout. The raw context is not persisted in Order.
+	ReferralActivityContextDigest [32]byte
+	PromotionContextDigest        [32]byte
+	PostPurchaseAction            json.RawMessage
+	ReservedAt                    time.Time
 }
 
 // CheckoutSnapshotReader is the narrow Order read seam for a Product paid

@@ -533,7 +533,7 @@ func (s *PromotionService) RecordCheckoutAttributionWithin(ctx context.Context, 
 	if err != nil {
 		return orderport.CheckoutAttributionResult{}, err
 	}
-	return orderport.CheckoutAttributionResult{Attributed: true, ProfitSharingRequired: commission > 0}, nil
+	return orderport.CheckoutAttributionResult{Attributed: true, ProfitSharingRequired: commission > 0, PromoterCustomerID: distributor.CustomerID, PromotionCredentialRef: "distribution.credential:" + decimal(credential.ID), PolicyVersion: policy.Version, CommissionRateBasisPoints: policy.CommissionRateBasisPoints, WaitDays: policy.WaitDays}, nil
 }
 
 func (s *PromotionService) isSelfPurchaseWithin(ctx context.Context, distributorCustomerID, payerCustomerID, beneficiaryCustomerID int64) bool {

@@ -183,7 +183,7 @@ func NewService(uow platformport.UnitOfWork, store Store, orders orderport.Payme
 func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (domain.Payment, error) {
 	fromExistingOrder := c.OrderID > 0 && c.ProductID == 0 && c.ProductType == ""
 	fromProduct := c.OrderID == 0 && c.ProductID > 0 && (c.ProductType == string(productport.ProductOptionStandard) || c.ProductType == string(productport.ProductOptionServicePeriod))
-	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) || len(c.PromotionContext) > 512 || strings.TrimSpace(c.PromotionContext) != c.PromotionContext {
+	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) || len(c.PromotionContext) > 512 || strings.TrimSpace(c.PromotionContext) != c.PromotionContext || !validOpaqueActivityContext(c.ReferralActivityContext) {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
 	// A response-lost browser recovery checkpoint is valid for precisely the
@@ -305,7 +305,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				ProductID: int64(product.ID), CouponClaimID: c.CouponClaimID, ProductCode: product.Code, ProductName: product.Name,
 				ProductVersion: product.Version, ProductType: orderCheckoutProductType(product.ProductType), ServicePeriodDurationDays: product.ServicePeriodDurationDays, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
 				PostPurchaseAction: product.PostPurchaseAction,
-				MobileE164:         c.MobileE164, PromotionContext: c.PromotionContext,
+				MobileE164:         c.MobileE164, PromotionContext: c.PromotionContext, ReferralActivityContext: c.ReferralActivityContext,
 				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
 			})
 		}
@@ -371,6 +371,10 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		return domain.Payment{}, classify(err)
 	}
 	return result, nil
+}
+
+func validOpaqueActivityContext(value string) bool {
+	return len(value) <= 512 && value == strings.TrimSpace(value) && strings.IndexFunc(value, func(r rune) bool { return r < 0x21 || r > 0x7e }) < 0
 }
 
 func orderCheckoutProductType(kind productport.ProductOptionType) string {

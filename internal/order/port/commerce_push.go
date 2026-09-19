@@ -13,20 +13,27 @@ import (
 // only canonical IDs and the already-frozen Order snapshot; an Outbound
 // consumer must not infer a customer, mutate Order, or inspect Order tables.
 type PaidEvent struct {
-	ID                       int64
-	OrderID                  int64
-	OrderVersion             int64
-	DomainEventOutboxID      int64
-	CheckoutProductID        int64
-	CheckoutGrossAmountMinor int64
-	OccurredAt               time.Time
-	SourceDigest             [32]byte
-	Order                    domain.Snapshot
+	ID                            int64
+	OrderID                       int64
+	OrderVersion                  int64
+	DomainEventOutboxID           int64
+	CheckoutProductID             int64
+	CheckoutGrossAmountMinor      int64
+	CheckoutPayableAmountMinor    int64
+	CheckoutProductType           string
+	ReferralActivityContextDigest [32]byte
+	PromotionContextDigest        [32]byte
+	OccurredAt                    time.Time
+	SourceDigest                  [32]byte
+	Order                         domain.Snapshot
 }
 
 func (event PaidEvent) Valid() bool {
 	return event.ValidOrderFact() && event.DomainEventOutboxID > 0 &&
-		((event.CheckoutProductID == 0 && event.CheckoutGrossAmountMinor == 0) || (event.CheckoutProductID > 0 && event.CheckoutGrossAmountMinor > 0))
+		((event.CheckoutProductID == 0 && event.CheckoutGrossAmountMinor == 0) ||
+			(event.CheckoutProductID > 0 && event.CheckoutGrossAmountMinor > 0 &&
+				(event.CheckoutProductType == "" || event.CheckoutProductType == "standard_product" || event.CheckoutProductType == "service_period") &&
+				(event.CheckoutPayableAmountMinor == 0 || event.CheckoutPayableAmountMinor > 0)))
 }
 
 // ValidOrderFact allows Order persistence to construct the outbox fact before
