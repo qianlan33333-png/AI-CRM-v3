@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformidempotency "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
@@ -56,17 +57,19 @@ type serviceStore interface {
 	CountDirectInvitationsWithin(context.Context, int64, int64) (int64, error)
 	ListInviteItemsWithin(context.Context, int64, int64, int32, int32) ([]referralport.InviteItem, error)
 	LeaderboardRowsWithin(context.Context, int64, referralport.LeaderboardKind, int64, time.Time, time.Time, int32, int32, int64, int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error)
+	ListSalesLeaderboardRowsWithin(context.Context, int64, referralport.LeaderboardKind, int64, time.Time, time.Time, int32, int32, int64, int64) ([]referralport.LeaderboardEntry, *referralport.LeaderboardEntry, error)
 }
 
 type Service struct {
-	uow       platformport.UnitOfWork
-	store     serviceStore
-	origin    string
-	tokens    invitationTokenIssuer
-	closeJobs CampaignCloseEnqueuer
-	audit     *platformaudit.Service
-	outbox    platformoutbox.Appender
-	now       func() time.Time
+	uow           platformport.UnitOfWork
+	store         serviceStore
+	origin        string
+	tokens        invitationTokenIssuer
+	closeJobs     CampaignCloseEnqueuer
+	audit         *platformaudit.Service
+	outbox        platformoutbox.Appender
+	qualification referralport.PurchaseQualificationReader
+	now           func() time.Time
 }
 
 func NewService(uow platformport.UnitOfWork, store serviceStore, origin, tokenDataKey string, closeJobs CampaignCloseEnqueuer, audit *platformaudit.Service, outbox platformoutbox.Appender) (*Service, error) {
@@ -78,6 +81,34 @@ func NewService(uow platformport.UnitOfWork, store serviceStore, origin, tokenDa
 		return nil, referralport.ErrUnavailable
 	}
 	return &Service{uow: uow, store: store, origin: strings.TrimRight(origin, "/"), tokens: tokens, closeJobs: closeJobs, audit: audit, outbox: outbox, now: time.Now}, nil
+}
+
+// SetPurchaseQualificationReader wires the existing Distribution qualification
+// read seam. It is optional for free-signup campaigns, but product-qualified
+// campaigns fail closed until composition supplies it.
+func (s *Service) SetPurchaseQualificationReader(reader referralport.PurchaseQualificationReader) error {
+	if s == nil || reader == nil {
+		return referralport.ErrUnavailable
+	}
+	s.qualification = reader
+	return nil
+}
+
+func (s *Service) checkPurchaseQualification(ctx context.Context, campaign referraldomain.Campaign, customerID int64) error {
+	if campaign.Config().QualificationMode != referraldomain.QualificationProductPurchase {
+		return nil
+	}
+	if s.qualification == nil {
+		return referralport.ErrUnavailable
+	}
+	qualification, err := s.qualification.CheckWithin(ctx, customerID, campaign.ProductID, distributiondomain.ProductType(campaign.ProductType))
+	if err != nil {
+		return referralport.ErrUnavailable
+	}
+	if !qualification.AllowsPromotion() {
+		return referralport.ErrParticipationRequired
+	}
+	return nil
 }
 
 func (s *Service) ListPublicCampaigns(ctx context.Context) ([]referralport.CampaignSummary, error) {
@@ -156,9 +187,11 @@ func (s *Service) PreviewInvitation(ctx context.Context, token string) (referral
 		if participation.State != referraldomain.ParticipationActive {
 			return referralport.ErrInvitationInvalid
 		}
-		team, err = s.store.ReadTeamWithin(tx, participation.TeamID, false)
-		if err != nil || team.CampaignID != campaign.ID {
-			return referralport.ErrInvitationInvalid
+		if campaign.Config().TeamMode == referraldomain.TeamModeTeam {
+			team, err = s.store.ReadTeamWithin(tx, participation.TeamID, false)
+			if err != nil || team.CampaignID != campaign.ID {
+				return referralport.ErrInvitationInvalid
+			}
 		}
 		return nil
 	})
@@ -173,7 +206,7 @@ func (s *Service) PreviewInvitation(ctx context.Context, token string) (referral
 }
 
 func (s *Service) JoinCampaign(ctx context.Context, command referralport.JoinCampaignCommand) (referralport.MyCampaign, error) {
-	if s == nil || s.uow == nil || s.store == nil || !command.Actor.Valid() || command.CampaignID < 1 || !validKey(command.IdempotencyKey) || (command.InvitationToken != "" && !validInvitationToken(command.InvitationToken)) || (command.InvitationToken == "" && command.TeamID < 1) {
+	if s == nil || s.uow == nil || s.store == nil || !command.Actor.Valid() || command.CampaignID < 1 || command.TeamID < 0 || !validKey(command.IdempotencyKey) || (command.InvitationToken != "" && !validInvitationToken(command.InvitationToken)) {
 		return referralport.MyCampaign{}, referralport.ErrConflict
 	}
 	actorScope := customerScope(command.Actor.CustomerID)
@@ -245,6 +278,16 @@ func (s *Service) JoinCampaign(ctx context.Context, command referralport.JoinCam
 		if !campaign.AcceptingAt(now) {
 			return referralport.ErrCampaignUnavailable
 		}
+		config := campaign.Config()
+		if config.TeamMode == referraldomain.TeamModeTeam && command.InvitationToken == "" && command.TeamID < 1 {
+			return referralport.ErrConflict
+		}
+		if config.TeamMode == referraldomain.TeamModeIndividual && command.TeamID != 0 {
+			return referralport.ErrConflict
+		}
+		if err = s.checkPurchaseQualification(tx, campaign, command.Actor.CustomerID); err != nil {
+			return err
+		}
 
 		teamID, invitationID, inviterCustomerID, inviterTeamID := command.TeamID, int64(0), int64(0), int64(0)
 		if command.InvitationToken != "" {
@@ -261,23 +304,21 @@ func (s *Service) JoinCampaign(ctx context.Context, command referralport.JoinCam
 			if inviterErr != nil || inviter.State != referraldomain.ParticipationActive {
 				return referralport.ErrInvitationInvalid
 			}
-			team, teamErr := s.store.ReadTeamWithin(tx, inviter.TeamID, false)
-			if teamErr != nil || team.CampaignID != campaign.ID {
-				return referralport.ErrInvitationInvalid
+			if config.TeamMode == referraldomain.TeamModeTeam {
+				team, teamErr := s.store.ReadTeamWithin(tx, inviter.TeamID, false)
+				if teamErr != nil || team.CampaignID != campaign.ID {
+					return referralport.ErrInvitationInvalid
+				}
+				teamID, inviterTeamID = inviter.TeamID, inviter.TeamID
 			}
-			teamID, invitationID, inviterCustomerID, inviterTeamID = inviter.TeamID, invitation.ID, invitation.InviterCustomerID, inviter.TeamID
+			invitationID, inviterCustomerID = invitation.ID, invitation.InviterCustomerID
 		} else {
-			team, teamErr := s.store.ReadTeamWithin(tx, teamID, false)
-			if teamErr != nil || team.CampaignID != campaign.ID {
-				return referralport.ErrConflict
+			if config.TeamMode == referraldomain.TeamModeTeam {
+				team, teamErr := s.store.ReadTeamWithin(tx, teamID, false)
+				if teamErr != nil || team.CampaignID != campaign.ID {
+					return referralport.ErrConflict
+				}
 			}
-		}
-		captainTeam, assignedCaptain, captainErr := s.store.ReadCaptainTeamWithin(tx, campaign.ID, command.Actor.CustomerID)
-		if captainErr != nil {
-			return captainErr
-		}
-		if assignedCaptain && captainTeam.ID != teamID {
-			return referralport.ErrConflict
 		}
 		participation, insertErr := s.store.InsertParticipationWithin(tx, referraldomain.Participation{CampaignID: campaign.ID, CustomerID: command.Actor.CustomerID, TeamID: teamID, InvitationID: invitationID, InviterCustomerID: inviterCustomerID, InviterTeamID: inviterTeamID, State: referraldomain.ParticipationActive, JoinedAt: now})
 		if insertErr != nil {
@@ -411,9 +452,11 @@ func (s *Service) MyCampaign(ctx context.Context, actor referralport.TrustedSess
 		} else if !errors.Is(err, referralport.ErrNotFound) {
 			return err
 		}
-		captainTeam, assignedCaptain, err = s.store.ReadCaptainTeamWithin(tx, campaignID, actor.CustomerID)
-		if err != nil {
-			return err
+		if campaign.Config().TeamMode == referraldomain.TeamModeTeam {
+			captainTeam, assignedCaptain, err = s.store.ReadCaptainTeamWithin(tx, campaignID, actor.CustomerID)
+			if err != nil {
+				return err
+			}
 		}
 		relationship, err = s.store.ReadCurrentRelationshipWithin(tx, actor.CustomerID, false)
 		if err == nil {
@@ -435,11 +478,15 @@ func (s *Service) MyCampaign(ctx context.Context, actor referralport.TrustedSess
 		result.CaptainTeam = &captainTeam
 	}
 	if hasParticipation {
-		team, teamErr := s.readTeam(ctx, participation.TeamID)
-		if teamErr != nil {
-			return referralport.MyCampaign{}, teamErr
+		if participation.TeamID > 0 {
+			team, teamErr := s.readTeam(ctx, participation.TeamID)
+			if teamErr != nil {
+				return referralport.MyCampaign{}, teamErr
+			}
+			result.Participation, result.Team = &participation, &team
+		} else {
+			result.Participation = &participation
 		}
-		result.Participation, result.Team = &participation, &team
 		result.InvitationAvailable = participation.State == referraldomain.ParticipationActive && campaign.AcceptingAt(s.now().UTC())
 		var countErr error
 		err = s.uow.Within(ctx, func(tx context.Context) error {
@@ -456,12 +503,14 @@ func (s *Service) MyCampaign(ctx context.Context, actor referralport.TrustedSess
 		if page.MyEntry != nil {
 			result.PersonalTotalScore, result.PersonalRank = page.MyEntry.Score, page.MyEntry.Rank
 		}
-		teamPage, teamErr := s.Leaderboard(ctx, referralport.LeaderboardQuery{CampaignID: campaignID, Kind: referralport.LeaderboardTeam, Period: referralport.LeaderboardTotal, Limit: 1, ViewerTeamID: participation.TeamID})
-		if teamErr != nil {
-			return referralport.MyCampaign{}, teamErr
-		}
-		if teamPage.MyEntry != nil {
-			result.TeamTotalScore, result.TeamRank = teamPage.MyEntry.Score, teamPage.MyEntry.Rank
+		if campaign.Config().TeamMode == referraldomain.TeamModeTeam && participation.TeamID > 0 {
+			teamPage, teamErr := s.Leaderboard(ctx, referralport.LeaderboardQuery{CampaignID: campaignID, Kind: referralport.LeaderboardTeam, Period: referralport.LeaderboardAll, Limit: 1, ViewerTeamID: participation.TeamID})
+			if teamErr != nil {
+				return referralport.MyCampaign{}, teamErr
+			}
+			if teamPage.MyEntry != nil {
+				result.TeamTotalScore, result.TeamRank = teamPage.MyEntry.Score, teamPage.MyEntry.Rank
+			}
 		}
 	}
 	if hasRelationship {
@@ -510,6 +559,7 @@ func (s *Service) ListMyInvites(ctx context.Context, actor referralport.TrustedS
 }
 
 func (s *Service) Leaderboard(ctx context.Context, query referralport.LeaderboardQuery) (referralport.LeaderboardPage, error) {
+	query.Period = referralport.NormalizeLeaderboardPeriod(query.Period)
 	if s == nil || query.CampaignID < 1 || !query.Kind.Valid() || !query.Period.Valid() || query.Limit < 1 || query.Limit > 100 {
 		return referralport.LeaderboardPage{}, referralport.ErrConflict
 	}
@@ -526,6 +576,9 @@ func (s *Service) Leaderboard(ctx context.Context, query referralport.Leaderboar
 	if err != nil {
 		return referralport.LeaderboardPage{}, err
 	}
+	if campaign.Config().TeamMode == referraldomain.TeamModeIndividual && query.Kind != referralport.LeaderboardPersonal {
+		return referralport.LeaderboardPage{}, referralport.ErrConflict
+	}
 	start, end, err := leaderboardWindow(campaign, query.Period, query.Anchor, s.now().UTC())
 	if err != nil {
 		return referralport.LeaderboardPage{}, err
@@ -534,7 +587,11 @@ func (s *Service) Leaderboard(ctx context.Context, query referralport.Leaderboar
 	var mine *referralport.LeaderboardEntry
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
-		items, mine, err = s.store.LeaderboardRowsWithin(tx, query.CampaignID, query.Kind, query.TeamID, start, end, offset, query.Limit+1, query.ViewerCustomerID, query.ViewerTeamID)
+		if campaign.Config().LeaderboardMetric == referraldomain.LeaderboardSales {
+			items, mine, err = s.store.ListSalesLeaderboardRowsWithin(tx, query.CampaignID, query.Kind, query.TeamID, start, end, offset, query.Limit+1, query.ViewerCustomerID, query.ViewerTeamID)
+		} else {
+			items, mine, err = s.store.LeaderboardRowsWithin(tx, query.CampaignID, query.Kind, query.TeamID, start, end, offset, query.Limit+1, query.ViewerCustomerID, query.ViewerTeamID)
+		}
 		return err
 	})
 	if err != nil {
@@ -582,6 +639,9 @@ func (s *Service) campaignSummary(ctx context.Context, campaign referraldomain.C
 	if err != nil {
 		return referralport.CampaignSummary{}, err
 	}
+	if campaign.Config().TeamMode == referraldomain.TeamModeIndividual {
+		counts.TeamCount = 0
+	}
 	return referralport.CampaignSummary{Campaign: campaign, EffectiveState: campaign.EffectiveState(s.now().UTC()), ParticipantCount: counts.ParticipantCount, InvitationCount: counts.InvitationCount, TeamCount: counts.TeamCount}, nil
 }
 
@@ -594,9 +654,11 @@ func (s *Service) campaignView(ctx context.Context, campaign referraldomain.Camp
 	var daily []referralport.CampaignDailyMetric
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
-		teams, err = s.store.ListTeamsWithin(tx, campaign.ID)
-		if err != nil {
-			return err
+		if campaign.Config().TeamMode == referraldomain.TeamModeTeam {
+			teams, err = s.store.ListTeamsWithin(tx, campaign.ID)
+			if err != nil {
+				return err
+			}
 		}
 		daily, err = s.store.CampaignDailyMetricsWithin(tx, campaign.ID)
 		return err

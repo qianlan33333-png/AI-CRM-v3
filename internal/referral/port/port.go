@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/referral/domain"
 )
@@ -52,13 +53,23 @@ func (k LeaderboardKind) Valid() bool {
 type LeaderboardPeriod string
 
 const (
-	LeaderboardTotal LeaderboardPeriod = "total"
+	// LeaderboardAll is the canonical all-time period. LeaderboardTotal is a
+	// source-compatible Go alias; HTTP normalizes the legacy "total" input.
+	LeaderboardAll   LeaderboardPeriod = "all"
+	LeaderboardTotal LeaderboardPeriod = LeaderboardAll
 	LeaderboardWeek  LeaderboardPeriod = "week"
 	LeaderboardDay   LeaderboardPeriod = "day"
 )
 
 func (p LeaderboardPeriod) Valid() bool {
-	return p == LeaderboardTotal || p == LeaderboardWeek || p == LeaderboardDay
+	return p == LeaderboardAll || p == LeaderboardWeek || p == LeaderboardDay
+}
+
+func NormalizeLeaderboardPeriod(p LeaderboardPeriod) LeaderboardPeriod {
+	if p == LeaderboardPeriod("total") {
+		return LeaderboardAll
+	}
+	return p
 }
 
 type CampaignSummary struct {
@@ -157,6 +168,8 @@ type LeaderboardEntry struct {
 	CustomerID, TeamID int64
 	TeamName           string
 	FirstReachedAt     time.Time
+	SalesAmountMinor   int64
+	SalesOrderCount    int64
 	Mine               bool
 }
 
@@ -168,6 +181,14 @@ type LeaderboardPage struct {
 	Items       []LeaderboardEntry
 	MyEntry     *LeaderboardEntry
 	NextCursor  string
+}
+
+// SalesFactWriter is the same-UoW handoff from Order/Distribution. It freezes
+// campaign/product/promoter attribution and the paid amount; a public client
+// cannot submit any of these facts.
+type SalesFactWriter interface {
+	RecordSalesFactWithin(context.Context, domain.SalesFact) (domain.SalesFact, error)
+	ApplySuccessfulSalesRefundWithin(context.Context, int64, int64, int64, int32, time.Time) (domain.SalesFact, error)
 }
 
 type JoinCampaignCommand struct {
@@ -203,6 +224,11 @@ type CreateCampaignCommand struct {
 	Name, CoverURL, Description string
 	RewardRules                 string
 	StartsAt, EndsAt            time.Time
+	TeamMode                    domain.TeamMode
+	QualificationMode           domain.QualificationMode
+	ProductID                   int64
+	ProductType                 string
+	LeaderboardMetric           domain.LeaderboardMetric
 	IdempotencyKey              string
 }
 
@@ -212,7 +238,19 @@ type UpdateCampaignCommand struct {
 	Name, CoverURL, Description string
 	RewardRules                 string
 	StartsAt, EndsAt            time.Time
+	TeamMode                    domain.TeamMode
+	QualificationMode           domain.QualificationMode
+	ProductID                   int64
+	ProductType                 string
+	LeaderboardMetric           domain.LeaderboardMetric
 	IdempotencyKey              string
+}
+
+// PurchaseQualificationReader is the only Referral seam for product-based
+// participation. The implementation owns Identity/Order/Payment reads and
+// is injected by composition; Referral never queries those tables.
+type PurchaseQualificationReader interface {
+	CheckWithin(context.Context, int64, int64, distributiondomain.ProductType) (distributiondomain.Qualification, error)
 }
 
 type SetCampaignStateCommand struct {
