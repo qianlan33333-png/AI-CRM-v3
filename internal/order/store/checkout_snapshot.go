@@ -42,6 +42,7 @@ func (r *Repository) ReadCheckoutSnapshot(ctx context.Context, orderID int64) (o
 		return orderport.CheckoutSnapshot{}, orderport.ErrNotFound
 	}
 	var snapshot orderport.CheckoutSnapshot
+	var activityDigest, promotionDigest []byte
 	err = tx.QueryRow(ctx, `SELECT order_id,product_type,product_id,product_code,product_name,product_version,service_period_duration_days,
 gross_amount_minor,discount_amount_minor,payable_amount_minor,currency,coupon_applied,coupon_reservation_ref,
 COALESCE(coupon_claim_id,0),COALESCE(coupon_id,0),COALESCE(coupon_rule_version,0),profit_sharing_required,referral_activity_context_digest,promotion_context_digest,post_purchase_action,reserved_at
@@ -49,13 +50,18 @@ FROM order_checkout_snapshots WHERE order_id=$1`, orderID).Scan(
 		&snapshot.OrderID, &snapshot.ProductType, &snapshot.ProductID, &snapshot.ProductCode, &snapshot.ProductName,
 		&snapshot.ProductVersion, &snapshot.ServicePeriodDurationDays, &snapshot.GrossAmountMinor, &snapshot.DiscountAmountMinor,
 		&snapshot.PayableAmountMinor, &snapshot.Currency, &snapshot.CouponApplied, &snapshot.CouponReservationRef,
-		&snapshot.CouponClaimID, &snapshot.CouponID, &snapshot.CouponRuleVersion, &snapshot.ProfitSharingRequired, &snapshot.ReferralActivityContextDigest, &snapshot.PromotionContextDigest, &snapshot.PostPurchaseAction, &snapshot.ReservedAt)
+		&snapshot.CouponClaimID, &snapshot.CouponID, &snapshot.CouponRuleVersion, &snapshot.ProfitSharingRequired, &activityDigest, &promotionDigest, &snapshot.PostPurchaseAction, &snapshot.ReservedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return orderport.CheckoutSnapshot{}, orderport.ErrNotFound
 	}
 	if err != nil {
 		return orderport.CheckoutSnapshot{}, mapError(err)
 	}
+	if len(activityDigest) != len(snapshot.ReferralActivityContextDigest) || len(promotionDigest) != len(snapshot.PromotionContextDigest) {
+		return orderport.CheckoutSnapshot{}, orderport.ErrUnavailable
+	}
+	copy(snapshot.ReferralActivityContextDigest[:], activityDigest)
+	copy(snapshot.PromotionContextDigest[:], promotionDigest)
 	if !validCheckoutSnapshot(snapshot) {
 		return orderport.CheckoutSnapshot{}, orderport.ErrUnavailable
 	}
