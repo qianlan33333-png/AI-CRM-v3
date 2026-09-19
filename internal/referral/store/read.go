@@ -352,7 +352,7 @@ func (r *Repository) LeaderboardRowsWithin(ctx context.Context, campaignID int64
 	switch kind {
 	case referralport.LeaderboardPersonal:
 		query = `WITH active_credits AS (
-		    SELECT e.inviter_customer_id,e.team_id,COALESCE(t.name,'') AS team_name,e.occurred_at,e.id
+		    SELECT e.inviter_customer_id,COALESCE(e.team_id,0) AS team_id,COALESCE(t.name,'') AS team_name,e.occurred_at,e.id
 		    FROM referral_score_events e LEFT JOIN referral_teams t ON t.id=e.team_id
             WHERE e.campaign_id=$1 AND e.kind='credit' AND e.occurred_at >= $2 AND e.occurred_at < $3
               AND NOT EXISTS (SELECT 1 FROM referral_score_events r WHERE r.kind='reversal' AND r.reverses_score_event_id=e.id)

@@ -186,7 +186,7 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 		http.Redirect(writer, request, "/admin/referral", http.StatusSeeOther)
 		return
 	}
-	if request.URL.Path == "/admin/referral" {
+	if request.URL.Path == "/admin/referral" || request.URL.Path == "/admin/referral/settings" {
 		assets, ok := DistReferralAdminAssets(handler.distDir)
 		if !ok {
 			http.Error(writer, "referral page unavailable", http.StatusServiceUnavailable)

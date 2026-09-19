@@ -82,3 +82,5 @@ const campaignBExport = calls.filter((call) => call.path === '/api/admin/referra
 assert.equal(/participation_id=/.test(campaignBExport.query), false, 'campaign B export must clear campaign A drilldown scope');
 dom.window.close();
 console.log('referralAdmin behavior passed');
+
+await import("./referralSettings.test.mjs");

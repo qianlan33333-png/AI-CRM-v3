@@ -1033,7 +1033,7 @@ func referralPostgreSQLPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate referral migrations")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0185_referral_core.sql", "0198_referral_activity_config.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0185_referral_core.sql", "0198_referral_activity_config.sql", "0199_referral_individual_invitation.sql"} {
 		body, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			pool.Close()
@@ -1067,5 +1067,44 @@ func referralPostgreSQLPool(t *testing.T) (*pgxpool.Pool, func()) {
 		defer stop()
 		_, _ = admin.Exec(cleanup, "DROP SCHEMA "+identifier+" CASCADE")
 		admin.Close()
+	}
+}
+
+func TestPostgreSQLIndividualConfigurationAndInvitationReadback(t *testing.T) {
+	h := newReferralPostgreSQLHarness(t)
+	defer h.cleanup()
+	ctx := context.Background()
+	c, err := h.admin.CreateCampaign(ctx, referralport.CreateCampaignCommand{ActorAdminID: 9001, Name: "个人活动", StartsAt: h.clock.Add(-time.Hour), EndsAt: h.clock.Add(24 * time.Hour), TeamMode: referraldomain.TeamModeIndividual, QualificationMode: referraldomain.QualificationFreeSignup, LeaderboardMetric: referraldomain.LeaderboardInvites, IdempotencyKey: "individual-create"})
+	if err != nil || c.Config().TeamMode != referraldomain.TeamModeIndividual {
+		t.Fatalf("config readback=%+v err=%v", c, err)
+	}
+	c, err = h.admin.SetCampaignState(ctx, referralport.SetCampaignStateCommand{ActorAdminID: 9001, CampaignID: c.ID, ExpectedVersion: c.Version, Target: referraldomain.CampaignActive, IdempotencyKey: "individual-activate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.joinDirect(t, c.ID, 0, 101, "individual-direct")
+	token := h.issue(t, c.ID, 101, "individual-invite")
+	joined := h.joinInvite(t, c.ID, 102, token, "individual-accept")
+	if joined.Participation == nil || joined.Participation.TeamID != 0 || joined.Participation.InviterCustomerID != 101 {
+		t.Fatalf("individual invited participation=%+v", joined.Participation)
+	}
+	board, err := h.service.Leaderboard(ctx, referralport.LeaderboardQuery{CampaignID: c.ID, Kind: referralport.LeaderboardPersonal, Period: referralport.LeaderboardTotal, ViewerCustomerID: 101, Limit: 20})
+	if err != nil || len(board.Items) != 1 || board.Items[0].Score != 1 {
+		t.Fatalf("personal board=%+v err=%v", board, err)
+	}
+	assertCount(t, h.pool, "SELECT count(*) FROM referral_participations WHERE campaign_id=$1 AND team_id IS NULL", 2, c.ID)
+}
+
+func TestPostgreSQLProductCampaignConfigRoundtrip(t *testing.T) {
+	h := newReferralPostgreSQLHarness(t)
+	defer h.cleanup()
+	ctx := context.Background()
+	c, err := h.admin.CreateCampaign(ctx, referralport.CreateCampaignCommand{ActorAdminID: 9001, Name: "商品活动", StartsAt: h.clock.Add(time.Hour), EndsAt: h.clock.Add(24 * time.Hour), TeamMode: referraldomain.TeamModeIndividual, QualificationMode: referraldomain.QualificationProductPurchase, ProductID: 51, ProductType: referraldomain.ProductTypeStandard, LeaderboardMetric: referraldomain.LeaderboardSalesAmount, IdempotencyKey: "product-config-create"})
+	if err != nil || c.Config().ProductID != 51 || c.Config().QualificationMode != referraldomain.QualificationProductPurchase || c.Config().TeamMode != referraldomain.TeamModeIndividual {
+		t.Fatalf("create readback=%+v err=%v", c, err)
+	}
+	next, err := h.admin.UpdateCampaign(ctx, referralport.UpdateCampaignCommand{CampaignID: c.ID, ExpectedVersion: c.Version, ActorAdminID: 9001, Name: c.Name, StartsAt: c.StartsAt, EndsAt: c.EndsAt, TeamMode: referraldomain.TeamModeTeam, QualificationMode: referraldomain.QualificationProductPurchase, ProductID: 52, ProductType: referraldomain.ProductTypeStandard, LeaderboardMetric: referraldomain.LeaderboardSalesOrders, IdempotencyKey: "product-config-update"})
+	if err != nil || next.Config().ProductID != 52 || next.Config().LeaderboardMetric != referraldomain.LeaderboardSalesOrders || next.Config().TeamMode != referraldomain.TeamModeTeam {
+		t.Fatalf("update readback=%+v err=%v", next, err)
 	}
 }

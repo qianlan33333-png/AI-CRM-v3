@@ -204,3 +204,6 @@ Host／assets 缩写：`WB`=`webshell.RenderAdmin` + `admin_base`；`CH`=`Render
 
 ### 管理端搜索单选
 `internal/webshell/static/admin_console/admin_search_select.js`：核心产品销售商品关联使用原生搜索输入、单选与分页加载。调用方注入受权目录 loader，组件不写领域数据。保留选择、清空、失败重试、键盘/IME 和选中项回显；Segment `/core/product-options` 通过 ProductOptionReader 读取普通/周期商品。
+
+### 裂变活动完整设置页（2026-09-19 修复）
+`/admin/referral/settings` 经 `RenderReferral` 继续使用 admin_base；`referralAdmin.ts` 复用 `AICRMSearchSelect` 搜索普通/周期商品，目录由 Referral 管理权限下的 ProductOptionReader 提供。共享选择器增加可选 emptyLabel/initialLabel/initialQuery/onChange，既有核心产品调用默认行为保持。真实 PostgreSQL 配置读回与个人邀请测试、JSDOM 设置页及同壳装配测试独立于生产验收；视觉 QA 的未完成项见 design-qa.md。
