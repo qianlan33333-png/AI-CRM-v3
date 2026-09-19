@@ -79,7 +79,9 @@ func TestPostgreSQLCatalogDailyManualRerunAndFreshness(t *testing.T) {
 		t.Fatal(jobs)
 	}
 	initial, err := repo.CatalogStatus(ctx)
-	if err != nil || !initial.NextAutoAt.Equal(now.Add(24*time.Hour)) {
+	// PostgreSQL timestamps are stored with microsecond precision, while `now`
+	// may contain nanoseconds. Compare within the persistence precision.
+	if err != nil || initial.NextAutoAt.Sub(now.Add(24*time.Hour)) > time.Millisecond || now.Add(24*time.Hour).Sub(initial.NextAutoAt) > time.Millisecond {
 		t.Fatal(initial, err)
 	}
 	if err = repo.WithinCatalogRequest(ctx, true, now.Add(time.Hour), enqueue); err != nil {
