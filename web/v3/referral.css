@@ -1019,3 +1019,10 @@ body:has(#referral-root) {
     grid-template-columns: 1fr;
   }
 }
+
+.referral-admin-product-controls {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}

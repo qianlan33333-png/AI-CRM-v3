@@ -20,6 +20,12 @@ for(const active of [false,true]) {
  assert.equal(doc.querySelector('[aria-label="资格商品"]').value,'51:standard_product');
  assert.equal(doc.querySelector('select[name="战队模式"]').value,'individual');
  assert.equal(doc.querySelector('select[name="参加条件"]').disabled,active);
+ if(active){
+  const clear=[...doc.querySelectorAll('button')].find(b=>b.textContent==='清空选择');
+  assert.ok(clear.matches(':disabled'),'active product clear must remain disabled after asynchronous directory loading');
+  clear.click();
+  assert.equal(doc.querySelector('[aria-label="资格商品"]').value,'51:standard_product');
+ }
  doc.querySelector('textarea[name="活动介绍"]').value='新介绍';
  doc.querySelector('[data-testid="referral-admin-save-campaign"]').click();
  await wait(()=>writes.length===1);

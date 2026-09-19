@@ -1105,7 +1105,10 @@ function openCampaignForm(existing?: Campaign): void {
     },
   });
   productPicker.element.dataset.testid = "referral-product-select";
-  productField.append(productPicker.element);
+  const productControls = document.createElement("fieldset");
+  productControls.className = "referral-admin-product-controls";
+  productControls.append(productPicker.element);
+  productField.append(productControls);
   rules.append(productField);
   const team = section(
     "战队与排行",
@@ -1171,6 +1174,7 @@ function openCampaignForm(existing?: Campaign): void {
   syncProduct();
 
   if (started) {
+    productControls.disabled = true;
     feedback.textContent =
       "活动已开始，参加条件、资格商品、战队模式和排行榜指标已锁定。";
     feedback.dataset.error = "true";
