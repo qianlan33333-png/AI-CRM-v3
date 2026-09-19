@@ -4027,28 +4027,28 @@
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "服务端签发的活动上下文是订单归因和销售事实的不可变来源；过期状态由活动规则控制，不能物理删除。",
-      "source": "migrations/0197_referral_activity_config.sql"
+      "source": "migrations/0198_referral_activity_config.sql"
     },
     "referral_product_sale_checkouts": {
       "owner": "referral",
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "保存订单创建时冻结的活动、商品和推广归因事实，供支付事件重放和审计使用。",
-      "source": "migrations/0197_referral_activity_config.sql"
+      "source": "migrations/0198_referral_activity_config.sql"
     },
     "referral_product_sale_events": {
       "owner": "referral",
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "销售计分与退款冲正是追加式业务事实，必须保留原始付款和冲正证据。",
-      "source": "migrations/0197_referral_activity_config.sql"
+      "source": "migrations/0198_referral_activity_config.sql"
     },
     "referral_sales_facts": {
       "owner": "referral",
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "销售榜的可重建事实及退款投影，历史活动和对账需要长期保留。",
-      "source": "migrations/0197_referral_activity_config.sql"
+      "source": "migrations/0198_referral_activity_config.sql"
     }
   }
 }
