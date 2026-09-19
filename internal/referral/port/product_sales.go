@@ -87,12 +87,12 @@ type ProductSaleContext struct {
 }
 
 type ProductActivityContext struct {
-	ContextDigest [sha256.Size]byte
+	ContextDigest         [sha256.Size]byte
 	CampaignID, ProductID int64
-	ProductType string
-	SalesMetric SalesMetric
-	State string
-	ExpiresAt, CreatedAt time.Time
+	ProductType           string
+	SalesMetric           SalesMetric
+	State                 string
+	ExpiresAt, CreatedAt  time.Time
 }
 
 // ProductSaleContextReader is a Referral-owned lookup used by the checkout
