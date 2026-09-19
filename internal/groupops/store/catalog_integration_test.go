@@ -51,7 +51,7 @@ func TestPostgreSQLCatalogDailyManualRerunAndFreshness(t *testing.T) {
 	if _, err = native.Exec(ctx, `CREATE TABLE admin_users(id BIGINT PRIMARY KEY);`+s[a:b]+`ALTER TABLE group_ops_directory_groups ADD COLUMN external_member_count INTEGER;`); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"0119_group_ops_unnamed_groups.sql", "0193_group_invitation_catalog.sql"} {
+	for _, f := range []string{"0119_group_ops_unnamed_groups.sql", "0194_group_invitation_catalog.sql"} {
 		raw, err = os.ReadFile(filepath.Join("../../../migrations", f))
 		if err != nil {
 			t.Fatal(err)

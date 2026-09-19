@@ -3979,7 +3979,7 @@
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "保存全量群目录同步运行记录，作为可审计业务状态。",
-      "source": "migrations/0193_group_invitation_catalog.sql",
+      "source": "migrations/0194_group_invitation_catalog.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/group_ops_catalog_runs"
     },
     "group_ops_catalog_control": {
@@ -3987,7 +3987,7 @@
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "保存群目录自动同步控制状态和合并重跑标记。",
-      "source": "migrations/0193_group_invitation_catalog.sql",
+      "source": "migrations/0194_group_invitation_catalog.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/group_ops_catalog_control"
     },
     "group_ops_catalog_observations": {
@@ -3995,7 +3995,7 @@
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "保存全量群目录同步逐群结果，支持部分失败审计。",
-      "source": "migrations/0193_group_invitation_catalog.sql",
+      "source": "migrations/0194_group_invitation_catalog.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/group_ops_catalog_observations"
     },
     "media_invitation_plans": {
@@ -4003,7 +4003,7 @@
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "保存邀请计划、绑定顺序、阈值和当前承接状态。",
-      "source": "migrations/0194_media_invitation_plans.sql",
+      "source": "migrations/0195_media_invitation_plans.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/media_invitation_plans"
     },
     "media_invitation_codes": {
@@ -4011,7 +4011,7 @@
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "保存官方群码外部效果回执及当前二维码投影。",
-      "source": "migrations/0194_media_invitation_plans.sql",
+      "source": "migrations/0195_media_invitation_plans.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/media_invitation_codes"
     },
     "media_invitation_changes": {
@@ -4019,7 +4019,7 @@
       "policy": "permanent",
       "cleanup": "disabled",
       "reason": "保存邀请计划切换历史和审计记录。",
-      "source": "migrations/0194_media_invitation_plans.sql",
+      "source": "migrations/0195_media_invitation_plans.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/media_invitation_changes"
     }
   }

@@ -52,7 +52,7 @@ func TestPostgreSQLInvitationAtomicSaveAndUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer native.Close()
-	for _, f := range []string{"0007_media.sql", "0194_media_invitation_plans.sql"} {
+	for _, f := range []string{"0007_media.sql", "0195_media_invitation_plans.sql"} {
 		raw, err := os.ReadFile(filepath.Join("../../../migrations", f))
 		if err != nil {
 			t.Fatal(err)
