@@ -1,13 +1,14 @@
 import { mountPageHeaderActions } from './shared/ui/pageHeaderActions';
 import { openDetailDrawer } from './shared/ui/detailDrawer';
+import { governanceOutcomesView } from './governanceOutcomes';
 import { renderTableReadState } from './shared/ui/tableReadState';
 
 type Check = { id: string; owner: string; title: string; scope?: string; status: string; code: string; observed_at: string; metrics: Record<string, number> };
 type Issue = { id: number; check_id: string; code: string; status: string; severity: string; version: number; first_seen: string; last_seen: string; occurrences: number };
 type Overview = { fresh: boolean; observed_at: string; latest?: { id: number; release_sha: string; completed_at?: string }; checks: Check[]; issues: Issue[] };
-type Tab = 'overview' | 'checks' | 'issues' | 'reports' | 'diagnostics' | 'profiles' | 'retention' | 'resources';
+type Tab = 'outcomes' | 'overview' | 'checks' | 'issues' | 'reports' | 'diagnostics' | 'profiles' | 'retention' | 'resources';
 const root = document.querySelector<HTMLElement>('#governance-admin-root');
-const labels: Record<Tab, string> = { overview: '治理总览', checks: '检查详情', issues: '问题跟踪', reports: '巡查报告', diagnostics: '错误聚合', profiles: '性能采样', retention: '数据生命周期', resources: '资源覆盖' };
+const labels: Record<Tab, string> = { overview: '治理总览', outcomes: '治理成效', checks: '检查详情', issues: '问题跟踪', reports: '巡查报告', diagnostics: '错误聚合', profiles: '性能采样', retention: '数据生命周期', resources: '资源覆盖' };
 const statusLabels: Record<string, string> = { ok: '正常', warning: '需关注', critical: '严重', unknown: '未知', uncovered: '未覆盖', stale: '过期', open: '待处理', acknowledged: '已确认', resolved: '已恢复', queued: '待发送', executed: '飞书已接受', outcome_unknown: '发送结果未知', final_failed: '发送失败', disabled: '发送未启用' };
 let tab: Tab = 'overview';
 let serial = 0;
@@ -170,6 +171,13 @@ async function refresh(): Promise<void> {
       if (id !== serial) return;
       if (!isRetentionCoverage(data)) throw new Error('资源登记数据不完整，暂时无法确认覆盖情况。');
       renderResources(data);
+      return;
+    }
+    if (selected === 'outcomes') {
+      const view = await governanceOutcomesView(request);
+      if (id !== serial) return;
+      layout(view.html);
+      if (root) view.bind(root, () => id === serial, refresh);
       return;
     }
     if (['overview', 'checks', 'issues'].includes(selected)) {

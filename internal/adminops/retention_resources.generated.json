@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "40821b2d7d1e647aa0cfd00a5d420ecd8a0ae3916b7bf2b4048e3d506f66f963",
+  "registry_sha256": "3ed7cf0db55e30c21af19ee43bd0a4e669ee6bc4caf5a765932d5a6be4c80ea8",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -260,6 +260,45 @@
       "cleanup_entrypoint": "internal/adminops/store/snapshot_retention.go#CleanupDiagnosticSnapshotsWithin",
       "policy_id": "ops_snapshots",
       "coverage_status": "policy_available",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
+      "name": "adminops_governance_releases",
+      "owner": "adminops",
+      "policy": "permanent",
+      "reason": "Permanent root-authenticated successful-release summary and one-way revocation facts; observed runtime projections are excluded.",
+      "source": "migrations/0193_adminops_governance_outcomes.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
+      "name": "adminops_incident_attributions",
+      "owner": "adminops",
+      "policy": "permanent",
+      "reason": "Permanent immutable CAS, idempotency and attribution audit receipts containing only fixed structured governance facts.",
+      "source": "migrations/0193_adminops_governance_outcomes.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
+      "name": "adminops_incident_episodes",
+      "owner": "adminops",
+      "policy": "permanent",
+      "reason": "Permanent minimal episode and fixed-enum attribution facts, without raw diagnostic details; recurrence retains independent duration.",
+      "source": "migrations/0193_adminops_governance_outcomes.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
       "gap_code": "",
       "authorization_expiry": "not_assessed"
     },

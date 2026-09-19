@@ -218,6 +218,7 @@ test -f "$release_dir/migrations/0189_owner_process_retention.sql"
 test -f "$release_dir/migrations/0190_adminops_cpu_profiles.sql"
 test -f "$release_dir/migrations/0191_payment_h5_referral_return_path.sql"
 test -f "$release_dir/migrations/0192_adminops_diagnostic_event_identity.sql"
+test -f "$release_dir/migrations/0193_adminops_governance_outcomes.sql"
 test -f "$release_dir/migrations/0067_survey_completion_snapshots.sql"
 test -f "$release_dir/migrations/0084_hxc_shared_facts.sql"
 test -f "$release_dir/migrations/0090_survey_oauth_state_redirect.sql"
@@ -333,6 +334,7 @@ for standard_component_asset in \
 done
 test -f "$release_dir/release-files.sha256"
 test -f "$release_dir/deploy/record-release-success.py"
+test -f "$release_dir/deploy/publish-governance-releases.py"
 # Privileged deployment hooks must never execute application-writable code.
 # Seal the package before its final checksum verification, including resumes.
 chown -R root:root "$release_dir"
@@ -653,4 +655,9 @@ echo "release ${release_sha} active"
 # inode and calls inventory/apply without acquiring a conflicting second fd.
 if ! python3 "$release_dir/deploy/post-release-retention.py" --sha "$release_sha"; then
   echo 'release cleanup gap: inspect root-owned maintenance result; active release retained' >&2
+fi
+
+# Publish only minimal verified release facts; never expose original receipts.
+if ! python3 "$release_dir/deploy/publish-governance-releases.py" --lock-fd 9; then
+  echo 'governance release denominator unavailable: inspect trusted bridge; active release retained' >&2
 fi

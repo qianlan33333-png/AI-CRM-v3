@@ -416,6 +416,24 @@
     }
   },
   "tables": {
+    "adminops_incident_episodes": {
+      "owner": "adminops",
+      "source": "migrations/0193_adminops_governance_outcomes.sql",
+      "policy": "permanent",
+      "reason": "Permanent minimal episode and fixed-enum attribution facts, without raw diagnostic details; recurrence retains independent duration."
+    },
+    "adminops_incident_attributions": {
+      "owner": "adminops",
+      "source": "migrations/0193_adminops_governance_outcomes.sql",
+      "policy": "permanent",
+      "reason": "Permanent immutable CAS, idempotency and attribution audit receipts containing only fixed structured governance facts."
+    },
+    "adminops_governance_releases": {
+      "owner": "adminops",
+      "source": "migrations/0193_adminops_governance_outcomes.sql",
+      "policy": "permanent",
+      "reason": "Permanent root-authenticated successful-release summary and one-way revocation facts; observed runtime projections are excluded."
+    },
     "adminops_cpu_profile_receipts": {
       "owner": "adminops",
       "source": "migrations/0190_adminops_cpu_profiles.sql",

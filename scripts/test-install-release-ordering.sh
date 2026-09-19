@@ -62,6 +62,7 @@ sha_missing_0189=f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7
 sha_missing_0190=f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8
 sha_missing_0191=f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9
 sha_missing_0192=fafafafafafafafafafafafafafafafafafafafa
+sha_missing_0193=babababababababababababababababababababa
 sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
 sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
@@ -249,6 +250,7 @@ make_release() {
     0190_adminops_cpu_profiles.sql \
     0191_payment_h5_referral_return_path.sql \
     0192_adminops_diagnostic_event_identity.sql \
+    0193_adminops_governance_outcomes.sql \
     0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
@@ -378,6 +380,10 @@ import os
 with open(os.environ["AICRM_TEST_LOG"], "a") as log:
     log.write("host-install:" + os.environ["AICRM_TEST_LABEL"] + "\n")
 PY
+  cat > "$release/deploy/publish-governance-releases.py" <<'PYBRIDGE'
+import os
+os.fstat(9)
+PYBRIDGE
   cat > "$release/deploy/post-release-retention.py" <<'PY'
 import os
 with open(os.environ["AICRM_TEST_LOG"], "a") as log:
@@ -456,6 +462,7 @@ for missing_release in \
   "$sha_missing_0190:migrations/0190_adminops_cpu_profiles.sql" \
   "$sha_missing_0191:migrations/0191_payment_h5_referral_return_path.sql" \
   "$sha_missing_0192:migrations/0192_adminops_diagnostic_event_identity.sql" \
+  "$sha_missing_0193:migrations/0193_adminops_governance_outcomes.sql" \
   "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
   "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
   "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \
