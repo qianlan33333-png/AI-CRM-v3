@@ -202,8 +202,9 @@ func (s opsCompletion) CompleteEffect(ctx context.Context, id string, e effectpo
 	return s.observer.ObserveOpsReportWithin(ctx, effectport.Projection{ID: id, Owner: e.Owner, Kind: e.Kind, State: r.Completion, AttemptCount: a.Number, Generation: a.Generation, UpdatedAt: time.Now().UTC()})
 }
 
-func mountOpsGovernance(next http.Handler, inspection, retention, cpuProfiles http.Handler) http.Handler {
+func mountOpsGovernance(next http.Handler, inspection, retention, cpuProfiles, outcomes http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("/api/admin/ops-governance/", outcomes)
 	for _, path := range []string{"/api/admin/ops-diagnostics/cpu-profiles", "/api/admin/ops-diagnostics/cpu-profiles/"} {
 		mux.Handle(path, cpuProfiles)
 	}

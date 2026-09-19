@@ -141,6 +141,7 @@ for migration_contract in \
   '0190_adminops_cpu_profiles.sql:CPU profile audit receipts' \
   '0191_payment_h5_referral_return_path.sql:Payment H5 Referral return path' \
   '0192_adminops_diagnostic_event_identity.sql:Diagnostic event identity' \
+  '0193_adminops_governance_outcomes.sql:Governance outcomes' \
   '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
@@ -342,3 +343,7 @@ for new_shell_page in \
   wecom-tags; do
   grep -qE "^[[:space:]]*${new_shell_page}([[:space:]]+\\\\|; do)$" "$installer" || { echo "release must enumerate new shell document ${new_shell_page}" >&2; exit 1; }
 done
+
+grep -qxF 'test -f "$release_dir/deploy/publish-governance-releases.py"' "$installer" || { echo 'release requires governance fact publisher' >&2; exit 1; }
+bridge_line="$(grep -nF 'if ! python3 "$release_dir/deploy/publish-governance-releases.py" --lock-fd 9; then' "$installer" | cut -d: -f1)"
+[[ "$bridge_line" -gt "$receipt_line" ]] || { echo 'governance facts require a committed success receipt' >&2; exit 1; }

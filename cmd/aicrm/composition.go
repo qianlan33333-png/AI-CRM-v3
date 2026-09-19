@@ -534,6 +534,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = opsInspectionHTTP.BindManualEnqueuer(opsManualEnqueuer); err != nil {
 		return fail(err)
 	}
+	opsGovernanceOutcomes, err := adminops.NewGovernanceOutcomesService(pool.Native(), uow, hostmaintenance.NewGovernanceReleaseReader(), adminops.GovernanceOutcomesOptions{})
+	if err != nil {
+		return fail(err)
+	}
+	opsGovernanceOutcomesHTTP, err := adminops.NewGovernanceOutcomesHandler(opsGovernanceOutcomes, opsSecurity{requestSecurity})
+	if err != nil {
+		return fail(err)
+	}
 	opsRetentionHTTP, err := adminops.NewRetentionHandler(opsRetention, opsSecurity{requestSecurity})
 	if err != nil {
 		return fail(err)
@@ -2300,7 +2308,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
-	handler = mountOpsGovernance(handler, opsInspectionHTTP, opsRetentionHTTP, opsCPUProfileHTTP)
+	handler = mountOpsGovernance(handler, opsInspectionHTTP, opsRetentionHTTP, opsCPUProfileHTTP, opsGovernanceOutcomesHTTP)
 	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountOpenPlatformUI(handler, shellHandler, authentication)
 	handler = mountMemberGridUI(handler, memberGridUI)
