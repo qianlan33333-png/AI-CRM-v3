@@ -1072,6 +1072,10 @@ func (h *Handler) directory(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			return
 		}
 		value, err := h.runtime.RefreshGroups(r.Context(), groupopsport.GroupRefreshCommand{OwnerStaffID: body.OwnerStaffID, ActorID: actor.InternalID, Limit: body.Limit, IdempotencyKey: key})
+		if err == nil && value.CatalogSync != nil {
+			writeJSON(w, stdhttp.StatusAccepted, value)
+			return
+		}
 		h.respond(w, value, err)
 		return
 	}

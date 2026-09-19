@@ -260,7 +260,9 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 	audienceDetail := strings.HasPrefix(data.RequestPath, "/admin/automation-conversion/packages/")
 	customers := data.RequestPath == "/admin/customers" || strings.HasPrefix(data.RequestPath, "/admin/customers/")
 	archive := data.RequestPath == "/admin/message-archive" || strings.HasPrefix(data.RequestPath, "/admin/message-archive/customers/")
-	if audienceList {
+	if data.RequestPath == "/admin/group-invitations" {
+		contentTemplate = "admin_invitations"
+	} else if audienceList {
 		contentTemplate = "admin_audience"
 	} else if audienceDetail {
 		contentTemplate = "admin_audience_detail"

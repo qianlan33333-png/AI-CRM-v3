@@ -743,9 +743,12 @@ type response struct {
 	TagGroups   json.RawMessage `json:"tag_group"`
 	FollowUser  json.RawMessage `json:"follow_user"`
 	NextCursor  string          `json:"next_cursor"`
-	ConfigID    string          `json:"config_id"`
-	QRCode      string          `json:"qr_code"`
-	ContactWay  struct {
+	JoinWay     struct {
+		QRCode string `json:"qr_code"`
+	} `json:"join_way"`
+	ConfigID   string `json:"config_id"`
+	QRCode     string `json:"qr_code"`
+	ContactWay struct {
 		ConfigID string `json:"config_id"`
 		QRCode   string `json:"qr_code"`
 	} `json:"contact_way"`
@@ -838,6 +841,39 @@ func (client *Client) ListGroupChats(ctx context.Context, ownerUserID, cursor st
 		return wecomport.GroupChatPage{}, err
 	}
 	body, err := json.Marshal(map[string]any{"status_filter": 0, "owner_filter": map[string]any{"userid_list": []string{ownerUserID}}, "cursor": cursor, "limit": limit})
+	if err != nil {
+		return wecomport.GroupChatPage{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/groupchat/list", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.GroupChatPage{}, err
+	}
+	page := wecomport.GroupChatPage{Items: make([]wecomport.GroupChatListItem, 0, len(payload.GroupChatList)), NextCursor: strings.TrimSpace(payload.NextCursor)}
+	seen := make(map[string]struct{}, len(payload.GroupChatList))
+	for _, item := range payload.GroupChatList {
+		chatID := strings.TrimSpace(item.ChatID)
+		if invalid(chatID) || item.Status < 0 || item.Status > 3 {
+			return wecomport.GroupChatPage{}, ErrResponse
+		}
+		if _, exists := seen[chatID]; exists {
+			return wecomport.GroupChatPage{}, ErrResponse
+		}
+		seen[chatID] = struct{}{}
+		page.Items = append(page.Items, wecomport.GroupChatListItem{ChatID: chatID, Status: item.Status})
+	}
+	return page, nil
+}
+
+func (client *Client) ListAllGroupChats(ctx context.Context, cursor string, limit int) (result wecomport.GroupChatPage, err error) {
+	defer func() { err = classifyGroupDirectoryReadError(err) }()
+	if !client.DirectoryReady() || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
+		return wecomport.GroupChatPage{}, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.GroupChatPage{}, err
+	}
+	body, err := json.Marshal(map[string]any{"status_filter": 0, "cursor": cursor, "limit": limit})
 	if err != nil {
 		return wecomport.GroupChatPage{}, ErrResponse
 	}

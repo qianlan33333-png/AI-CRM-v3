@@ -36,6 +36,7 @@ const (
 	KindFeishuOpsNotification   = port.KindFeishuOpsNotification
 	OwnerSegment                = port.OwnerSegment
 	KindAIRecommend             = port.KindAIRecommend
+	KindInvitationCode          = port.KindInvitationCode
 	KindOutboundMessage         = port.KindOutboundMessage
 	KindAutomationMessage       = port.KindAutomationMessage
 	KindOutboundMedia           = port.KindOutboundMedia

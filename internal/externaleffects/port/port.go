@@ -58,6 +58,7 @@ const (
 	KindCustomerTagCommand      Kind  = "customer_tag_command"
 	KindCustomerOwnerHandoff    Kind  = "customer_owner_handoff"
 	KindCommerceProductPush     Kind  = "commerce_product_push"
+	KindInvitationCode          Kind  = "group_invitation_code"
 	KindChannelLink             Kind  = "channel_acquisition_link_mutation"
 	KindSidebarJSSDKSend        Kind  = "sidebar_jssdk_send"
 	KindSurveyCompletion        Kind  = "survey_completion"
@@ -99,7 +100,7 @@ type Envelope struct {
 }
 
 func (value Envelope) Valid() bool {
-	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindWeComContactDescription || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
+	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindWeComContactDescription || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindInvitationCode || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund || value.Kind == KindWeChatPayReceiverAdd || value.Kind == KindWeChatPayProfitSharing || value.Kind == KindWeChatPayProfitUnfreeze) ||
 		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate ||
 		value.Owner == OwnerAdminOps && value.Kind == KindFeishuOpsNotification || value.Owner == OwnerSegment && value.Kind == KindAIRecommend

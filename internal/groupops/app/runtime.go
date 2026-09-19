@@ -35,6 +35,7 @@ var (
 // transaction accepter.  A nil directory source is intentional: reads and
 // refreshes fail closed instead of inventing a group or sender.
 type RuntimeService struct {
+	catalog    groupopsport.Catalog
 	uow        platformport.UnitOfWork
 	plans      Store
 	runtime    groupopsport.RuntimeStore
@@ -58,6 +59,9 @@ func NewRuntimeService(uow platformport.UnitOfWork, plans Store, runtime groupop
 	}
 	return &RuntimeService{uow: uow, plans: plans, runtime: runtime, effects: effects, staff: staff, directory: directory, senders: senders, materials: materialResolver, evidence: evidence, reconciler: reconciler, now: time.Now}
 }
+
+// SetCatalog connects legacy refresh callers to the single durable catalog service.
+func (s *RuntimeService) SetCatalog(c groupopsport.Catalog) { s.catalog = c }
 
 func (s *RuntimeService) SetDispatchEnabled(enabled bool) {
 	if s != nil {
@@ -1047,6 +1051,15 @@ func validDirectoryQuery(value string) bool {
 func (s *RuntimeService) RefreshGroups(ctx context.Context, command groupopsport.GroupRefreshCommand) (groupopsport.GroupDirectoryPage, error) {
 	if s == nil || s.uow == nil || s.runtime == nil || command.OwnerStaffID < 1 || command.ActorID < 1 || command.Limit < 1 || command.Limit > 200 || !validRuntimeKey(command.IdempotencyKey) {
 		return groupopsport.GroupDirectoryPage{}, invalidOrUnavailableRuntime(s)
+	}
+	if s.catalog != nil {
+		status, err := s.catalog.RequestCatalogSync(ctx, true)
+		if err != nil {
+			return groupopsport.GroupDirectoryPage{}, err
+		}
+		page, err := s.ListGroups(ctx, command.OwnerStaffID, "", command.Limit, 0)
+		page.CatalogSync = &status
+		return page, err
 	}
 	if s.directory == nil {
 		// No real directory source is wired in the id-dev composition. Do

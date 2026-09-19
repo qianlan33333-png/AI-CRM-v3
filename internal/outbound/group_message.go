@@ -511,6 +511,7 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
+	invitationCode     effectport.CompletionSink
 	sidebarMedia       effectport.CompletionSink
 	tag                *TagCatalogCompletionSink
 	tagMutation        effectport.CompletionSink
@@ -718,6 +719,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("channel entrant completion sink is unavailable")
 		}
 		return r.entrant.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindInvitationCode:
+		if r.invitationCode == nil {
+			return errors.New("invitation completion unavailable")
+		}
+		return r.invitationCode.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	case effectport.KindChannelLink:
 		if r.link == nil {
 			return errors.New("channel link completion sink is unavailable")
@@ -767,3 +773,8 @@ var _ effectport.ProviderAdapter = (*DisabledGroupMessageProvider)(nil)
 var _ effectport.ProviderAdapter = (*GroupMessageProvider)(nil)
 var _ effectport.CompletionSink = (*GroupMessageCompletionSink)(nil)
 var _ effectport.CompletionSink = (*CompletionRouter)(nil)
+
+func (r *CompletionRouter) WithInvitationCode(s effectport.CompletionSink) *CompletionRouter {
+	r.invitationCode = s
+	return r
+}

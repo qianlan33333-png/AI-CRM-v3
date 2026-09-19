@@ -26,3 +26,9 @@ type GroupChat struct {
 	MemberCount         int
 	ExternalMemberCount *int32
 }
+
+// AllGroupChatReader reads all groups visible to the configured application.
+type AllGroupChatReader interface {
+	ListAllGroupChats(context.Context, string, int) (GroupChatPage, error)
+	GetGroupChat(context.Context, string) (GroupChat, error)
+}

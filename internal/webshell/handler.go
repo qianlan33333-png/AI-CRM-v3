@@ -310,6 +310,7 @@ var adminSpecs = map[string]adminSpec{
 		summary:        "渠道码中心入口已预留。",
 		activeEndpoint: "api.admin_channels_page",
 	},
+	"/admin/group-invitations": {title: "群邀请", summary: "统一管理邀请计划与群聊目录。", activeEndpoint: "api.admin_group_invitations"},
 	"/admin/cloud-orchestrator/plans": {
 		title:          "AI 助手",
 		summary:        "AI 助手入口已预留。",

@@ -152,11 +152,12 @@ type GroupDirectoryItem struct {
 }
 
 type GroupDirectoryPage struct {
-	Items   []GroupDirectoryItem `json:"items"`
-	Total   int64                `json:"total"`
-	Limit   int32                `json:"limit"`
-	Offset  int32                `json:"offset"`
-	HasMore bool                 `json:"has_more"`
+	CatalogSync *CatalogStatus       `json:"catalog_sync,omitempty"`
+	Items       []GroupDirectoryItem `json:"items"`
+	Total       int64                `json:"total"`
+	Limit       int32                `json:"limit"`
+	Offset      int32                `json:"offset"`
+	HasMore     bool                 `json:"has_more"`
 	RuntimeSafety
 }
 

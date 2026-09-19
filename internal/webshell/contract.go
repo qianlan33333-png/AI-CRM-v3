@@ -87,6 +87,7 @@ var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.admin_radar_link_new":                         {"api.admin_radar_link_new", "/admin/radar-links/new"},
 	"api.admin_automation_conversion":                  {"api.admin_automation_conversion", "/admin/automation-conversion"},
 	"api.admin_automation_agents_page":                 {"api.admin_automation_agents_page", "/admin/automation-agents"},
+	"api.admin_group_invitations":                      {"api.admin_group_invitations", "/admin/group-invitations"},
 	"api.admin_group_ops_ui":                           {"api.admin_group_ops_ui", "/admin/automation-conversion/group-ops/ui"},
 	"api.admin_group_ops_groups_ui":                    {"api.admin_group_ops_groups_ui", "/admin/automation-conversion/group-ops/groups/ui"},
 	"api.admin_wechat_pay_transactions_page":           {"api.admin_wechat_pay_transactions_page", "/admin/wechat-pay/transactions"},

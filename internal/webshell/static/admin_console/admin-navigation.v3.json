@@ -105,6 +105,14 @@
           "required_permission": ""
         },
         {
+          "key": "group_invitations",
+          "label": "群邀请",
+          "endpoint": "api.admin_group_invitations",
+          "href": "/admin/group-invitations",
+          "active_prefixes": ["/admin/group-invitations"],
+          "required_permission": ""
+        },
+        {
           "key": "channels",
           "label": "渠道码中心",
           "endpoint": "api.admin_channels_page",

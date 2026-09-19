@@ -152,6 +152,7 @@ var _ effect.ProviderAdapter = (*TagCatalogProvider)(nil)
 // different outbound kind. Unsupported intents fail closed without a network
 // call; their own future adapters can be added explicitly by composition.
 type ProviderRouter struct {
+	invitationCode     effect.ProviderAdapter
 	sidebarMedia       effect.ProviderAdapter
 	tagCatalog         effect.ProviderAdapter
 	tagCatalogMutation effect.ProviderAdapter
@@ -325,6 +326,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 			if r.channelEntrant != nil {
 				return r.channelEntrant.Execute(ctx, envelope, attempt)
 			}
+		case effect.KindInvitationCode:
+			if r.invitationCode != nil {
+				return r.invitationCode.Execute(ctx, envelope, attempt)
+			}
 		case effect.KindChannelLink:
 			if r.channelLink != nil {
 				return r.channelLink.Execute(ctx, envelope, attempt)
@@ -363,3 +368,8 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 }
 
 var _ effect.ProviderAdapter = (*ProviderRouter)(nil)
+
+func (r *ProviderRouter) WithInvitationCode(p effect.ProviderAdapter) *ProviderRouter {
+	r.invitationCode = p
+	return r
+}
