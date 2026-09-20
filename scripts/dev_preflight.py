@@ -184,17 +184,9 @@ class Preflight:
                                                  "source": {"before": before, "after": self.source_snapshot()}})
                 raise
         if set(FULL_LANES) & {"backend", "frontend", "browser"}:
-            donor_paths = {
-                "v2": os.environ.get("PR07_DONOR_DIR", str(ROOT / ".ci-donor-v2")),
-                "sidebar": os.environ.get("AICRM_SIDEBAR_DONOR_DIR", str(ROOT / ".ci-donor-sidebar")),
-            }
-            try:
-                self.report["donors"] = {
-                    name: subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
-                    for name, path in donor_paths.items()
-                }
-            except (OSError, subprocess.SubprocessError) as error:
-                raise RuntimeError("donor provenance unavailable after local full verification") from error
+            self.report["repository"] = "AI-CRM-v3"
+            self.report["commit_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            self.report["tree_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
 
 
 def main():

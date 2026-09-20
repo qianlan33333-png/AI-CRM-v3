@@ -5,6 +5,14 @@ description: "AI-CRM-v3 的开发前置门禁与并行交付流程。用于新�
 
 # AI-CRM-v3 开发前置门禁
 
+## 唯一代码来源
+
+所有开发、测试、构建、发布和部署只允许使用当前 AI-CRM-v3 仓库的准确
+commit 和 Git tree。禁止旧仓库 checkout、旧 commit、donor SHA、donor
+manifest、旧运行时、旧数据库、旧接口或旧前端；缺失旧系统不得阻塞 v3。
+每个发布包必须生成 provenance sidecar，记录 repository、commit SHA、tree
+SHA、package SHA-256、构建环境和构建命令。
+
 先阅读 `AGENTS.md`、`skills/aicrm-v3-development/SKILL.md`；涉及前端时再阅读 `skills/aicrm-v3-frontend-consistency/SKILL.md`。详细字段见 [开发前置流程与上线验收标准](../../docs/plans/开发前置流程与上线验收标准.md) 和 [PRD 前置模板](../../docs/prd/开发前置PRD模板.md)。
 
 ## 开始前分类
@@ -36,7 +44,7 @@ PRD 经用户确认后冻结；重大范围、合同或风险变化必须重新�
 
 常规发布先在 `49.232.57.128` 预发布机完成完整部署和合成业务验收，再合并 PR；PR 只验证预发布 receipt 与当前 tree 一致、治理和冲突状态。合并后从本地通过 SSH 登录 `124.220.53.183` 完成生产部署。生产部署私钥固定使用 `/Users/qianlan/Downloads/zhengshi.pem`，必须保持 `0600`，不得复制到仓库、PR、日志或命令输出。预发布使用同一账号和密钥时也必须单独核验 Host Key。
 
-本地构建发布包必须使用 Linux CI 等价的运行时目标：固定设置 `GOOS=linux`、`GOARCH=amd64`，并为 Linux amd64 cgo runner 提供显式交叉编译器（例如 `CC="zig cc -target x86_64-linux-gnu"`）。发布包统一由仓库 Python archiver 创建，拒绝 `._*` AppleDouble、symlink、未注册文件和非 Linux ELF；不再直接使用 macOS BSD tar。`release-files.sha256` 必须在本地、预发布安装器和 success observer 中通过。
+本地构建发布包必须使用 Linux CI 等价的运行时目标：固定设置 `GOOS=linux`、`GOARCH=amd64`，并为 Linux amd64 cgo runner 提供显式交叉编译器（例如 `CC="zig cc -target x86_64-linux-gnu"`）。发布包统一由当前仓库 Python archiver 创建，拒绝 `._*` AppleDouble、symlink、未注册文件和非 Linux ELF；不再直接使用 macOS BSD tar。`release-files.sha256` 必须在本地、预发布安装器和 success observer 中通过。
 
 当前已验证 SSH 账号为 `ubuntu`，通过 `deploy/run-release-as-root.sh` 持有 root fd 9 后执行 installer；禁止从普通 sudo 调用中传递失效的锁描述符。使用 `-i /Users/qianlan/Downloads/zhengshi.pem -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes`，显式选择已核验的 known_hosts；禁止尝试其他账号或绕过校验。上传前后独立比对 SHA-256，逐个检查 `bin/` 下文件为 Linux x86-64 ELF，纯 Go 默认 `CGO_ENABLED=0`，SDK runner 由现有脚本单独开启 cgo。构建必须来自准确候选 tree 的干净独立 checkout。
 

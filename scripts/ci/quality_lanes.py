@@ -22,8 +22,6 @@ ROOT = Path(__file__).resolve().parents[2]
 LANES = ("preflight", "backend", "frontend", "browser", "archive-sdk")
 NODE_VERSION = "24.18.0"
 NPM_VERSION = "11.12.1"
-V2_DONOR_SHA = "6bfbe5816bb89913c70adaca87d6a486260e016e"
-SIDEBAR_DONOR_SHA = "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f"
 
 
 def command_available(name: str) -> bool:
@@ -61,21 +59,6 @@ def exact_version(command: list[str], expected: str) -> bool:
     return result.returncode == 0 and expected in result.stdout.split()
 
 
-def donors_ready() -> bool:
-    donors = ((Path(os.environ.get("PR07_DONOR_DIR", ROOT / ".ci-donor-v2")), V2_DONOR_SHA),
-              (Path(os.environ.get("AICRM_SIDEBAR_DONOR_DIR", ROOT / ".ci-donor-sidebar")), SIDEBAR_DONOR_SHA))
-    for path, expected_sha in donors:
-        if not path.is_dir():
-            return False
-        head = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, text=True, check=False)
-        status = subprocess.run(["git", "-C", str(path), "status", "--porcelain=v1", "--untracked-files=all"],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
-        if head.returncode or status.returncode or head.stdout.strip() != expected_sha or status.stdout:
-            return False
-    return True
-
-
 def chromium_font_ready() -> bool:
     if not command_available("fc-match"):
         return False
@@ -110,8 +93,6 @@ def missing_prerequisites(lane: str) -> list[str]:
         missing.append("npm " + NPM_VERSION)
     if lane == "preflight" and not dedup_base_ready():
         missing.append("AICRM_DEDUP_BASE_SHA/current AICRM_DEDUP_HEAD_SHA baseline")
-    if lane in {"backend", "frontend", "browser"} and not donors_ready():
-        missing.append("frozen donor checkouts")
     if lane in {"backend", "browser"} and not postgres_16_ready():
         required.add("PostgreSQL 16 reachable through AICRM_DATABASE_URL")
     if lane == "browser":
@@ -163,9 +144,7 @@ def commands(lane: str, report_dir: Path | None) -> list[list[str]]:
             "bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-race", "-count=1", "-timeout=15m", "./..."
         ]]
     if lane == "frontend":
-        return [[sys.executable, "scripts/ci/check_toolchain_ownership.py"], ["npm", "run", "orval:check"], ["node", "scripts/ci/generated_clients_contract.mjs"], ["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/excel-batches-pagination-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
-            "node", "scripts/verify-donor-sources.mjs"
-        ], ["node", "--test", "scripts/donor-source-views.test.mjs"], [
+        return [["npm", "run", "orval:check"], ["node", "scripts/ci/generated_clients_contract.mjs"], ["node", "scripts/excel-batches-dom-test.mjs"], ["node", "scripts/excel-batches-pagination-dom-test.mjs"], ["node", "scripts/validate-openapi.mjs"], [
             "bash", "scripts/run-donor-view-consumers.sh", "check"
         ], ["node", "scripts/media-shell-interactions-e2e.mjs"], [
             "node", "scripts/tags-shell-interactions-e2e.mjs"

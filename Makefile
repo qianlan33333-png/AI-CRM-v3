@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-donor-check radar-check hxc-identity-boundaries prepare-donor-views
+.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-check hxc-identity-boundaries prepare-donor-views
 
 generate-orval:
 	npx orval --config ./orval.config.mjs
@@ -20,8 +20,7 @@ fmt-check:
 	@test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
 
 prepare-donor-views:
-	node scripts/check-donor-source-view-ignore.mjs
-	node scripts/prepare-donor-source-views.mjs
+	@test -d web/v3
 
 vet: prepare-donor-views
 	GOWORK=off go vet ./...
@@ -41,11 +40,7 @@ check: fmt-check vet test arch hxc-identity-boundaries build
 hxc-identity-boundaries:
 	bash scripts/check-hxc-identity-boundaries.sh
 
-radar-donor-check:
-	bash scripts/check-radar-donor-manifest.sh
-	bash scripts/test-check-radar-donor-manifest.sh
-
-radar-check: prepare-donor-views radar-donor-check
+radar-check: prepare-donor-views
 	bash scripts/check-radar-boundaries.sh
 	node scripts/validate-openapi.mjs
 	GOWORK=off go test ./internal/radar/... ./cmd/migrate-radar-v2 ./cmd/aicrm

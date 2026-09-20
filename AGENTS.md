@@ -5,13 +5,13 @@
 ## 1. 仓库地位
 
 - v3 是唯一新能力主线。
-- `AI-CRM-production` 与 `AI-CRM-v2` 只能作为只读行为、测试和叶子协议供体，禁止成为 Go module、submodule、远程运行依赖或正常数据源。
+- 当前 AI-CRM-v3 仓库是唯一代码、测试、构建、发布和部署来源。禁止使用 AI-CRM-production、AI-CRM-v2、AI-CRM 或任何旧仓库 checkout、commit、donor SHA、donor manifest、运行时、数据库、接口和前端；旧系统缺失不得阻塞 v3。
 - 新功能不得在 v3 和旧仓重复实现。
 - 优先级：用户最新明确指令 > 本文件第 2 节“开发前最高优先级判断”与第 8 节“红线” > `docs/01-PRD-迁移范围与新仓库基线.md` > `docs/02-模块化开发与交付方案.md` > 本文件其他内容。
 
 ## 2. 开发前最高优先级判断
 
-- 新功能、Bug 修复、调试、合并和上线前置流程统一先应用 `skills/aicrm-v3-development-frontdoor/SKILL.md`；新功能必须完成市场/GitHub 调研、复用评估和已确认 PRD，且合并前必须完成并行与发布快照。
+- 新功能、Bug 修复、调试、合并和上线前置流程统一先应用 `skills/aicrm-v3-development-frontdoor/SKILL.md`；新功能必须完成市场/GitHub 调研、复用评估和已确认 PRD，且合并前必须完成并行与发布快照。所有证据只允许来自当前 v3 commit/tree。
 - 除用户最新明确指令与安全红线外，任何设计、实现、迁移或代码审查在开始编码前，都必须优先判断两件事：是否涉及 OneID/外部身份，以及是否涉及持久化、内部持久任务或外部效果。
 - 开发者必须先阅读并应用项目核心 Skill：`skills/aicrm-v3-development/SKILL.md`，在计划或 PR 中留下简短分类结论。
 - 这是一项优先设计检查，不是要求所有功能都接入 OneID 或 External Effects。确实不涉及时，应明确记录“不涉及”及理由，随后按本领域正常边界开发，禁止为了过门禁而制造虚假依赖。

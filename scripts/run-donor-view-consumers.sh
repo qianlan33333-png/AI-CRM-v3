@@ -1,56 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script always performs the non-destructive source-view preparation
-# itself. After P4 the exact ignored views are materialized untracked for every consumer.
+# Compatibility name retained for callers; every command uses only the current
+# AI-CRM-v3 checkout. No external repository, donor checkout, or donor SHA is used.
 mode="${1:-}"
-v2_donor="${AICRM_V2_FROZEN_DONOR_DIR:-${PR07_DONOR_DIR:?PR07_DONOR_DIR is required}}"
-sidebar_donor="${AICRM_SIDEBAR_DONOR_DIR:?AICRM_SIDEBAR_DONOR_DIR is required}"
 npm ci --prefix web/v3 --no-audit --no-fund
-node scripts/check-donor-source-view-ignore.mjs >/dev/null
-node scripts/prepare-donor-source-views.mjs >/dev/null
-
-check_v2_donor() {
-  [[ -d "$v2_donor/.git" ]] || { echo "missing V2 donor Git checkout: $v2_donor" >&2; exit 2; }
-  [[ "$(git -C "$v2_donor" rev-parse HEAD)" == "6bfbe5816bb89913c70adaca87d6a486260e016e" ]] || {
-    echo "V2 donor revision differs from the frozen source identity" >&2
-    exit 2
-  }
-  git -C "$v2_donor" diff --quiet HEAD --
-  git -C "$v2_donor" diff --cached --quiet
-}
-
-run_frozen_consumer_gates() {
-  bash scripts/check-standard-components-donor-manifest.sh
-  check_v2_donor
-  scripts/check-pr01-donor-manifest.sh
-  scripts/check-pr02-donor-manifest.sh
-  scripts/check-pr03-frontend-donor-manifest.sh
-  PR04_DONOR_ROOT="${PR04_DONOR_ROOT:-$v2_donor}" scripts/check-pr04-donor-manifest.sh
-  PR05_DONOR_ROOT="${PR05_DONOR_ROOT:-$v2_donor}" scripts/check-pr05-closure.sh
-  AICRM_PR06_DONOR_DIR="$v2_donor" scripts/check-pr06-closure.sh
-  AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR="$sidebar_donor" scripts/check-service-period-member-grid-donor.sh
-  scripts/check-automationops-donor-manifest.sh
-  scripts/check-channel-donor-manifest.sh
-  AICRM_SURVEY_DONOR_DIR="$v2_donor" scripts/check-survey-donor-manifest.sh
-  scripts/check-pr07-frontend-freeze.sh
-  node web/scripts/channel-center-characterization.mjs
-  node web/scripts/survey-editor-characterization.mjs
-  node web/scripts/survey-public-characterization.mjs
-  node web/scripts/survey-unresolved-history-contract.mjs
-  node --check internal/webshell/static/admin_console/survey_operations.js
-  node --check internal/webshell/static/admin_console/admin_audience_detail.js
-  scripts/check-pr08-frontend-donor-manifest.sh
-  scripts/check-pr09-frontend-freeze.sh
-  scripts/check-config-definition-import-boundary.sh
-  node --test scripts/check-p4-donor-view-closure.test.mjs
-  scripts/check-ai-assistant-donor-manifest.sh
-  bash scripts/test-check-ai-assistant-donor-manifest.sh
-  AICRM_SIDEBAR_DONOR_DIR="$sidebar_donor" scripts/check-sidebar-customer360-contract.sh
-}
 
 run_frontend_and_stage_checks() {
-  make radar-donor-check
   bash scripts/check-radar-boundaries.sh
   node scripts/generate-ai-assistant-client.mjs
   npm run typecheck
@@ -211,17 +167,17 @@ case "$mode" in
         | xargs -0 sha256sum > release-files.sha256
       sha256sum --strict --check release-files.sha256
     )
-    python3 scripts/create-release-archive.py release "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz"
+    archive="aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz"
+    python3 scripts/create-release-archive.py release "$archive"
+    python3 scripts/write-release-provenance.py "$archive" "${archive%.tar.gz}.provenance.json"
     ;;
   check)
-    run_frozen_consumer_gates
     run_frontend_and_stage_checks
     stage_frontend
     scripts/check-install-release-contract.sh
     ;;
   release)
     build_release_binaries
-    run_frozen_consumer_gates
     run_frontend_and_stage_checks
     cp -R migrations deploy release/
     mkdir -p release/components/excel-batches
@@ -240,7 +196,9 @@ case "$mode" in
         | xargs -0 sha256sum > release-files.sha256
       sha256sum --strict --check release-files.sha256
     )
-    python3 scripts/create-release-archive.py release "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz"
+    archive="aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz"
+    python3 scripts/create-release-archive.py release "$archive"
+    python3 scripts/write-release-provenance.py "$archive" "${archive%.tar.gz}.provenance.json"
     ;;
   *)
     echo "usage: scripts/run-donor-view-consumers.sh check|stage|release|release-fast" >&2

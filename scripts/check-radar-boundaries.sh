@@ -3,7 +3,6 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repository_root"
 
-bash scripts/check-radar-donor-manifest.sh
 python3 scripts/check-architecture.py
 node --check internal/webshell/static/admin_console/radar_oneid_bridge.js
 
@@ -19,4 +18,4 @@ if rg -n '(unionid|openid|external_userid|phone|access_token|oauth_code)[[:space
   echo 'Radar schema contains a forbidden external identity value column' >&2
   exit 1
 fi
-echo 'Radar OneID, donor and privacy boundaries verified'
+echo 'Radar OneID and privacy boundaries verified'

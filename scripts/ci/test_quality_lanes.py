@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -57,23 +56,6 @@ class QualityLaneTests(unittest.TestCase):
                     quality_lanes, "command_available", return_value=True), patch("subprocess.run") as run:
                 self.assertFalse(quality_lanes.postgres_16_ready())
                 run.assert_not_called()
-
-    def test_donors_require_fixed_sha_and_clean_checkout(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            v2, sidebar = root / "v2", root / "sidebar"
-            v2.mkdir()
-            sidebar.mkdir()
-            clean = type("Result", (), {"returncode": 0, "stdout": ""})
-            v2_head = type("Result", (), {"returncode": 0, "stdout": quality_lanes.V2_DONOR_SHA + "\n"})
-            sidebar_head = type("Result", (), {"returncode": 0, "stdout": quality_lanes.SIDEBAR_DONOR_SHA + "\n"})
-            with patch.dict(os.environ, {"PR07_DONOR_DIR": str(v2), "AICRM_SIDEBAR_DONOR_DIR": str(sidebar)}), patch(
-                    "subprocess.run", side_effect=[v2_head, clean, sidebar_head, clean]):
-                self.assertTrue(quality_lanes.donors_ready())
-            wrong = type("Result", (), {"returncode": 0, "stdout": "f" * 40 + "\n"})
-            with patch.dict(os.environ, {"PR07_DONOR_DIR": str(v2), "AICRM_SIDEBAR_DONOR_DIR": str(sidebar)}), patch(
-                    "subprocess.run", side_effect=[wrong, clean]):
-                self.assertFalse(quality_lanes.donors_ready())
 
     def test_version_match_is_exact_token_not_substring(self):
         with patch.object(quality_lanes, "command_available", return_value=True), patch("subprocess.run") as run:
