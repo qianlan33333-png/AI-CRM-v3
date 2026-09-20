@@ -18,6 +18,7 @@ func TestPostgreSQLEmptyPackageLifecycleAndCoreBinding(t *testing.T) {
 	native, cleanup := scheduleRuntimeDatabase(t, ctx)
 	defer cleanup()
 	applySegmentRuntimeMigration(t, native, "0183_segment_core_operations.sql")
+	applySegmentRuntimeMigration(t, native, "0200_segment_core_recommendation_failure_code.sql")
 	wrapped, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		t.Fatal(err)

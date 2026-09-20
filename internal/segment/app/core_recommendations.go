@@ -26,7 +26,7 @@ type CoreRecommendationStore interface {
 	BindCoreRecommendation(context.Context, int64, string) error
 	CoreRecommendationByEffect(context.Context, string, bool) (segmentport.CoreRecommendation, error)
 	CoreRecommendation(context.Context, int64) (segmentport.CoreRecommendation, error)
-	SetCoreRecommendationResult(context.Context, int64, string, string, string, int64, time.Time) error
+	SetCoreRecommendationResult(context.Context, int64, string, string, string, string, int64, time.Time) error
 }
 type CoreRecommendCommand struct {
 	CustomerIDs    []int64 `json:"customer_ids"`
@@ -295,7 +295,7 @@ func (c *CoreOperations) CompleteGeneration(ctx context.Context, in automationpo
 			}
 		}
 	}
-	if e = repo.SetCoreRecommendationResult(ctx, item.ID, state, reason, evidence, product, in.CompletedAt); e != nil {
+	if e = repo.SetCoreRecommendationResult(ctx, item.ID, state, in.FailureCode, reason, evidence, product, in.CompletedAt); e != nil {
 		return e
 	}
 	actor, _ := segmentport.AdminMutationActor(item.ActorID)

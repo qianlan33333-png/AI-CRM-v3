@@ -80,6 +80,15 @@
     stale: "客户归属已变化，本次未覆盖",
     invalid_output: "模型结果无效，未修改归属",
     outcome_unknown: "结果待核实",
+    generation_provider_disabled: "模型服务未启用",
+    generation_provider_config_invalid: "模型配置无效",
+    generation_provider_config_unavailable: "模型配置暂时不可读取",
+    generation_dispatch_unavailable: "推荐任务数据暂时不可读取",
+    generation_dispatch_invalid: "推荐任务校验失败",
+    generation_http_rejected: "模型服务拒绝了请求",
+    generation_response_invalid: "模型返回结果无效",
+    generation_call_unknown: "模型调用结果待核实",
+    generation_response_unknown: "模型响应结果待核实",
     ai: "智能推荐",
     ai_recommendation: "智能推荐",
     manual: "人工调整",
@@ -561,6 +570,8 @@
                 ),
                 el("p", `推荐理由：${item.reason || "等待处理结果"}`),
               );
+              if (item.failure_code)
+                description.append(el("p", `处理原因：${labels[item.failure_code] || "结果待核实"}`));
               if (item.evidence)
                 description.append(el("p", `判断依据：${item.evidence}`));
             }

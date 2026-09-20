@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-const recommendationColumns = `id,customer_id,expected_epoch,actor_id,preview,prompt_version,products,dispatch,COALESCE(effect_id,''),state,reason,evidence,COALESCE(chosen_product_id,0),created_at,completed_at`
+const recommendationColumns = `id,customer_id,expected_epoch,actor_id,preview,prompt_version,products,dispatch,COALESCE(effect_id,''),state,COALESCE(failure_code,''),reason,evidence,COALESCE(chosen_product_id,0),created_at,completed_at`
 
 func scanRecommendation(row pgx.Row) (v segmentport.CoreRecommendation, e error) {
 	var products []byte
-	e = row.Scan(&v.ID, &v.CustomerID, &v.ExpectedEpoch, &v.ActorID, &v.Preview, &v.PromptVersion, &products, &v.Dispatch, &v.EffectID, &v.State, &v.Reason, &v.Evidence, &v.ChosenProductID, &v.CreatedAt, &v.CompletedAt)
+	e = row.Scan(&v.ID, &v.CustomerID, &v.ExpectedEpoch, &v.ActorID, &v.Preview, &v.PromptVersion, &products, &v.Dispatch, &v.EffectID, &v.State, &v.FailureCode, &v.Reason, &v.Evidence, &v.ChosenProductID, &v.CreatedAt, &v.CompletedAt)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return v, ErrNotFound
 	}
@@ -67,12 +67,12 @@ func (r *Repository) CoreRecommendation(ctx context.Context, id int64) (segmentp
 	}
 	return scanRecommendation(t.QueryRow(ctx, `SELECT `+recommendationColumns+` FROM segment_core_recommendations WHERE id=$1`, id))
 }
-func (r *Repository) SetCoreRecommendationResult(ctx context.Context, id int64, state, reason, evidence string, product int64, now time.Time) error {
+func (r *Repository) SetCoreRecommendationResult(ctx context.Context, id int64, state, failureCode, reason, evidence string, product int64, now time.Time) error {
 	t, e := tx(ctx)
 	if e != nil {
 		return e
 	}
-	_, e = t.Exec(ctx, `UPDATE segment_core_recommendations SET state=$2,reason=$3,evidence=$4,chosen_product_id=NULLIF($5,0),completed_at=CASE WHEN $2 IN ('retryable_failed','outcome_unknown') THEN NULL ELSE $6::timestamptz END WHERE id=$1`, id, state, reason, evidence, product, now)
+	_, e = t.Exec(ctx, `UPDATE segment_core_recommendations SET state=$2,failure_code=$3,reason=$4,evidence=$5,chosen_product_id=NULLIF($6,0),completed_at=CASE WHEN $2 IN ('retryable_failed','outcome_unknown') THEN NULL ELSE $7::timestamptz END WHERE id=$1`, id, state, failureCode, reason, evidence, product, now)
 	return e
 }
 func (r *Repository) LockCoreAssignments(ctx context.Context) error {
