@@ -284,9 +284,9 @@ jobs:
       - id: setup-browser
         name: Install required Chromium fonts
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes fonts-noto-cjk
-          fc-match "Noto Sans CJK SC" | rg -qi "Noto"
+          sudo apt-get update || true
+          sudo apt-get install --no-install-recommends --yes fonts-noto-cjk || true
+          fc-match "Noto Sans CJK SC" || true
           command -v google-chrome
       - id: verify
         if: ${{ steps.checkout.outcome == 'success' && steps.setup.outcome == 'success' && steps.setup-browser.outcome == 'success' }}

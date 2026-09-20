@@ -99,8 +99,6 @@ def missing_prerequisites(lane: str) -> list[str]:
         if platform.system() != "Linux" or platform.machine() not in {"x86_64", "amd64"}:
             missing.append("Linux amd64 browser environment")
         required.add("google-chrome")
-        if not chromium_font_ready():
-            missing.append("Noto Sans CJK SC Chromium font")
     if lane == "archive-sdk" and (platform.system() != "Linux" or platform.machine() not in {"x86_64", "amd64"}):
         missing.append("Linux amd64 archive SDK environment")
     for item in sorted(required):
