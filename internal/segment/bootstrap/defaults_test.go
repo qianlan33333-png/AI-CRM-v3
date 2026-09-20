@@ -171,6 +171,7 @@ func TestApplyPreservesOperatorChangesAndArchivedPackage(t *testing.T) {
 			changedID = item.ID
 			configuration := catalog.configs[item.ID]
 			configuration.Version = 3
+			configuration.Definition = json.RawMessage(`{"schema_version":1,"template_key":"core_ai_product","parameters":{"core_product_id":1}}`)
 			configuration.RefreshCronUTC = "15 2 * * *"
 			catalog.configs[item.ID] = configuration
 			continue
@@ -191,6 +192,9 @@ func TestApplyPreservesOperatorChangesAndArchivedPackage(t *testing.T) {
 		t.Fatalf("operator configuration was overwritten: before=%d after=%d", beforePuts, catalog.putCalls)
 	}
 	for _, item := range report.Packages {
+		if item.ID == changedID && (item.SkippedReason != "operator_configured" || item.Preview != nil || item.Refresh != nil) {
+			t.Fatalf("operator configured package was evaluated: %+v", item)
+		}
 		if item.ID == changedID && item.ConfigurationVersion != 3 {
 			t.Fatalf("operator version not preserved: %+v", item)
 		}

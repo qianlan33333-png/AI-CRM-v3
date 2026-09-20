@@ -427,7 +427,7 @@ jobs:
           name: ci-verification-${{ github.run_id }}-${{ github.run_attempt }}
           path: verification.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
 
   quality-report:
     # This is read-only reporting. It is intentionally outside the check gate:
@@ -457,7 +457,7 @@ jobs:
           name: ci-quality-summary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-quality-summary.json
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 90
 
   # Production installation is opt-in. An unset repository variable is not
   # equivalent to approval, so ordinary main pushes complete CI only.

@@ -3,6 +3,46 @@
 - 用户可观察的变化：
 - 明确未改变的范围：
 
+## 开发前置与并行发布快照
+
+- [ ] 新功能已完成市场/GitHub 调研、复用评估和已确认 PRD；Bug 已完成复现、根因判断和回归测试
+- [ ] 假设与 PRD 已确认；开始后将持续推进到完整上线验收
+- 工作项/板块：
+- 负责人：
+- 分支/worktree：
+- 状态：开发中｜调试中｜待测试｜待合并｜排队上线｜已上线
+- 修改范围与共享入口：
+- 依赖的其他工作项：
+- 预计上线窗口：
+- 当前 main HEAD/tree：
+- 活跃分支与 PR：
+- 重叠文件/模块/迁移/API：
+- 其他已合并但未部署版本：
+- 当前排队上线版本：
+- 正在执行的部署或观察窗口：
+- 本次合并需要重新运行的测试：
+- GitHub 合并提交后部署目标：`124.220.53.183`
+- [ ] 部署使用仓外私钥，未进入仓库、PR、日志或命令输出
+- [ ] 部署前已完成 known_hosts/远端 Host Key 校验
+- [ ] 部署后认证读回与观察窗口已完成（未完成不得标记已上线）
+
+## CI 证据留存时间线
+
+- PR 状态阶段：本地验证｜CI 执行｜CI 失败｜CI 通过｜已合并｜已部署｜读回通过
+- 首轮 CI 证据：run_id / attempt / head_sha / 结果 / 分类 / artifact URL
+- 当前 head 首次 attempt：run_id / attempt / head_sha / 结果
+- 当前 head 最终 required check：run_id / attempt / head_sha / 结果 / artifact URL
+- 失败原因分类（首轮失败或阻塞）：assertion_or_verification_failure｜environment_setup_failure｜cancelled｜pending_or_incomplete｜unknown_failure
+- 修复提交与复跑阶段：
+- 合并 SHA：
+- 部署 SHA：
+- 线上认证读回：
+- 观察窗口：
+- 未验证项与阻塞原因：
+- [ ] 首轮证据未被后续成功覆盖
+- [ ] 当前 head 的最终结果未使用旧 head 绿灯替代
+- [ ] PR 正文只保留摘要和 artifact 链接，未粘贴长日志
+
 ## 验证
 
 - [ ] `make check`
