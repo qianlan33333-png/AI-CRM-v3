@@ -90,6 +90,7 @@ type CoreRecommendation struct {
 	Dispatch        json.RawMessage `json:"-"`
 	EffectID        string          `json:"-"`
 	State           string          `json:"state"`
+	FailureCode     string          `json:"failure_code,omitempty"`
 	Reason          string          `json:"reason"`
 	Evidence        string          `json:"evidence"`
 	ChosenProductID int64           `json:"chosen_product_id"`

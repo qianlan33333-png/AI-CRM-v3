@@ -46,6 +46,7 @@ func TestPostgreSQLCoreRecommendationPreviewAndHumanPrecedence(t *testing.T) {
 	native, cleanup := scheduleRuntimeDatabase(t, ctx)
 	defer cleanup()
 	applySegmentRuntimeMigration(t, native, "0183_segment_core_operations.sql")
+	applySegmentRuntimeMigration(t, native, "0200_segment_core_recommendation_failure_code.sql")
 	pool, e := platformpostgres.Wrap(native, time.Second)
 	if e != nil {
 		t.Fatal(e)
@@ -129,10 +130,14 @@ func TestPostgreSQLCoreRecommendationPreviewAndHumanPrecedence(t *testing.T) {
 		t.Fatal(e)
 	}
 	e = uow.Within(ctx, func(tx context.Context) error {
-		return core.CompleteGeneration(tx, automationport.GenerationCompletion{EffectID: "eer_core_3", State: effectport.StateRetryable, CompletedAt: time.Now().UTC()})
+		return core.CompleteGeneration(tx, automationport.GenerationCompletion{EffectID: "eer_core_3", State: effectport.StateRetryable, FailureCode: "generation_call_unknown", CompletedAt: time.Now().UTC()})
 	})
 	if e != nil {
 		t.Fatal(e)
+	}
+	uncertain, e := core.Recommendation(ctx, assigned.Items[0].ID)
+	if e != nil || uncertain.FailureCode != "generation_call_unknown" || uncertain.State != string(effectport.StateRetryable) {
+		t.Fatalf("failure code was not persisted: %+v err=%v", uncertain, e)
 	}
 	if _, found, e := core.GenerationDispatch(ctx, "eer_core_3"); e != nil || !found {
 		t.Fatalf("retry lost frozen dispatch: %v", e)

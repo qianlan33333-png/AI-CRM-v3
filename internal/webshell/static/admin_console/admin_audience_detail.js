@@ -88,6 +88,7 @@
     if (error.status === 409) return { state: "conflict", message: "服务端版本已经变化。页面将重新读取；请重新预览后确认。" };
     if (error.status === 404) return { state: "empty", message: "记录不存在或尚未生成。" };
     if (error.status === 422 || error.status === 503) return { state: "not-ready", message: "能力尚未满足执行条件；请检查身份资料、快照、已发布话术、发送人与发送服务的就绪状态。" };
+    if (error.status >= 500) return { state: "failed", message: "服务端暂时无法完成本次请求；请稍后刷新核对任务状态。" };
     return { state: "unknown", message: "请求未完成，请刷新页面核对后重试。" };
   }
 
