@@ -66,6 +66,8 @@ dom.window.AudienceOperationsHTTP = {
           { id: 9, name: "新客人群包" },
         ],
       };
+    if (path.startsWith("/api/admin/customers?keyword="))
+      return { items: [{ customer_id: 42, customer_number: "7" }], total: 1 };
     if (path.endsWith("core/recommendations"))
       return {
         data: { items: [{ id: 11, customer_id: 7, state: "accepted" }] },
@@ -158,7 +160,7 @@ assert.equal(mutations.length, 2);
 assert.equal(mutations[0].options.body.publish, false);
 assert.equal(mutations[0].options.body.body, "历史判断规则");
 assert.equal(mutations[1].options.body.preview, true);
-assert.deepEqual(Array.from(mutations[1].options.body.customer_ids), [7]);
+assert.deepEqual(Array.from(mutations[1].options.body.customer_ids), [42]);
 assert.match(document.querySelector(".core-results").textContent, /等待处理/);
 button("刷新结果").click();
 await settle();
