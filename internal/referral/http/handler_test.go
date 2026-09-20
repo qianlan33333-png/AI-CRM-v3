@@ -12,6 +12,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	referraldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/domain"
 	referralport "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/port"
 )
@@ -127,6 +128,15 @@ func (namesStub) DisplayNames(context.Context, []customerdomain.CustomerID) (map
 	return map[customerdomain.CustomerID]string{}, nil
 }
 
+type productTargetStub struct {
+	item productport.ProductOption
+	err  error
+}
+
+func (s productTargetStub) ReadProductTarget(context.Context, productport.ProductOptionType, productport.ID) (productport.ProductOption, error) {
+	return s.item, s.err
+}
+
 type securityStub struct{ err error }
 
 func (s securityStub) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
@@ -156,6 +166,17 @@ func TestInvitationHandoffIsReadOnlyAndCanonical(t *testing.T) {
 	handler.ServePublicHTTP(response, httptest.NewRequest(http.MethodGet, "/referral/invite/"+token, nil))
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/referral?campaign=7&invite="+token || public.previewCalls != 1 || public.joinCalls != 0 {
 		t.Fatalf("status=%d location=%q preview=%d join=%d", response.Code, response.Header().Get("Location"), public.previewCalls, public.joinCalls)
+	}
+}
+
+func TestAddPublicCampaignLinksUsesDedicatedActivityAndProductURLs(t *testing.T) {
+	handler := referralTestHandler(t, &publicStub{})
+	handler.productTargets = productTargetStub{item: productport.ProductOption{ID: 42, Code: "ai-trial", ProductType: productport.ProductOptionServicePeriod}}
+	campaign := referraldomain.Campaign{ID: 7, QualificationMode: referraldomain.QualificationProductPurchase, ProductID: 42, ProductType: referraldomain.ProductTypeServicePeriod}
+	response := map[string]any{}
+	handler.addPublicCampaignLinks(context.Background(), response, campaign)
+	if response["activity_url"] != "/referral?campaign=7" || response["product_url"] != "/s/ai-trial" {
+		t.Fatalf("unexpected campaign links: %#v", response)
 	}
 }
 

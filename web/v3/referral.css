@@ -138,6 +138,13 @@ body:has(#referral-root) {
   background: var(--referral-surface);
   box-shadow: 0 3px 12px rgb(16 24 40 / 4%);
 }
+.referral-campaign-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
 .referral-card {
   padding: 18px;
 }

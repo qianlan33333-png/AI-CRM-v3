@@ -19,6 +19,8 @@ type Campaign = {
   participants: number;
   invitations: number;
   teams: Team[];
+  activityURL: string;
+  productURL: string;
 };
 type Team = { id: number; name: string; logoURL: string; captainName: string };
 type Me = {
@@ -237,6 +239,8 @@ function parseCampaign(raw: unknown): Campaign {
     participants: num(row.participant_count),
     invitations: num(row.invitation_count || row.valid_invitation_count),
     teams,
+    activityURL: str(row.activity_url, `/referral?campaign=${num(row.id)}`),
+    productURL: str(row.product_url),
   };
 }
 function parseMe(raw: unknown): Me {
@@ -399,6 +403,10 @@ function renderCampaignList(): void {
   heading.className = "referral-list-heading";
   heading.append(element("p", "邀请好友，组队冲榜"), element("h1", "裂变活动"));
   host.append(heading);
+  const message = element("p");
+  message.className = "referral-message";
+  message.dataset.referralMessage = "";
+  host.append(message);
   const list = element("section");
   list.className = "referral-campaign-list";
   list.dataset.testid = "referral-campaign-list";
@@ -422,11 +430,20 @@ function renderCampaignList(): void {
         `${item.participants.toLocaleString("zh-CN")} 人已参加 · ${remaining(item)}`,
       ),
     );
+    const actions = element("div");
+    actions.className = "referral-campaign-actions";
     const link = element("a", "查看活动");
-    link.href = `/referral?campaign=${item.id}`;
+    link.href = item.activityURL;
     link.className = "referral-text-link";
     link.dataset.testid = "referral-campaign-detail";
-    body.append(link);
+    const copyLink = button("复制活动链接", async () => {
+      const activityURL = new URL(item.activityURL, location.origin).toString();
+      if (await copy(activityURL)) setMessage("活动链接已复制。");
+      else setMessage("请手动复制活动链接。", true);
+    }, "referral-quiet");
+    copyLink.dataset.testid = "referral-copy-activity-link";
+    actions.append(link, copyLink);
+    body.append(actions);
     card.append(body);
     list.append(card);
   }
@@ -885,25 +902,35 @@ async function beginParticipation(): Promise<void> {
 async function openInvite(): Promise<void> {
   if (!campaign || !me?.participant) return;
   try {
-    const raw = obj(
-      await api(
-        `/campaigns/${campaign.id}/invite`,
-        { method: "POST" },
-        `invite:${campaign.id}`,
-      ),
-    );
-    const url = str(raw.url);
+    let url = "";
+    let shareText = `邀请你参加 ${campaign.name}，一起组队冲榜！`;
+    if (campaign.qualificationMode === "product_purchase") {
+      url = campaign.productURL;
+      shareText = `邀请你购买活动指定商品，参加 ${campaign.name}！`;
+      const parsed = new URL(url, location.origin);
+      if (parsed.origin !== location.origin || !/^\/(p|s)\/[^/]+$/.test(parsed.pathname) || parsed.search || parsed.hash)
+        throw new Error("活动绑定商品入口暂不可用。");
+    } else {
+      const raw = obj(
+        await api(
+          `/campaigns/${campaign.id}/invite`,
+          { method: "POST" },
+          `invite:${campaign.id}`,
+        ),
+      );
+      url = str(raw.url);
+    }
     if (!url) throw new Error("邀请入口暂不可用。");
     const parsed = new URL(url, location.origin);
-    if (
+    if (campaign.qualificationMode !== "product_purchase" && (
       parsed.origin !== location.origin ||
       !/^\/referral\/invite\/rfi_[A-Za-z0-9_-]{43}$/.test(parsed.pathname)
-    )
+    ))
       throw new Error("服务端返回的邀请入口无效。");
     invite = {
       url: parsed.toString(),
       qrPayload: parsed.toString(),
-      shareText: `邀请你参加 ${campaign.name}，一起组队冲榜！`,
+      shareText,
     };
     renderInviteDialog();
   } catch (error) {
@@ -928,6 +955,7 @@ function posterURL(title: string, qrSVG: string): string {
 }
 async function renderInviteDialog(): Promise<void> {
   if (!invite || !campaign) return;
+  const paidActivity = campaign.qualificationMode === "product_purchase";
   const dialog = document.createElement("dialog");
   dialog.className = "referral-dialog";
   dialog.dataset.testid = "referral-invite-dialog";
@@ -936,7 +964,7 @@ async function renderInviteDialog(): Promise<void> {
   const qr = element("div");
   qr.className = "referral-qr";
   const { renderQr } = await import("../src/admin/sections/qr");
-  renderQr(qr, invite.qrPayload, "活动邀请入口");
+  renderQr(qr, invite.qrPayload, paidActivity ? "活动商品入口" : "活动邀请入口");
   const input = document.createElement("input");
   input.readOnly = true;
   input.value = invite.url;
@@ -950,15 +978,15 @@ async function renderInviteDialog(): Promise<void> {
     element("small", "扫码参与活动"),
   );
   const copyLink = button(
-    "复制邀请链接",
+    paidActivity ? "复制商品链接" : "复制邀请链接",
     async () => {
       if (await copy(invite!.url)) {
-        setMessage("邀请链接已复制。");
+        setMessage(paidActivity ? "商品链接已复制。" : "邀请链接已复制。");
         dialog.close();
       } else {
         input.focus();
         input.select();
-        setMessage("请手动复制邀请链接。", true);
+        setMessage(paidActivity ? "请手动复制商品链接。" : "请手动复制邀请链接。", true);
       }
     },
     "referral-primary",
