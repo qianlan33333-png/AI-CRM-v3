@@ -21,6 +21,17 @@ def git(ref):
     return subprocess.check_output(["git", "rev-parse", ref], text=True).strip()
 
 
+def requires_full_pr_verification() -> bool:
+    """Changes to delivery infrastructure must exercise the full CI lanes."""
+    base = os.environ.get("GITHUB_BASE_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        return False
+    changed = subprocess.check_output(["git", "diff", "--name-only", f"{base}...HEAD"], text=True).splitlines()
+    critical = (".github/", "deploy/", "scripts/ci/", "skills/aicrm-v3-development-frontdoor/",
+                "AGENTS.md", "scripts/check-install-release-contract.sh")
+    return any(path.startswith(critical) for path in changed)
+
+
 def api(path, raw=False):
     result = subprocess.run(["gh", "api", path], check=True, capture_output=True, timeout=30)
     return result.stdout if raw else json.loads(result.stdout)
@@ -132,7 +143,8 @@ def main():
     if args.mode == "plan":
         verified_run = None
         mode = "full"
-        if event == "pull_request" and os.environ.get("FORCE_FULL") != "true":
+        if (event == "pull_request" and os.environ.get("FORCE_FULL") != "true"
+                and not requires_full_pr_verification()):
             mode = "light"
             full = False
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:

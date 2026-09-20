@@ -67,6 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE_FULL: ${{ inputs.force_full }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 scripts/ci/verification.py plan
       - id: impact
         name: Select affected verification lanes
