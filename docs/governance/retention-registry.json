@@ -252,6 +252,18 @@
       "policy": "never_delete_by_retention",
       "reason": "Explicit deployment control artifact; no generic deletion."
     },
+    "/etc/systemd/system/aicrm-hxc-daily-lessons-sync.service": {
+      "owner": "platform",
+      "scope": "exact",
+      "policy": "never_delete_by_retention",
+      "reason": "Explicit deployment control artifact; no generic deletion."
+    },
+    "/etc/systemd/system/aicrm-hxc-daily-lessons-sync.timer": {
+      "owner": "platform",
+      "scope": "exact",
+      "policy": "never_delete_by_retention",
+      "reason": "Explicit deployment control artifact; no generic deletion."
+    },
     "/etc/systemd/system/aicrm-hxc-dashboard-rollout.service": {
       "owner": "platform",
       "scope": "exact",
