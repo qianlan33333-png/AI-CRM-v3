@@ -39,7 +39,11 @@ func NewMessageService(pool *pgxpool.Pool, uow platformport.UnitOfWork, effects 
 	return &MessageService{pool: pool, uow: uow, effects: effects, projector: projector, now: time.Now}, nil
 }
 func validMessageIntent(in outboundport.MessageIntent) bool {
-	return (in.SourceKind == "automation_run" || in.SourceKind == "automation_enrollment") && in.SourceID > 0 && in.RunRecipientID > 0 && in.CustomerID > 0 && in.SenderStaffID > 0 && in.AgentID > 0 && in.AgentPublishedVersion > 0 && len(in.ContentReference) > 0 && len(in.ContentReference) <= 200 && len(in.ReceiptKey) >= 16 && len(in.ReceiptKey) <= 128 && strings.TrimSpace(in.ReceiptKey) == in.ReceiptKey && in.SourceDigest != ([32]byte{}) && in.TargetDigest != ([32]byte{}) && in.PayloadDigest != ([32]byte{}) && in.PolicyDigest != ([32]byte{}) && validContentSnapshot(in.ContentSnapshot, in.ContentSnapshotDigest)
+	sourceValid := (in.SourceKind == "automation_run" || in.SourceKind == "automation_enrollment") && in.AgentID > 0 && in.AgentPublishedVersion > 0
+	if in.SourceKind == "audience_direct_push" {
+		sourceValid = in.AgentID == 0 && in.AgentPublishedVersion == 0 && len(bytes.TrimSpace(in.ContentSnapshot)) > 0
+	}
+	return sourceValid && in.SourceID > 0 && in.RunRecipientID > 0 && in.CustomerID > 0 && in.SenderStaffID > 0 && len(in.ContentReference) > 0 && len(in.ContentReference) <= 200 && len(in.ReceiptKey) >= 16 && len(in.ReceiptKey) <= 128 && strings.TrimSpace(in.ReceiptKey) == in.ReceiptKey && in.SourceDigest != ([32]byte{}) && in.TargetDigest != ([32]byte{}) && in.PayloadDigest != ([32]byte{}) && in.PolicyDigest != ([32]byte{}) && validContentSnapshot(in.ContentSnapshot, in.ContentSnapshotDigest)
 }
 
 func validContentSnapshot(raw json.RawMessage, digest [32]byte) bool {

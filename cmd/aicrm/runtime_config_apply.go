@@ -244,6 +244,7 @@ func runtimeConfigProtectedReferencePresence(cfg platformconfig.Runtime) map[str
 		"environment://AICRM_WECOM_CALLBACK_AES_KEY":             cfg.WeCom.CallbackAESKey != "",
 		"environment://AICRM_WECOM_MESSAGE_ARCHIVE_SECRET":       cfg.WeCom.MessageArchiveSecret != "",
 		"environment://AICRM_AUTOMATION_OPS_WEBHOOK_SECRET":      cfg.AutomationOperations.WebhookSecret != "",
+		"environment://AICRM_AUDIENCE_PUSH_WEBHOOK_SECRET":       cfg.AutomationOperations.AudiencePushWebhookSecret != "",
 		"environment://AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION": cfg.AutomationOperations.ProviderPermission != "",
 		"environment://AICRM_AI_GENERATION_API_KEY":              cfg.AIGeneration.APIKey != "",
 		"environment://AICRM_WECHAT_PAY_API_V3_KEY":              cfg.WeChatPay.APIV3Key != "",

@@ -50,3 +50,29 @@ func mountSegmentWebhook(next, webhook http.Handler) (http.Handler, error) {
 		next.ServeHTTP(writer, request)
 	}), nil
 }
+
+func mountAudienceDirectPush(next, webhook http.Handler) (http.Handler, error) {
+	if next == nil || webhook == nil {
+		return nil, errors.New("audience direct push route dependencies are required")
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/api/automation/audience/webhooks/") {
+			webhook.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	}), nil
+}
+
+func mountAudienceDirectPushAdmin(next, admin http.Handler) (http.Handler, error) {
+	if next == nil || admin == nil {
+		return nil, errors.New("audience direct push admin route dependencies are required")
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/api/admin/ai-audience/packages/") && (strings.HasSuffix(request.URL.Path, "/direct-push") || strings.HasSuffix(request.URL.Path, "/direct-pushes")) {
+			admin.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	}), nil
+}

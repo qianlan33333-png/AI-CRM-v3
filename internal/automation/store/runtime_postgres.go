@@ -406,7 +406,20 @@ func (r *Repository) ProjectMessageCompletion(ctx context.Context, completion ou
 	var runID int64
 	e = t.QueryRow(ctx, `UPDATE automation_run_recipients SET state=$2,updated_at=clock_timestamp() WHERE effect_id=$1 AND state NOT IN ('delivery_proven','final_failed','cancelled') RETURNING run_id`, completion.EffectID, state).Scan(&runID)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return automationapp.ErrRuntimeConflict
+		failureCode := ""
+		if state == automationport.RecipientFinalFailed {
+			failureCode = "provider_failed"
+		} else if state == automationport.RecipientOutcomeUnknown {
+			failureCode = "outcome_unknown"
+		}
+		tag, directErr := t.Exec(ctx, `UPDATE automation_audience_push_items SET send_state=$2,failure_code=CASE WHEN $3='' THEN failure_code ELSE $3 END,updated_at=clock_timestamp() WHERE effect_id=$1 AND send_state NOT IN ('delivery_proven','final_failed','cancelled')`, completion.EffectID, state, failureCode)
+		if directErr != nil {
+			return directErr
+		}
+		if tag.RowsAffected() != 1 {
+			return automationapp.ErrRuntimeConflict
+		}
+		return nil
 	}
 	if e != nil {
 		return e

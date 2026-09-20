@@ -27,6 +27,7 @@ import (
 	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
 	automation "github.com/qianlan33333-png/AI-CRM-v3/internal/automation"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
+	automationhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/http"
 	automationprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/provider"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
@@ -415,6 +416,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = river.AddWorkerSafely[segment.AudienceScheduleScanJobArgs](effectWorkers, audienceScheduleWorker); err != nil {
 		return fail(err)
 	}
+	audienceDirectPushReconcileWorker := automation.NewDirectPushReconcileWorker()
+	if err = river.AddWorkerSafely[automation.DirectPushReconcileArgs](effectWorkers, audienceDirectPushReconcileWorker); err != nil {
+		return fail(err)
+	}
+	audienceDirectPushObserveWorker := automation.NewDirectPushObserveWorker()
+	if err = river.AddWorkerSafely[automation.DirectPushObserveArgs](effectWorkers, audienceDirectPushObserveWorker); err != nil {
+		return fail(err)
+	}
 	groupOpsContinuationWorker := groupopsapp.NewContinuationWorker()
 	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](effectWorkers, groupOpsContinuationWorker); err != nil {
 		return fail(err)
@@ -453,6 +462,10 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	audienceDirectPushScheduler, err := automation.NewRiverDirectPushObservationScheduler(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -601,7 +614,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = materialPreparation.EnsureDailyRefresh(ctx); err != nil {
 		return fail(err)
 	}
-	periodicJobs := []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}
+	periodicJobs := []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob(), automation.DirectPushReconcilePeriodicJob()}
 	if cfg.Ops.Enabled {
 		periodicJobs = append(periodicJobs, adminops.InspectionPeriodicJobs()...)
 	}
@@ -773,10 +786,39 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = automationRuntime.SetReviewPlanIntake(aiService, automationService); err != nil {
 		return fail(err)
 	}
-	if err = automationRuntime.SetOutboundContentFreezer(automationOutboundContentFreezer{capturer: mediaRepository}); err != nil {
+	if err = automationRuntime.SetOutboundContentFreezer(automationOutboundContentFreezer{capturer: mediaRepository, materials: mediaRepository}); err != nil {
 		return fail(err)
 	}
 	if err = automationRuntime.SetEffectReconciler(effectRepository); err != nil {
+		return fail(err)
+	}
+	audienceUnionScope := strings.TrimSpace(cfg.HXCDashboard.UnionIDScope)
+	if audienceUnionScope == "" && strings.TrimSpace(cfg.Survey.OAuthOpenPlatformID) != "" {
+		audienceUnionScope = "wechat-open-platform:" + strings.TrimSpace(cfg.Survey.OAuthOpenPlatformID)
+	}
+	audienceDirectPush, err := automationapp.NewDirectPushRuntime(
+		uow,
+		automationRepository,
+		audienceDirectPushTargetResolver{uow: uow, identities: oneID, staff: accessRepository, unionScope: audienceUnionScope},
+		directPushEligibilityAdapter{reader: segmentRepository},
+		automationOutboundContentFreezer{capturer: mediaRepository, materials: mediaRepository},
+		outboundMessages,
+	)
+	if err != nil {
+		return fail(err)
+	}
+	if err = audienceDirectPushReconcileWorker.Bind(audienceDirectPush); err != nil {
+		return fail(err)
+	}
+	if err = audienceDirectPushObserveWorker.Bind(audienceDirectPush); err != nil {
+		return fail(err)
+	}
+	audienceDirectPushHandler, err := automationhttp.NewDirectPushHandler(audienceDirectPush, &audienceDirectPushAuthenticator{key: []byte(cfg.AutomationOperations.AudiencePushWebhookSecret), now: time.Now})
+	if err != nil {
+		return fail(err)
+	}
+	audienceDirectPushAdmin, err := automationhttp.NewDirectPushAdminHandler(audienceDirectPush, requestSecurity)
+	if err != nil {
 		return fail(err)
 	}
 	if err = audienceMemberEventWorker.Bind(segmentSnapshots, automationMemberEventSink{runtime: automationRuntime}); err != nil {
@@ -1778,6 +1820,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err != nil {
 		return fail(err)
 	}
+	if err = audienceDirectPush.BindObservation(
+		audienceDirectPushDeliveryAdapter{receipts: outboundMessages, provider: providerClient},
+		audienceDirectPushOpenAdapter{uow: uow, identities: queries, excel: excelClient, unionScope: audienceUnionScope},
+		audienceDirectPushScheduler,
+	); err != nil {
+		return fail(err)
+	}
 	catalogService.Provider = providerClient
 	// Enterprise employee selection is a separate, read-only application
 	// directory capability. It never reuses the external-contact follow-user
@@ -2379,6 +2428,14 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	handler, err = mountSegmentWebhook(handler, segmentWebhookHandler)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountAudienceDirectPush(handler, audienceDirectPushHandler)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountAudienceDirectPushAdmin(handler, audienceDirectPushAdmin)
 	if err != nil {
 		return fail(err)
 	}

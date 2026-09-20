@@ -80,6 +80,7 @@ func RuntimeCatalog(statuses ...map[string]bool) []RuntimeCategory {
 			field(configport.AIAgentGenerationEnabled, "启用 AI 动态文本生成", "AI 生成", "boolean", "restart"),
 			secret("AICRM_AI_GENERATION_API_KEY", "AI 生成 Provider Key", "AI 生成", "environment://AICRM_AI_GENERATION_API_KEY"),
 			secret("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET", "自动化 Webhook 密钥", "自动化", "environment://AICRM_AUTOMATION_OPS_WEBHOOK_SECRET"),
+			secret("AICRM_AUDIENCE_PUSH_WEBHOOK_SECRET", "人群包持续推送 Webhook 密钥", "自动化", "environment://AICRM_AUDIENCE_PUSH_WEBHOOK_SECRET"),
 			secret("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION", "发送授权确认（只读）", "自动化", "environment://AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
 		}},
 		{Key: "open_api_key", Label: "CRM 开放 API Key", Group: "外部联通能力", ManagedURL: "/admin/api-docs", Fields: []RuntimeField{

@@ -232,6 +232,14 @@ class Tests(unittest.TestCase):
         coverage[0] = 1
         self.assertEqual(source.opens(*args), [])
 
+    def test_direct_content_open_requires_coverage_before_zero(self):
+        service = Service(self.root / "direct-content.sqlite", self.config)
+        service.source.opens = lambda *_: None
+        query = {"unionid": "union", "path": "pages/article/article?lesson_id=1", "start": "2026-01-01T00:00:00Z", "end": "2026-01-02T00:00:00Z"}
+        self.assertEqual(service.content_open(query)["state"], "unavailable")
+        service.source.opens = lambda *_: []
+        self.assertEqual(service.content_open(query)["state"], "not_opened")
+
     def test_authenticated_http_and_row_errors(self):
         from http.server import ThreadingHTTPServer
 

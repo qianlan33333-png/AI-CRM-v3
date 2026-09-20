@@ -123,7 +123,8 @@ func (p *MessageProvider) Execute(ctx context.Context, envelope effectport.Envel
 	if !found {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("outbound.message.sender-unavailable", string(envelope.Fingerprint()))}, nil
 	}
-	receipt, attempted, err := p.writer.SendPrivateMessage(ctx, PrivateMessageTarget{ExternalUserID: identity.Value, StaffUserID: sender}, payload)
+	target := PrivateMessageTarget{ExternalUserID: identity.Value, StaffUserID: sender}
+	receipt, attempted, err := p.writer.SendPrivateMessage(ctx, target, payload)
 	if err != nil {
 		// The sender distinguishes a preflight rejection (invalid payload,
 		// attachment limit, or provider permission failure) from a request whose
@@ -135,21 +136,35 @@ func (p *MessageProvider) Execute(ctx context.Context, envelope effectport.Envel
 			if attempted && failure.OutcomeUnknown() {
 				state = effectport.StateUnknown
 			} else if retryable, ok := err.(outboundport.PrivateMessageRetryableRejection); ok && attempted && retryable.Retryable() {
+				_ = p.record(ctx, execution, target, "", retryable.FailureCode())
 				return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash("outbound.message.provider-retryable-rejection", retryable.FailureCode(), string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: false, SafeToRetryRejected: true, FailureCode: retryable.FailureCode()}, nil
 			}
 			// The typed sender error is already a complete Provider outcome. The
 			// effect kernel treats a returned error as retryable/unknown before it
 			// examines AdapterResult, so keep this classification observable.
+			p.record(ctx, execution, target, "", failureCode(err, string(state)))
 			return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("outbound.message.provider-error", string(envelope.Fingerprint())), CallAttempted: attempted, RealExternalCallExecuted: attempted}, nil
 		} else if attempted {
 			state = effectport.StateUnknown
 		}
+		_ = p.record(ctx, execution, target, "", failureCode(err, string(state)))
 		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("outbound.message.provider-error", string(envelope.Fingerprint())), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}
 	if !attempted || receipt.MessageID == "" {
+		_ = p.record(ctx, execution, target, "", "provider_rejected")
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("outbound.message.provider-rejected", string(envelope.Fingerprint()))}, nil
 	}
+	if err = p.record(ctx, execution, target, receipt.MessageID, ""); err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash("outbound.message.receipt-unavailable", string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("outbound.message.provider-receipt", receipt.MessageID, string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true}, nil
+}
+
+func (p *MessageProvider) record(ctx context.Context, execution outboundport.MessageExecution, target PrivateMessageTarget, messageID, reason string) error {
+	if recorder, ok := p.executions.(outboundport.MessageReceiptRecorder); ok {
+		return recorder.RecordAutomationMessageReceipt(ctx, execution.MessageIntentID, execution.ContentReference, target, messageID, reason)
+	}
+	return nil
 }
 
 var _ effectport.ProviderAdapter = (*MessageProvider)(nil)

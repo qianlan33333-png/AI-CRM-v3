@@ -46,6 +46,15 @@ type MessageExecutionReader interface {
 	MessageExecution(context.Context, string) (MessageExecution, bool, error)
 }
 
+type MessageReceiptRecorder interface {
+	RecordAutomationMessageReceipt(context.Context, int64, string, PrivateMessageTarget, string, string) error
+}
+
+type MessageDeliveryStore interface {
+	AutomationMessageReceipt(context.Context, string) (PrivateMessageDelivery, bool, error)
+	SaveAutomationMessageDelivery(context.Context, string, PrivateMessageDelivery) error
+}
+
 // FrozenAutomationMessagePayloadReader converts an immutable Outbound intent
 // snapshot into the one PrivateMessage payload accepted by the WeCom writer.
 // It must fail closed if any frozen Media source no longer verifies.
