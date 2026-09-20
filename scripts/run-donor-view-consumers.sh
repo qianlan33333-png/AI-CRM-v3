@@ -5,6 +5,9 @@ set -euo pipefail
 # AI-CRM-v3 checkout. No external repository, donor checkout, or donor SHA is used.
 mode="${1:-}"
 npm ci --prefix web/v3 --no-audit --no-fund
+# Materialize only the source views already committed inside this v3 checkout;
+# no network checkout or external repository is consulted.
+node scripts/prepare-donor-source-views.mjs >/dev/null
 
 run_frontend_and_stage_checks() {
   bash scripts/check-radar-boundaries.sh

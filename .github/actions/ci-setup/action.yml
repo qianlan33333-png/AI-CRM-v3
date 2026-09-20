@@ -36,3 +36,4 @@ runs:
         npm ci --no-audit --no-fund
         npm ci --prefix web/v3 --no-audit --no-fund
         npm run version:check
+        node scripts/prepare-donor-source-views.mjs

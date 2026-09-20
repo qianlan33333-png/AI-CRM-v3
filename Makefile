@@ -21,6 +21,7 @@ fmt-check:
 
 prepare-donor-views:
 	@test -d web/v3
+	node scripts/prepare-donor-source-views.mjs
 
 vet: prepare-donor-views
 	GOWORK=off go vet ./...
