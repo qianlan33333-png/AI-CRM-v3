@@ -512,6 +512,8 @@ install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.service" /etc/sys
 install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.timer" /etc/systemd/system/aicrm-customer-sync-daily.timer
 install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.service" /etc/systemd/system/aicrm-hxc-dashboard-refresh.service
 install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.timer" /etc/systemd/system/aicrm-hxc-dashboard-refresh.timer
+install -m 0644 "$release_dir/deploy/aicrm-hxc-daily-lessons-sync.service" /etc/systemd/system/aicrm-hxc-daily-lessons-sync.service
+install -m 0644 "$release_dir/deploy/aicrm-hxc-daily-lessons-sync.timer" /etc/systemd/system/aicrm-hxc-daily-lessons-sync.timer
 install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service" /etc/systemd/system/aicrm-hxc-dashboard-rollout.service
 install -m 0644 "$release_dir/deploy/aicrm-automation-bootstrap.service" /etc/systemd/system/aicrm-automation-bootstrap.service
 systemctl daemon-reload
@@ -543,6 +545,7 @@ rollback() {
     systemctl restart aicrm-effects-worker.service || true
     systemctl restart aicrm-customer-sync-daily.timer || true
     systemctl restart aicrm-hxc-dashboard-refresh.timer || true
+    systemctl restart aicrm-hxc-daily-lessons-sync.timer || true
   fi
 }
 
@@ -634,6 +637,10 @@ fi
 if ! systemctl enable --now aicrm-hxc-dashboard-refresh.timer; then
   rollback
   exit 12
+fi
+if ! systemctl enable --now aicrm-hxc-daily-lessons-sync.timer; then
+  rollback
+  exit 14
 fi
 # A same-schema package is a rollback only after this observer verifies the
 # real API readiness and both process images. It inherits the same fd 9 lock.
