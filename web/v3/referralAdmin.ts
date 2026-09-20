@@ -173,6 +173,12 @@ function errorText(status: number, raw: unknown): string {
   };
   return labels[code] || `请求失败（HTTP ${status}）`;
 }
+function referralProductType(value: unknown): string {
+  const productType = str(value);
+  if (productType === "standard" || productType === "standard_product")
+    return "standard_product";
+  return productType === "service_period" ? productType : "";
+}
 async function api(
   path: string,
   init: RequestInit = {},
@@ -1094,12 +1100,17 @@ function openCampaignForm(existing?: Campaign): void {
       const raw = Array.isArray(payload.items) ? payload.items : [];
       return {
         total: int(payload.total),
-        items: raw.map((item) => {
+        items: raw.flatMap((item) => {
           const row = obj(item);
-          return {
-            value: `${int(row.id)}:${str(row.product_type)}`,
-            label: `${str(row.name)} · ${str(row.code)} · ${str(row.product_type) === "service_period" ? "周期商品" : "普通商品"}`,
-          };
+          const productType = referralProductType(row.product_type);
+          return productType
+            ? [
+                {
+                  value: `${int(row.id)}:${productType}`,
+                  label: `${str(row.name)} · ${str(row.code)} · ${productType === "service_period" ? "周期商品" : "普通商品"}`,
+                },
+              ]
+            : [];
         }),
       };
     },
