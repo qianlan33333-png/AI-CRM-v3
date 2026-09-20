@@ -134,6 +134,13 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 			packageReport.ConfigurationInstalled = true
 		}
 		packageReport.ConfigurationVersion = configuration.Version
+		// Versions after the bootstrap-owned v2 belong to operators. Their
+		// definitions may require sources this defaults-only command does not own.
+		if configuration.Version > 2 {
+			packageReport.SkippedReason = "operator_configured"
+			report.Packages = append(report.Packages, packageReport)
+			continue
+		}
 		preview, err := snapshots.Preview(ctx, item.ID, bootstrapReference)
 		if err != nil {
 			return Report{}, fmt.Errorf("preview package %s: %w", definition.Code, err)
