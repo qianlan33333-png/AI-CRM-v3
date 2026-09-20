@@ -140,6 +140,7 @@ class Preflight:
     def browser(self, group: str):
         if not os.environ.get("AICRM_DATABASE_URL"):
             raise ValueError("AICRM_DATABASE_URL is required; use an isolated PostgreSQL 16 test database")
+        self.run("current-v3-source", ["node", "scripts/prepare-donor-source-views.mjs"])
         env = dict(os.environ, AICRM_REQUIRE_CHROMIUM_JOURNEY="1")
         listing = self.run("browser-discovery", ["bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-list", "ChromiumJourney$", "./cmd/aicrm"], env)
         names = select_journeys(listing.read_text(), group)
