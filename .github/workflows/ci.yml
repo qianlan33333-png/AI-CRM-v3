@@ -67,6 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE_FULL: ${{ inputs.force_full }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 scripts/ci/verification.py plan
       - id: impact
         name: Select affected verification lanes
@@ -97,6 +98,10 @@ jobs:
             echo 'mode=full' >> "$GITHUB_OUTPUT"
             echo 'lanes=["preflight","backend","frontend","browser","archive-sdk"]' >> "$GITHUB_OUTPUT"
             echo 'full=true' >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.plan.outputs.mode }}" == "light" ]]; then
+            echo 'mode=light' >> "$GITHUB_OUTPUT"
+            echo 'lanes=[]' >> "$GITHUB_OUTPUT"
+            echo 'full=false' >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.impact.outputs.mode }}" == "targeted" ]]; then
             echo 'mode=targeted' >> "$GITHUB_OUTPUT"
             echo 'lanes=${{ steps.impact.outputs.lanes }}' >> "$GITHUB_OUTPUT"
@@ -416,9 +421,12 @@ jobs:
       - name: Require full success or a verified identical merged tree
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           python3 scripts/ci/governance_impact.py --gate
+          python3 scripts/ci/local_first_gate.py
           python3 scripts/ci/verification.py gate
       - name: Record the exact tested tree for main
         if: needs.plan.outputs.full == 'true'
@@ -462,7 +470,9 @@ jobs:
   # Production installation is opt-in. An unset repository variable is not
   # equivalent to approval, so ordinary main pushes complete CI only.
   deploy:
-    if: ${{ vars.AICRM_ENABLE_ACTIONS_DEPLOY == 'true' && !cancelled() && needs.check.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    # Normal releases are local-first and pass through staging. Keep Actions
+    # deployment only as an explicit break-glass path.
+    if: ${{ vars.AICRM_ENABLE_ACTIONS_DEPLOY == 'true' && vars.AICRM_CLOUD_DEPLOY_BREAKGLASS == 'true' && !cancelled() && needs.check.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     needs: check
     runs-on: ubuntu-latest
     # Cross-region upload to the mainland deployment host can make steady
@@ -510,10 +520,11 @@ jobs:
             "$DEPLOY_HOST" \
             "$HOME/.ssh/deploy_key"
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
-          remote_installer="/tmp/install-release-${GITHUB_SHA}.sh"
-          scp "${ssh_flags[@]}" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_installer}"
+          remote_incoming="/opt/aicrm/incoming"
+          scp "${ssh_flags[@]}" deploy/install-release.sh deploy/run-release-as-root.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
+            "sudo install -d -m 0755 ${remote_incoming} && sudo install -o root -g root -m 0755 /tmp/install-release.sh ${remote_incoming}/install-release.sh && sudo install -o root -g root -m 0755 /tmp/run-release-as-root.sh ${remote_incoming}/run-release-as-root.sh && sudo ${remote_incoming}/run-release-as-root.sh /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
       - name: Configure HXC production source
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

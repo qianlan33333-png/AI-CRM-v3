@@ -21,6 +21,17 @@ def git(ref):
     return subprocess.check_output(["git", "rev-parse", ref], text=True).strip()
 
 
+def requires_full_pr_verification() -> bool:
+    """Changes to delivery infrastructure must exercise the full CI lanes."""
+    base = os.environ.get("GITHUB_BASE_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        return False
+    changed = subprocess.check_output(["git", "diff", "--name-only", f"{base}...HEAD"], text=True).splitlines()
+    critical = (".github/", "deploy/", "scripts/ci/", "skills/aicrm-v3-development-frontdoor/",
+                "AGENTS.md", "scripts/check-install-release-contract.sh")
+    return any(path.startswith(critical) for path in changed)
+
+
 def api(path, raw=False):
     result = subprocess.run(["gh", "api", path], check=True, capture_output=True, timeout=30)
     return result.stdout if raw else json.loads(result.stdout)
@@ -106,8 +117,15 @@ def require_results(needs, full, event, ref):
     elif mode == "targeted":
         if event != "pull_request" or full or "preflight" not in lanes:
             raise ValueError("targeted verification is only valid for pull requests with preflight")
-    elif mode != "full":
+    elif mode not in {"full", "light"}:
         raise ValueError("unknown verification mode")
+    if mode == "light":
+        if event != "pull_request" or full or lanes:
+            raise ValueError("light verification is only valid for pull requests without scheduled lanes")
+        for name in PHASES:
+            if needs.get(name, {}).get("result") != "skipped":
+                raise ValueError(f"{name}: expected skipped")
+        return
     if mode == "full" and not full:
         raise ValueError("full verification requires full=true")
     for name in PHASES:
@@ -124,6 +142,15 @@ def main():
     repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
     if args.mode == "plan":
         verified_run = None
+        mode = "full"
+        if (event == "pull_request" and os.environ.get("FORCE_FULL") != "true"
+                and not requires_full_pr_verification()):
+            mode = "light"
+            full = False
+            with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                output.write("full=false\nverified_run=\nmode=light\n")
+            print("Local-first policy: PR uses GitHub light consistency gate")
+            return
         if (event in {"push", "workflow_dispatch"} and ref == "refs/heads/main"
                 and os.environ.get("FORCE_FULL") != "true"):
             try:
@@ -134,6 +161,7 @@ def main():
         full = verified_run is None
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"full={str(full).lower()}\nverified_run={verified_run or ''}\n")
+            output.write(f"mode={'verified' if verified_run else 'full'}\n")
         message = ("Full PR verification required" if full else
                    f"Reusing PR run {verified_run}: complete Git tree equals {sha}")
         print(message)
@@ -161,6 +189,7 @@ def main():
         mode = needs["plan"]["outputs"].get("mode", "full" if full else "verified")
         print({"full": "All required verification passed",
                "targeted": "Selected PR verification lanes passed",
+               "light": "Local-first PR consistency gate passed",
                "verified": "Identical merged tree: PR verification reused"}[mode])
 
 

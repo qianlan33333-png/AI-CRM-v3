@@ -162,6 +162,12 @@
     }
   },
   "filesystem_prefixes": {
+    "/opt/aicrm/incoming": {
+      "owner": "release",
+      "scope": "subtree",
+      "policy": "never_delete_by_retention",
+      "reason": "Root-owned release installer handoff directory; deployment cleanup owns individual temporary entries and retention cleanup never removes the control path."
+    },
     "/opt/aicrm/release-success": {
       "owner": "release",
       "scope": "subtree",

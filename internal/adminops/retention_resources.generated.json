@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "b2fd5b19baa17c050ed9aab09432383e30d9ad993eabd4dc4a3cc312d46839f1",
+  "registry_sha256": "d799650eab36d33ef408d8dc1e95cc42c90f90a74b5f49f21018dcf1fdd0754a",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -6419,6 +6419,19 @@
       "policy": "never_delete_by_retention",
       "reason": "Explicit deployment control artifact; no generic deletion.",
       "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/hxc-identity-v2-rollout.lock",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/incoming",
+      "owner": "release",
+      "policy": "never_delete_by_retention",
+      "reason": "Root-owned release installer handoff directory; deployment cleanup owns individual temporary entries and retention cleanup never removes the control path.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/incoming",
       "cleanup_entrypoint": "",
       "policy_id": "",
       "coverage_status": "protected",
