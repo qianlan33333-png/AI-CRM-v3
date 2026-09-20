@@ -175,6 +175,8 @@ def attempt_record(repo: str, run_id: int, attempt: int, *, pr: int | None = Non
     lifecycle, conclusion = workflow_lifecycle(run.get("status")), workflow_conclusion(run.get("conclusion"))
     verification = attempt_verification(lifecycle, conclusion, jobs["jobs"])
     return {"run_id": run_id, "run_attempt": attempt, "head_sha": run.get("head_sha"), "created_at": run.get("created_at"),
+            "run_url": run.get("html_url") or run.get("url"),
+            "artifacts_url": f"https://github.com/{repo}/actions/runs/{run_id}/artifacts",
             "workflow_lifecycle": lifecycle, "workflow_conclusion": conclusion, "verification": verification}
 
 
@@ -264,7 +266,30 @@ def current_attempt(repo: str, run_id: int, run_attempt: int, head: str, needs: 
     verification = "success" if check == "success" else "failure" if check == "failure" else "cancelled" if check == "cancelled" else "pending_or_incomplete"
     # This self-report job is still running even if check has completed.
     return {"run_id": run_id, "run_attempt": run_attempt, "head_sha": head, "workflow_lifecycle": "in_progress",
-            "workflow_conclusion": "not_available", "verification": verification, "source": "current_needs"}
+            "workflow_conclusion": "not_available", "verification": verification, "source": "current_needs",
+            "artifacts_url": f"https://github.com/{repo}/actions/runs/{run_id}/artifacts"}
+
+
+def evidence_timeline(first: dict[str, Any], current_head_first: dict[str, Any], final: dict[str, Any],
+                      current_run: dict[str, Any], lanes: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return append-only-friendly PR events without allowing later success to erase failure."""
+    events: list[dict[str, Any]] = []
+    for label, record in (("pr_first_attempt", first), ("current_head_first_attempt", current_head_first),
+                          ("current_head_final_attempt", final), ("current_reporting_run", current_run)):
+        if not record.get("run_id"):
+            continue
+        events.append({"event": label, "head_sha": record.get("head_sha"), "run_id": record.get("run_id"),
+                       "run_attempt": record.get("run_attempt"), "created_at": record.get("created_at"),
+                       "run_url": record.get("run_url"), "artifacts_url": record.get("artifacts_url"),
+                       "verification": record.get("verification", "unknown"),
+                       "workflow_lifecycle": record.get("workflow_lifecycle", "unknown"),
+                       "workflow_conclusion": record.get("workflow_conclusion", "not_available")})
+    for lane, record in lanes.items():
+        for observation in record.get("observations", []):
+            events.append({"event": "lane", "lane": lane, "head_sha": current_run.get("head_sha"),
+                           "run_id": current_run.get("run_id"), "run_attempt": current_run.get("run_attempt"),
+                           "observation": observation})
+    return events
 
 
 def lane_summary(needs: dict[str, Any]) -> dict[str, Any]:
@@ -404,17 +429,22 @@ def emit_receipt(args: argparse.Namespace) -> int:
 def emit_summary(args: argparse.Namespace) -> int:
     needs, current = json.loads(args.needs), current_attempt(args.repo, args.run_id, args.run_attempt, args.head, json.loads(args.needs))
     first, current_first, final, current_head, history = history_records(args.repo, args.pr)
-    data = {"schema": 1, "repository": args.repo, "pull_request": args.pr, "reported_head_sha": args.head, "current_head_sha": current_head,
+    lanes = lane_summary(needs)
+    data = {"schema": 2, "repository": args.repo, "pull_request": args.pr, "reported_head_sha": args.head, "current_head_sha": current_head,
             "history": history, "source": source_snapshot(), "first_attempt": first, "current_head_first_attempt": current_first,
-            "final_attempt": final, "current_run_snapshot": current, "lanes": lane_summary(needs)}
+            "final_attempt": final, "current_run_snapshot": current, "lanes": lanes,
+            "artifact_name": f"ci-quality-summary-{args.run_id}-{args.run_attempt}",
+            "artifact_url": f"https://github.com/{args.repo}/actions/runs/{args.run_id}/artifacts",
+            "timeline": evidence_timeline(first, current_first, final, current, lanes)}
     data["counts"] = one_pr_counts(first, final, current_first); write_json(args.out, data); step_summary(data)
     return 0
 
 
 def emit_inspect(args: argparse.Namespace) -> int:
     first, current_first, final, current_head, history = history_records(args.repo, args.pr)
-    data = {"schema": 1, "repository": args.repo, "pull_request": args.pr, "history": history, "current_head_sha": current_head,
-            "first_attempt": first, "current_head_first_attempt": current_first, "final_attempt": final}
+    data = {"schema": 2, "repository": args.repo, "pull_request": args.pr, "history": history, "current_head_sha": current_head,
+            "first_attempt": first, "current_head_first_attempt": current_first, "final_attempt": final,
+            "timeline": evidence_timeline(first, current_first, final, {}, {})}
     data["counts"] = one_pr_counts(first, final, current_first)
     print(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)); return 0
 

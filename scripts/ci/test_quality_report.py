@@ -74,6 +74,21 @@ class QualityReportTests(unittest.TestCase):
         self.assertEqual(data["workflow_lifecycle"], "in_progress")
         self.assertEqual(data["workflow_conclusion"], "not_available")
 
+    def test_evidence_timeline_preserves_first_failure_and_current_success(self):
+        first = {"run_id": 4, "run_attempt": 1, "head_sha": OLD, "verification": "failure", "created_at": "2026-01-01T00:00:00Z"}
+        current_first = {"run_id": 9, "run_attempt": 1, "head_sha": FRESH, "verification": "success", "created_at": "2026-01-02T00:00:00Z"}
+        final = {"run_id": 9, "run_attempt": 2, "head_sha": FRESH, "verification": "success", "created_at": "2026-01-02T00:00:00Z"}
+        current = {"run_id": 9, "run_attempt": 2, "head_sha": FRESH, "verification": "success"}
+        timeline = quality_report.evidence_timeline(first, current_first, final, current, {"backend": {"observations": ["success"]}})
+        self.assertEqual(timeline[0]["event"], "pr_first_attempt")
+        self.assertEqual(timeline[0]["head_sha"], OLD)
+        self.assertEqual(timeline[0]["verification"], "failure")
+        self.assertEqual(timeline[2]["event"], "current_head_final_attempt")
+        self.assertEqual(timeline[2]["head_sha"], FRESH)
+        self.assertEqual(timeline[-1]["observation"], "success")
+        empty_timeline = quality_report.evidence_timeline(first, current_first, final, {}, {})
+        self.assertNotIn("current_reporting_run", [event["event"] for event in empty_timeline])
+
     def test_first_pr_attempt_uses_old_force_pushed_head_and_attempt_one(self):
         old_run = run(4, OLD, "2026-01-01T00:00:00Z", attempt=3)
         with patch.object(quality_report, "gh_pages", return_value=pages(old_run, run(5, FRESH, "2026-01-02T00:00:00Z"))), patch.object(

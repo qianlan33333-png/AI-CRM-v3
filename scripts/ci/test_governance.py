@@ -189,6 +189,14 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn(": write", workflow)
         self.assertNotIn("pull_request_target", workflow)
 
+    def test_pr_quality_evidence_is_structured_and_lightweight_manifest_is_retained(self):
+        workflow = (impact.ROOT / ".github/workflows/ci.yml").read_text()
+        template = (impact.ROOT / ".github/pull_request_template.md").read_text()
+        self.assertIn("ci-quality-summary-${{ github.run_id }}-${{ github.run_attempt }}", workflow)
+        self.assertIn("retention-days: 90", workflow)
+        for field in ("首轮 CI 证据", "当前 head 最终 required check", "失败原因分类", "修复提交与复跑阶段", "观察窗口"):
+            self.assertIn(field, template)
+
 
 if __name__ == "__main__":
     unittest.main()

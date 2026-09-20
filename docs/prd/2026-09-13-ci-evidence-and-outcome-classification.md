@@ -161,6 +161,12 @@ artifact，并不成为 `check` 的 prerequisite。
   成功可以成立，旧 SHA、不同 PR、main push 或树相同的复用证明都不替代
   PR 当前 head 的此统计。
 
+质量摘要使用 schema 2，除首轮、current-head 首次和最终 attempt 外，追加
+不可覆盖的 `timeline` 事件。每个事件保存 head SHA、run/attempt、lane 或
+阶段、结果分类和 run/artifact 定位；后续推送只能追加新事件，不能改写首轮
+失败。轻量 `ci-quality-summary` 与 `ci-verification` manifest 保留 90 天，
+详细 lane 日志、截图和大型测试包继续使用各自的 14/30 天保留期。
+
 批量报表按 PR 同时给出 `prs_observed`、`first_success`、`first_failure`、
 `first_cancelled`、`first_pending_or_incomplete`、`first_unknown` 及同组
 final 字段，并另列 current-head first 字段。通过率只显示为
