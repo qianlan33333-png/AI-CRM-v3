@@ -107,7 +107,8 @@ func NewHandler(config Config) (*Handler, error) {
 }
 
 // SetPromotionApplication wires Distribution after both domains have been
-// composed while keeping the dependency on its stable Public port.
+// composed while keeping the dependency on its stable Public port and
+// preventing Referral from minting or inspecting Distribution credentials.
 func (h *Handler) SetPromotionApplication(application PromotionIssuer) error {
 	if h == nil || application == nil {
 		return referralport.ErrUnavailable
