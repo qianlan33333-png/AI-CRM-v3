@@ -56,12 +56,13 @@ func (dynamicGenerationProfilesStub) BindSidebarPhone(context.Context, customerp
 func TestDynamicGenerationContextFreezesOnlyApprovedReadPorts(t *testing.T) {
 	surveys := &dynamicGenerationSurveyStub{}
 	messages := &dynamicGenerationMessagesStub{}
-	reader := dynamicGenerationContextAdapter{questionnaires: surveys, messages: messages, tags: dynamicGenerationTagsStub{}, profiles: dynamicGenerationProfilesStub{}, now: func() time.Time { return time.Date(2026, 9, 8, 8, 0, 0, 0, time.UTC) }}
+	watermark := time.Date(2026, 9, 8, 8, 0, 0, 0, time.UTC)
+	reader := dynamicGenerationContextAdapter{questionnaires: surveys, messages: messages, tags: dynamicGenerationTagsStub{}, profiles: dynamicGenerationProfilesStub{}, now: func() time.Time { return watermark }}
 	value, err := reader.FreezeGenerationContext(context.Background(), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if surveys.query.CustomerID != 42 || surveys.query.Limit != 20 || messages.query.CustomerID != 42 || messages.query.Limit != 20 || !value.Valid() || !strings.Contains(value.Questionnaire, "入营问卷") || !strings.Contains(value.RecentChats, "想了解课程") || !strings.Contains(value.Tags, "阶段/活跃") || !strings.Contains(value.Activation, "activated") {
+	if surveys.query.CustomerID != 42 || surveys.query.Limit != 20 || !surveys.query.Watermark.Equal(watermark) || messages.query.CustomerID != 42 || messages.query.Limit != 20 || !messages.query.Watermark.Equal(watermark) || messages.query.Watermark.Location() != time.UTC || !value.Valid() || !strings.Contains(value.Questionnaire, "入营问卷") || !strings.Contains(value.RecentChats, "想了解课程") || !strings.Contains(value.Tags, "阶段/活跃") || !strings.Contains(value.Activation, "activated") {
 		t.Fatalf("queries survey=%+v messages=%+v value=%+v", surveys.query, messages.query, value)
 	}
 }

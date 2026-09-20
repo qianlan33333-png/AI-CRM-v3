@@ -32,11 +32,12 @@ func (a dynamicGenerationContextAdapter) FreezeGenerationContext(ctx context.Con
 	if a.now != nil {
 		now = a.now
 	}
-	questionnaires, err := a.questionnaires.CustomerHistoryWindow(ctx, surveyport.CustomerHistoryQuery{CustomerID: int64(customerID), Limit: 20, Watermark: now().UTC()})
+	watermark := now().UTC()
+	questionnaires, err := a.questionnaires.CustomerHistoryWindow(ctx, surveyport.CustomerHistoryQuery{CustomerID: int64(customerID), Limit: 20, Watermark: watermark})
 	if err != nil {
 		return automationport.GenerationContext{}, fmt.Errorf("read questionnaire context: %w", err)
 	}
-	messages, err := a.messages.CustomerMessages(ctx, archiveport.CustomerQuery{CustomerID: customerID, Limit: 20})
+	messages, err := a.messages.CustomerMessages(ctx, archiveport.CustomerQuery{CustomerID: customerID, Limit: 20, Watermark: watermark})
 	if err != nil {
 		return automationport.GenerationContext{}, fmt.Errorf("read recent chat context: %w", err)
 	}
