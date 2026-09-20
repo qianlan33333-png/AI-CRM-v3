@@ -90,13 +90,30 @@ def find_verified_run(repo, sha, tree):
 def require_results(needs, full, event, ref):
     if needs.get("plan", {}).get("result") != "success":
         raise ValueError("verification plan did not succeed")
-    if not full and (event not in {"push", "workflow_dispatch"} or ref != "refs/heads/main"
-                     or not needs["plan"].get("outputs", {}).get("verified_run")):
-        raise ValueError("only main with a verified PR tree may reuse checks")
-    expected = "success" if full else "skipped"
+    plan_outputs = needs["plan"].get("outputs", {})
+    mode = plan_outputs.get("mode", "full" if full else "verified")
+    try:
+        lanes = set(json.loads(plan_outputs.get("lanes", "[]")))
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError("invalid verification lane plan")
+    if not lanes.issubset(PHASES):
+        raise ValueError("unknown verification lane")
+    if mode == "verified":
+        if full or lanes:
+            raise ValueError("reused verification must not schedule lanes")
+        if event not in {"push", "workflow_dispatch"} or ref != "refs/heads/main" or not plan_outputs.get("verified_run"):
+            raise ValueError("only main with a verified PR tree may reuse checks")
+    elif mode == "targeted":
+        if event != "pull_request" or full or "preflight" not in lanes:
+            raise ValueError("targeted verification is only valid for pull requests with preflight")
+    elif mode != "full":
+        raise ValueError("unknown verification mode")
+    if mode == "full" and not full:
+        raise ValueError("full verification requires full=true")
     for name in PHASES:
-        if needs.get(name, {}).get("result") != expected:
-            raise ValueError(f"{name}: expected {expected}")
+        lane_expected = "success" if mode == "full" or name in lanes else "skipped"
+        if needs.get(name, {}).get("result") != lane_expected:
+            raise ValueError(f"{name}: expected {lane_expected}")
 
 
 def main():
@@ -141,7 +158,10 @@ def main():
                 "phases": {name: needs[name]["result"] for name in PHASES},
             }
             Path("verification.json").write_text(json.dumps(proof, indent=2) + "\n")
-        print("All required verification passed" if full else "Identical merged tree: PR verification reused")
+        mode = needs["plan"]["outputs"].get("mode", "full" if full else "verified")
+        print({"full": "All required verification passed",
+               "targeted": "Selected PR verification lanes passed",
+               "verified": "Identical merged tree: PR verification reused"}[mode])
 
 
 if __name__ == "__main__":

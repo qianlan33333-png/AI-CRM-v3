@@ -53,8 +53,10 @@ jobs:
       actions: read
       pull-requests: read
     outputs:
-      full: ${{ steps.plan.outputs.full }}
+      full: ${{ steps.finalize.outputs.full }}
       verified_run: ${{ steps.plan.outputs.verified_run }}
+      mode: ${{ steps.finalize.outputs.mode }}
+      lanes: ${{ steps.finalize.outputs.lanes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -66,10 +68,48 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORCE_FULL: ${{ inputs.force_full }}
         run: python3 scripts/ci/verification.py plan
+      - id: impact
+        name: Select affected verification lanes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.full == 'true' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/governance_impact.py --out "$RUNNER_TEMP/impact.json"
+          selection="$(python3 scripts/ci/impact_selection.py "$RUNNER_TEMP/impact.json")"
+          echo "selection=$selection" >> "$GITHUB_STEP_SUMMARY"
+          python3 - "$selection" "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          selection = json.loads(sys.argv[1])
+          with open(sys.argv[2], "a") as output:
+              output.write("mode=" + selection["mode"] + "\n")
+              output.write("lanes=" + json.dumps(selection["lanes"], separators=(",", ":")) + "\n")
+          PY
+      - id: finalize
+        name: Publish verification plan
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" && "${{ steps.plan.outputs.full }}" == "false" ]]; then
+            echo 'mode=verified' >> "$GITHUB_OUTPUT"
+            echo 'lanes=[]' >> "$GITHUB_OUTPUT"
+            echo 'full=false' >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo 'mode=full' >> "$GITHUB_OUTPUT"
+            echo 'lanes=["preflight","backend","frontend","browser","archive-sdk"]' >> "$GITHUB_OUTPUT"
+            echo 'full=true' >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.impact.outputs.mode }}" == "targeted" ]]; then
+            echo 'mode=targeted' >> "$GITHUB_OUTPUT"
+            echo 'lanes=${{ steps.impact.outputs.lanes }}' >> "$GITHUB_OUTPUT"
+            echo 'full=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'mode=full' >> "$GITHUB_OUTPUT"
+            echo 'lanes=["preflight","backend","frontend","browser","archive-sdk"]' >> "$GITHUB_OUTPUT"
+            echo 'full=true' >> "$GITHUB_OUTPUT"
+          fi
 
   preflight:
     needs: plan
-    if: needs.plan.outputs.full == 'true'
+    if: contains(fromJSON(needs.plan.outputs.lanes), 'preflight')
     outputs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
@@ -120,7 +160,7 @@ jobs:
 
   backend:
     needs: [plan, preflight]
-    if: needs.plan.outputs.full == 'true'
+    if: contains(fromJSON(needs.plan.outputs.lanes), 'backend')
     outputs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
@@ -174,7 +214,7 @@ jobs:
 
   frontend:
     needs: [plan, preflight]
-    if: needs.plan.outputs.full == 'true'
+    if: contains(fromJSON(needs.plan.outputs.lanes), 'frontend')
     outputs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
@@ -214,7 +254,7 @@ jobs:
 
   browser:
     needs: [plan, preflight]
-    if: needs.plan.outputs.full == 'true'
+    if: contains(fromJSON(needs.plan.outputs.lanes), 'browser')
     outputs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
@@ -283,7 +323,7 @@ jobs:
 
   archive-sdk:
     needs: [plan, preflight]
-    if: needs.plan.outputs.full == 'true'
+    if: contains(fromJSON(needs.plan.outputs.lanes), 'archive-sdk')
     outputs:
       classification: ${{ steps.receipt.outputs.classification }}
       observations: ${{ steps.receipt.outputs.observations }}
