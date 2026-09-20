@@ -96,6 +96,8 @@ the success observer needs. Do not call `sudo bash install-release.sh` directly.
 
 The production Actions deploy remains a break-glass path and requires both
 `AICRM_ENABLE_ACTIONS_DEPLOY=true` and `AICRM_CLOUD_DEPLOY_BREAKGLASS=true`.
+Changes to this deployment path automatically use the complete GitHub CI lanes;
+ordinary feature PRs keep the shorter staging consistency gate.
 
 ## Controlled release
 
