@@ -4,9 +4,6 @@ inputs:
   lane:
     required: true
     description: Cache namespace (race, frontend, browser, release, sdk).
-  donors:
-    default: 'true'
-    description: Check out the frozen donor references.
 runs:
   using: composite
   steps:
@@ -39,29 +36,4 @@ runs:
         npm ci --no-audit --no-fund
         npm ci --prefix web/v3 --no-audit --no-fund
         npm run version:check
-    - name: Checkout frozen v2 donor
-      if: inputs.donors == 'true'
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        repository: qianlan33333-png/AI-CRM-v2
-        ref: 6bfbe5816bb89913c70adaca87d6a486260e016e
-        path: .ci-donor-v2
-        persist-credentials: false
-    - name: Checkout frozen sidebar donor
-      if: inputs.donors == 'true'
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        repository: qianlan33333-png/AI-CRM
-        ref: dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f
-        path: .ci-donor-sidebar
-        persist-credentials: false
-    - name: Prepare non-destructive source views
-      shell: bash
-      run: |
-        if ! command -v rg >/dev/null; then
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes ripgrep
-        fi
-        command -v rg
-        node scripts/check-donor-source-view-ignore.mjs
         node scripts/prepare-donor-source-views.mjs

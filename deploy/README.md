@@ -79,7 +79,7 @@ WeCom, outbound, or credential prerequisites itself.
 The normal release path is local-first:
 
 1. Run the complete local verification and build the archive with
-   `scripts/run-donor-view-consumers.sh release-fast`.
+   `scripts/run-donor-view-consumers.sh release-fast`（脚本名为兼容名称，实际只使用当前 AI-CRM-v3 仓库，不读取任何 donor）。
 2. Deploy the exact archive to staging `49.232.57.128` with
    `scripts/deploy-release-local.sh`. Use synthetic CRM data and complete the
    staging browser/API/readback and rollback checks.

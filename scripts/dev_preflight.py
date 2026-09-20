@@ -126,12 +126,11 @@ class Preflight:
         return log
 
     def fast(self):
-        # No npm install, database, browser or external donor checkout needed.
+        # No npm install, database or browser setup is performed in this phase.
         self.run("format", ["make", "fmt-check"])
         self.run("boundaries", ["bash", "scripts/check-hxc-identity-boundaries.sh"])
         self.run("whitespace", ["git", "diff", "--check", "HEAD"])
-        self.run("source-views", ["make", "prepare-donor-views"])
-        self.run("frozen-frontend", ["bash", "scripts/check-pr01-donor-manifest.sh"])
+        self.run("current-v3-source", ["node", "scripts/prepare-donor-source-views.mjs"])
         self.run("retention-registry", [sys.executable, "scripts/check-retention-registry.py"])
         self.run("preflight-tests", [sys.executable, "scripts/test_dev_preflight.py"])
 
@@ -141,6 +140,7 @@ class Preflight:
     def browser(self, group: str):
         if not os.environ.get("AICRM_DATABASE_URL"):
             raise ValueError("AICRM_DATABASE_URL is required; use an isolated PostgreSQL 16 test database")
+        self.run("current-v3-source", ["node", "scripts/prepare-donor-source-views.mjs"])
         env = dict(os.environ, AICRM_REQUIRE_CHROMIUM_JOURNEY="1")
         listing = self.run("browser-discovery", ["bash", "scripts/run-go-with-donor-views.sh", "go", "test", "-p", "1", "-list", "ChromiumJourney$", "./cmd/aicrm"], env)
         names = select_journeys(listing.read_text(), group)
@@ -184,17 +184,9 @@ class Preflight:
                                                  "source": {"before": before, "after": self.source_snapshot()}})
                 raise
         if set(FULL_LANES) & {"backend", "frontend", "browser"}:
-            donor_paths = {
-                "v2": os.environ.get("PR07_DONOR_DIR", str(ROOT / ".ci-donor-v2")),
-                "sidebar": os.environ.get("AICRM_SIDEBAR_DONOR_DIR", str(ROOT / ".ci-donor-sidebar")),
-            }
-            try:
-                self.report["donors"] = {
-                    name: subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
-                    for name, path in donor_paths.items()
-                }
-            except (OSError, subprocess.SubprocessError) as error:
-                raise RuntimeError("donor provenance unavailable after local full verification") from error
+            self.report["repository"] = "AI-CRM-v3"
+            self.report["commit_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            self.report["tree_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
 
 
 def main():
