@@ -231,6 +231,8 @@ grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platfo
 canonical_backend_full_go_test || { echo "CI must test the Open Platform history tool through the canonical backend lane" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-media-legacy-materials"' "$installer" || { echo "release must include legacy Media mapping migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' "$release_builder" || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-hxc-daily-lessons"' "$installer" || { echo "release must include the HXC daily lesson migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-hxc-daily-lessons ./cmd/migrate-hxc-daily-lessons' "$release_builder" || { echo "CI must build the HXC daily lesson migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-customer-tag-history"' "$installer" || { echo "release must include customer tag history migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history' "$release_builder" || { echo "release workflow must build customer tag history migration tool" >&2; exit 1; }
