@@ -919,6 +919,7 @@ func miniMap(id int64, name, appID, page, title string, thumb *int64, enabled bo
 	if thumb != nil {
 		out["thumb_image_id"] = *thumb
 		out["thumb_image_url"] = fmt.Sprintf("/api/admin/image-library/%d/variants/thumb_320", *thumb)
+		out["thumbnail_status"] = "ready"
 	}
 	return out
 }

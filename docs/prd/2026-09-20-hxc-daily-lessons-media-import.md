@@ -16,7 +16,8 @@
   - 每条日课同时落一个封面图片素材和一个小程序素材；小程序引用该图片。
   - `hxc-daily-lessons + UUID` 是稳定源键；重复执行只读回原映射，不重复创建。
   - 非 UUID、源条数漂移、重复 ID、摘要不一致、无效 PNG、已有映射漂移均停止，不降级导入。
-  - 本次是冻结快照的一次性导入，不建立持续同步、轮询或远端运行依赖。
+  - 首次导入后增加每日 10:00（Asia/Shanghai）增量同步：源接口没有 cursor/updated_at，因此每次只做轻量目录扫描，并只下载、写入尚未存在完整 UUID 映射的新记录。
+  - 已有 UUID 映射保持不可变，不在定时任务中覆盖；源记录漂移留给显式对账/修复流程。非 UUID 继续排除。
 - 成功标准：冻结快照精确包含 1,062 条；生产 apply 后新增或重放合计 1,062 条；verify 证明 1,062 个小程序映射、封面引用、分组、AppID、路径、标题和启用状态一致；素材库认证读回总数和抽样内容一致。
 
 ## 2. 市场与 GitHub 调研
@@ -34,11 +35,11 @@
 - 共享组件与标准组件：复用现有小程序素材库页面和“日课”分组，不增加页面或并行素材模型。
 - OneID：不涉及；日课是内容素材，不读取、解析、创建或关联客户身份。
 - Persistence：Provider 读取只发生在离线快照提取；生产导入是本地 PostgreSQL 事务。无 Provider 写入或 External Effect。
-- 复用、扩展和舍弃方案：新增独立迁移命令和 Media-owned 原子导入方法；复用稳定映射、收据、审计、Outbox、图片检查和引用账本；不使用后台 HTTP 循环、不直连源 MySQL、不新增队列/Worker/定时器。
+- 复用、扩展和舍弃方案：新增独立迁移命令和 Media-owned 原子导入方法；复用稳定映射、收据、审计、Outbox、图片检查和引用账本；定时任务使用 systemd oneshot + Persistent timer，不使用进程内 cron/ticker、后台 HTTP 循环或源 MySQL。
 
 ## 4. 产品与技术边界
 
-- 用户流程：离线 `extract` 生成 0600 冻结快照 → `inspect` → 测试库 `dry-run` → 生产 `apply`（精确 SHA + actor + 显式确认）→ `verify` → 管理端认证读回。
+- 用户流程：离线 `extract` 生成 0600 冻结快照 → `inspect` → 测试库 `dry-run` → 生产 `apply`（精确 SHA + actor + 显式确认）→ `verify` → 管理端认证读回；随后每天 10:00 由 `migrate-hxc-daily-lessons --mode sync` 扫描新增 UUID 并幂等写入。
 - 页面：不改前端；导入结果出现在现有“小程序”素材板块和“日课”分组。
 - API/Port/事件：不新增线上业务 API；离线只读源接口为 `/api/lesson/list` 与 `/api/share/lesson-card/{id}.png`。
 - 数据 Owner：所有写入由 Media 拥有；每条日课的 blob、图片、小程序、两条源映射、引用、收据、审计和 Outbox 在一个 PostgreSQL UoW 中提交。

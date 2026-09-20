@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "6880824a6432febf27542c46f67afd2b9255f2bb136edabc13a96edea72acc34",
+  "registry_sha256": "b2fd5b19baa17c050ed9aab09432383e30d9ad993eabd4dc4a3cc312d46839f1",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -6237,6 +6237,32 @@
       "policy": "never_delete_by_retention",
       "reason": "Explicit deployment control artifact; no generic deletion.",
       "source": "docs/governance/retention-registry.json#filesystem_prefixes//etc/systemd/system/aicrm-excel-batches.service",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/etc/systemd/system/aicrm-hxc-daily-lessons-sync.service",
+      "owner": "platform",
+      "policy": "never_delete_by_retention",
+      "reason": "Explicit deployment control artifact; no generic deletion.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//etc/systemd/system/aicrm-hxc-daily-lessons-sync.service",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/etc/systemd/system/aicrm-hxc-daily-lessons-sync.timer",
+      "owner": "platform",
+      "policy": "never_delete_by_retention",
+      "reason": "Explicit deployment control artifact; no generic deletion.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//etc/systemd/system/aicrm-hxc-daily-lessons-sync.timer",
       "cleanup_entrypoint": "",
       "policy_id": "",
       "coverage_status": "protected",

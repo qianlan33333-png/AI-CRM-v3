@@ -368,7 +368,8 @@ make_release() {
   for unit in \
     aicrm.service aicrm-migrate.service aicrm-wecom-worker.service aicrm-wecom-worker.timer \
     aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer \
-    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer aicrm-hxc-dashboard-rollout.service \
+    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer \
+    aicrm-hxc-daily-lessons-sync.service aicrm-hxc-daily-lessons-sync.timer aicrm-hxc-dashboard-rollout.service \
     aicrm-automation-bootstrap.service; do
     : > "$release/deploy/$unit"
   done

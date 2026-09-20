@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/media/domain"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -112,7 +113,7 @@ func run(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("migrate-hxc-daily-lessons", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var cfg options
-	flags.StringVar(&cfg.mode, "mode", "inspect", "extract|inspect|dry-run|apply|verify")
+	flags.StringVar(&cfg.mode, "mode", "inspect", "extract|inspect|dry-run|apply|verify|sync")
 	flags.StringVar(&cfg.snapshotDir, "snapshot-dir", "", "0600 offline snapshot directory")
 	flags.StringVar(&cfg.manifestSHA, "manifest-sha256", "", "exact manifest sha256 required outside inspect/extract")
 	flags.StringVar(&cfg.sourceBase, "source-base-url", defaultSourceBase, "fixed HXC public source for extract")
@@ -121,11 +122,20 @@ func run(ctx context.Context, args []string) error {
 	flags.IntVar(&cfg.expectedTotal, "expected-source-total", 1162, "exact public source count for extract")
 	flags.IntVar(&cfg.expectedExcluded, "expected-excluded-non-uuid", 100, "exact non-UUID exclusion count for extract")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm exact snapshot writes")
-	if err := flags.Parse(args); err != nil || cfg.snapshotDir == "" || cfg.expectedCount < 1 {
+	if err := flags.Parse(args); err != nil || cfg.expectedCount < 1 {
 		return errInvalidArguments
 	}
 	if cfg.mode == "extract" {
+		if cfg.snapshotDir == "" {
+			return errInvalidArguments
+		}
 		return extract(ctx, cfg)
+	}
+	if cfg.mode == "sync" {
+		return syncIncremental(ctx, cfg)
+	}
+	if cfg.snapshotDir == "" {
+		return errInvalidArguments
 	}
 	snapshot, raw, err := loadSnapshot(cfg.snapshotDir, cfg.expectedCount)
 	if err != nil {
@@ -191,6 +201,96 @@ func run(ctx context.Context, args []string) error {
 		out.Verified = len(snapshot.Records)
 	}
 	return printJSON(out)
+}
+
+// syncIncremental performs a lightweight catalog scan and imports only UUIDs
+// that have no complete immutable mapping yet. The public source has no
+// cursor or updated_at, so existing mappings are deliberately not overwritten.
+func syncIncremental(ctx context.Context, cfg options) error {
+	if cfg.sourceBase != defaultSourceBase || cfg.actor < 1 {
+		return errInvalidArguments
+	}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	lessons, total, excluded, err := readSourceCatalog(ctx, client)
+	if err != nil {
+		return err
+	}
+	databaseURL, err := platformconfig.DatabaseURL()
+	if err != nil {
+		return err
+	}
+	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: databaseURL, MaxConnections: 4, MinConnections: 1})
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		return err
+	}
+	repository, err := mediastore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return err
+	}
+	tempDir, err := os.MkdirTemp("", "hxc-daily-lessons-sync-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+	out := report{Mode: "sync", Count: len(lessons), Expected: total, ExcludedNonUUID: excluded}
+	for _, lesson := range lessons {
+		mapped, err := hasCompleteHXCDailyLessonMapping(ctx, uow, repository, lesson.ID)
+		if err != nil {
+			return err
+		}
+		if mapped {
+			out.Replayed++
+			continue
+		}
+		png, getErr := get(ctx, client, defaultSourceBase+"/api/share/lesson-card/"+url.PathEscape(lesson.ID)+".png")
+		if getErr != nil {
+			return getErr
+		}
+		inspection, inspectErr := domain.Inspect("lesson-card.png", "image/png", png)
+		if inspectErr != nil {
+			return errInvalidSnapshot
+		}
+		coverPath := filepath.Join(tempDir, lesson.ID+".png")
+		if err := os.WriteFile(coverPath, png, 0o600); err != nil {
+			return err
+		}
+		item := record{ID: lesson.ID, Title: strings.TrimSpace(lesson.Title), PublishDate: lesson.PublishDate, AppID: lessonAppID, PagePath: "pages/article/article?lesson_id=" + lesson.ID + "&from=learn", CoverSHA256: hexDigest(png), CoverSize: int64(len(png)), Width: inspection.Width, Height: inspection.Height}
+		item.SourceRecordDigest = sourceRecordDigest(item)
+		input := mediastore.HXCDailyLessonImport{SourceID: item.ID, Title: item.Title, AppID: item.AppID, PagePath: item.PagePath, PNG: png, Width: item.Width, Height: item.Height, Actor: int64(cfg.actor), IdempotencyKey: "hxc-daily-lesson:" + item.ID, SourceRecordDigest: "sha256:" + item.SourceRecordDigest}
+		if err := uow.Within(ctx, func(tx context.Context) error {
+			_, importErr := repository.ImportHXCDailyLessonWithin(tx, input)
+			return importErr
+		}); err != nil {
+			return err
+		}
+		out.New++
+	}
+	return printJSON(out)
+}
+
+func hasCompleteHXCDailyLessonMapping(ctx context.Context, uow *platformpostgres.UnitOfWork, repository *mediastore.Repository, lessonID string) (bool, error) {
+	var imageFound, miniFound bool
+	err := uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		_, imageFound, err = repository.ResolveLegacyMaterialMapping(tx, mediaport.LegacyMaterialReference{SourceSystem: mediastore.HXCDailyLessonSourceSystem, MaterialKind: "image", LegacyID: lessonID})
+		if err != nil {
+			return err
+		}
+		_, miniFound, err = repository.ResolveLegacyMaterialMapping(tx, mediaport.LegacyMaterialReference{SourceSystem: mediastore.HXCDailyLessonSourceSystem, MaterialKind: "miniprogram", LegacyID: lessonID})
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	if imageFound != miniFound {
+		return false, mediastore.ErrConflict
+	}
+	return imageFound, nil
 }
 
 func extract(ctx context.Context, cfg options) error {
