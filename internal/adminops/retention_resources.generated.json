@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "69277f97097c5a90f3ef5e41ffad256960a64734a35e36e7fd30dcc5e1167198",
+  "registry_sha256": "586f65b4c760187a01830f8b7901f09ea33e81c15baaf2ba300d8f77eb75c47d",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -6349,6 +6349,32 @@
     },
     {
       "kind": "filesystem_prefix",
+      "name": "/etc/systemd/system/aicrm-hxc-daily-lessons-sync.service",
+      "owner": "platform",
+      "policy": "never_delete_by_retention",
+      "reason": "Explicit deployment control artifact; no generic deletion.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//etc/systemd/system/aicrm-hxc-daily-lessons-sync.service",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/etc/systemd/system/aicrm-hxc-daily-lessons-sync.timer",
+      "owner": "platform",
+      "policy": "never_delete_by_retention",
+      "reason": "Explicit deployment control artifact; no generic deletion.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//etc/systemd/system/aicrm-hxc-daily-lessons-sync.timer",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
       "name": "/etc/systemd/system/aicrm-hxc-dashboard-refresh.service",
       "owner": "platform",
       "policy": "never_delete_by_retention",
@@ -6497,6 +6523,19 @@
       "policy": "never_delete_by_retention",
       "reason": "Explicit deployment control artifact; no generic deletion.",
       "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/hxc-identity-v2-rollout.lock",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/incoming",
+      "owner": "release",
+      "policy": "never_delete_by_retention",
+      "reason": "Root-owned release installer handoff directory; deployment cleanup owns individual temporary entries and retention cleanup never removes the control path.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/incoming",
       "cleanup_entrypoint": "",
       "policy_id": "",
       "coverage_status": "protected",
