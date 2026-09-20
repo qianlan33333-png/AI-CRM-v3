@@ -188,7 +188,9 @@ func (h *Handler) campaigns(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]any, 0, len(items))
 	for _, item := range items {
-		result = append(result, campaignSummary(item))
+		response := campaignSummary(item)
+		h.addPublicCampaignLinks(r.Context(), response, item.Campaign)
+		result = append(result, response)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
@@ -214,7 +216,9 @@ func (h *Handler) campaignTail(w http.ResponseWriter, r *http.Request, tail stri
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, campaignView(view))
+		response := campaignView(view)
+		h.addPublicCampaignLinks(r.Context(), response, view.Campaign)
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	if len(parts) != 2 {
@@ -1068,6 +1072,34 @@ func campaignSummary(value referralport.CampaignSummary) map[string]any {
 	response["invitation_count"] = value.InvitationCount
 	response["team_count"] = value.TeamCount
 	return response
+}
+
+func (h *Handler) addPublicCampaignLinks(ctx context.Context, response map[string]any, campaign referraldomain.Campaign) {
+	if response == nil || campaign.ID < 1 {
+		return
+	}
+	response["activity_url"] = "/referral?campaign=" + strconv.FormatInt(campaign.ID, 10)
+	config := campaign.Config()
+	if config.QualificationMode != referraldomain.QualificationProductPurchase || h.productTargets == nil {
+		return
+	}
+	kind := productport.ProductOptionType(config.ProductType)
+	if kind == "standard_product" {
+		kind = productport.ProductOptionStandard
+	} else if kind == "service_period" {
+		kind = productport.ProductOptionServicePeriod
+	} else {
+		return
+	}
+	product, err := h.productTargets.ReadProductTarget(ctx, kind, productport.ID(config.ProductID))
+	if err != nil || product.Code == "" {
+		return
+	}
+	prefix := "/p/"
+	if kind == productport.ProductOptionServicePeriod {
+		prefix = "/s/"
+	}
+	response["product_url"] = prefix + url.PathEscape(product.Code)
 }
 
 func publicTeam(value referraldomain.Team) map[string]any {
