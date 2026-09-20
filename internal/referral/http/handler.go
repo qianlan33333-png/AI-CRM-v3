@@ -38,6 +38,8 @@ type SessionResolver interface {
 }
 
 type PromotionIssuer interface {
+	// The issuer must derive the distributor and product qualification from
+	// the trusted actor and server-side campaign target.
 	IssuePromotionLink(context.Context, distributionport.IssuePromotionCommand) (distributionport.PromotionLink, error)
 }
 
