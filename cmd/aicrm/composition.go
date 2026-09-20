@@ -1581,6 +1581,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	var referralAdmin http.Handler = referralUnavailableHandler{}
 	var referralService *referralapp.Service
 	var referralAdminService *referralapp.AdminService
+	var referralHandler *referralhttp.Handler
+	var referralErr error
 	var referralPaidConsumer orderport.PaidEventConsumer
 	var referralRefundConsumer orderport.RefundSettlementConsumer
 	if cfg.Referral.TokenDataKey != "" {
@@ -1624,7 +1626,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 		if referralService != nil && referralAdminService != nil {
-			referralHandler, referralErr := referralhttp.NewHandler(referralhttp.Config{
+			referralHandler, referralErr = referralhttp.NewHandler(referralhttp.Config{
 				ProductOptions:    productCatalog,
 				ProductTargets:    productTargets,
 				Public:            referralService,
@@ -1678,6 +1680,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(distributionErr)
 		}
 		promotion.SetSettlementEnabled(cfg.WeChatPay.ProfitSharingEnabled)
+		if referralHandler != nil {
+			if distributionErr = referralHandler.SetPromotionApplication(promotion); distributionErr != nil {
+				return fail(distributionErr)
+			}
+		}
 		commissionService, distributionErr := distributionapp.NewCommissionService(distributionRepository, distributionDueEnqueuer, qualificationService)
 		if distributionErr != nil {
 			return fail(distributionErr)

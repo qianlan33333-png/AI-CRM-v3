@@ -22,6 +22,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	distributiondomain "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/domain"
 	distributionport "github.com/qianlan33333-png/AI-CRM-v3/internal/distribution/port"
 	referraldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/domain"
 	referralport "github.com/qianlan33333-png/AI-CRM-v3/internal/referral/port"
@@ -34,6 +35,10 @@ const (
 
 type SessionResolver interface {
 	Resolve(context.Context, string) (distributionport.TrustedSessionActor, error)
+}
+
+type PromotionIssuer interface {
+	IssuePromotionLink(context.Context, distributionport.IssuePromotionCommand) (distributionport.PromotionLink, error)
 }
 
 // PaymentSessionBridge is composition-owned and reads the one-time trusted
@@ -51,6 +56,7 @@ type Config struct {
 	ProductOptions    productport.ProductOptionReader
 	ProductTargets    productport.ProductTargetReader
 	Public            referralport.PublicApplication
+	Promotion         PromotionIssuer
 	Admin             referralport.AdminApplication
 	Sessions          SessionResolver
 	Bridge            PaymentSessionBridge
@@ -68,6 +74,7 @@ type Handler struct {
 	productOptions                                productport.ProductOptionReader
 	productTargets                                productport.ProductTargetReader
 	public                                        referralport.PublicApplication
+	promotion                                     PromotionIssuer
 	admin                                         referralport.AdminApplication
 	sessions                                      SessionResolver
 	bridge                                        PaymentSessionBridge
@@ -94,7 +101,17 @@ func NewHandler(config Config) (*Handler, error) {
 	if len(allowed) == 0 {
 		return nil, referralport.ErrUnavailable
 	}
-	return &Handler{productOptions: config.ProductOptions, productTargets: config.ProductTargets, public: config.Public, admin: config.Admin, sessions: config.Sessions, bridge: config.Bridge, names: config.Names, profiles: config.Profiles, security: config.Security, cookieSecure: config.CookieSecure, allowedOrigins: allowed, sessionCookieName: config.SessionCookieName, csrfCookieName: config.CSRFCookieName, csrfHeader: config.CSRFHeader}, nil
+	return &Handler{productOptions: config.ProductOptions, productTargets: config.ProductTargets, public: config.Public, promotion: config.Promotion, admin: config.Admin, sessions: config.Sessions, bridge: config.Bridge, names: config.Names, profiles: config.Profiles, security: config.Security, cookieSecure: config.CookieSecure, allowedOrigins: allowed, sessionCookieName: config.SessionCookieName, csrfCookieName: config.CSRFCookieName, csrfHeader: config.CSRFHeader}, nil
+}
+
+// SetPromotionApplication wires Distribution after both domains have been
+// composed while keeping the dependency on its stable Public port.
+func (h *Handler) SetPromotionApplication(application PromotionIssuer) error {
+	if h == nil || application == nil {
+		return referralport.ErrUnavailable
+	}
+	h.promotion = application
+	return nil
 }
 
 func (h *Handler) ServePublicHTTP(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +251,8 @@ func (h *Handler) campaignTail(w http.ResponseWriter, r *http.Request, tail stri
 		h.leaderboard(w, r, campaignID)
 	case "invite":
 		h.issueInvitation(w, r, campaignID)
+	case "promotion-link":
+		h.issuePromotionLink(w, r, campaignID)
 	case "product-context":
 		h.productContext(w, r, campaignID)
 	case "participations":
@@ -241,6 +260,58 @@ func (h *Handler) campaignTail(w http.ResponseWriter, r *http.Request, tail stri
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+// issuePromotionLink bridges a paid referral campaign to Distribution's
+// server-issued promotion credential. Referral owns the campaign and
+// participation checks; Distribution owns the credential, qualification and
+// attribution semantics. The browser never supplies a product or distributor
+// identity.
+func (h *Handler) issuePromotionLink(w http.ResponseWriter, r *http.Request, campaignID int64) {
+	if r.Method != http.MethodPost || r.URL.RawQuery != "" || r.ContentLength > 0 {
+		method(w, http.MethodPost)
+		return
+	}
+	if h.promotion == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	actor, ok := h.sessionActor(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	view, err := h.public.ReadPublicCampaign(r.Context(), campaignID)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	campaign := view.Campaign
+	config := campaign.Config()
+	if config.QualificationMode != referraldomain.QualificationProductPurchase || !campaign.AcceptingAt(time.Now().UTC()) {
+		resultError(w, referralport.ErrCampaignUnavailable)
+		return
+	}
+	mine, err := h.public.MyCampaign(r.Context(), actor, campaignID)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	if mine.Participation == nil || mine.Participation.State != referraldomain.ParticipationActive {
+		resultError(w, referralport.ErrParticipationRequired)
+		return
+	}
+	link, err := h.promotion.IssuePromotionLink(r.Context(), distributionport.IssuePromotionCommand{
+		Actor: actor, ProductID: config.ProductID, ProductType: distributiondomain.ProductType(config.ProductType), IdempotencyKey: key,
+	})
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"url": link.URL, "expires_at": link.ExpiresAt.UTC()})
 }
 
 func (h *Handler) productContext(w http.ResponseWriter, r *http.Request, campaignID int64) {
