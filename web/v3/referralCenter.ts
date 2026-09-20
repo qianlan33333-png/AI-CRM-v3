@@ -905,10 +905,17 @@ async function openInvite(): Promise<void> {
     let url = "";
     let shareText = `邀请你参加 ${campaign.name}，一起组队冲榜！`;
     if (campaign.qualificationMode === "product_purchase") {
-      url = campaign.productURL;
+      const raw = obj(
+        await api(
+          `/campaigns/${campaign.id}/promotion-link`,
+          { method: "POST" },
+          `promotion-link:${campaign.id}`,
+        ),
+      );
+      url = str(raw.url);
       shareText = `邀请你购买活动指定商品，参加 ${campaign.name}！`;
       const parsed = new URL(url, location.origin);
-      if (parsed.origin !== location.origin || !/^\/(p|s)\/[^/]+$/.test(parsed.pathname) || parsed.search || parsed.hash)
+      if (parsed.origin !== location.origin || !/^\/d\/dpc_[A-Za-z0-9_-]{16,}$/.test(parsed.pathname) || parsed.search || parsed.hash)
         throw new Error("活动绑定商品入口暂不可用。");
     } else {
       const raw = obj(

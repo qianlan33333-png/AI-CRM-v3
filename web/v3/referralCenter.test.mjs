@@ -81,6 +81,7 @@ const paidDom = new JSDOM('<!doctype html><main id="referral-root"></main>', { u
     if (url.pathname === '/api/v1/referral/campaigns/8') return json(paidCampaign);
     if (url.pathname === '/api/v1/referral/campaigns/8/me') return json({ participation: { joined_at: '2026-09-18T00:00:00Z' }, team: { id: 9, name: '向阳队' }, direct_invitation_count: 0, personal_total_score: 0, personal_rank: 0, invitation_available: true });
     if (url.pathname === '/api/v1/referral/campaigns/8/leaderboard') return json({ kind: 'team', period: 'total', items: [], my_entry: null });
+    if (url.pathname === '/api/v1/referral/campaigns/8/promotion-link') return json({ url: 'https://crm.example/d/dpc_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd' }, 201);
     return json({ error: 'not_found' }, 404);
   };
 } });
@@ -88,8 +89,9 @@ paidDom.window.eval(bundle);
 await waitFor(() => paidDom.window.document.querySelector('[data-testid="referral-invite"]')?.disabled === false, 'paid activity invite action must be enabled for a participant');
 paidDom.window.document.querySelector('[data-testid="referral-invite"]').click();
 await waitFor(() => paidDom.window.document.querySelector('[data-testid="referral-invite-dialog"]'), 'paid activity product link dialog did not render');
-assert.equal(paidDom.window.document.querySelector('[data-testid="referral-invite-url"]').value, 'https://crm.example/p/bound-product', 'paid activity must copy the bound product URL');
+assert.equal(paidDom.window.document.querySelector('[data-testid="referral-invite-url"]').value, 'https://crm.example/d/dpc_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd', 'paid activity must copy the distribution promotion URL');
 assert.equal(listCalls.some((call) => call.path === '/api/v1/referral/campaigns/8/invite'), false, 'paid activity must not fall back to the ordinary referral invite endpoint');
+assert.equal(listCalls.some((call) => call.path === '/api/v1/referral/campaigns/8/promotion-link' && call.method === 'POST'), true, 'paid activity must request a server-issued distribution promotion URL');
 assert.match(paidDom.window.document.querySelector('[data-testid="referral-invite-dialog"]').textContent, /复制商品链接/);
 paidDom.window.close();
 console.log('referralCenter behavior passed');
