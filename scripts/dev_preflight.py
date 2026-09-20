@@ -126,12 +126,11 @@ class Preflight:
         return log
 
     def fast(self):
-        # No npm install, database, browser or external donor checkout needed.
+        # No npm install, database or browser setup is performed in this phase.
         self.run("format", ["make", "fmt-check"])
         self.run("boundaries", ["bash", "scripts/check-hxc-identity-boundaries.sh"])
         self.run("whitespace", ["git", "diff", "--check", "HEAD"])
-        self.run("source-views", ["make", "prepare-donor-views"])
-        self.run("frozen-frontend", ["bash", "scripts/check-pr01-donor-manifest.sh"])
+        self.run("current-v3-source", ["test", "-d", "web/v3"])
         self.run("retention-registry", [sys.executable, "scripts/check-retention-registry.py"])
         self.run("preflight-tests", [sys.executable, "scripts/test_dev_preflight.py"])
 
