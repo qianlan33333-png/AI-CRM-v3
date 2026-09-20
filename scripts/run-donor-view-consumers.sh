@@ -164,6 +164,7 @@ build_release_binaries() {
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-commerce-external-push-history ./cmd/migrate-v2-commerce-external-push-history
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-open-platform ./cmd/migrate-open-platform
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials
+  go build -trimpath -ldflags "-s -w" -o release/bin/migrate-hxc-daily-lessons ./cmd/migrate-hxc-daily-lessons
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-customer-tag-history ./cmd/migrate-v2-customer-tag-history
   go build -trimpath -ldflags "-s -w" -o release/bin/migrate-owner-handoff-history ./cmd/migrate-owner-handoff-history
