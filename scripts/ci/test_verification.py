@@ -113,6 +113,19 @@ class VerificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.require_results(needs, False, "pull_request", "refs/pull/1/merge")
 
+    def test_targeted_gate_rejects_failure_cancel_and_unplanned_success(self):
+        needs = {name: {"result": "skipped"} for name in policy.PHASES}
+        needs["preflight"]["result"] = "success"
+        needs["plan"] = {"result": "success", "outputs": {"mode": "targeted", "lanes": '["preflight"]'}}
+        policy.require_results(needs, False, "pull_request", "refs/pull/1/merge")
+        for result in ["failure", "cancelled", "success", None]:
+            needs["browser"]["result"] = result
+            with self.assertRaises(ValueError):
+                policy.require_results(needs, False, "pull_request", "refs/pull/1/merge")
+        needs["browser"]["result"] = "skipped"
+        with self.assertRaises(ValueError):
+            policy.require_results(needs, False, "push", "refs/heads/main")
+
     def test_http_200_with_wrong_sha_or_not_ready_is_not_deployed(self):
         for body in [{"status": "ready", "release_sha": "f" * 40}, {"status": "not_ready", "release_sha": self.sha}]:
             with patch.object(verify_deployment, "urlopen", return_value=io.BytesIO(json.dumps(body).encode())):
