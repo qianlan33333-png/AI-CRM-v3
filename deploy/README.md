@@ -74,6 +74,29 @@ effects worker, verifies the installed release through `/readyz`, and restores
 the prior environment if restart or readiness fails. It never enables the read,
 WeCom, outbound, or credential prerequisites itself.
 
+## Local-first release
+
+The normal release path is local-first:
+
+1. Run the complete local verification and build the archive with
+   `scripts/run-donor-view-consumers.sh release-fast`.
+2. Deploy the exact archive to staging `49.232.57.128` with
+   `scripts/deploy-release-local.sh`. Use synthetic CRM data and complete the
+   staging browser/API/readback and rollback checks.
+3. Put the staging SHA/tree and receipt in the PR. GitHub PR checks validate
+   the receipt, current tree, governance and merge consistency; they do not
+   repeat long lanes by default.
+4. After merge, compare the merged tree with the staging tree and deploy the
+   same package contents to production `124.220.53.183`.
+
+The local deploy helper uploads the archive and installer, then invokes
+`deploy/run-release-as-root.sh`. That root wrapper opens fd 9 itself and
+exports `AICRM_RELEASE_LOCK_HELD=1`, so sudo cannot close the descriptor that
+the success observer needs. Do not call `sudo bash install-release.sh` directly.
+
+The production Actions deploy remains a break-glass path and requires both
+`AICRM_ENABLE_ACTIONS_DEPLOY=true` and `AICRM_CLOUD_DEPLOY_BREAKGLASS=true`.
+
 ## Controlled release
 
 The `deploy` job runs only after the required `check` job succeeds on `main` and

@@ -211,7 +211,7 @@ case "$mode" in
         | xargs -0 sha256sum > release-files.sha256
       sha256sum --strict --check release-files.sha256
     )
-    tar -C release -czf "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz" .
+    python3 scripts/create-release-archive.py release "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz"
     ;;
   check)
     run_frozen_consumer_gates
@@ -240,7 +240,7 @@ case "$mode" in
         | xargs -0 sha256sum > release-files.sha256
       sha256sum --strict --check release-files.sha256
     )
-    tar -C release -czf "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz" .
+    python3 scripts/create-release-archive.py release "aicrm-${GITHUB_SHA:?GITHUB_SHA is required}.tar.gz"
     ;;
   *)
     echo "usage: scripts/run-donor-view-consumers.sh check|stage|release|release-fast" >&2

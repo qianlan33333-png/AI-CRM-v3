@@ -32,13 +32,13 @@ PRD 经用户确认后冻结；重大范围、合同或风险变化必须重新�
 
 当所有假设和风险边界确认、用户明确开始开发后，持续推进到完整上线验收，不把常规实现选择逐步退回用户。只有新的业务决策、红线风险、凭据/权限缺失或部署证据不一致才暂停并报告。
 
-完整终点：实现 → 本地适用测试 → GitHub PR 验证与合并 → 准确发布提交 → 本地 SSH 部署 → 部署后认证读回 → 观察窗口验收。
+完整终点：实现 → 本地完整验证 → 预发布机验收 → GitHub 轻量一致性门禁与合并 → 生产 SSH 部署 → 部署后认证读回 → 观察窗口验收。
 
-生产部署固定先合并 GitHub PR，再从本地通过 SSH 登录 `124.220.53.183` 完成部署。部署私钥固定使用 `/Users/qianlan/Downloads/zhengshi.pem`，必须保持 `0600`，不得复制到仓库、PR、日志或命令输出。SSH 用户和发布命令从现有部署配置或已确认运行手册取得，不得猜测。部署前严格校验 known_hosts/远端 Host Key；不匹配时停止，不能关闭校验或接受未知钥匙。
+常规发布先在 `49.232.57.128` 预发布机完成完整部署和合成业务验收，再合并 PR；PR 只验证预发布 receipt 与当前 tree 一致、治理和冲突状态。合并后从本地通过 SSH 登录 `124.220.53.183` 完成生产部署。生产部署私钥固定使用 `/Users/qianlan/Downloads/zhengshi.pem`，必须保持 `0600`，不得复制到仓库、PR、日志或命令输出。预发布使用同一账号和密钥时也必须单独核验 Host Key。
 
-本地构建发布包必须使用 Linux CI 等价的运行时目标：固定设置 `GOOS=linux`、`GOARCH=amd64`，并为 Linux amd64 cgo runner 提供显式交叉编译器（例如 `CC="zig cc -target x86_64-linux-gnu"`）。macOS BSD tar 运行发布构建时固定设置 `COPYFILE_DISABLE=1`，并在上传前检查包内不存在 `._*` AppleDouble 文件，且 `release-files.sha256` 能在远端安装器和 success observer 中通过。
+本地构建发布包必须使用 Linux CI 等价的运行时目标：固定设置 `GOOS=linux`、`GOARCH=amd64`，并为 Linux amd64 cgo runner 提供显式交叉编译器（例如 `CC="zig cc -target x86_64-linux-gnu"`）。发布包统一由仓库 Python archiver 创建，拒绝 `._*` AppleDouble、symlink、未注册文件和非 Linux ELF；不再直接使用 macOS BSD tar。`release-files.sha256` 必须在本地、预发布安装器和 success observer 中通过。
 
-当前已验证 SSH 账号为 `ubuntu`，通过 `sudo -n` 执行现有 `deploy/install-release.sh`。使用 `-i /Users/qianlan/Downloads/zhengshi.pem -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes`，显式选择已核验的 known_hosts；禁止尝试其他账号或绕过校验。上传前后独立比对 SHA-256，逐个检查 `bin/` 下文件为 Linux x86-64 ELF，纯 Go 默认 `CGO_ENABLED=0`，SDK runner 由现有脚本单独开启 cgo。构建必须来自准确已合并提交的干净独立 checkout。
+当前已验证 SSH 账号为 `ubuntu`，通过 `deploy/run-release-as-root.sh` 持有 root fd 9 后执行 installer；禁止从普通 sudo 调用中传递失效的锁描述符。使用 `-i /Users/qianlan/Downloads/zhengshi.pem -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes`，显式选择已核验的 known_hosts；禁止尝试其他账号或绕过校验。上传前后独立比对 SHA-256，逐个检查 `bin/` 下文件为 Linux x86-64 ELF，纯 Go 默认 `CGO_ENABLED=0`，SDK runner 由现有脚本单独开启 cgo。构建必须来自准确候选 tree 的干净独立 checkout。
 
 同一发布仅允许一个任务负责构建、上传、安装和观察，其他任务排队；不得共用可被另一任务改写的发布目录或归档路径。安装失败先保留证据并检查实际 active SHA；没有新证据不重复安装，不直接修改运营配置或跳过 bootstrap。失败候选需隔离时，先在发布锁下确认未运行、无成功收据和其他引用，不能删除正在使用的 release。
 
@@ -64,7 +64,7 @@ PRD 经用户确认后冻结；重大范围、合同或风险变化必须重新�
 
 ## 测试与合并
 
-按影响范围执行适用的静态、编译/单元、PostgreSQL/迁移/事务、集成/权限、前端构建与真实浏览器、OneID、External Effects、发布包、部署后读回和回滚检查。私有化项目只能简化 CI 编排和重复报告，不能删除适用质量门禁。
+按影响范围先在本地执行适用的静态、编译/单元、PostgreSQL/迁移/事务、集成/权限、前端构建与真实浏览器、OneID、External Effects、发布包和回滚检查；预发布机再执行完整部署、合成数据业务旅程和读回。GitHub PR 默认只执行一致性、治理、冲突、证据和 tree 检查，不重复本地长测试；修改 Composition、迁移、Provider、共享组件、CI 或部署脚本时，可由维护者显式升级完整云端 CI。
 
 PR 保留准确 HEAD/tree、并行与发布快照、测试摘要、证据目录和未验证项。编译通过、排队成功、Mock 或 HTTP 202 都不能单独称为完成。
 

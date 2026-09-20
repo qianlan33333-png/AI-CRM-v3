@@ -39,9 +39,17 @@
 - 线上认证读回：
 - 观察窗口：
 - 未验证项与阻塞原因：
+- 预发布环境：`49.232.57.128`
+- 预发布验收 SHA/tree：
+- 预发布 receipt/artifact：
+- 合并后 main tree 与预发布 tree 一致性：
+Staging-Head: <预发布时的 PR head SHA>
+Staging-Tree: <预发布 tree SHA>
+Staging-Receipt: <预发布 receipt 或 artifact 链接>
 - [ ] 首轮证据未被后续成功覆盖
 - [ ] 当前 head 的最终结果未使用旧 head 绿灯替代
 - [ ] PR 正文只保留摘要和 artifact 链接，未粘贴长日志
+- [ ] 本地完整验证和预发布验收已完成；GitHub 仅执行一致性与治理门禁
 
 ## 验证
 

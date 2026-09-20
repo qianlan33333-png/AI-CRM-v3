@@ -126,6 +126,14 @@ class VerificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.require_results(needs, False, "push", "refs/heads/main")
 
+    def test_light_pr_gate_accepts_only_skipped_long_lanes(self):
+        needs = {name: {"result": "skipped"} for name in policy.PHASES}
+        needs["plan"] = {"result": "success", "outputs": {"mode": "light", "lanes": "[]"}}
+        policy.require_results(needs, False, "pull_request", "refs/pull/1/merge")
+        needs["backend"]["result"] = "success"
+        with self.assertRaises(ValueError):
+            policy.require_results(needs, False, "pull_request", "refs/pull/1/merge")
+
     def test_http_200_with_wrong_sha_or_not_ready_is_not_deployed(self):
         for body in [{"status": "ready", "release_sha": "f" * 40}, {"status": "not_ready", "release_sha": self.sha}]:
             with patch.object(verify_deployment, "urlopen", return_value=io.BytesIO(json.dumps(body).encode())):
