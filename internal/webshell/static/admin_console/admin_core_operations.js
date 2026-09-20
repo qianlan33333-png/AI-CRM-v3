@@ -528,25 +528,35 @@
           assign.disabled = pending || !enabled || !publishedID;
         }
         async function run(previewMode) {
-          const ids = [
-            ...new Set(
-              customers.value
-                .split(/[,，\s]+/)
-                .filter(Boolean)
-                .map(Number),
-            ),
+          const numbers = [
+            ...new Set(customers.value.split(/[,，\s]+/).filter(Boolean)),
           ];
           if (
-            !ids.length ||
-            ids.length > 100 ||
-            ids.some((id) => !Number.isSafeInteger(id) || id < 1)
+            !numbers.length ||
+            numbers.length > 100 ||
+            numbers.some((number) => !/^\d{1,32}$/.test(number))
           ) {
             notice.textContent = "请填写1至100个有效客户编号。";
             return;
           }
+          const ids = [];
+          for (const number of numbers) {
+            const page = await http.request(
+              `/api/admin/customers?keyword=${encodeURIComponent(number)}&limit=2`,
+            );
+            const matches = (page.items || []).filter(
+              (item) => String(item.customer_number || "") === number,
+            );
+            if (matches.length !== 1 || !Number.isSafeInteger(Number(matches[0].customer_id))) {
+              notice.textContent = `客户编号 ${number} 不存在或无法唯一确认，请先在客户管理中核对。`;
+              return;
+            }
+            ids.push(Number(matches[0].customer_id));
+          }
+          const canonicalIDs = [...new Set(ids)];
           if (previewMode) await savePrompt(false);
           const batch = await write("core/recommendations", {
-            customer_ids: ids,
+            customer_ids: canonicalIDs,
             preview: previewMode,
           });
           result.replaceChildren(
