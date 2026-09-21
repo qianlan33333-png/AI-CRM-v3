@@ -92,7 +92,7 @@ jobs:
             echo 'mode=release' >> "$GITHUB_OUTPUT"
             echo 'lanes=[]' >> "$GITHUB_OUTPUT"
             echo 'full=false' >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          elif [[ "${{ github.event_name }}" == "push" || "${{ github.ref }}" == "refs/heads/main" || "${{ inputs.force_full }}" == "true" ]]; then
             echo 'mode=full' >> "$GITHUB_OUTPUT"
             echo 'lanes=["preflight","backend","frontend","browser","archive-sdk"]' >> "$GITHUB_OUTPUT"
             echo 'full=true' >> "$GITHUB_OUTPUT"
