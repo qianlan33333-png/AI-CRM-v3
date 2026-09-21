@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "586f65b4c760187a01830f8b7901f09ea33e81c15baaf2ba300d8f77eb75c47d",
+  "registry_sha256": "04e8b05007184b70d31f111e97175c8aaddfb9d5468c1b2017f6b289f962454b",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -6500,6 +6500,19 @@
       "cleanup_entrypoint": "",
       "policy_id": "",
       "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/builds",
+      "owner": "release",
+      "policy": "verified_release_allowlist",
+      "reason": "Root-owned staging build inputs and packages are retained until their matching receipt is promoted or explicitly expired by the release owner.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/builds",
+      "cleanup_entrypoint": "deploy/post-release-retention.py#run",
+      "policy_id": "release_build_artifacts",
+      "coverage_status": "host_unobserved",
       "gap_code": "",
       "authorization_expiry": "not_assessed"
     },

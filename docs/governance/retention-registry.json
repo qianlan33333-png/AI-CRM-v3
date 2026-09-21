@@ -98,6 +98,12 @@
       "policy_id": "release_artifacts",
       "cleanup_entrypoint": "deploy/post-release-retention.py#run"
     },
+    "filesystem_prefix:/opt/aicrm/builds": {
+      "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "policy_id": "release_build_artifacts",
+      "cleanup_entrypoint": "deploy/post-release-retention.py#run"
+    },
     "table:admin_login_rate_limits": {
       "coverage_status": "gap",
       "gap_code": "owner_cleanup_contract_missing",
@@ -353,6 +359,12 @@
       "scope": "subtree",
       "policy": "verified_release_allowlist",
       "reason": "Deletion only by lock and fully verified release inventory/apply protocol."
+    },
+    "/opt/aicrm/builds": {
+      "owner": "release",
+      "scope": "subtree",
+      "policy": "verified_release_allowlist",
+      "reason": "Root-owned staging build inputs and packages are retained until their matching receipt is promoted or explicitly expired by the release owner."
     },
     "/run/aicrm-release-retention": {
       "owner": "platform",
