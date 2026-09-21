@@ -785,6 +785,55 @@
       "source": "migrations/0013_automation_agents.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/automation_audit_events"
     },
+    "automation_audience_push_audit_events": {
+      "owner": "automation",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "记录持续推送批次受理与24小时观察的不可变摘要，是外部触达审计事实，不能因时间删除。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
+    },
+    "automation_audience_push_batches": {
+      "owner": "automation",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "保存批量请求的事件摘要、正文摘要和逐条受理结果，原事件重放必须返回同一结果。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
+    },
+    "automation_audience_push_config_audit_events": {
+      "owner": "automation",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "记录接口持续推送配置变更的操作者和摘要，供权限审计与历史解释。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
+    },
+    "automation_audience_push_config_receipts": {
+      "owner": "automation",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "保存配置命令幂等键、载荷摘要和结果，防止重试制造重复配置变更。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
+    },
+    "automation_audience_push_configs": {
+      "owner": "automation",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "保存人群包独立 Webhook、启用状态和频控版本，是持续使用的业务配置。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
+    },
+    "automation_audience_push_items": {
+      "owner": "automation",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "冻结单条推送的客户主键、素材、发送人、外部效果和打开观察事实，用于频控、状态查询和效果对账。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
+    },
+    "automation_audience_push_outbox": {
+      "owner": "automation",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "记录持续推送批次已受理的版本化领域事件与幂等摘要，供后续可靠消费和重放。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
+    },
     "automation_enrollments": {
       "owner": "automation",
       "policy": "permanent",
@@ -2709,6 +2758,13 @@
       "reason": "冻结业务意图、外部效果绑定或 Provider 接受/交付证据；效果已发生与否必须可对账，不能因时间删除后制造重复写入。 核验字段：source_kind, source_id, run_recipient_id, customer_id, sender_staff_id, agent_id, agent_published_version, content_reference。",
       "source": "migrations/0044_outbound_automation_messages.sql",
       "classification_evidence": "docs/governance/retention-classification-review.json#tables/outbound_message_intents"
+    },
+    "outbound_message_receipts": {
+      "owner": "outbound",
+      "policy": "permanent",
+      "cleanup": "disabled",
+      "reason": "保存企微消息任务、发送人、目标和实际发送回执，用于证明送达或明确失败并禁止盲目重发。",
+      "source": "migrations/0201_automation_audience_direct_push.sql"
     },
     "outbound_message_outbox": {
       "owner": "outbound",

@@ -67,6 +67,30 @@
             <button class="ai-btn soft" id="replaceLegacyScheduleWithManualBtn" type="button">改为手动刷新</button>
           </div>
         </div>
+        <section class="template-config-card" aria-label="接口持续推送">
+          <div class="template-config-head">
+            <h4>接口持续推送</h4>
+            <span class="ai-pill gray">直接进入正常发送队列</span>
+          </div>
+          <p class="ai-label">每次接收 1–1000 条；请求内指定 UnionID、话术、小程序素材库 ID 和发送人。该能力不经过 AI 生成或人工审核。</p>
+          <div class="ai-form-grid">
+            <label class="template-switch full"><input id="directPushEnabled" type="checkbox"> 启用当前人群包的独立 Webhook</label>
+            <div class="ai-field">
+              <label class="ai-label" for="directPushLimit">同一用户滚动 24 小时最多受理</label>
+              <input class="ai-input" id="directPushLimit" type="number" min="1" max="100" value="1">
+            </div>
+            <div class="ai-field full">
+              <label class="ai-label" for="directPushPath">Webhook 地址</label>
+              <input class="ai-input" id="directPushPath" readonly value="首次保存后生成">
+            </div>
+            <div class="ai-field full">
+              <label class="ai-label">签名协议</label>
+              <div class="ai-label">Client ID：<code id="directPushClientID">aicrm-audience-direct-push</code>；使用 X-AICRM-Timestamp、X-AICRM-Event-Id、X-AICRM-Signature。密钥只由环境变量配置，本页不展示。</div>
+            </div>
+          </div>
+          <div class="ai-btns"><button class="ai-btn primary" id="saveDirectPushBtn" type="button">保存接口配置</button></div>
+          <div class="ai-status-line" id="directPushStatusLine">正在读取接口能力…</div>
+        </section>
         <section data-rule-config class="template-config-card" aria-label="模板筛选条件">
           <div class="template-config-head">
             <h4>模板与筛选条件</h4>

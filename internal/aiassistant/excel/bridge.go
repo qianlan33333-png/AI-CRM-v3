@@ -369,36 +369,7 @@ func (b *Bridge) rowsFromRecipients(ctx context.Context, id ai.PlanID, recipient
 	return result, nil
 }
 func (b *Bridge) pollReceipt(ctx context.Context, receipt outbound.PrivateMessageDelivery) (outbound.PrivateMessageDelivery, error) {
-	cursor := ""
-	seen := map[string]bool{}
-	var match *outbound.PrivateMessageDelivery
-	for {
-		if seen[cursor] {
-			return receipt, errors.New("receipt cursor repeated")
-		}
-		seen[cursor] = true
-		page, err := b.Provider.GetPrivateMessageSendResult(ctx, receipt.MessageID, receipt.SenderUserID, cursor)
-		if err != nil {
-			return receipt, err
-		}
-		for _, item := range page.Items {
-			if item.ExternalUserID == receipt.ExternalUserID && item.SenderUserID == receipt.SenderUserID && item.MessageID == receipt.MessageID {
-				if match != nil {
-					return receipt, errors.New("ambiguous receipt")
-				}
-				copy := item
-				match = &copy
-			}
-		}
-		if page.NextCursor == "" {
-			break
-		}
-		cursor = page.NextCursor
-	}
-	if match == nil {
-		return receipt, errors.New("receipt not observed")
-	}
-	return *match, nil
+	return outbound.ReconcilePrivateMessageDelivery(ctx, b.Provider, receipt)
 }
 func (b *Bridge) PrepareSnapshot(ctx context.Context, id ai.PlanID, version int64) (string, error) {
 	if b.Client == nil {

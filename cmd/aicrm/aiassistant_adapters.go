@@ -265,22 +265,31 @@ type aiPrivatePayloadReader struct {
 // accepted automatic message. It holds only fixed text and Media source
 // digests/local references; it never stores binary content or Provider IDs.
 type frozenAutomationContent struct {
-	SchemaVersion int                              `json:"schema_version"`
-	ContentText   string                           `json:"content_text,omitempty"`
-	Sources       []frozenAutomationMaterialSource `json:"sources,omitempty"`
+	SchemaVersion   int                              `json:"schema_version"`
+	ContentText     string                           `json:"content_text,omitempty"`
+	Sources         []frozenAutomationMaterialSource `json:"sources,omitempty"`
+	ObservationPath string                           `json:"observation_path,omitempty"`
 }
 
 // frozenAutomationMaterialSource excludes Provider-shaped metadata and binary
 // content. The captured digest proves the complete Media-owned source when it
 // is re-read immediately before the one Provider request.
 type frozenAutomationMaterialSource struct {
-	Kind         string `json:"kind"`
-	ID           int64  `json:"id"`
-	SourceDigest string `json:"source_digest"`
+	Kind                  string `json:"kind"`
+	ID                    int64  `json:"id"`
+	SourceDigest          string `json:"source_digest"`
+	Name                  string `json:"name,omitempty"`
+	Version               int64  `json:"version,omitempty"`
+	AppID                 string `json:"appid,omitempty"`
+	PagePath              string `json:"pagepath,omitempty"`
+	Title                 string `json:"title,omitempty"`
+	ThumbnailImageID      int64  `json:"thumbnail_image_id,omitempty"`
+	ThumbnailSourceDigest string `json:"thumbnail_source_digest,omitempty"`
 }
 
 type automationOutboundContentFreezer struct {
-	capturer mediaport.GroupOpsMaterialSourceCapturer
+	capturer  mediaport.GroupOpsMaterialSourceCapturer
+	materials aiMaterialDetails
 }
 
 func (a automationOutboundContentFreezer) FreezeOutboundContent(ctx context.Context, content automationport.OutboundPublishedContent) (json.RawMessage, [32]byte, error) {
@@ -345,10 +354,19 @@ func (a automationFrozenPayloadReader) LoadFrozenAutomationMessagePayload(ctx co
 		return outbound.PrivateMessagePayload{}, errors.New("automation content sources are invalid")
 	}
 	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(snapshot.Sources))
+	frozenAttachments := make([]outbound.PrivateMessageAttachment, 0, len(snapshot.Sources))
 	if text := strings.TrimSpace(snapshot.ContentText); text != "" {
 		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentText, Text: text})
 	}
 	for _, source := range snapshot.Sources {
+		if source.Kind == "miniprogram" && source.AppID != "" {
+			attachment, err := a.preparer.prepareFrozenAutomationMiniProgram(ctx, source)
+			if err != nil {
+				return outbound.PrivateMessagePayload{}, err
+			}
+			frozenAttachments = append(frozenAttachments, attachment)
+			continue
+		}
 		block := aiassistantport.ContentBlock{MaterialKind: source.Kind, MaterialID: source.ID, MaterialDigest: effectport.Digest(source.SourceDigest)}
 		switch source.Kind {
 		case "image":
@@ -364,7 +382,28 @@ func (a automationFrozenPayloadReader) LoadFrozenAutomationMessagePayload(ctx co
 		}
 		blocks = append(blocks, block)
 	}
-	return a.preparer.prepareBlocks(ctx, blocks)
+	payload, err := a.preparer.prepareBlocks(ctx, blocks)
+	if err != nil {
+		return outbound.PrivateMessagePayload{}, err
+	}
+	payload.Attachments = append(payload.Attachments, frozenAttachments...)
+	return payload, nil
+}
+
+func (a aiPrivatePayloadReader) prepareFrozenAutomationMiniProgram(ctx context.Context, source frozenAutomationMaterialSource) (outbound.PrivateMessageAttachment, error) {
+	if a.sources == nil || a.preparer == nil || strings.TrimSpace(source.AppID) == "" || strings.TrimSpace(source.PagePath) == "" || strings.TrimSpace(source.Title) == "" ||
+		source.ThumbnailImageID < 1 || !effectport.ValidDigest(effectport.Digest(source.ThumbnailSourceDigest)) {
+		return outbound.PrivateMessageAttachment{}, errors.New("frozen mini program is invalid")
+	}
+	thumbnail, err := a.sources.GetSourceSnapshot(ctx, "image:"+strconv.FormatInt(source.ThumbnailImageID, 10))
+	if err != nil || sourceSnapshotDigest(thumbnail) != source.ThumbnailSourceDigest {
+		return outbound.PrivateMessageAttachment{}, errors.New("frozen mini program thumbnail unavailable")
+	}
+	mediaID, err := a.readyMedia(ctx, thumbnail)
+	if err != nil {
+		return outbound.PrivateMessageAttachment{}, err
+	}
+	return outbound.PrivateMessageAttachment{Kind: "mini_program", MediaID: mediaID, AppID: source.AppID, PagePath: source.PagePath, Title: source.Title}, nil
 }
 
 func mustMarshalFrozenAutomationContent(value frozenAutomationContent) []byte {

@@ -702,6 +702,30 @@ class Service:
             )
         return result
 
+    def content_open(self, data):
+        unionid = data.get("unionid", "")
+        path = data.get("path", "")
+        if not isinstance(unionid, str) or not isinstance(path, str) or not unionid or len(unionid.encode()) > 256 or len(path.encode()) > 1024:
+            raise Invalid("内容打开查询参数无效")
+        try:
+            start, end = instant(data["start"]), instant(data["end"])
+        except Exception as error:
+            raise Invalid("内容打开查询时间无效") from error
+        if end <= start or end - start > timedelta(hours=24, minutes=1):
+            raise Invalid("内容打开查询窗口无效")
+        if content_key(path) is None:
+            return {"state": "unavailable", "reason": "unsupported_path"}
+        events = self.source.opens(unionid, path, start, end)
+        if events is None:
+            return {"state": "unavailable", "reason": "coverage_incomplete"}
+        try:
+            opened = sorted(value for value in (instant(event) for event in events) if start <= value <= end)
+        except Exception:
+            return {"state": "unavailable", "reason": "invalid_source_event"}
+        if opened:
+            return {"state": "opened", "opened_at": opened[0].isoformat()}
+        return {"state": "not_opened"}
+
     def report(self, plan_id):
         with self.db() as db:
             row = db.execute("SELECT body FROM observations WHERE plan_id=?", (plan_id,)).fetchone()
@@ -813,6 +837,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, service.snapshot(data["snapshot_key"], data["rows"], data.get("segment_source"), data.get("has_segments"), data.get("version")))
             if path == "/observations":
                 return self.reply(200, service.observe(int(data["plan_id"]), data["snapshot_key"], data["rows"], data.get("now")))
+            if path == "/content-opens":
+                return self.reply(200, service.content_open(data))
             return self.reply(404, {"error": "not_found"})
         except Conflict as error:
             body = {"error": error.code, "message": str(error)}

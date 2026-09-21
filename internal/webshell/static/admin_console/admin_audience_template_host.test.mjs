@@ -74,6 +74,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/senders" || url.pathname === "/api/admin/ai-audience/packages/13/members") return json({ error: "not_found" }, 404);
       if (url.pathname === "/api/admin/automation-agents") return json({ items: [{ id: 8, agent_name: "冻结话术", automation_type: "fixed_script", status: "active" }] });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/direct-push" && (!init.method || init.method === "GET")) return json({ data: { enabled: true, max_per_customer_24h: 1, version: 1, client_id: "aicrm-audience-direct-push", webhook_path: "/api/automation/audience/webhooks/test-reference" } });
       if (url.pathname === "/api/admin/ai-audience/packages/13/precheck") return json({ precheck: { ready: false, reasons: [] } });
       if (url.pathname === "/api/admin/ai-audience/packages/13/refresh" && init.method === "POST") return json({ refresh_run: { id: 71, state: "queued" } }, 202);
       if (url.pathname === "/api/admin/ai-audience/packages/13/refresh-runs/71") return json({ refresh_run: { id: 71, state: "failed", error_code: "refresh_unavailable" } });

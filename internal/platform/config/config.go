@@ -133,10 +133,11 @@ const (
 // Effects switch. Enabling the effects worker must never implicitly authorize
 // an Automation Operations send.
 type AutomationOperations struct {
-	WebhookSecret       string
-	ProviderMode        AutomationProviderMode
-	ProviderPermission  string
-	MaxRecipientsPerRun int
+	WebhookSecret             string
+	AudiencePushWebhookSecret string
+	ProviderMode              AutomationProviderMode
+	ProviderPermission        string
+	MaxRecipientsPerRun       int
 }
 
 func (c AutomationOperations) ProviderEnabled() bool {
@@ -390,10 +391,11 @@ func Load() (Runtime, error) {
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
 		AutomationOperations: AutomationOperations{
-			WebhookSecret:       os.Getenv("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET"),
-			ProviderMode:        AutomationProviderMode(valueOrDefault("AICRM_AUTOMATION_OPS_PROVIDER_MODE", string(AutomationProviderDisabled))),
-			ProviderPermission:  os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
-			MaxRecipientsPerRun: DefaultAutomationMaxRecipientsPerRun,
+			WebhookSecret:             os.Getenv("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET"),
+			AudiencePushWebhookSecret: os.Getenv("AICRM_AUDIENCE_PUSH_WEBHOOK_SECRET"),
+			ProviderMode:              AutomationProviderMode(valueOrDefault("AICRM_AUTOMATION_OPS_PROVIDER_MODE", string(AutomationProviderDisabled))),
+			ProviderPermission:        os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
+			MaxRecipientsPerRun:       DefaultAutomationMaxRecipientsPerRun,
 		},
 		Survey:       Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), CompletionNavigationTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_NAVIGATION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
 		Referral:     Referral{TokenDataKey: os.Getenv("AICRM_REFERRAL_TOKEN_DATA_KEY")},
@@ -791,6 +793,9 @@ func Load() (Runtime, error) {
 	}
 	if cfg.AutomationOperations.WebhookSecret != "" && (strings.TrimSpace(cfg.AutomationOperations.WebhookSecret) != cfg.AutomationOperations.WebhookSecret || len(cfg.AutomationOperations.WebhookSecret) < 32 || len(cfg.AutomationOperations.WebhookSecret) > 4096) {
 		return Runtime{}, errors.New("invalid Automation Operations webhook secret")
+	}
+	if cfg.AutomationOperations.AudiencePushWebhookSecret != "" && (strings.TrimSpace(cfg.AutomationOperations.AudiencePushWebhookSecret) != cfg.AutomationOperations.AudiencePushWebhookSecret || len(cfg.AutomationOperations.AudiencePushWebhookSecret) < 32 || len(cfg.AutomationOperations.AudiencePushWebhookSecret) > 4096) {
+		return Runtime{}, errors.New("invalid AICRM_AUDIENCE_PUSH_WEBHOOK_SECRET")
 	}
 	switch cfg.AutomationOperations.ProviderMode {
 	case AutomationProviderDisabled:

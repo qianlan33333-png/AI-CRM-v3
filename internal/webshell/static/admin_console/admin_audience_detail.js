@@ -161,6 +161,10 @@
     return ({ accepted: "已接受", queued: "已排队", preparing: "动态生成中", pending_review: "等待 AI 审阅", executing: "执行中", completed: "已完成", partial: "部分完成", partial_failed: "部分失败", failed: "失败", cancelled: "已取消", outcome_unknown: "结果待核实", reconciled: "已对账", provider_accepted: "发送服务已接受", delivery_proven: "已证明送达", retryable_failed: "可重试失败", final_failed: "最终失败" })[value] || "运行状态待确认";
   }
 
+  function observationStateLabel(value) {
+    return ({ not_started: "尚未开始", observing: "24 小时观察中", opened: "已打开", not_opened: "未打开", unavailable: "不可统计" })[value] || "观察状态待确认";
+  }
+
   function identityDispositionLabel(value) {
     return ({ resolved: "已关联用户", pending: "待识别", conflict: "身份冲突", anonymous: "匿名访问", failed: "识别失败" })[value] || "身份状态待确认";
   }
@@ -451,6 +455,31 @@
       }
     }
 
+    function renderDirectPush() {
+      if (!byID("directPushEnabled")) return;
+      const config = state.directPush || { enabled: false, max_per_customer_24h: 1, version: 0, client_id: "aicrm-audience-direct-push" };
+      byID("directPushEnabled").checked = config.enabled === true;
+      byID("directPushLimit").value = Number(config.max_per_customer_24h || 1);
+      byID("directPushPath").value = config.webhook_path || "首次保存后生成";
+      byID("directPushClientID").textContent = config.client_id || "aicrm-audience-direct-push";
+      const archived = state.pkg?.lifecycle === "archived";
+      byID("directPushEnabled").disabled = archived;
+      byID("directPushLimit").disabled = archived;
+      byID("saveDirectPushBtn").disabled = archived;
+      setStatus(byID("directPushStatusLine"), config.webhook_path ? (config.enabled ? "接口已启用；合法条目会直接排队发送，实际送达和 24 小时打开结果另行回写。" : "接口已配置但当前停用。") : "尚未生成独立 Webhook。", config.enabled ? "success" : "");
+    }
+
+    async function loadDirectPush() {
+      try {
+        const result = await optional(`${API}/ai-audience/packages/${packageID}/direct-push`, "接口持续推送");
+        state.directPush = result?.data || null;
+        renderDirectPush();
+      } catch (error) {
+        const detail = errorState(error);
+        setStatus(byID("directPushStatusLine"), detail.message, "error");
+      }
+    }
+
     async function load() {
       setCapability("正在读取真实配置与持久执行状态…", "loading");
       try {
@@ -469,12 +498,15 @@
         state.binding = bindingResult?.binding || null;
         state.senders = senderResult?.sender_set || null;
         state.agents = agentResult.items || [];
+        state.directPush = null;
         enable();
         renderGroups(groups.items);
         renderTemplates(templates.items);
         renderAgents();
         renderSenders();
+        renderDirectPush();
         renderSummary();
+        void loadDirectPush();
         await loadMembers(true);
         try {
           const check = await request(`${API}/ai-audience/packages/${packageID}/precheck`, { method: "POST", body: {} });
@@ -567,6 +599,22 @@
       } catch (error) { const value = errorState(error); setStatus(byID("senderStatusLine"), value.message, "error"); }
     }
 
+    async function saveDirectPush() {
+      if (!state.pkg || state.pkg.lifecycle === "archived") return;
+      const limit = Number(byID("directPushLimit").value);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) return setStatus(byID("directPushStatusLine"), "24 小时受理上限必须为 1–100。", "error");
+      setStatus(byID("directPushStatusLine"), "正在保存独立 Webhook 与频控配置…");
+      try {
+        const result = await request(`${API}/ai-audience/packages/${packageID}/direct-push`, { method: "PUT", mutate: true, scope: "audience-direct-push-config", body: { enabled: byID("directPushEnabled").checked, max_per_customer_24h: limit, expected_version: Number(state.directPush?.version || 0) } });
+        state.directPush = result.data;
+        renderDirectPush();
+      } catch (error) {
+        const detail = errorState(error);
+        setStatus(byID("directPushStatusLine"), detail.message, "error");
+        if (error instanceof APIError && error.status === 409) await load();
+      }
+    }
+
     async function loadMembers(silent = false) {
       if (!silent) setStatus(byID("memberTotal"), "读取中");
       try {
@@ -582,10 +630,14 @@
     async function loadRuns() {
       setStatus(byID("sendRecordStatusLine"), "正在读取持久运行与收件人效果状态…");
       try {
-        const result = await request(`${API}/automation-runs?limit=100`);
+        const [runOutcome, directOutcome] = await Promise.allSettled([request(`${API}/automation-runs?limit=100`), optional(`${API}/ai-audience/packages/${packageID}/direct-pushes`, "接口发送记录")]);
+        if (runOutcome.status === "rejected") throw runOutcome.reason;
+        const result = runOutcome.value;
+        const directResult = directOutcome.status === "fulfilled" ? directOutcome.value : null;
         state.runs = (result.items || []).filter((run) => run.package_id === packageID);
-        byID("sendRecordTotal").textContent = `${state.runs.length} 次运行`;
-        byID("sendRecordRows").innerHTML = state.runs.length ? state.runs.map((run) => {
+        state.directPushRecords = directResult?.items || [];
+        byID("sendRecordTotal").textContent = `${state.runs.length} 次运行 · ${state.directPushRecords.length} 条接口推送`;
+        const runRows = state.runs.map((run) => {
           const generated = run.generation || {};
           const dynamic = Number(generated.total || 0) > 0;
           const generationStatus = dynamic ? `<div class="ai-label">动态生成 ${generated.total} 项 · 成功 ${generated.succeeded || 0} · 失败排除 ${generated.failed || 0} · 未知排除 ${generated.unknown || 0} · 待处理 ${generated.queued || 0}</div>` : "";
@@ -594,11 +646,13 @@
             : dynamic
               ? `<button class="ai-btn soft" data-generation-run-id="${run.id}">查看动态生成进度</button>`
               : `<button class="ai-btn soft" data-run-id="${run.id}">查看收件人</button>`;
-          return `<tr><td>#${run.id}</td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span>${generationStatus}${run.ai_plan_state ? `<div class="ai-label">AI：${escapeHTML(aiPlanStateLabel(run.ai_plan_state))}</div>` : ""}</td><td>${run.target_count} / ${run.skipped_count}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || generated.unknown || 0}</td><td>${action}</td></tr>`;
-        }).join("") : `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
+          return `<tr><td>#${run.id}<div class="ai-label">自动化运行</div></td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span>${generationStatus}${run.ai_plan_state ? `<div class="ai-label">AI：${escapeHTML(aiPlanStateLabel(run.ai_plan_state))}</div>` : ""}</td><td>${run.target_count} / ${run.skipped_count}</td><td>${runStateLabel(run.state)}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || generated.unknown || 0}</td><td>${action}</td></tr>`;
+        });
+        const directRows = state.directPushRecords.map((item) => `<tr><td>${escapeHTML(item.push_id)}<div class="ai-label">接口批次 ${escapeHTML(item.batch_id)}</div></td><td><span class="ai-pill${item.send_state === "outcome_unknown" ? " gray" : ""}">${escapeHTML(runStateLabel(item.send_state))}</span><div class="ai-label">${escapeHTML(observationStateLabel(item.observation_state))}${item.observation_reason ? ` · ${escapeHTML(item.observation_reason)}` : ""}</div></td><td>1 / 0<div class="ai-label">员工 #${Number(item.sender_staff_id)} · ${escapeHTML(item.miniprogram_name || `素材 #${Number(item.miniprogram_id)}`)}${item.miniprogram_version ? ` · 冻结版本 ${Number(item.miniprogram_version)}` : ""}</div></td><td>${escapeHTML(runStateLabel(item.send_state))}</td><td>${formatTime(item.sent_at || item.created_at)}</td><td>${item.send_state === "outcome_unknown" ? 1 : 0}</td><td><span class="ai-label">${item.failure_code ? escapeHTML(item.failure_code) : "请求话术已冻结，不在列表展示"}</span></td></tr>`);
+        byID("sendRecordRows").innerHTML = [...directRows, ...runRows].join("") || `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
         byID("sendRecordRows").querySelectorAll("[data-run-id]").forEach((node) => node.addEventListener("click", () => loadRecipients(Number(node.dataset.runId))));
         byID("sendRecordRows").querySelectorAll("[data-generation-run-id]").forEach((node) => node.addEventListener("click", () => loadGenerationItems(Number(node.dataset.generationRunId))));
-        setStatus(byID("sendRecordStatusLine"), "固定发送和动态生成均读取持久状态；失败和未知项会明确排除出 AI 待审。", "success");
+        setStatus(byID("sendRecordStatusLine"), directOutcome.status === "fulfilled" ? "固定发送、动态生成和接口推送均读取持久状态；失败和未知项会明确展示。" : "原有发送记录已读取；接口推送记录暂不可读取。", directOutcome.status === "fulfilled" ? "success" : "error");
       } catch (error) { const detail = errorState(error); setStatus(byID("sendRecordStatusLine"), detail.message, "error"); }
     }
 
@@ -751,6 +805,7 @@
     });
     byID("addSenderBtn").addEventListener("click", () => byID("senderReferenceInput")?.focus());
     byID("saveSendersBtn").addEventListener("click", saveSenders);
+    byID("saveDirectPushBtn")?.addEventListener("click", saveDirectPush);
     byID("broadcastPreviewBtn").addEventListener("click", createBroadcastPreview);
     byID("broadcastConfirmBtn").addEventListener("click", confirmBroadcast);
     byID("createPolicyBtn").addEventListener("click", createPolicy);

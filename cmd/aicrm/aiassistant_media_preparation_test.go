@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +112,26 @@ func TestAIPrivatePayloadReturnsTypedPendingUntilPrepared(t *testing.T) {
 	var pending outboundport.MediaPreparationPendingError
 	if !errors.As(err, &pending) || pending.RetryAfter() != time.Second {
 		t.Fatalf("err=%v pending=%+v", err, pending)
+	}
+}
+
+func TestAudienceDirectPushUsesFrozenMiniProgramFields(t *testing.T) {
+	thumbnailDigest := [32]byte{2}
+	thumbnailDigestText := "sha256:" + hex.EncodeToString(thumbnailDigest[:])
+	source := outboundport.MaterialSourceSnapshot{SourceRef: "image:41", SourceType: "image", ContentDigest: thumbnailDigest, FileName: "cover.png", MediaType: "image/png", SizeBytes: 10, SnapshotVersion: 3}
+	preparer := &preparedAIPreparerStub{result: outboundport.MaterialResult{State: "ready", MediaID: "frozen-cover-id"}}
+	snapshot := frozenAutomationContent{SchemaVersion: 1, ContentText: "冻结话术", Sources: []frozenAutomationMaterialSource{{Kind: "miniprogram", ID: 128, SourceDigest: "sha256:" + strings.Repeat("a", 64), Name: "课程卡", Version: 7, AppID: "wx-frozen", PagePath: "pages/frozen", Title: "冻结标题", ThumbnailImageID: 41, ThumbnailSourceDigest: thumbnailDigestText}}, ObservationPath: "pages/frozen"}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{sources: preparedAISourceStub{source: source}, preparer: preparer, scopeDigest: "sha256:" + strings.Repeat("b", 64)}}
+	payload, err := reader.LoadFrozenAutomationMessagePayload(context.Background(), raw, sha256.Sum256(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Text != "冻结话术" || len(payload.Attachments) != 1 || payload.Attachments[0].AppID != "wx-frozen" || payload.Attachments[0].PagePath != "pages/frozen" || payload.Attachments[0].Title != "冻结标题" || payload.Attachments[0].MediaID != "frozen-cover-id" {
+		t.Fatalf("payload=%+v", payload)
 	}
 }
 
