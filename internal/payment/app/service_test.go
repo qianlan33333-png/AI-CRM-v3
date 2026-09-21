@@ -753,27 +753,52 @@ func (o *checkoutOrderStub) ReadStandardPurchaseWithin(context.Context, orderpor
 	return o.purchase, nil
 }
 
-func TestStandardPurchaseGateRejectsOwnedAndPendingBeforeOrderOrEffect(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		state orderport.StandardPurchaseState
-		want  error
-	}{{"owned", orderport.StandardPurchaseState{Owned: true}, paymentport.ErrAlreadyPurchased}, {"pending", orderport.StandardPurchaseState{Pending: true}, paymentport.ErrPurchasePending}} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := &storeStub{}
-			orders := &checkoutOrderStub{purchase: tc.state}
-			products := &checkoutProductStub{product: productport.CheckoutProduct{ID: 5, ProductType: productport.ProductOptionStandard, Code: "course-5", Name: "Course 5", PriceMinor: 8800, Currency: "CNY", Version: 3}}
-			sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved}}
-			svc := NewService(uowStub{}, store, orders, sessions, &effectStub{})
-			_ = svc.SetCheckoutProductReader(products)
-			cmd := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_session_token_0000000005", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_0000000005"), ActorScope: "public-checkout", IdempotencyKey: "checkout-product-key-0005"}
-			if _, err := svc.Create(context.Background(), cmd); !errors.Is(err, tc.want) {
-				t.Fatalf("got %v want %v", err, tc.want)
-			}
-			if orders.command.ProductID != 0 || store.payment.ID != 0 || sessions.consumed {
-				t.Fatal("blocked purchase wrote order/payment or consumed session")
-			}
-		})
+func TestStandardPurchaseGateBlocksOwnedButAllowsPending(t *testing.T) {
+	products := &checkoutProductStub{product: productport.CheckoutProduct{ID: 5, ProductType: productport.ProductOptionStandard, Code: "course-5", Name: "Course 5", PriceMinor: 8800, Currency: "CNY", Version: 3}}
+	newCommand := func() paymentport.CreateCommand {
+		return paymentport.CreateCommand{ProductID: 5, ProductType: "standard", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_session_token_0000000005", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_0000000005"), ActorScope: "public-checkout", IdempotencyKey: "checkout-product-key-0005"}
+	}
+	t.Run("owned remains blocked", func(t *testing.T) {
+		store := &storeStub{}
+		orders := &checkoutOrderStub{purchase: orderport.StandardPurchaseState{Owned: true}}
+		sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved}}
+		svc := NewService(uowStub{}, store, orders, sessions, &effectStub{})
+		_ = svc.SetCheckoutProductReader(products)
+		if _, err := svc.Create(context.Background(), newCommand()); !errors.Is(err, paymentport.ErrAlreadyPurchased) {
+			t.Fatalf("got %v want %v", err, paymentport.ErrAlreadyPurchased)
+		}
+		if orders.command.ProductID != 0 || store.payment.ID != 0 || sessions.consumed {
+			t.Fatal("owned purchase wrote order/payment or consumed session")
+		}
+	})
+	t.Run("pending allows a new order", func(t *testing.T) {
+		store := &storeStub{}
+		orders := &checkoutOrderStub{purchase: orderport.StandardPurchaseState{Pending: true}}
+		sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved}}
+		svc := NewService(uowStub{}, store, orders, sessions, &effectStub{})
+		_ = svc.SetCheckoutProductReader(products)
+		if _, err := svc.Create(context.Background(), newCommand()); err != nil {
+			t.Fatalf("pending purchase blocked new checkout: %v", err)
+		}
+		if orders.command.ProductID != 5 || store.payment.ID == 0 || !sessions.consumed {
+			t.Fatal("pending purchase did not create order/payment and consume session")
+		}
+	})
+}
+
+func TestPurchaseStatusTreatsPendingAsAvailable(t *testing.T) {
+	orders := &checkoutOrderStub{purchase: orderport.StandardPurchaseState{Pending: true}}
+	sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved}}
+	svc := NewService(uowStub{}, &storeStub{}, orders, sessions, &effectStub{})
+	_ = svc.SetCheckoutProductReader(&checkoutProductStub{product: productport.CheckoutProduct{
+		ID: 5, ProductType: productport.ProductOptionStandard, Code: "course-5", Name: "Course 5", PriceMinor: 8800, Currency: "CNY", Version: 3,
+	}})
+	state, err := svc.PurchaseStatus(context.Background(), "pays_session_token_0000000005", "standard", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.State != "available" || !state.CanPurchase {
+		t.Fatalf("pending purchase status=%+v", state)
 	}
 }
 
