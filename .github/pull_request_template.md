@@ -42,6 +42,12 @@
 - 预发布环境：`49.232.57.128`
 - 预发布验收 SHA/tree：
 - 预发布 receipt/artifact：
+- capability：
+- affected_modules：
+- required_routes：
+- required_services：
+- required_provider_dependencies：
+- business_readback：
 - 合并后 main tree 与预发布 tree 一致性：
 Staging-Head: <预发布时的 PR head SHA>
 Staging-Tree: <预发布 tree SHA>

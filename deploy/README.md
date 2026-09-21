@@ -74,20 +74,28 @@ effects worker, verifies the installed release through `/readyz`, and restores
 the prior environment if restart or readiness fails. It never enables the read,
 WeCom, outbound, or credential prerequisites itself.
 
-## Local-first release
+## Staging-built release
 
-The normal release path is local-first:
+The normal release path builds once on the Linux staging host and promotes the
+same package after merge:
 
-1. Run the complete local verification and build the archive with
-   `scripts/run-donor-view-consumers.sh release-fast`（脚本名为兼容名称，实际只使用当前 AI-CRM-v3 仓库，不读取任何 donor）。
-2. Deploy the exact archive to staging `49.232.57.128` with
-   `scripts/deploy-release-local.sh`. Use synthetic CRM data and complete the
-   staging browser/API/readback and rollback checks.
+1. Run fast local checks only. The staging host checks out the exact v3 commit
+   and runs `deploy/build-release-on-staging.sh`, which invokes
+   `scripts/run-donor-view-consumers.sh release-fast` on Linux amd64.
+2. Install the resulting package to staging `49.232.57.128` and complete the
+   affected capability's synthetic API/browser/readback and rollback checks.
 3. Put the staging SHA/tree and receipt in the PR. GitHub PR checks validate
    the receipt, current tree, governance and merge consistency; they do not
    repeat long lanes by default.
-4. After merge, compare the merged tree with the staging tree and deploy the
-   same package contents to production `124.220.53.183`.
+4. After merge, compare the merged tree with the staging tree and run
+   `deploy/promote-staging-release.sh` for the same archive digest. The staging
+   receipt must bind repository, commit, tree, package SHA-256, capability and
+   business readback. A mismatched tree or digest stops promotion. Production
+   is never rebuilt from a different checkout.
+
+Staging and production use separate release locks. An unrelated disabled
+Provider is recorded as `external_config_unavailable`; it blocks only when the
+capability declaration lists that Provider as a required dependency.
 
 The local deploy helper uploads the archive and installer, then invokes
 `deploy/run-release-as-root.sh`. That root wrapper opens fd 9 itself and

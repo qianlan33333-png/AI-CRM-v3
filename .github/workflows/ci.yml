@@ -57,6 +57,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate release target before building
+        run: |
+          python3 scripts/check-migration-sequence.py --base "${GITHUB_BASE_SHA:-origin/main}"
       - id: plan
         name: Verify whether main is exactly the tested PR tree
         env:
@@ -89,7 +92,7 @@ jobs:
             echo 'mode=release' >> "$GITHUB_OUTPUT"
             echo 'lanes=[]' >> "$GITHUB_OUTPUT"
             echo 'full=false' >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          elif [[ "${{ github.event_name }}" == "push" || "${{ github.ref }}" == "refs/heads/main" || "${{ inputs.force_full }}" == "true" ]]; then
             echo 'mode=full' >> "$GITHUB_OUTPUT"
             echo 'lanes=["preflight","backend","frontend","browser","archive-sdk"]' >> "$GITHUB_OUTPUT"
             echo 'full=true' >> "$GITHUB_OUTPUT"
@@ -467,6 +470,9 @@ jobs:
     # deployment only as an explicit break-glass path.
     if: ${{ vars.AICRM_ENABLE_ACTIONS_DEPLOY == 'true' && vars.AICRM_CLOUD_DEPLOY_BREAKGLASS == 'true' && !cancelled() && needs.check.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     needs: check
+    concurrency:
+      group: aicrm-production-release
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     # Cross-region upload to the mainland deployment host can make steady
     # progress for longer than 60 minutes. Keep a bounded three-hour ceiling so
@@ -479,45 +485,49 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
-        with:
-          lane: release
-      - name: Build the merged release without repeating PR regression tests
+      - name: Configure pinned staging and production SSH hosts
         env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: amd64
-        run: bash scripts/run-donor-view-consumers.sh release-fast
-      - name: Configure pinned SSH host
+          DEPLOY_SSH_KEY: ${{ secrets.STAGING_SSH_KEY || secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS || secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/staging_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/staging_known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/staging_key" >/dev/null
+          test -s "$HOME/.ssh/staging_known_hosts"
+      - name: Retrieve the accepted staging package and receipt
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER || 'ubuntu' }}
+        run: |
+          set -euo pipefail
+          ssh_flags=(-i "$HOME/.ssh/staging_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/staging_known_hosts")
+          remote_root="/opt/aicrm/builds/${GITHUB_SHA}"
+          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/aicrm-${GITHUB_SHA}.tar.gz" "aicrm-${GITHUB_SHA}.tar.gz"
+          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/staging-receipt.json" "staging-receipt-${GITHUB_SHA}.json"
+          export STAGING_PACKAGE_SHA256="$(python3 -c 'import json; print(json.load(open("staging-receipt-" + __import__("os").environ["GITHUB_SHA"] + ".json"))["package_sha256"])')"
+          echo "STAGING_PACKAGE_SHA256=$STAGING_PACKAGE_SHA256" >> "$GITHUB_ENV"
+      - name: Configure pinned production SSH host
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          install -d -m 0700 "$HOME/.ssh"
           umask 077
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
           test -s "$HOME/.ssh/known_hosts"
-      - name: Install versioned release
+      - name: Promote the accepted package to production
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          set -euo pipefail
-          deploy/upload-release-chunks.sh \
-            "aicrm-${GITHUB_SHA}.tar.gz" \
-            "$GITHUB_SHA" \
-            "$DEPLOY_USER" \
-            "$DEPLOY_HOST" \
-            "$HOME/.ssh/deploy_key"
-          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
-          remote_incoming="/opt/aicrm/incoming"
-          scp "${ssh_flags[@]}" deploy/install-release.sh deploy/run-release-as-root.sh \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
-          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo install -d -m 0755 ${remote_incoming} && sudo install -o root -g root -m 0755 /tmp/install-release.sh ${remote_incoming}/install-release.sh && sudo install -o root -g root -m 0755 /tmp/run-release-as-root.sh ${remote_incoming}/run-release-as-root.sh && sudo ${remote_incoming}/run-release-as-root.sh /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
+          STAGING_RECEIPT: staging-receipt-${{ github.sha }}.json
+          PRODUCTION_HOST: ${{ secrets.DEPLOY_HOST }}
+          PRODUCTION_USER: ${{ secrets.DEPLOY_USER }}
+          PRODUCTION_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          PRODUCTION_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: bash deploy/promote-staging-release.sh "aicrm-${GITHUB_SHA}.tar.gz" "$GITHUB_SHA"
       - name: Configure HXC production source
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
