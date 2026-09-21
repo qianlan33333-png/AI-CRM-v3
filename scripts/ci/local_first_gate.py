@@ -23,6 +23,7 @@ OPERATOR_ONLY_PREFIXES = (
 # they do not require an application receipt when no runtime code changes.
 OPERATOR_ONLY_PREFIXES += (
     "deploy/build-release-on-staging.sh",
+    "deploy/build-release-on-staging-remote.sh",
     "deploy/promote-staging-release.sh",
     "scripts/check-release-binaries.py",
     "scripts/check-migration-sequence.py",
@@ -73,8 +74,11 @@ def main() -> int:
     for name in ("Staging-Head", "Staging-Tree", "Staging-Receipt"):
         match = re.search(rf"(?m)^{re.escape(name)}:\s*(\S+)\s*$", body)
         values[name] = match.group(1) if match else ""
-    if not SHA.fullmatch(values["Staging-Head"]) or values["Staging-Head"] != current:
-        raise SystemExit("staging receipt head does not match the current PR head")
+    if not SHA.fullmatch(values["Staging-Head"]):
+        raise SystemExit("staging receipt head is missing or invalid")
+    staging_tree = subprocess.check_output(["git", "rev-parse", f"{values['Staging-Head']}^{{tree}}"], text=True).strip()
+    if staging_tree != tree:
+        raise SystemExit("staging receipt head tree does not match the current PR tree")
     if not SHA.fullmatch(values["Staging-Tree"]) or values["Staging-Tree"] != tree:
         raise SystemExit("staging receipt tree does not match the current PR tree")
     if values["Staging-Receipt"].startswith("<"):
