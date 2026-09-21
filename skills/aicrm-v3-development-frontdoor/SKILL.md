@@ -101,4 +101,6 @@ PR 保留准确 HEAD/tree、并行与发布快照、测试摘要、证据目录�
 
 每次 staging receipt 必须带能力声明：`affected_modules`、`required_routes`、`required_services`、`required_provider_dependencies` 和 `business_readback`。验收只执行声明的当前板块及明确共享依赖。未声明的 Provider 返回 `503 distribution_unavailable` 时必须用 `scripts/validate-staging-capability.py` 分类为 `external_config_unavailable` 并保留观察证据；不得把它写成代码失败，也不得阻塞当前板块。若该 Provider 在 `required_provider_dependencies` 中，则 503 仍是阻塞。Payment checkout 变更不自动要求 Distribution 商品链路；Distribution 变更才要求真实商品、资格和 Provider 读回。
 
-验收辅助脚本不生成 accepted receipt，也不执行 HTTP 请求。required_routes 是非空路径字符串数组；observations 必须覆盖全部必需路由/Provider，并记录 status 与真实业务断言 business_verified。HTTP 200 本身不能替代业务验收。Payment Provider 关闭时，支付下单验收仍未完成，不得用无关分销豁免代替。
+验收辅助脚本不生成 accepted receipt，也不执行 HTTP 请求。required_routes 是非空路径字符串数组；observations 必须覆盖全部必需路由/Provider，并记录 status 与业务断言 business_verified。HTTP 200 本身不能替代业务验收。支付板块默认使用 acceptance_mode=virtual：在预发布用本地虚拟支付适配器或确定性数据库事实验证待支付订单重购、幂等、已支付拦截和状态回读，不连接真实支付、不扣款、不等待 Provider 回执。只有明确需要 Provider 集成的板块才使用 acceptance_mode=live。
+
+支付板块在预发布默认使用虚拟验收，不要求真实商户配置、真实扣款或 Provider 回执。能力声明填写 `acceptance_mode: virtual`，并用本地虚拟适配器/确定性数据库事实完成 pending 重购、幂等回放、旧订单保留、已支付拦截和业务状态读回；`business_verified` 必须为真且观察项带 `effect_mode: virtual`。只有用户明确要求支付渠道联调时才使用 `acceptance_mode: live`，那是独立 Provider 验收，不得阻塞普通支付逻辑 PR。

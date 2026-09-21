@@ -17,6 +17,18 @@ class CapabilityTests(unittest.TestCase):
         result = module.validate(self.cap, {'observations': [self.ok, self.disabled]})
         self.assertEqual(result['unrelated_observations'][0]['classification'], 'external_config_unavailable')
 
+
+    def test_virtual_payment_requires_virtual_evidence(self):
+        cap = {**self.cap, 'acceptance_mode': 'virtual'}
+        with self.assertRaises(ValueError):
+            module.validate(cap, {'observations': [self.ok]})
+        result = module.validate(cap, {'observations': [{**self.ok, 'effect_mode': 'virtual'}]})
+        self.assertEqual(result['acceptance_mode'], 'virtual')
+
+    def test_invalid_acceptance_mode_fails(self):
+        with self.assertRaises(ValueError):
+            module.validate({**self.cap, 'acceptance_mode': 'provider'}, {'observations': [self.ok]})
+
     def test_declared_route_cannot_be_ignored(self):
         self.cap['required_routes'].append(self.disabled['route'])
         with self.assertRaises(ValueError):

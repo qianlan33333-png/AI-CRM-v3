@@ -188,4 +188,6 @@ python3 scripts/validate-staging-capability.py capability.json readback.json
 
 An unavailable unrelated provider is recorded as `external_config_unavailable`; a failure on a declared route or provider remains blocking. For example, a Payment checkout change does not require the Distribution product route when WeChat Distribution is disabled on staging.
 
-验收辅助脚本不生成 accepted receipt，也不执行 HTTP 请求。required_routes 是非空路径字符串数组；observations 必须覆盖全部必需路由/Provider，并记录 status 与真实业务断言 business_verified。HTTP 200 本身不能替代业务验收。Payment Provider 关闭时，支付下单验收仍未完成，不得用无关分销豁免代替。
+验收辅助脚本不生成 accepted receipt，也不执行 HTTP 请求。required_routes 是非空路径字符串数组；observations 必须覆盖全部必需路由/Provider，并记录 status 与业务断言 business_verified。HTTP 200 本身不能替代业务验收。支付板块默认使用 acceptance_mode=virtual：在预发布用本地虚拟支付适配器或确定性数据库事实验证待支付订单重购、幂等、已支付拦截和状态回读，不连接真实支付、不扣款、不等待 Provider 回执。只有明确需要 Provider 集成的板块才使用 acceptance_mode=live。
+
+Payment staging uses a virtual acceptance mode by default. It verifies pending-order replacement, idempotency replay, preservation of the old order, paid ownership blocking, and business readback with a local adapter or deterministic database facts. It never charges money or requires merchant credentials. Provider callbacks, real payment, and reconciliation remain a separate explicitly requested live acceptance.
