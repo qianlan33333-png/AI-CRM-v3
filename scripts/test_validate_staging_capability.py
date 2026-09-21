@@ -10,12 +10,29 @@ spec.loader.exec_module(module)
 class CapabilityTests(unittest.TestCase):
     def setUp(self):
         self.cap = {'required_routes': ['/checkout'], 'required_provider_dependencies': []}
-        self.ok = {'route': '/checkout', 'status': 200, 'business_verified': True}
+        self.ok = {'route': '/checkout', 'status': 200, 'business_verified': True, 'effect_mode': 'virtual'}
         self.disabled = {'route': '/api/v1/distribution/products', 'provider': 'distribution', 'status': 503, 'error': 'distribution_unavailable'}
 
     def test_unrelated_disabled_distribution(self):
         result = module.validate(self.cap, {'observations': [self.ok, self.disabled]})
         self.assertEqual(result['unrelated_observations'][0]['classification'], 'external_config_unavailable')
+
+
+    def test_virtual_payment_requires_virtual_evidence(self):
+        cap = {**self.cap, 'acceptance_mode': 'virtual'}
+        with self.assertRaises(ValueError):
+            module.validate(cap, {'observations': [{k: v for k, v in self.ok.items() if k != 'effect_mode'}]})
+        result = module.validate(cap, {'observations': [{**self.ok, 'effect_mode': 'virtual'}]})
+        self.assertEqual(result['acceptance_mode'], 'virtual')
+
+    def test_invalid_acceptance_mode_fails(self):
+        with self.assertRaises(ValueError):
+            module.validate({**self.cap, 'acceptance_mode': 'provider'}, {'observations': [self.ok]})
+
+
+    def test_all_unconnected_external_schedulers_are_nonblocking_in_virtual_mode(self):
+        result = module.validate(self.cap, {'observations': [self.ok, {'route': '/api/v1/audience/push', 'provider': 'outbound', 'status': 503, 'error': 'outbound_unavailable'}, {'route': '/api/v1/automation/run', 'provider': 'automation', 'status': 503, 'error': 'automation_unavailable'}]})
+        self.assertEqual(len(result['unrelated_observations']), 2)
 
     def test_declared_route_cannot_be_ignored(self):
         self.cap['required_routes'].append(self.disabled['route'])

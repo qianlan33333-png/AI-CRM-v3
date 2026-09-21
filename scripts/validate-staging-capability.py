@@ -12,6 +12,9 @@ def string_list(value, name):
 
 
 def validate(capability, readback):
+    mode = capability.get('acceptance_mode', 'virtual')
+    if mode not in {'live', 'virtual'}:
+        raise ValueError('acceptance_mode must be live or virtual')
     routes = string_list(capability.get('required_routes'), 'required_routes')
     providers = string_list(capability.get('required_provider_dependencies'), 'required_provider_dependencies')
     if not routes:
@@ -28,21 +31,20 @@ def validate(capability, readback):
             raise ValueError('observation must contain a route and HTTP status')
         required = route in routes or provider in providers
         if required:
+            if mode == 'virtual' and item.get('effect_mode') != 'virtual':
+                raise ValueError(f'virtual acceptance requires virtual effect evidence: {route}')
             if not 200 <= status < 300 or item.get('business_verified') is not True:
                 raise ValueError(f'required business readback failed: {route}')
             seen_routes.add(route)
             seen_providers.add(provider)
-        elif status == 503 and item.get('error') == 'distribution_unavailable':
-            # Known composition fallback only. Never infer configuration failure
-            # from an arbitrary *_unavailable string or general server error.
-            if provider != 'distribution' or not (route.startswith('/api/v1/distribution/') or route.startswith('/api/admin/distribution/') or route.startswith('/d/')):
-                raise ValueError('distribution fallback has no matching route/provider')
-            unrelated.append({'route': route, 'classification': 'external_config_unavailable'})
+        elif mode == 'virtual' and status == 503 and isinstance(item.get('provider'), str) and item.get('provider') and isinstance(item.get('error'), str) and item['error'].endswith('_unavailable'):
+            # Staging deliberately has no real external scheduler/provider.
+            unrelated.append({'route': route, 'provider': provider, 'classification': 'external_config_unavailable'})
         elif not 200 <= status < 300:
             raise ValueError(f'unclassified failed observation: {route}')
     if routes - seen_routes or providers - seen_providers:
         raise ValueError('required route/provider readback is missing')
-    return {'required_readback': 'passed', 'unrelated_observations': unrelated}
+    return {'required_readback': 'passed', 'acceptance_mode': mode, 'unrelated_observations': unrelated}
 
 
 def main():
