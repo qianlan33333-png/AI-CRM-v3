@@ -131,6 +131,24 @@ class CleanupTests(unittest.TestCase):
         path.rename(alias); path.symlink_to(alias)
         with self.assertRaises((cleanup.Refuse, OSError)): cleanup.verified_success(self.root, package)
 
+    def test_schema_compatibility_allows_reviewed_later_migration(self):
+        package = cleanup.verified_package(self.root / "releases" / self.names[-1])
+        installed = json.loads(self.schema.read_text())
+        installed["migrations"].append(dict(cleanup.COMPATIBLE_ADDITIONAL_MIGRATIONS["0202"]))
+        self.assertTrue(cleanup.schema_is_compatible(package, installed))
+        installed["migrations"][0]["checksum"] = "0" * 64
+        self.assertFalse(cleanup.schema_is_compatible(package, installed))
+
+    def test_unknown_later_migration_is_not_automatically_compatible(self):
+        package = cleanup.verified_package(self.root / "releases" / self.names[-1])
+        installed = json.loads(self.schema.read_text())
+        installed["migrations"].append({"version": "0003", "name": "0003_destructive.sql", "checksum": "f" * 64})
+        self.assertFalse(cleanup.schema_is_compatible(package, installed))
+        installed["migrations"][-1] = dict(cleanup.COMPATIBLE_ADDITIONAL_MIGRATIONS["0202"])
+        installed["migrations"][-1]["checksum"] = "0" * 64
+        self.assertFalse(cleanup.schema_is_compatible(package, installed))
+        self.assertFalse(cleanup.schema_is_compatible({}, installed))
+
     def test_writable_success_directory_and_duplicate_sequence_fail_closed(self):
         directory = self.root / cleanup.SUCCESS_DIRECTORY
         directory.chmod(0o777)

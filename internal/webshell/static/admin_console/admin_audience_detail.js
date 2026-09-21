@@ -378,7 +378,7 @@
     const match = window.location.pathname.match(/^\/admin\/automation-conversion\/packages\/([1-9][0-9]*)$/);
     if (!match) { setCapability("人群包路径无效。", "unknown"); return; }
     const packageID = Number(match[1]);
-    const state = { pkg: null, config: null, binding: null, senders: null, snapshot: null, agents: [], policies: [], preview: null, runs: [], dependencyIssues: [], busy: false };
+    const state = { pkg: null, config: null, binding: null, senders: null, senderSelections: [], snapshot: null, agents: [], policies: [], preview: null, runs: [], dependencyIssues: [], busy: false };
     let currentPanel = "basic";
 
     const optional = async (path, label = "") => {
@@ -423,7 +423,7 @@
       byID("dailySelect").value = state.config?.refresh_cron_utc ? "daily_0200" : "off";
       byID("incrementalSelect").value = "off";
       const immutable = pkg?.lifecycle === "archived" || pkg?.lifecycle === "active";
-      document.querySelectorAll("#panel-basic input,#panel-basic textarea,#panel-basic select,#panel-basic button,#panel-automation button,#panel-automation select,#panel-senders input,#panel-senders button").forEach((node) => { node.disabled = immutable; });
+      document.querySelectorAll("#panel-basic input,#panel-basic textarea,#panel-basic select,#panel-basic button,#panel-automation button,#panel-automation select").forEach((node) => { node.disabled = immutable; });
       byID("manualRefreshBtn").disabled = pkg?.lifecycle === "archived";
       for (const id of ["packageNameInput", "packageGroupSelect", "savePackageBtn"]) byID(id).disabled = pkg?.lifecycle === "archived";
       // An active package freezes its audience definition, but the independent
@@ -452,12 +452,36 @@
     function renderSenders() {
       const items = state.senders?.members || [];
       byID("senderRows").innerHTML = items.length ? items.map((item) => `<tr><td>${item.sort_order}</td><td>员工 #${item.staff_id}</td><td>资格版本 ${item.eligibility_version}</td><td><span class="ai-pill">已冻结</span></td><td></td></tr>`).join("") : `<tr><td class="ai-empty" colspan="5">尚未配置发送人。只保存内部员工编号。</td></tr>`;
-      if (!byID("senderReferenceInput")) {
-        const holder = document.createElement("div");
-        holder.className = "ai-field";
-        holder.innerHTML = `<label class="ai-label" for="senderReferenceInput">企微成员引用（仅本次解析，每行一个）</label><textarea class="ai-textarea" id="senderReferenceInput" autocomplete="off" placeholder="输入 1–5 个成员引用；不会保存到 Segment 表或日志"></textarea>`;
-        byID("senderRows").closest(".ai-table-wrap").before(holder);
+      const selection = byID("senderSelectionSummary");
+      if (selection) selection.innerHTML = state.senderSelections.length
+        ? state.senderSelections.map((member) => `<span class="ai-pill">${escapeHTML(member.display_name || member.user_id)}${member.display_name && member.user_id ? ` · ${escapeHTML(member.user_id)}` : ""}</span>`).join(" ")
+        : `<span class="ai-label">尚未选择待保存的发送人</span>`;
+      const archived = state.pkg?.lifecycle === "archived";
+      byID("addSenderBtn").disabled = archived;
+      byID("saveSendersBtn").disabled = archived || state.senderSelections.length === 0;
+    }
+
+    function openSenderPicker() {
+      if (state.pkg?.lifecycle === "archived") return;
+      if (!window.OperationMemberPicker?.open) {
+        return setStatus(byID("senderStatusLine"), "企微客服选择器尚未加载，请刷新页面后重试。", "error");
       }
+      window.OperationMemberPicker.open({
+        context: "channel_assignees",
+        title: "选择企微客服",
+        description: "从已授权企微成员目录选择发送人；重新选择后保存会替换当前白名单。",
+        confirmLabel: "确认选择",
+        multiple: true,
+        max: 5,
+        selectedMembers: state.senderSelections,
+        scope: "audience_senders",
+        page_size: 100,
+        onConfirm: (members) => {
+          state.senderSelections = Array.isArray(members) ? members : [];
+          renderSenders();
+          setStatus(byID("senderStatusLine"), state.senderSelections.length ? "已选择发送人，请点击保存发送人白名单。" : "尚未选择发送人。", "success");
+        },
+      });
     }
 
     function renderDirectPush() {
@@ -595,12 +619,11 @@
 
     async function saveSenders() {
       if (!state.pkg) return;
-      const refs = (byID("senderReferenceInput")?.value || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+      const refs = state.senderSelections.map((member) => String(member?.user_id || "").trim()).filter(Boolean);
       if (refs.length < 1 || refs.length > 5) return setStatus(byID("senderStatusLine"), "请输入 1–5 个发送人成员引用。", "error");
       try {
         await request(`${API}/ai-audience/packages/${packageID}/senders`, { method: "PUT", mutate: true, scope: "audience-senders", body: { expected_version: state.pkg.version, provider_member_references: refs } });
-        byID("senderReferenceInput").value = "";
-        setStatus(byID("senderStatusLine"), "成员引用已即时解析；Segment 只保存内部员工编号 和资格版本。", "success");
+        setStatus(byID("senderStatusLine"), "已通过企微成员目录解析并保存发送人白名单；Segment 只保存内部员工编号和资格版本。", "success");
         await load();
       } catch (error) { const value = errorState(error); setStatus(byID("senderStatusLine"), value.message, "error"); }
     }
@@ -809,7 +832,7 @@
       } catch (error) { const detail = errorState(error); setStatus(byID("automationStatusLine"), detail.message, "error"); }
       finally { state.busy = false; }
     });
-    byID("addSenderBtn").addEventListener("click", () => byID("senderReferenceInput")?.focus());
+    byID("addSenderBtn").addEventListener("click", openSenderPicker);
     byID("saveSendersBtn").addEventListener("click", saveSenders);
     byID("saveDirectPushBtn")?.addEventListener("click", saveDirectPush);
     byID("broadcastPreviewBtn").addEventListener("click", createBroadcastPreview);

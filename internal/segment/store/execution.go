@@ -176,7 +176,7 @@ func (r *Repository) SetCurrentSenderSetWithActor(ctx context.Context, packageID
 	if err != nil {
 		return segmentdomain.Package{}, err
 	}
-	item, err := scanPackage(t.QueryRow(ctx, `UPDATE segment_audience_packages SET current_sender_set_id=$2,version=version+1,updated_by=NULLIF($4,0),updated_actor_kind=$5,updated_actor_ref=$6,updated_at=$7 WHERE id=$1 AND version=$3 AND lifecycle='paused' RETURNING `+packageColumns, packageID, senderSetID, expectedVersion, actor.StaffID, actor.Kind, actor.Reference, now))
+	item, err := scanPackage(t.QueryRow(ctx, `UPDATE segment_audience_packages SET current_sender_set_id=$2,version=version+1,updated_by=NULLIF($4,0),updated_actor_kind=$5,updated_actor_ref=$6,updated_at=$7 WHERE id=$1 AND version=$3 AND lifecycle IN ('paused','active') RETURNING `+packageColumns, packageID, senderSetID, expectedVersion, actor.StaffID, actor.Kind, actor.Reference, now))
 	if errors.Is(err, ErrNotFound) {
 		return item, ErrConflict
 	}

@@ -241,7 +241,38 @@ def verified_package(path: Path) -> dict:
             "inode": root_stat.st_ino, "device": root_stat.st_dev, "newest_file_ns": newest_file_ns,
             "binary_sha256": expected["bin/aicrm"],
             "package_digest": canonical_digest({"release_sha": path.name, "files": expected}),
-            "schema_digest": canonical_digest(sorted(migrations, key=lambda x: x["version"]))}
+            "schema_digest": canonical_digest(sorted(migrations, key=lambda x: x["version"])),
+            "migrations": sorted(migrations, key=lambda x: x["version"])}
+
+
+# Explicitly reviewed v3 additive migration from PR #419. It only expands
+# payment/provider CHECK enums; it does not rename/drop columns or data. Unknown
+# later migrations must never inherit this exception merely by being later.
+COMPATIBLE_ADDITIONAL_MIGRATIONS = {
+    "0202": {"version": "0202", "name": "0202_alipay_web_payment.sql",
+             "checksum": "73e2142dbd857e856dedf31bff28981d9bb5cb607b65260d7ffb770951e19eba"},
+}
+
+
+def schema_is_compatible(package: dict, installed: dict) -> bool:
+    expected = package.get("migrations")
+    actual = installed.get("migrations")
+    if not isinstance(expected, list) or not expected or not isinstance(actual, list):
+        return False
+    if any(not isinstance(item, dict) for item in actual):
+        return False
+    by_version = {item.get("version"): item for item in actual}
+    if len(by_version) != len(actual):
+        return False
+    if any(by_version.get(item["version"]) != item for item in expected):
+        return False
+    expected_versions = {item["version"] for item in expected}
+    for version, item in by_version.items():
+        if version not in expected_versions:
+            if (not isinstance(version, str) or version <= max(expected_versions)
+                    or COMPATIBLE_ADDITIONAL_MIGRATIONS.get(version) != item):
+                return False
+    return True
 
 
 def schema_snapshot(path: Path, current: str) -> tuple[dict, str]:
