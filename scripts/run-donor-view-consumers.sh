@@ -4,6 +4,7 @@ set -euo pipefail
 # Compatibility name retained for callers; every command uses only the current
 # AI-CRM-v3 checkout. No external repository, donor checkout, or donor SHA is used.
 mode="${1:-}"
+npm ci --no-audit --no-fund
 npm ci --prefix web/v3 --no-audit --no-fund
 # Materialize only the source views already committed inside this v3 checkout;
 # no network checkout or external repository is consulted.
