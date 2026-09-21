@@ -2231,6 +2231,8 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			customerHandler.OwnerHandoffOperationMembersHandler().ServeHTTP(w, r)
 		case "channel_code":
 			channelOperationMemberPicker{directory: channelAcquisitionService, security: requestSecurity}.ServeHTTP(w, r)
+		case "audience_senders":
+			audienceOperationMemberPicker{directory: groupOpsStaff, security: requestSecurity}.ServeHTTP(w, r)
 		default:
 			groupOpsBindings.GroupOps.ServeHTTP(w, r)
 		}
