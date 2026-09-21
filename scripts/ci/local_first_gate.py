@@ -29,6 +29,7 @@ OPERATOR_ONLY_PREFIXES += (
     "scripts/check-migration-sequence.py",
     "scripts/test_release_preflight.py",
     "scripts/check-install-release-contract.sh",
+    "scripts/ci/local_first_gate.py",
     "scripts/validate-staging-receipt.py",
     "scripts/test_staging_receipt.py",
     "scripts/run-donor-view-consumers.sh",
