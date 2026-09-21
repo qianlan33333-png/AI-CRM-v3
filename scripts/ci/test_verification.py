@@ -141,6 +141,13 @@ class VerificationTests(unittest.TestCase):
         ):
             self.assertTrue(policy.requires_full_pr_verification())
 
+    def test_release_consistency_gate_accepts_main_without_long_lanes(self):
+        needs = {name: {"result": "skipped"} for name in policy.PHASES}
+        needs["plan"] = {"result": "success", "outputs": {"mode": "release", "lanes": "[]"}}
+        policy.require_results(needs, False, "push", "refs/heads/main")
+        with self.assertRaises(ValueError):
+            policy.require_results(needs, False, "pull_request", "refs/pull/1/merge")
+
     def test_http_200_with_wrong_sha_or_not_ready_is_not_deployed(self):
         for body in [{"status": "ready", "release_sha": "f" * 40}, {"status": "not_ready", "release_sha": self.sha}]:
             with patch.object(verify_deployment, "urlopen", return_value=io.BytesIO(json.dumps(body).encode())):

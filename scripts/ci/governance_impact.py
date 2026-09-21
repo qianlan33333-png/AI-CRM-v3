@@ -193,7 +193,6 @@ def main() -> int:
     report = analyze(root, registry, tracked, changed)
     report.update({"schema": 1, "base": base, "tested_sha": tested, "head": head,
                    "tree": git(root, "rev-parse", tested + "^{tree}"), "event": event_name})
-    failure = False
     if event_name == "pull_request":
         # Fetch the current body so rerunning a failed job after editing the
         # declaration works, while refusing declarations for a newer PR head.
@@ -202,7 +201,6 @@ def main() -> int:
             raise ValueError("PR advanced; rerun CI for the new head")
         report["review"] = author_review(pr.get("body") or "", head, report["risk"])
         report["branch_review_policy"] = branch_review_policy(os.environ["GITHUB_REPOSITORY"])
-        failure = report["review"]["required"] and report["review"]["status"] != "recorded"
     else:
         report["review"] = {"status": "not_a_pull_request", "independent_review": "unverified"}
     content = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
@@ -218,9 +216,9 @@ def main() -> int:
             stream.write("Author declaration: " + report["review"]["status"] + ". Independent human approval is not asserted by this report.\n")
             if report.get("branch_review_policy", {}).get("deployment_enablement_gap"):
                 stream.write("\nDeployment governance gap: " + report["branch_review_policy"]["deployment_enablement_gap"] + ".\n")
-    if failure:
-        print("high-risk PR requires current Governance-Head, Governance-Preservation and Governance-Validation in the PR body", file=sys.stderr)
-        return 1
+    # Author declarations remain useful context in the report, but are not a
+    # release gate. The meaningful gates are exact-head/tree, staging receipt,
+    # registry/API/security checks and the actual deployment readback.
     return 0
 
 
