@@ -18,7 +18,10 @@ def requires_staging_receipt(current: str) -> bool:
     base = os.environ.get("PR_BASE_SHA", "")
     if not SHA.fullmatch(base):
         return True
-    changed = subprocess.check_output(["git", "diff", "--name-only", f"{base}...{current}"], text=True).splitlines()
+    changed = subprocess.check_output(
+        ["git", "-c", "core.quotePath=false", "diff", "--name-only", f"{base}...{current}"],
+        text=True,
+    ).splitlines()
     return any(path not in NON_RUNTIME_FILES and not path.startswith(NON_RUNTIME_PREFIXES) for path in changed)
 
 
