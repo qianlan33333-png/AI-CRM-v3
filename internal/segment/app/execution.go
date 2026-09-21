@@ -203,7 +203,7 @@ func (s *ExecutionService) ReplaceSenders(ctx context.Context, command SendersCo
 		if e != nil {
 			return e
 		}
-		if pkg.Version != command.ExpectedPackageVersion || pkg.Lifecycle != segmentdomain.Paused {
+		if pkg.Version != command.ExpectedPackageVersion || (pkg.Lifecycle != segmentdomain.Paused && pkg.Lifecycle != segmentdomain.Active) {
 			return ErrConflict
 		}
 		output, e = s.store.CreateSenderSet(tx, segmentdomain.SenderSet{PackageID: command.PackageID, Members: members, CreatedBy: actor.StaffID, CreatedActorKind: string(actor.Kind), CreatedActorRef: actor.Reference, CreatedAt: now})

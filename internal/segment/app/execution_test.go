@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -36,6 +37,26 @@ func (s executionStoreStub) CurrentBinding(context.Context, int64) (segmentdomai
 }
 func (s executionStoreStub) CurrentSenderSet(context.Context, int64) (segmentdomain.SenderSet, error) {
 	return s.senders, s.sendersErr
+}
+func (s executionStoreStub) CreateSenderSet(_ context.Context, item segmentdomain.SenderSet) (segmentdomain.SenderSet, error) {
+	item.ID = 1
+	item.Version = 1
+	return item, nil
+}
+func (s executionStoreStub) SetCurrentSenderSet(_ context.Context, packageID, _senderSetID, _expectedVersion, _actor int64, _now time.Time) (segmentdomain.Package, error) {
+	item := s.pkg
+	item.ID = packageID
+	item.Version++
+	return item, nil
+}
+func (s executionStoreStub) Reserve(context.Context, segmentstore.Reservation) (segmentstore.Receipt, bool, error) {
+	return segmentstore.Receipt{ID: 1}, true, nil
+}
+func (s executionStoreStub) Complete(_ context.Context, id int64, result json.RawMessage, now time.Time) (segmentstore.Receipt, error) {
+	return segmentstore.Receipt{ID: id, ResultSnapshot: result, CompletedAt: &now}, nil
+}
+func (s executionStoreStub) AppendMutationFacts(context.Context, segmentstore.MutationFact) (int64, error) {
+	return 1, nil
 }
 
 func TestPrecheckReportsMissingSetupWithoutTurningItIntoAReadFailure(t *testing.T) {
@@ -117,6 +138,17 @@ func TestSendersRejectDuplicateInternalStaffAndPrecheckReportsProviderDisabled(t
 	check, err := service.Precheck(context.Background(), 1)
 	if err != nil || check.Ready || len(check.Reasons) == 0 || check.Reasons[len(check.Reasons)-1] != "provider_disabled" {
 		t.Fatalf("check=%+v err=%v", check, err)
+	}
+}
+
+func TestSendersCanReplaceWhitelistForActivePackage(t *testing.T) {
+	now := time.Now().UTC()
+	staff := staffReaderStub{accessport.StaffEligibility{StaffID: 9, Active: true, Eligible: true, EligibilityVersion: 2, RefreshedAt: now}}
+	store := executionStoreStub{pkg: segmentdomain.Package{ID: 1, Version: 1, Lifecycle: segmentdomain.Active}}
+	service, _ := NewExecutionService(directUOW{}, store, publishedAgentStub{}, staff, false)
+	_, err := service.ReplaceSenders(context.Background(), SendersCommand{PackageID: 1, ExpectedPackageVersion: 1, ProviderMemberIDs: []string{"QianLan"}, Actor: 1, IdempotencyKey: "active-senders-command-01"})
+	if err != nil {
+		t.Fatalf("active package sender replacement err=%v, want lifecycle gate to allow whitelist updates", err)
 	}
 }
 

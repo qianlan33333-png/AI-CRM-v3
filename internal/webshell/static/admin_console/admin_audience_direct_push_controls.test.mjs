@@ -12,6 +12,7 @@ const adapter = fs.readFileSync(path.join(here, "admin_audience_detail.js"), "ut
 const wait = (milliseconds = 120) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 const writes = [];
+let pickerOptions = null;
 
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: "https://test.invalid/admin/automation-conversion/packages/12",
@@ -20,6 +21,7 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   beforeParse(window) {
     window.Headers = globalThis.Headers;
     window.AdminFmt = { localTime: (value) => value || "" };
+    window.OperationMemberPicker = { open: (options) => { pickerOptions = options; } };
     window.fetch = async (input, init = {}) => {
       const url = new URL(String(input), window.location.origin);
       const method = init.method || "GET";
@@ -27,7 +29,9 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
       if (url.pathname === "/api/admin/ai-audience/package-groups") return json({ items: [] });
       if (url.pathname === "/api/admin/ai-audience/templates") return json({ items: [] });
       if (url.pathname === "/api/admin/automation-agents") return json({ items: [] });
-      if (url.pathname.endsWith("/configuration") || url.pathname.endsWith("/automation-binding") || url.pathname.endsWith("/senders")) return json({ error: "not_found" }, 404);
+      if (url.pathname.endsWith("/configuration") || url.pathname.endsWith("/automation-binding")) return json({ error: "not_found" }, 404);
+      if (url.pathname.endsWith("/senders") && method === "GET") return json({ sender_set: { members: [] } });
+      if (url.pathname.endsWith("/senders") && method === "PUT") { writes.push(JSON.parse(init.body)); return json({ sender_set: { members: [] } }); }
       if (url.pathname.endsWith("/members")) return json({ snapshot: { member_count: 1 }, items: [] });
       if (url.pathname.endsWith("/precheck")) return json({ precheck: { ready: false, reasons: [] } });
       if (url.pathname.endsWith("/direct-push") && method === "GET") return json({ data: { enabled: false, max_per_customer_24h: 1, version: 0, client_id: "aicrm-audience-direct-push", webhook_path: "" } });
@@ -48,11 +52,20 @@ for (const id of ["directPushEnabled", "directPushLimit", "directPushPath", "sav
   if (document.querySelector(`#${id}`)?.disabled) throw new Error(`${id} stayed disabled for an active package`);
 }
 if (!document.querySelector("#packageDefinitionInput")?.disabled) throw new Error("active audience definition unexpectedly became editable");
+if (document.querySelector("#addSenderBtn")?.disabled || document.querySelector("#saveSendersBtn")?.disabled !== true) throw new Error("sender whitelist controls did not remain in the expected editable state");
+document.querySelector("#addSenderBtn").click();
+if (!pickerOptions || pickerOptions.title !== "选择企微客服" || pickerOptions.scope !== "audience_senders") throw new Error("shared WeCom member picker was not opened for audience senders");
+pickerOptions.onConfirm([{ user_id: "QianLan", display_name: "QianLan" }]);
+document.querySelector("#saveSendersBtn").click();
+await wait(160);
+const senderWrite = writes.find((item) => Array.isArray(item.provider_member_references));
+if (!senderWrite || senderWrite.provider_member_references.join(",") !== "QianLan") throw new Error(`sender whitelist save did not submit selected userid: ${JSON.stringify(writes)}`);
 document.querySelector("#directPushEnabled").checked = true;
 document.querySelector("#directPushLimit").value = "2";
 document.querySelector("#saveDirectPushBtn").click();
 await wait(160);
-if (writes.length !== 1 || writes[0].enabled !== true || writes[0].max_per_customer_24h !== 2 || writes[0].expected_version !== 0) throw new Error(`direct push save did not preserve the independent command: ${JSON.stringify(writes)}`);
+const directWrite = writes.find((item) => Object.prototype.hasOwnProperty.call(item, "enabled"));
+if (!directWrite || directWrite.enabled !== true || directWrite.max_per_customer_24h !== 2 || directWrite.expected_version !== 0) throw new Error(`direct push save did not preserve the independent command: ${JSON.stringify(writes)}`);
 if (document.querySelector("#directPushPath").value !== "/api/automation/audience/webhooks/awh_test") throw new Error("saved webhook path was not rendered");
 
 dom.window.close();
