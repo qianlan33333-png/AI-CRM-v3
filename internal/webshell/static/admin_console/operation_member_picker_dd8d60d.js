@@ -451,13 +451,18 @@
     state.errorMessage = "";
     render();
     try {
-      const response = await fetch(syncApiUrl, { method: "POST", headers: { Accept: "application/json" }, credentials: "same-origin", cache: "no-store" });
+      const syncUrl = new URL(syncApiUrl, window.location.origin);
+      if (state.scope) syncUrl.searchParams.set("scope", state.scope);
+      const response = await fetch(syncUrl.toString(), { method: "POST", headers: { Accept: "application/json" }, credentials: "same-origin", cache: "no-store" });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) throw new Error(window.AdminApi.responseErrorMessage(response, data, "企微客服刷新失败"));
+      if (!response.ok || data.ok === false) {
+        const message = typeof window.AdminApi?.responseErrorMessage === "function" ? window.AdminApi.responseErrorMessage(response, data, "企微客服刷新失败") : (data.error || `企微客服刷新失败（${response.status}）`);
+        throw new Error(message);
+      }
       await fetchMembers();
     } catch (error) {
       state.items = [];
-      state.errorMessage = window.AdminApi.errorMessage(error, "企微客服刷新失败，请检查企微配置后重试");
+      state.errorMessage = typeof window.AdminApi?.errorMessage === "function" ? window.AdminApi.errorMessage(error, "企微客服刷新失败，请检查企微配置后重试") : (error?.message || "企微客服刷新失败，请检查企微配置后重试");
     } finally {
       state.loading = false;
       render();
