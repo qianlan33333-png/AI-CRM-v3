@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -10,7 +11,45 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
+
+// audienceOperationMemberDirectory binds the Access-owned staff read to a
+// read-only Unit of Work. Access stores intentionally reject unbound request
+// contexts, so the HTTP adapter must not pass r.Context() directly through.
+type audienceOperationMemberDirectory struct {
+	uow       platformport.UnitOfWork
+	directory interface {
+		ListEligibleStaff(context.Context) ([]groupopsport.OperationMember, error)
+	}
+}
+
+// audienceOperationMemberSubtree keeps the shared picker refresh endpoint in
+// the audience scope. Group Ops owns the existing /sync contract for all
+// other scopes; audience sender refresh is a read-only Access directory read.
+type audienceOperationMemberSubtree struct {
+	audience http.Handler
+	groupOps http.Handler
+}
+
+func (handler audienceOperationMemberSubtree) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("scope") == "audience_senders" {
+		handler.audience.ServeHTTP(w, r)
+		return
+	}
+	handler.groupOps.ServeHTTP(w, r)
+}
+
+func (directory audienceOperationMemberDirectory) ListEligibleStaff(ctx context.Context) (items []groupopsport.OperationMember, err error) {
+	if directory.uow == nil || directory.directory == nil {
+		return nil, errors.New("audience operation-member directory is unavailable")
+	}
+	err = directory.uow.Within(ctx, func(tx context.Context) error {
+		items, err = directory.directory.ListEligibleStaff(tx)
+		return err
+	})
+	return items, err
+}
 
 // audienceOperationMemberPicker exposes the Access-owned eligible staff
 // directory to the audience sender allowlist. It is deliberately read-only:
