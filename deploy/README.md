@@ -177,3 +177,13 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 curl --fail --silent --show-error http://127.0.0.1:8080/readyz
 curl --fail --silent --show-error https://id-dev.youcangogogo.com/readyz
 ```
+
+### Capability-scoped staging readback
+
+Staging acceptance is capability-scoped. Write the changed modules, required routes, and required provider dependencies into a capability manifest, then validate the readback with:
+
+```sh
+python3 scripts/validate-staging-capability.py capability.json readback.json
+```
+
+An unavailable unrelated provider is recorded as `external_config_unavailable`; a failure on a declared route or provider remains blocking. For example, a Payment checkout change does not require the Distribution product route when WeChat Distribution is disabled on staging.

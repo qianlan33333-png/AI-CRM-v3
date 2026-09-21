@@ -96,3 +96,7 @@ PR 保留准确 HEAD/tree、并行与发布快照、测试摘要、证据目录�
 预发布构建必须持有 `/opt/aicrm/staging-build.lock` 单飞锁，锁覆盖构建目录清理、checkout、编译和 receipt 生成。并行构建不得共享目录或互相删除产物。`built` receipt 只能证明包来源，不能授权生产；完成安装和业务读回后才可写入 `accepted`。
 
 合并后的 squash/rebase commit 允许与 staging 构建 commit 不同，但生产晋级前必须比较两者 tree 完全一致，并验证 accepted receipt 的 package SHA。生产使用 staging 已验收的同一包，不重新编译；任何 tree、receipt、包摘要或发布队列不一致都停止晋级。
+
+### 预发布板块验收不可被无关 Provider 阻塞
+
+每次 staging receipt 必须带能力声明：`affected_modules`、`required_routes`、`required_services`、`required_provider_dependencies` 和 `business_readback`。验收只执行声明的当前板块及明确共享依赖。未声明的 Provider 返回 `503 *_unavailable` 时必须用 `scripts/validate-staging-capability.py` 分类为 `external_config_unavailable` 并保留观察证据；不得把它写成代码失败，也不得阻塞当前板块。若该 Provider 在 `required_provider_dependencies` 中，则 503 仍是阻塞。Payment checkout 变更不自动要求 Distribution 商品链路；Distribution 变更才要求真实商品、资格和 Provider 读回。
