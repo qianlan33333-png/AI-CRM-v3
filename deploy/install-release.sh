@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Installer hooks are part of the sealed release package. Prevent Python from
+# materializing __pycache__ inside that package, which would make the success
+# observer correctly reject an otherwise valid release as unregistered content.
+export PYTHONDONTWRITEBYTECODE=1
 # Privileged Python hooks must not mutate the immutable package with import
 # caches; its success receipt and cleanup both verify the complete file set.
 export PYTHONDONTWRITEBYTECODE=1

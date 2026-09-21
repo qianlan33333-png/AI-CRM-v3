@@ -12,6 +12,11 @@ import sys
 SHA = re.compile(r"^[0-9a-f]{40}$")
 NON_RUNTIME_PREFIXES = (".github/", "docs/", "scripts/ci/", "skills/")
 NON_RUNTIME_FILES = {"AGENTS.md"}
+OPERATOR_ONLY_PREFIXES = (
+    "scripts/deploy-release-local.sh",
+    "deploy/install-release.sh",
+    "deploy/run-release-as-root.sh",
+)
 
 
 def requires_staging_receipt(current: str) -> bool:
@@ -22,7 +27,12 @@ def requires_staging_receipt(current: str) -> bool:
         ["git", "-c", "core.quotePath=false", "diff", "--name-only", f"{base}...{current}"],
         text=True,
     ).splitlines()
-    return any(path not in NON_RUNTIME_FILES and not path.startswith(NON_RUNTIME_PREFIXES) for path in changed)
+    return any(
+        path not in NON_RUNTIME_FILES
+        and not path.startswith(NON_RUNTIME_PREFIXES)
+        and path not in OPERATOR_ONLY_PREFIXES
+        for path in changed
+    )
 
 
 def main() -> int:
