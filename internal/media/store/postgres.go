@@ -1076,6 +1076,34 @@ func (r *Repository) MiniProgram(ctx context.Context, id int64) (map[string]any,
 	})
 	return out, err
 }
+
+// MiniProgramWithin reads the immutable card metadata from the caller's
+// transaction.  Callers that are freezing content as part of a larger
+// acceptance UoW must not call MiniProgram, which opens a nested transaction.
+func (r *Repository) MiniProgramWithin(ctx context.Context, id int64) (map[string]any, error) {
+	if id < 1 {
+		return nil, ErrNotFound
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	var n, a, p, t string
+	var thumb *int64
+	var enabled bool
+	var version, createdBy, updatedBy int64
+	var c, u time.Time
+	err = tx.QueryRow(ctx, `SELECT id,name,app_id,page_path,title,thumb_image_id,enabled,version,created_by,updated_by,created_at,updated_at FROM media_miniprograms WHERE id=$1`, id).Scan(&id, &n, &a, &p, &t, &thumb, &enabled, &version, &createdBy, &updatedBy, &c, &u)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, updatedBy, c, u)
+	return out, nil
+}
 func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key string, input map[string]any) (map[string]any, error) {
 	if id < 1 {
 		return nil, ErrNotFound
