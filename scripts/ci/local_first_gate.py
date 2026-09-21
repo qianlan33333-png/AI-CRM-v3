@@ -12,6 +12,8 @@ import sys
 SHA = re.compile(r"^[0-9a-f]{40}$")
 NON_RUNTIME_PREFIXES = (".github/", "docs/", "scripts/ci/", "skills/")
 NON_RUNTIME_FILES = {"AGENTS.md"}
+NON_RUNTIME_FILES.add("internal/adminops/retention_resources.generated.json")
+NON_RUNTIME_FILES.add("deploy/README.md")
 OPERATOR_ONLY_PREFIXES = (
     "scripts/deploy-release-local.sh",
     "deploy/install-release.sh",
@@ -25,6 +27,10 @@ OPERATOR_ONLY_PREFIXES += (
     "scripts/check-release-binaries.py",
     "scripts/check-migration-sequence.py",
     "scripts/test_release_preflight.py",
+    "scripts/check-install-release-contract.sh",
+    "scripts/validate-staging-receipt.py",
+    "scripts/test_staging_receipt.py",
+    "scripts/run-donor-view-consumers.sh",
 )
 
 

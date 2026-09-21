@@ -88,8 +88,14 @@ same package after merge:
    the receipt, current tree, governance and merge consistency; they do not
    repeat long lanes by default.
 4. After merge, compare the merged tree with the staging tree and run
-   `deploy/promote-staging-release.sh` for the same archive digest. Production
+   `deploy/promote-staging-release.sh` for the same archive digest. The staging
+   receipt must bind repository, commit, tree, package SHA-256, capability and
+   business readback. A mismatched tree or digest stops promotion. Production
    is never rebuilt from a different checkout.
+
+Staging and production use separate release locks. An unrelated disabled
+Provider is recorded as `external_config_unavailable`; it blocks only when the
+capability declaration lists that Provider as a required dependency.
 
 The local deploy helper uploads the archive and installer, then invokes
 `deploy/run-release-as-root.sh`. That root wrapper opens fd 9 itself and

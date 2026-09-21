@@ -46,7 +46,7 @@ PRD 经用户确认后冻结；重大范围、合同或风险变化必须重新�
 `mcp__codex_app__fire_confetti` 一次庆祝本次上线。构建成功、PR 合并、部署开始、服务启动或仅有
 `/readyz` 通过都不能触发；部署失败、回滚、结果未知或观察窗口未结束时不得触发。一次上线事件只触发一次，重复重试同一部署不得重复庆祝。
 
-常规发布先在 `49.232.57.128` 预发布机从当前 v3 准确 commit 编译、安装并完成受影响板块验收，再合并 PR；PR 只验证预发布 receipt 与当前 tree 一致、治理和冲突状态。合并后由预发布机在发布锁下把同一已验收包串行晋级到 `124.220.53.183`，不重新编译和打包。生产只做版本、健康、认证和本次板块真实读回。生产部署私钥固定使用 `/Users/qianlan/Downloads/zhengshi.pem`，必须保持 `0600`，不得复制到仓库、PR、日志或命令输出。预发布使用同一账号和密钥时也必须单独核验 Host Key。
+常规发布先在 `49.232.57.128` 预发布机从当前 v3 准确 commit 编译、安装并完成受影响板块验收，再合并 PR；receipt 必须绑定 repository、commit、tree、package SHA-256、capability 和 business readback。PR 只验证 receipt 与当前 tree 一致、治理和冲突状态。合并后由预发布机在发布锁下把同一已验收包串行晋级到 `124.220.53.183`，不重新编译和打包。生产只做版本、健康、认证和本次板块真实读回。生产部署私钥固定使用 `/Users/qianlan/Downloads/zhengshi.pem`，必须保持 `0600`，不得复制到仓库、PR、日志或命令输出。预发布使用同一账号和密钥时也必须单独核验 Host Key。staging 与 production 使用独立 concurrency/release lock；无关 Provider 不可用时标记 `external_config_unavailable`，只有声明为当前板块依赖时才阻塞。
 
 发布包只允许在预发布机按 Linux amd64 目标编译，发布前执行 `scripts/check-release-binaries.py` 和 `scripts/check-migration-sequence.py`；安装器在切换 current 前再次拒绝非 Linux x86-64 ELF，避免 `status=126` 才发现架构错误。发布包统一由当前仓库 Python archiver 创建，拒绝 `._*` AppleDouble、symlink、未注册文件和非 Linux ELF；`release-files.sha256` 必须在预发布、生产安装器和 success observer 中通过。
 
