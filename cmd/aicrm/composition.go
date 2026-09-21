@@ -910,6 +910,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	invitationWorker.Service = invitationService
 	invitationHandler := mediahttp.InvitationHandler{Service: invitationService, Security: requestSecurity}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
+	audienceDirectory := audienceOperationMemberDirectory{uow: uow, directory: groupOpsStaff}
 	// Directory reads have their own explicitly published capability gate. A
 	// dispatch grant cannot silently authorize a new provider-read path.
 	groupOpsDirectory := &wecomGroupOpsDirectory{uow: uow, enabled: cfg.GroupOps.ProviderReadEnabled, staff: groupOpsStaff}
@@ -2232,7 +2233,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		case "channel_code":
 			channelOperationMemberPicker{directory: channelAcquisitionService, security: requestSecurity}.ServeHTTP(w, r)
 		case "audience_senders":
-			audienceOperationMemberPicker{directory: groupOpsStaff, security: requestSecurity}.ServeHTTP(w, r)
+			audienceOperationMemberPicker{directory: audienceDirectory, security: requestSecurity}.ServeHTTP(w, r)
 		default:
 			groupOpsBindings.GroupOps.ServeHTTP(w, r)
 		}
@@ -2418,7 +2419,11 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	aiUI := aiModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets aiassistant.Assets) error {
 		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS, PageHeaderActionHostJS: assets.PageHeaderActionHostJS})
 	})
-	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin, h5PublicOrigin(cfg))
+	groupOpsRoute := audienceOperationMemberSubtree{
+		audience: audienceOperationMemberPicker{directory: audienceDirectory, security: requestSecurity},
+		groupOps: groupOpsBindings.GroupOps,
+	}
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsRoute, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin, h5PublicOrigin(cfg))
 	if err != nil {
 		return fail(err)
 	}
