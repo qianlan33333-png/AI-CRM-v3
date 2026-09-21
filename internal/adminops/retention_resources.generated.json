@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "fe21522e02804bc050c497ae1d93162899a81940983cf59ef670af6f34d0ae5d",
+  "registry_sha256": "49951ede62dd024dc9020a72fae14a8fad115dbbf78b40ed1c87a677a1a69951",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -6596,6 +6596,19 @@
     },
     {
       "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/release-queue.json",
+      "owner": "release",
+      "policy": "never_delete_by_retention",
+      "reason": "Single release queue state is required to prevent concurrent production promotion.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/release-queue.json",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
       "name": "/opt/aicrm/release-success",
       "owner": "release",
       "policy": "never_delete_by_retention",
@@ -6630,6 +6643,32 @@
       "cleanup_entrypoint": "deploy/build-release-on-staging.sh#remote_root",
       "policy_id": "release_artifact",
       "coverage_status": "policy_available",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/source-mirror-status.json",
+      "owner": "release",
+      "policy": "never_delete_by_retention",
+      "reason": "Mirror health is operational evidence and must not be removed by retention cleanup.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/source-mirror-status.json",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/source-mirror.git",
+      "owner": "release",
+      "policy": "never_delete_by_retention",
+      "reason": "Staging source mirror is a nonblocking Git object cache; candidate receipts and release builds remain the release authority.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/source-mirror.git",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
       "gap_code": "",
       "authorization_expiry": "not_assessed"
     },

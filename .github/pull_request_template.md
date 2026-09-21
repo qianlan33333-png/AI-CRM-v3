@@ -74,3 +74,16 @@ Staging-Receipt: <预发布 receipt 或 artifact 链接>
 Governance-Head: <当前 PR head 的 40 位 SHA>
 Governance-Preservation: <原能力保持不变的业务断言和受影响消费者，至少 12 字符>
 Governance-Validation: <实际验证命令、结果及尚未验证项，至少 12 字符>
+
+## Merge preview candidate
+- Candidate ID:
+- Base main SHA:
+- PR head SHA:
+- Merge preview SHA / tree SHA:
+- Affected modules:
+- Shared dependencies:
+- Queue position / candidate status:
+- Staging accepted receipt and package SHA:
+- Bundle mode: incremental / full fallback
+- Source mirror status: ready / mirror_stale (non-blocking)
+- Direct staging→production promotion receipt:

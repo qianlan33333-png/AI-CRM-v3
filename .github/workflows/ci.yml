@@ -497,53 +497,34 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/staging_known_hosts"
           ssh-keygen -y -f "$HOME/.ssh/staging_key" >/dev/null
           test -s "$HOME/.ssh/staging_known_hosts"
-      - name: Retrieve the accepted staging package and receipt
+      - name: Directly promote the accepted staging candidate
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_USER: ${{ secrets.STAGING_USER || 'ubuntu' }}
-        run: |
-          set -euo pipefail
-          ssh_flags=(-i "$HOME/.ssh/staging_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/staging_known_hosts")
-          merged_tree="$(git rev-parse "${GITHUB_SHA}^{tree}")"
-          provenance="$(ssh "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST" "python3 - '$merged_tree' <<'PY'
-          import json, pathlib, sys
-          want = sys.argv[1]
-          for path in sorted(pathlib.Path('/opt/aicrm/builds').glob('*/staging-receipt.json')):
-              try:
-                  value = json.loads(path.read_text())
-              except Exception:
-                  continue
-              if value.get('status') == 'accepted' and value.get('tree_sha') == want:
-                  print(path.parent, value['commit_sha'], value.get('package_name', 'aicrm-' + value['commit_sha'] + '.tar.gz'))
-                  raise SystemExit
-          raise SystemExit('no accepted staging receipt matches merged tree')
-          PY
-          ")"
-          read -r remote_root staging_commit package_name <<<"$provenance"
-          export STAGING_COMMIT="$staging_commit"
-          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/$package_name" "aicrm-$staging_commit.tar.gz"
-          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/staging-receipt.json" "staging-receipt-$staging_commit.json"
-          export STAGING_PACKAGE_SHA256="$(python3 -c 'import json, os; print(json.load(open("staging-receipt-" + os.environ["STAGING_COMMIT"] + ".json"))["package_sha256"])')"
-          echo "STAGING_COMMIT=$STAGING_COMMIT" >> "$GITHUB_ENV"
-          echo "STAGING_PACKAGE_SHA256=$STAGING_PACKAGE_SHA256" >> "$GITHUB_ENV"
-      - name: Configure pinned production SSH host
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-          umask 077
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
-          test -s "$HOME/.ssh/known_hosts"
-      - name: Promote the accepted package to production
-        env:
-          PRODUCTION_HOST: ${{ secrets.DEPLOY_HOST }}
-          PRODUCTION_USER: ${{ secrets.DEPLOY_USER }}
+          STAGING_KEY: ${{ secrets.STAGING_SSH_KEY || secrets.DEPLOY_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS || secrets.DEPLOY_KNOWN_HOSTS }}
           PRODUCTION_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           PRODUCTION_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: STAGING_RECEIPT="staging-receipt-${STAGING_COMMIT}.json" bash deploy/promote-staging-release.sh "aicrm-${STAGING_COMMIT}.tar.gz" "$GITHUB_SHA"
+          PRODUCTION_HOST: ${{ secrets.DEPLOY_HOST }}
+          PRODUCTION_USER: ${{ secrets.DEPLOY_USER || 'ubuntu' }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$STAGING_KEY" > "$HOME/.ssh/staging_key"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$HOME/.ssh/staging_known_hosts"
+          printf '%s\n' "$PRODUCTION_KEY" > "$HOME/.ssh/production_key"
+          printf '%s\n' "$PRODUCTION_KNOWN_HOSTS" > "$HOME/.ssh/production_known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/staging_key" >/dev/null
+          ssh-keygen -y -f "$HOME/.ssh/production_key" >/dev/null
+          flags=(-i "$HOME/.ssh/staging_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/staging_known_hosts")
+          tree="$(git rev-parse "${GITHUB_SHA}^{tree}")"
+          scp "${flags[@]}" deploy/promote-staging-direct.sh "$STAGING_USER@$STAGING_HOST:/tmp/promote-staging-direct-${GITHUB_SHA}.sh"
+          scp "${flags[@]}" "$HOME/.ssh/production_key" "$STAGING_USER@$STAGING_HOST:/tmp/production-key-${GITHUB_SHA}"
+          scp "${flags[@]}" "$HOME/.ssh/production_known_hosts" "$STAGING_USER@$STAGING_HOST:/tmp/production-known-hosts-${GITHUB_SHA}"
+          ssh "${flags[@]}" "$STAGING_USER@$STAGING_HOST" "chmod 700 /tmp/promote-staging-direct-${GITHUB_SHA}.sh /tmp/production-key-${GITHUB_SHA}; chmod 600 /tmp/production-known-hosts-${GITHUB_SHA}; PRODUCTION_HOST='$PRODUCTION_HOST' PRODUCTION_USER='$PRODUCTION_USER' PRODUCTION_KEY_FILE='/tmp/production-key-${GITHUB_SHA}' PRODUCTION_KNOWN_HOSTS_FILE='/tmp/production-known-hosts-${GITHUB_SHA}' bash /tmp/promote-staging-direct-${GITHUB_SHA}.sh '' '$GITHUB_SHA' '$tree'"
+          ssh "${flags[@]}" "$STAGING_USER@$STAGING_HOST" "rm -f /tmp/promote-staging-direct-${GITHUB_SHA}.sh /tmp/production-key-${GITHUB_SHA} /tmp/production-known-hosts-${GITHUB_SHA}"
+
       - name: Configure HXC production source
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

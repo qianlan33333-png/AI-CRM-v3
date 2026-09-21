@@ -106,3 +106,11 @@ PR 保留准确 HEAD/tree、并行与发布快照、测试摘要、证据目录�
 支付板块在预发布默认使用虚拟验收，不要求真实商户配置、真实扣款或 Provider 回执。能力声明填写 `acceptance_mode: virtual`，并用本地虚拟适配器/确定性数据库事实完成 pending 重购、幂等回放、旧订单保留、已支付拦截和业务状态读回；`business_verified` 必须为真且观察项带 `effect_mode: virtual`。只有用户明确要求支付渠道联调时才使用 `acceptance_mode: live`，那是独立 Provider 验收，不得阻塞普通支付逻辑 PR。
 
 预发布外部效果统一采用虚拟验收。预发布不连接真实支付、企微发送、群发、自动化 Provider、Webhook、分账或其他外部调度；相关板块只验证本地意图、幂等、队列接收、重放、状态转换、失败分类和业务读回，能力声明使用 `acceptance_mode: virtual`，观察项使用 `effect_mode: virtual`。未连接 Provider 的 503 归类 `external_config_unavailable`，不阻塞当前板块。只有用户明确授权渠道联调时才使用 `acceptance_mode: live`，并另行保留真实 Provider 证据。
+
+### Merge preview candidate 与单一发布队列
+
+发布候选必须由 `current main + PR` 生成 merge preview。预发布不得直接构建 PR 分支，也不得使用旧 head 的 receipt。候选 manifest 固定记录 `candidate_id`、`base_main_sha`、`pr_head_sha`、`merge_preview_sha`、`tree_sha`、`package_sha256`、影响板块和共享依赖；main 前进即使旧 receipt 为 accepted 也必须回到候选构建并重新验收。
+
+预发布机维护非阻塞的 GitHub 源码镜像，仅用于增量 bundle 对象缓存。候选 bundle 优先以 `merge_preview_sha ^base_main_sha` 生成；缺少基线才传完整 bundle。Runner 不下载、不重新打包、不把发布包中转到生产。accepted 后由预发布机使用临时 0600 生产密钥、固定 known_hosts 和生产锁直推同一包，生产再次校验 tree、package SHA、active release、readyz 和板块读回。
+
+发布队列由 `scripts/release_queue.py` 维护，一次只允许一个候选处于生产相关状态；普通领域可并行开发，Composition、迁移、公共组件、Provider、External Effects、部署脚本和 CI 变更串行合并。状态按 development、waiting_candidate、preview_building、staging_acceptance、frozen、waiting_merge、merged、production、observing、released、stale_candidate 记录。旧候选永不覆盖新候选。
