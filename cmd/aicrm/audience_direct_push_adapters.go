@@ -100,7 +100,13 @@ func (a automationOutboundContentFreezer) FreezeDirectPushContent(ctx context.Co
 	if err != nil || mediaport.ValidateGroupOpsMaterialSourceSnapshot(captured) != nil || len(captured.References) != 1 {
 		return nil, [32]byte{}, errors.New("direct push material unavailable")
 	}
-	material, err := a.materials.MiniProgram(ctx, miniProgramID)
+	materialReader, ok := a.materials.(interface {
+		MiniProgramWithin(context.Context, int64) (map[string]any, error)
+	})
+	if !ok {
+		return nil, [32]byte{}, errors.New("direct push material reader unavailable")
+	}
+	material, err := materialReader.MiniProgramWithin(ctx, miniProgramID)
 	if err != nil {
 		return nil, [32]byte{}, errors.New("direct push material unavailable")
 	}
