@@ -88,3 +88,11 @@ PR 保留准确 HEAD/tree、并行与发布快照、测试摘要、证据目录�
 - 每次修复必须记录修复提交、重跑阶段和最终结果；PR 正文只放轻量摘要与 artifact 链接，详细日志留在 artifact。
 - 合并前必须有首轮和最终证据，未完成 lane、取消、skip、unknown 必须显式列出；合并后继续记录 merge SHA、部署 SHA、认证读回和观察窗口。
 - 轻量 quality summary、首轮失败 manifest 和最终 check manifest 保留 90 天；详细 lane 日志、截图和大型测试包沿用 14/30 天策略。
+
+### 国内预发布机与合并晋级
+
+当前默认发布源是本地 v3 Git bundle。先在本地确认准确 commit/tree 并生成 `git bundle verify` 通过的 bundle，再由 `deploy/build-release-on-staging.sh` 上传到 `49.232.57.128`；预发布机不得依赖 GitHub 网络，也不得默认执行远端 clone。预发布机是唯一 Linux amd64 构建节点，必须完成二进制架构、包清单、安装、健康和受影响板块真实读回。
+
+预发布构建必须持有 `/opt/aicrm/staging-build.lock` 单飞锁，锁覆盖构建目录清理、checkout、编译和 receipt 生成。并行构建不得共享目录或互相删除产物。`built` receipt 只能证明包来源，不能授权生产；完成安装和业务读回后才可写入 `accepted`。
+
+合并后的 squash/rebase commit 允许与 staging 构建 commit 不同，但生产晋级前必须比较两者 tree 完全一致，并验证 accepted receipt 的 package SHA。生产使用 staging 已验收的同一包，不重新编译；任何 tree、receipt、包摘要或发布队列不一致都停止晋级。

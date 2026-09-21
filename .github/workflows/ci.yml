@@ -504,10 +504,27 @@ jobs:
         run: |
           set -euo pipefail
           ssh_flags=(-i "$HOME/.ssh/staging_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/staging_known_hosts")
-          remote_root="/opt/aicrm/builds/${GITHUB_SHA}"
-          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/aicrm-${GITHUB_SHA}.tar.gz" "aicrm-${GITHUB_SHA}.tar.gz"
-          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/staging-receipt.json" "staging-receipt-${GITHUB_SHA}.json"
-          export STAGING_PACKAGE_SHA256="$(python3 -c 'import json; print(json.load(open("staging-receipt-" + __import__("os").environ["GITHUB_SHA"] + ".json"))["package_sha256"])')"
+          merged_tree="$(git rev-parse "${GITHUB_SHA}^{tree}")"
+          provenance="$(ssh "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST" "python3 - '$merged_tree' <<'PY'
+          import json, pathlib, sys
+          want = sys.argv[1]
+          for path in sorted(pathlib.Path('/opt/aicrm/builds').glob('*/staging-receipt.json')):
+              try:
+                  value = json.loads(path.read_text())
+              except Exception:
+                  continue
+              if value.get('status') == 'accepted' and value.get('tree_sha') == want:
+                  print(path.parent, value['commit_sha'], value.get('package_name', 'aicrm-' + value['commit_sha'] + '.tar.gz'))
+                  raise SystemExit
+          raise SystemExit('no accepted staging receipt matches merged tree')
+          PY
+          ")"
+          read -r remote_root staging_commit package_name <<<"$provenance"
+          export STAGING_COMMIT="$staging_commit"
+          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/$package_name" "aicrm-$staging_commit.tar.gz"
+          scp "${ssh_flags[@]}" "$STAGING_USER@$STAGING_HOST:$remote_root/staging-receipt.json" "staging-receipt-$staging_commit.json"
+          export STAGING_PACKAGE_SHA256="$(python3 -c 'import json, os; print(json.load(open("staging-receipt-" + os.environ["STAGING_COMMIT"] + ".json"))["package_sha256"])')"
+          echo "STAGING_COMMIT=$STAGING_COMMIT" >> "$GITHUB_ENV"
           echo "STAGING_PACKAGE_SHA256=$STAGING_PACKAGE_SHA256" >> "$GITHUB_ENV"
       - name: Configure pinned production SSH host
         env:
@@ -522,12 +539,11 @@ jobs:
           test -s "$HOME/.ssh/known_hosts"
       - name: Promote the accepted package to production
         env:
-          STAGING_RECEIPT: staging-receipt-${{ github.sha }}.json
           PRODUCTION_HOST: ${{ secrets.DEPLOY_HOST }}
           PRODUCTION_USER: ${{ secrets.DEPLOY_USER }}
           PRODUCTION_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           PRODUCTION_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: bash deploy/promote-staging-release.sh "aicrm-${GITHUB_SHA}.tar.gz" "$GITHUB_SHA"
+        run: STAGING_RECEIPT="staging-receipt-${STAGING_COMMIT}.json" bash deploy/promote-staging-release.sh "aicrm-${STAGING_COMMIT}.tar.gz" "$GITHUB_SHA"
       - name: Configure HXC production source
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
