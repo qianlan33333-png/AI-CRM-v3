@@ -60,7 +60,7 @@ grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_CUSTOMER_SYNC_TRIGGER=
 grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_HXC_SYNC_TRIGGER=scheduled /opt/aicrm/current/bin/aicrm' deploy/aicrm-hxc-dashboard-refresh.service || { echo "HXC refresh must use the durable worker trigger" >&2; exit 1; }
 grep -qxF 'OnCalendar=*-*-* 03,09,15,21:15:00 Asia/Shanghai' deploy/aicrm-hxc-dashboard-refresh.timer || { echo "HXC refresh timer must run at the four approved Beijing times" >&2; exit 1; }
 grep -qxF 'ExecStart=/opt/aicrm/current/bin/migrate-hxc-daily-lessons --mode sync --actor-admin-user-id 2' deploy/aicrm-hxc-daily-lessons-sync.service || { echo "HXC daily lesson sync must use the immutable UUID importer" >&2; exit 1; }
-grep -qxF 'OnCalendar=*-*-* 10:00:00 Asia/Shanghai' deploy/aicrm-hxc-daily-lessons-sync.timer || { echo "HXC daily lesson sync must run at 10:00 Beijing time" >&2; exit 1; }
+grep -qxF 'OnCalendar=*-*-* 09:15:00 Asia/Shanghai' deploy/aicrm-hxc-daily-lessons-sync.timer || { echo "HXC daily lesson sync must run at 09:15 Beijing time" >&2; exit 1; }
 grep -qx 'install -m 0644 "$release_dir/deploy/aicrm-hxc-daily-lessons-sync.service" /etc/systemd/system/aicrm-hxc-daily-lessons-sync.service' "$installer" || { echo "installer must install the HXC daily lesson sync service" >&2; exit 1; }
 grep -qx 'install -m 0644 "$release_dir/deploy/aicrm-hxc-daily-lessons-sync.timer" /etc/systemd/system/aicrm-hxc-daily-lessons-sync.timer' "$installer" || { echo "installer must install the HXC daily lesson sync timer" >&2; exit 1; }
 if grep -qE '^AICRM_ROLE=' deploy/aicrm.env.example; then

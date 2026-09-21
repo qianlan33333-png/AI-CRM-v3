@@ -1,8 +1,8 @@
 [Unit]
-Description=Run the HXC daily lesson incremental media sync at 10:00 Beijing time
+Description=Run the HXC daily lesson incremental media sync at 09:15 Beijing time
 
 [Timer]
-OnCalendar=*-*-* 10:00:00 Asia/Shanghai
+OnCalendar=*-*-* 09:15:00 Asia/Shanghai
 Persistent=true
 RandomizedDelaySec=0
 Unit=aicrm-hxc-daily-lessons-sync.service
