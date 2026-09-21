@@ -32,6 +32,8 @@ OPERATOR_ONLY_PREFIXES += (
     "scripts/ci/local_first_gate.py",
     "scripts/validate-staging-receipt.py",
     "scripts/test_staging_receipt.py",
+    "scripts/validate-staging-capability.py",
+    "scripts/test_validate_staging_capability.py",
     "scripts/run-donor-view-consumers.sh",
 )
 

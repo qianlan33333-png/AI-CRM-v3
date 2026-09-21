@@ -1,61 +1,61 @@
 #!/usr/bin/env python3
-"""Validate only the declared staging capability and classify unrelated outages."""
-from __future__ import annotations
-
+"""Check declared readback evidence; never mint an accepted staging receipt."""
 import argparse
 import json
 from pathlib import Path
-from typing import Any
 
 
-def load(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise ValueError(f"{path} must contain an object")
-    return value
+def string_list(value, name):
+    if not isinstance(value, list) or any(not isinstance(x, str) or not x.strip() for x in value):
+        raise ValueError(f'{name} must be a string array')
+    return set(value)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("capability", type=Path)
-    parser.add_argument("readback", type=Path)
-    args = parser.parse_args()
-    capability = load(args.capability)
-    readback = load(args.readback)
-    required = set(capability.get("required_provider_dependencies", []))
-    routes = capability.get("required_routes", [])
-    if not isinstance(required, set) or not all(isinstance(x, str) for x in required):
-        raise SystemExit("required_provider_dependencies must be a string array")
-    if not isinstance(routes, list):
-        raise SystemExit("required_routes must be an array")
-    observations = readback.get("observations", [])
+def validate(capability, readback):
+    routes = string_list(capability.get('required_routes'), 'required_routes')
+    providers = string_list(capability.get('required_provider_dependencies'), 'required_provider_dependencies')
+    if not routes:
+        raise ValueError('required_routes must not be empty')
+    observations = readback.get('observations')
     if not isinstance(observations, list):
-        raise SystemExit("readback observations must be an array")
-
-    unrelated: list[dict[str, Any]] = []
+        raise ValueError('observations must be an array')
+    seen_routes, seen_providers, unrelated = set(), set(), []
     for item in observations:
         if not isinstance(item, dict):
-            raise SystemExit("each readback observation must be an object")
-        status = item.get("status")
-        provider = item.get("provider")
-        error = item.get("error")
-        if status in (500, 502, 503, 504) and error == "distribution_unavailable":
-            if provider in required or "distribution" in required:
-                raise SystemExit("required Distribution provider is unavailable")
-            unrelated.append(item)
-            continue
-        if item.get("required") is True and status not in range(200, 300):
-            raise SystemExit(f"required route failed: {item.get('route', '<unknown>')} status={status}")
+            raise ValueError('observation must be an object')
+        route, provider, status = item.get('route'), item.get('provider'), item.get('status')
+        if not isinstance(route, str) or type(status) is not int or not 100 <= status <= 599:
+            raise ValueError('observation must contain a route and HTTP status')
+        required = route in routes or provider in providers
+        if required:
+            if not 200 <= status < 300 or item.get('business_verified') is not True:
+                raise ValueError(f'required business readback failed: {route}')
+            seen_routes.add(route)
+            seen_providers.add(provider)
+        elif status == 503 and item.get('error') == 'distribution_unavailable':
+            # Known composition fallback only. Never infer configuration failure
+            # from an arbitrary *_unavailable string or general server error.
+            if provider != 'distribution' or not (route.startswith('/api/v1/distribution/') or route.startswith('/api/admin/distribution/') or route.startswith('/d/')):
+                raise ValueError('distribution fallback has no matching route/provider')
+            unrelated.append({'route': route, 'classification': 'external_config_unavailable'})
+        elif not 200 <= status < 300:
+            raise ValueError(f'unclassified failed observation: {route}')
+    if routes - seen_routes or providers - seen_providers:
+        raise ValueError('required route/provider readback is missing')
+    return {'required_readback': 'passed', 'unrelated_observations': unrelated}
 
-    result = {
-        "classification": "external_config_unavailable" if unrelated else "accepted",
-        "required_provider_dependencies": sorted(required),
-        "unrelated_observations": unrelated,
-        "business_readback": readback.get("business_readback", ""),
-    }
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('capability', type=Path)
+    parser.add_argument('readback', type=Path)
+    args = parser.parse_args()
+    try:
+        result = validate(json.loads(args.capability.read_text()), json.loads(args.readback.read_text()))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise SystemExit(str(exc))
+    print(json.dumps(result, sort_keys=True))
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == '__main__':
+    main()

@@ -99,4 +99,6 @@ PR 保留准确 HEAD/tree、并行与发布快照、测试摘要、证据目录�
 
 ### 预发布板块验收不可被无关 Provider 阻塞
 
-每次 staging receipt 必须带能力声明：`affected_modules`、`required_routes`、`required_services`、`required_provider_dependencies` 和 `business_readback`。验收只执行声明的当前板块及明确共享依赖。未声明的 Provider 返回 `503 *_unavailable` 时必须用 `scripts/validate-staging-capability.py` 分类为 `external_config_unavailable` 并保留观察证据；不得把它写成代码失败，也不得阻塞当前板块。若该 Provider 在 `required_provider_dependencies` 中，则 503 仍是阻塞。Payment checkout 变更不自动要求 Distribution 商品链路；Distribution 变更才要求真实商品、资格和 Provider 读回。
+每次 staging receipt 必须带能力声明：`affected_modules`、`required_routes`、`required_services`、`required_provider_dependencies` 和 `business_readback`。验收只执行声明的当前板块及明确共享依赖。未声明的 Provider 返回 `503 distribution_unavailable` 时必须用 `scripts/validate-staging-capability.py` 分类为 `external_config_unavailable` 并保留观察证据；不得把它写成代码失败，也不得阻塞当前板块。若该 Provider 在 `required_provider_dependencies` 中，则 503 仍是阻塞。Payment checkout 变更不自动要求 Distribution 商品链路；Distribution 变更才要求真实商品、资格和 Provider 读回。
+
+验收辅助脚本不生成 accepted receipt，也不执行 HTTP 请求。required_routes 是非空路径字符串数组；observations 必须覆盖全部必需路由/Provider，并记录 status 与真实业务断言 business_verified。HTTP 200 本身不能替代业务验收。Payment Provider 关闭时，支付下单验收仍未完成，不得用无关分销豁免代替。
