@@ -233,7 +233,7 @@ def record(sha, run_number=None, revoke=False):
     if (not stat.S_ISREG(config.st_mode) or config.st_nlink != 1 or config.st_uid != ROOT_UID
             or config.st_gid != ROOT_GID or stat.S_IMODE(config.st_mode) != 0o600):
         raise ValueError("untrusted_database_configuration")
-    schema_value, installed_digest = cleanup.validated_schema_snapshot(post.snapshot(sha, post.database_environment(CONFIG)), sha)
+    schema_value, _ = cleanup.validated_schema_snapshot(post.snapshot(sha, post.database_environment(CONFIG)), sha)
     if not cleanup.schema_is_compatible(package, schema_value):
         raise ValueError("success_installed_schema_mismatch")
     cleanup.check_ready(sha)

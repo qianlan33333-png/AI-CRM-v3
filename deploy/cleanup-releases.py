@@ -245,20 +245,34 @@ def verified_package(path: Path) -> dict:
             "migrations": sorted(migrations, key=lambda x: x["version"])}
 
 
-def schema_is_compatible(package: dict, installed: dict) -> bool:
-    """Allow a forward-compatible staging database to retain later migrations.
+# Explicitly reviewed v3 additive migration from PR #419. It only expands
+# payment/provider CHECK enums; it does not rename/drop columns or data. Unknown
+# later migrations must never inherit this exception merely by being later.
+COMPATIBLE_ADDITIONAL_MIGRATIONS = {
+    "0202": {"version": "0202", "name": "0202_alipay_web_payment.sql",
+             "checksum": "73e2142dbd857e856dedf31bff28981d9bb5cb607b65260d7ffb770951e19eba"},
+}
 
-    A branch may have already applied an unrelated later migration on a shared
-    preproduction database. Every migration in this package must still match
-    exactly by version, name, and checksum; only additional higher versions are
-    allowed. This prevents branch ordering from blocking an otherwise safe
-    same-package promotion without permitting checksum drift or downgrades.
-    """
-    installed_items = installed.get("migrations")
-    if not isinstance(installed_items, list):
+
+def schema_is_compatible(package: dict, installed: dict) -> bool:
+    expected = package.get("migrations")
+    actual = installed.get("migrations")
+    if not isinstance(expected, list) or not expected or not isinstance(actual, list):
         return False
-    installed_by_version = {item.get("version"): item for item in installed_items if isinstance(item, dict)}
-    return all(installed_by_version.get(item["version"]) == item for item in package.get("migrations", []))
+    if any(not isinstance(item, dict) for item in actual):
+        return False
+    by_version = {item.get("version"): item for item in actual}
+    if len(by_version) != len(actual):
+        return False
+    if any(by_version.get(item["version"]) != item for item in expected):
+        return False
+    expected_versions = {item["version"] for item in expected}
+    for version, item in by_version.items():
+        if version not in expected_versions:
+            if (not isinstance(version, str) or version <= max(expected_versions)
+                    or COMPATIBLE_ADDITIONAL_MIGRATIONS.get(version) != item):
+                return False
+    return True
 
 
 def schema_snapshot(path: Path, current: str) -> tuple[dict, str]:
