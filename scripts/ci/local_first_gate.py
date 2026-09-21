@@ -10,6 +10,16 @@ import sys
 
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
+NON_RUNTIME_PREFIXES = (".github/", "docs/", "scripts/ci/", "skills/")
+NON_RUNTIME_FILES = {"AGENTS.md"}
+
+
+def requires_staging_receipt(current: str) -> bool:
+    base = os.environ.get("PR_BASE_SHA", "")
+    if not SHA.fullmatch(base):
+        return True
+    changed = subprocess.check_output(["git", "diff", "--name-only", f"{base}...{current}"], text=True).splitlines()
+    return any(path not in NON_RUNTIME_FILES and not path.startswith(NON_RUNTIME_PREFIXES) for path in changed)
 
 
 def main() -> int:
@@ -27,6 +37,9 @@ def main() -> int:
     number = os.environ["PR_NUMBER"]
     body = json.loads(subprocess.check_output(["gh", "api", f"repos/{repo}/pulls/{number}"], text=True))["body"] or ""
     current = os.environ.get("PR_HEAD_SHA") or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if not requires_staging_receipt(current):
+        print(json.dumps({"head": current, "staging": "not_required_for_non_runtime_change"}, separators=(",", ":")))
+        return 0
     tree = subprocess.check_output(["git", "rev-parse", f"{current}^{{tree}}"], text=True).strip()
     values = {}
     for name in ("Staging-Head", "Staging-Tree", "Staging-Receipt"):
