@@ -177,3 +177,15 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 curl --fail --silent --show-error http://127.0.0.1:8080/readyz
 curl --fail --silent --show-error https://id-dev.youcangogogo.com/readyz
 ```
+
+### Capability-scoped staging readback
+
+Staging acceptance is capability-scoped. Write the changed modules, required routes, and required provider dependencies into a capability manifest, then validate the readback with:
+
+```sh
+python3 scripts/validate-staging-capability.py capability.json readback.json
+```
+
+An unavailable unrelated provider is recorded as `external_config_unavailable`; a failure on a declared route or provider remains blocking. For example, a Payment checkout change does not require the Distribution product route when WeChat Distribution is disabled on staging.
+
+验收辅助脚本不生成 accepted receipt，也不执行 HTTP 请求。required_routes 是非空路径字符串数组；observations 必须覆盖全部必需路由/Provider，并记录 status 与真实业务断言 business_verified。HTTP 200 本身不能替代业务验收。Payment Provider 关闭时，支付下单验收仍未完成，不得用无关分销豁免代替。

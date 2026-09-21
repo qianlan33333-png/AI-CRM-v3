@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "04e8b05007184b70d31f111e97175c8aaddfb9d5468c1b2017f6b289f962454b",
+  "registry_sha256": "fe21522e02804bc050c497ae1d93162899a81940983cf59ef670af6f34d0ae5d",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -6617,6 +6617,32 @@
       "cleanup_entrypoint": "deploy/post-release-retention.py#run",
       "policy_id": "release_artifacts",
       "coverage_status": "host_unobserved",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/source-bundles",
+      "owner": "release",
+      "policy": "verified_release_allowlist",
+      "reason": "Local v3 source bundles retained for reproducible staging builds and removed only by the release owner after receipt expiry.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/source-bundles",
+      "cleanup_entrypoint": "deploy/build-release-on-staging.sh#remote_root",
+      "policy_id": "release_artifact",
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "filesystem_prefix",
+      "name": "/opt/aicrm/staging-build.lock",
+      "owner": "release",
+      "policy": "never_delete_by_retention",
+      "reason": "Single-flight staging build lock; never treated as a retention candidate.",
+      "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/staging-build.lock",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
       "gap_code": "",
       "authorization_expiry": "not_assessed"
     },

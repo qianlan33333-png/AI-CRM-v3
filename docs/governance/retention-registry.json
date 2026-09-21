@@ -127,6 +127,12 @@
       "gap_code": "owner_cleanup_contract_missing",
       "policy_id": "",
       "cleanup_entrypoint": ""
+    },
+    "filesystem_prefix:/opt/aicrm/source-bundles": {
+      "coverage_status": "policy_available",
+      "gap_code": "",
+      "policy_id": "release_artifact",
+      "cleanup_entrypoint": "deploy/build-release-on-staging.sh#remote_root"
     }
   },
   "resources": {
@@ -443,6 +449,18 @@
       "scope": "subtree",
       "policy": "never_delete_by_retention",
       "reason": "Shared system journal storage; generic deletion forbidden. Only aicrm namespace journalctl policy is approved."
+    },
+    "/opt/aicrm/source-bundles": {
+      "owner": "release",
+      "scope": "subtree",
+      "policy": "verified_release_allowlist",
+      "reason": "Local v3 source bundles retained for reproducible staging builds and removed only by the release owner after receipt expiry."
+    },
+    "/opt/aicrm/staging-build.lock": {
+      "owner": "release",
+      "scope": "exact",
+      "policy": "never_delete_by_retention",
+      "reason": "Single-flight staging build lock; never treated as a retention candidate."
     }
   },
   "tables": {
