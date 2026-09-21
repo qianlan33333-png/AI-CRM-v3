@@ -32,27 +32,33 @@ func (s *Service) standardPurchaseWithin(ctx context.Context, customerID, produc
 		}
 	}
 	excluded := []int64{}
-	if reviews, ok := s.store.(interface {
-		RestartAllowedOrderIDs(context.Context) ([]int64, error)
-	}); ok {
-		var err error
-		excluded, err = reviews.RestartAllowedOrderIDs(ctx)
-		if err != nil {
-			return paymentport.PurchaseState{}, err
+	// Restart permissions are only relevant when explicitly recovering an
+	// existing order. Fresh product checkouts ignore pending orders entirely,
+	// so they must not depend on the restart-review read path.
+	if currentOrderID > 0 {
+		if reviews, ok := s.store.(interface {
+			RestartAllowedOrderIDs(context.Context) ([]int64, error)
+		}); ok {
+			var err error
+			excluded, err = reviews.RestartAllowedOrderIDs(ctx)
+			if err != nil {
+				return paymentport.PurchaseState{}, err
+			}
 		}
 	}
 	state, err := r.ReadStandardPurchaseWithin(ctx, orderport.StandardPurchaseQuery{CustomerIDs: ids, ProductID: productID, ProductCode: code, CurrentOrderID: currentOrderID, ExcludedPendingOrderIDs: excluded, Lock: lock})
 	if err != nil {
 		return paymentport.PurchaseState{}, err
 	}
+	// A pending payment is an order fact, not a purchase eligibility block. The
+	// caller may create a new checkout with its own idempotency key while the
+	// earlier order remains available for provider reconciliation and admin
+	// support. Paid ownership remains the only standard-product gate.
 	result := paymentport.PurchaseState{State: "available", CanPurchase: true}
 	if state.Owned {
 		result.State = "owned"
 		result.PaidOrderID = state.PaidOrderID
 		result.MerchantOrderNo = state.MerchantOrderNo
-		result.CanPurchase = false
-	} else if state.Pending {
-		result.State = "pending"
 		result.CanPurchase = false
 	}
 	return result, nil
