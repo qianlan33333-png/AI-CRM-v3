@@ -156,8 +156,10 @@ case "$mode" in
     build_frontend
     stage_frontend
     ;;
-  release-fast)
+release-fast)
     build_release_binaries
+    python3 scripts/check-release-binaries.py release/bin
+    python3 scripts/check-migration-sequence.py --base origin/main
     build_frontend
     stage_frontend
     cp -R migrations deploy release/
@@ -179,8 +181,10 @@ case "$mode" in
     stage_frontend
     scripts/check-install-release-contract.sh
     ;;
-  release)
+release)
     build_release_binaries
+    python3 scripts/check-release-binaries.py release/bin
+    python3 scripts/check-migration-sequence.py --base origin/main
     run_frontend_and_stage_checks
     cp -R migrations deploy release/
     mkdir -p release/components/excel-batches

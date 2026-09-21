@@ -40,15 +40,15 @@ PRD 经用户确认后冻结；重大范围、合同或风险变化必须重新�
 
 当所有假设和风险边界确认、用户明确开始开发后，持续推进到完整上线验收，不把常规实现选择逐步退回用户。只有新的业务决策、红线风险、凭据/权限缺失或部署证据不一致才暂停并报告。
 
-完整终点：实现 → 本地完整验证 → 预发布机验收 → GitHub 轻量一致性门禁与合并 → 生产 SSH 部署 → 部署后认证读回 → 观察窗口验收 → 触发一次“彩纸礼炮”庆祝。
+完整终点：实现 → 预发布机按当前准确 commit 编译并验收 → GitHub 轻量一致性门禁与合并 → 预发布机将同一已验收包串行晋级生产 → 部署后认证读回 → 观察窗口验收 → 触发一次“彩纸礼炮”庆祝。本地只做快速反馈和发布脚本自检，不再重复上传本地构建包。
 
 生产部署完成且仅在版本、健康状态、认证读回、真实业务读回和观察窗口全部通过后，调用 Codex 的
 `mcp__codex_app__fire_confetti` 一次庆祝本次上线。构建成功、PR 合并、部署开始、服务启动或仅有
 `/readyz` 通过都不能触发；部署失败、回滚、结果未知或观察窗口未结束时不得触发。一次上线事件只触发一次，重复重试同一部署不得重复庆祝。
 
-常规发布先在 `49.232.57.128` 预发布机完成完整部署和合成业务验收，再合并 PR；PR 只验证预发布 receipt 与当前 tree 一致、治理和冲突状态。合并后从本地通过 SSH 登录 `124.220.53.183` 完成生产部署。生产部署私钥固定使用 `/Users/qianlan/Downloads/zhengshi.pem`，必须保持 `0600`，不得复制到仓库、PR、日志或命令输出。预发布使用同一账号和密钥时也必须单独核验 Host Key。
+常规发布先在 `49.232.57.128` 预发布机从当前 v3 准确 commit 编译、安装并完成受影响板块验收，再合并 PR；PR 只验证预发布 receipt 与当前 tree 一致、治理和冲突状态。合并后由预发布机在发布锁下把同一已验收包串行晋级到 `124.220.53.183`，不重新编译和打包。生产只做版本、健康、认证和本次板块真实读回。生产部署私钥固定使用 `/Users/qianlan/Downloads/zhengshi.pem`，必须保持 `0600`，不得复制到仓库、PR、日志或命令输出。预发布使用同一账号和密钥时也必须单独核验 Host Key。
 
-本地构建发布包必须使用 Linux CI 等价的运行时目标：固定设置 `GOOS=linux`、`GOARCH=amd64`，并为 Linux amd64 cgo runner 提供显式交叉编译器（例如 `CC="zig cc -target x86_64-linux-gnu"`）。发布包统一由当前仓库 Python archiver 创建，拒绝 `._*` AppleDouble、symlink、未注册文件和非 Linux ELF；不再直接使用 macOS BSD tar。`release-files.sha256` 必须在本地、预发布安装器和 success observer 中通过。
+发布包只允许在预发布机按 Linux amd64 目标编译，发布前执行 `scripts/check-release-binaries.py` 和 `scripts/check-migration-sequence.py`；安装器在切换 current 前再次拒绝非 Linux x86-64 ELF，避免 `status=126` 才发现架构错误。发布包统一由当前仓库 Python archiver 创建，拒绝 `._*` AppleDouble、symlink、未注册文件和非 Linux ELF；`release-files.sha256` 必须在预发布、生产安装器和 success observer 中通过。
 
 当前已验证 SSH 账号为 `ubuntu`，通过 `deploy/run-release-as-root.sh` 持有 root fd 9 后执行 installer；禁止从普通 sudo 调用中传递失效的锁描述符。使用 `-i /Users/qianlan/Downloads/zhengshi.pem -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes`，显式选择已核验的 known_hosts；禁止尝试其他账号或绕过校验。上传前后独立比对 SHA-256，逐个检查 `bin/` 下文件为 Linux x86-64 ELF，纯 Go 默认 `CGO_ENABLED=0`，SDK runner 由现有脚本单独开启 cgo。构建必须来自准确候选 tree 的干净独立 checkout。
 

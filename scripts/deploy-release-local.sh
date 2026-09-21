@@ -13,6 +13,8 @@ receipt="${DEPLOY_RECEIPT:-staging-receipts/${sha}.json}"
 environment="${DEPLOY_ENVIRONMENT:-staging}"
 [[ -f "$archive" && "$archive" == *"${sha}.tar.gz" ]] || { echo "archive/sha mismatch" >&2; exit 2; }
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid sha" >&2; exit 2; }
+python3 scripts/check-migration-sequence.py --base origin/main
+python3 scripts/check-release-binaries.py release/bin
 chmod 600 "$key"
 ssh_flags=(-i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts" -o ConnectTimeout=30)
 remote_archive="/tmp/aicrm-${sha}.tar.gz"

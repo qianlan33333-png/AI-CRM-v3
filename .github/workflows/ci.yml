@@ -57,6 +57,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate release target before building
+        run: |
+          python3 scripts/check-migration-sequence.py --base "${GITHUB_BASE_SHA:-origin/main}"
       - id: plan
         name: Verify whether main is exactly the tested PR tree
         env:

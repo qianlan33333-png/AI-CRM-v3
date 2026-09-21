@@ -137,6 +137,22 @@ test -x "$release_dir/bin/migrate-radar-v2"
 test -x "$release_dir/bin/migrate-sidebar-history"
 test -x "$release_dir/bin/migrate-owner-handoff-history"
 test -x "$release_dir/bin/bootstrap-automation-operations"
+if ! command -v file >/dev/null 2>&1; then
+  echo "release architecture check requires file(1)" >&2
+  exit 6
+fi
+if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+  echo "release host must be Linux x86_64" >&2
+  exit 6
+fi
+for binary in "$release_dir"/bin/*; do
+  [[ -f "$binary" && -x "$binary" ]] || continue
+  file_description="$(file -b "$binary")"
+  [[ "$file_description" == ELF\ 64-bit*\ x86-64* ]] || {
+    echo "release binary is not Linux amd64 ELF: $binary ($file_description)" >&2
+    exit 6
+  }
+done
 test -f "$release_dir/migrations/0005_external_effects.sql"
 test -f "$release_dir/migrations/0006_wecom_callback_channel_acquisition.sql"
 test -f "$release_dir/migrations/0007_media.sql"

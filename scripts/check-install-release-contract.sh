@@ -6,6 +6,8 @@ ci_workflow=".github/workflows/ci.yml"
 quality_lanes="scripts/ci/quality_lanes.py"
 release_builder="scripts/run-donor-view-consumers.sh"
 grep -qxF 'export PYTHONDONTWRITEBYTECODE=1' "$installer" || { echo "release hooks must not add unregistered Python cache files" >&2; exit 1; }
+grep -qF 'release host must be Linux x86_64' "$installer" || { echo "installer must reject non-Linux release hosts" >&2; exit 1; }
+grep -qF 'release binary is not Linux amd64 ELF' "$installer" || { echo "installer must reject non-Linux release binaries" >&2; exit 1; }
 canonical_backend_full_go_test() {
   grep -qF 'scripts/ci/quality_lanes.py backend' "$ci_workflow" &&
     grep -qF '"go", "test", "-p", "1", "-race", "-count=1", "-timeout=15m", "./..."' "$quality_lanes"
