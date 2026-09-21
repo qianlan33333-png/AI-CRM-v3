@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Reuse successful PR verification only for an identical, API-verified Git tree.
+"""Keep GitHub verification lightweight and exact-head based.
 
-No code or release artifact from a PR is executed by the main proof lookup.
-Missing, expired, invalid or unavailable evidence falls back to full verification.
+Local and staging evidence carry the long test suites. GitHub checks the
+current tree and governance; full lanes remain available only as an explicit
+workflow-dispatch break-glass action.
 """
 import argparse
 import io
@@ -117,11 +118,18 @@ def require_results(needs, full, event, ref):
     elif mode == "targeted":
         if event != "pull_request" or full or "preflight" not in lanes:
             raise ValueError("targeted verification is only valid for pull requests with preflight")
-    elif mode not in {"full", "light"}:
+    elif mode not in {"full", "light", "release"}:
         raise ValueError("unknown verification mode")
     if mode == "light":
         if event != "pull_request" or full or lanes:
             raise ValueError("light verification is only valid for pull requests without scheduled lanes")
+        for name in PHASES:
+            if needs.get(name, {}).get("result") != "skipped":
+                raise ValueError(f"{name}: expected skipped")
+        return
+    if mode == "release":
+        if event not in {"push", "workflow_dispatch"} or ref != "refs/heads/main" or full or lanes:
+            raise ValueError("release consistency gate is only valid for main without scheduled lanes")
         for name in PHASES:
             if needs.get(name, {}).get("result") != "skipped":
                 raise ValueError(f"{name}: expected skipped")
@@ -143,8 +151,10 @@ def main():
     if args.mode == "plan":
         verified_run = None
         mode = "full"
-        if (event == "pull_request" and os.environ.get("FORCE_FULL") != "true"
-                and not requires_full_pr_verification()):
+        # Local and staging verification are authoritative for ordinary
+        # changes. GitHub only checks the exact tree, receipt and governance.
+        # Full lanes remain an explicit break-glass action.
+        if event == "pull_request" and os.environ.get("FORCE_FULL") != "true":
             mode = "light"
             full = False
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
@@ -153,11 +163,10 @@ def main():
             return
         if (event in {"push", "workflow_dispatch"} and ref == "refs/heads/main"
                 and os.environ.get("FORCE_FULL") != "true"):
-            try:
-                verified_run = find_verified_run(repo, sha, git("HEAD^{tree}"))
-            except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
-                # Do not disclose raw API responses; uncertainty means run tests.
-                print("PR verification unavailable or invalid; running full checks")
+            with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                output.write("full=false\nverified_run=\nmode=release\n")
+            print("Local-first policy: main uses release consistency gate")
+            return
         full = verified_run is None
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"full={str(full).lower()}\nverified_run={verified_run or ''}\n")
@@ -190,6 +199,7 @@ def main():
         print({"full": "All required verification passed",
                "targeted": "Selected PR verification lanes passed",
                "light": "Local-first PR consistency gate passed",
+               "release": "Main release consistency gate passed",
                "verified": "Identical merged tree: PR verification reused"}[mode])
 
 

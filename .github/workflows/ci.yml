@@ -85,8 +85,8 @@ jobs:
         name: Publish verification plan
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" != "pull_request" && "${{ steps.plan.outputs.full }}" == "false" ]]; then
-            echo 'mode=verified' >> "$GITHUB_OUTPUT"
+          if [[ "${{ steps.plan.outputs.mode }}" == "release" ]]; then
+            echo 'mode=release' >> "$GITHUB_OUTPUT"
             echo 'lanes=[]' >> "$GITHUB_OUTPUT"
             echo 'full=false' >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event_name }}" != "pull_request" ]]; then
@@ -414,6 +414,7 @@ jobs:
           CI_NEEDS: ${{ toJSON(needs) }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 scripts/ci/governance_impact.py --gate
@@ -459,7 +460,7 @@ jobs:
           retention-days: 90
 
   # Production installation is opt-in. An unset repository variable is not
-  # equivalent to approval, so ordinary main pushes complete CI only.
+  # equivalent to approval; deployment remains local-first.
   deploy:
     # Normal releases are local-first and pass through staging. Keep Actions
     # deployment only as an explicit break-glass path.
