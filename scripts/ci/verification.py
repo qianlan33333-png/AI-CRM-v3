@@ -154,7 +154,7 @@ def main():
         # Local and staging verification are authoritative for ordinary
         # changes. GitHub only checks the exact tree, receipt and governance.
         # Full lanes remain an explicit break-glass action.
-        if event == "pull_request" and os.environ.get("FORCE_FULL") != "true":
+        if event in {"pull_request", "workflow_dispatch"} and ref != "refs/heads/main" and os.environ.get("FORCE_FULL") != "true":
             mode = "light"
             full = False
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:

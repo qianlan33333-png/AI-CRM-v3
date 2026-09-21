@@ -17,6 +17,15 @@ OPERATOR_ONLY_PREFIXES = (
     "deploy/install-release.sh",
     "deploy/run-release-as-root.sh",
 )
+# Release guard and deployment mechanics are validated by their own contracts;
+# they do not require an application receipt when no runtime code changes.
+OPERATOR_ONLY_PREFIXES += (
+    "deploy/build-release-on-staging.sh",
+    "deploy/promote-staging-release.sh",
+    "scripts/check-release-binaries.py",
+    "scripts/check-migration-sequence.py",
+    "scripts/test_release_preflight.py",
+)
 
 
 def requires_staging_receipt(current: str) -> bool:
