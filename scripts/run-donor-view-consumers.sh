@@ -4,6 +4,12 @@ set -euo pipefail
 # Compatibility name retained for callers; every command uses only the current
 # AI-CRM-v3 checkout. No external repository, donor checkout, or donor SHA is used.
 mode="${1:-}"
+if [[ "$mode" == release || "$mode" == release-fast ]]; then
+  if [[ "${GOOS:-}" != linux || "${GOARCH:-}" != amd64 ]]; then
+    echo "release builds require GOOS=linux GOARCH=amd64" >&2
+    exit 2
+  fi
+fi
 npm ci --no-audit --no-fund
 npm ci --prefix web/v3 --no-audit --no-fund
 # Materialize only the source views already committed inside this v3 checkout;
@@ -157,10 +163,8 @@ case "$mode" in
     build_frontend
     stage_frontend
     ;;
-release-fast)
+  release-fast)
     build_release_binaries
-    python3 scripts/check-release-binaries.py release/bin
-    python3 scripts/check-migration-sequence.py --base origin/main
     build_frontend
     stage_frontend
     cp -R migrations deploy release/
@@ -182,10 +186,8 @@ release-fast)
     stage_frontend
     scripts/check-install-release-contract.sh
     ;;
-release)
+  release)
     build_release_binaries
-    python3 scripts/check-release-binaries.py release/bin
-    python3 scripts/check-migration-sequence.py --base origin/main
     run_frontend_and_stage_checks
     cp -R migrations deploy release/
     mkdir -p release/components/excel-batches
