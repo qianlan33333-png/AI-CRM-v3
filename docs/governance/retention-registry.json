@@ -461,6 +461,24 @@
       "scope": "exact",
       "policy": "never_delete_by_retention",
       "reason": "Single-flight staging build lock; never treated as a retention candidate."
+    },
+    "/opt/aicrm/source-mirror.git": {
+      "owner": "release",
+      "scope": "subtree",
+      "policy": "never_delete_by_retention",
+      "reason": "Staging source mirror is a nonblocking Git object cache; candidate receipts and release builds remain the release authority."
+    },
+    "/opt/aicrm/source-mirror-status.json": {
+      "owner": "release",
+      "scope": "exact",
+      "policy": "never_delete_by_retention",
+      "reason": "Mirror health is operational evidence and must not be removed by retention cleanup."
+    },
+    "/opt/aicrm/release-queue.json": {
+      "owner": "release",
+      "scope": "exact",
+      "policy": "never_delete_by_retention",
+      "reason": "Single release queue state is required to prevent concurrent production promotion."
     }
   },
   "tables": {

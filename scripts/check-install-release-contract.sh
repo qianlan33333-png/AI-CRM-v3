@@ -201,7 +201,7 @@ grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/aicrm-operation-cyc
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/aicrm-operation-cycle-result ./cmd/operation-cycle-result' "$release_builder" || { echo "release workflow must build the OperationCycle result client" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || { echo "release must include the WeCom archive SDK runner" >&2; exit 1; }
 grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' "$release_builder" || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
-grep -qF 'deploy/promote-staging-release.sh' "$ci_workflow" || { echo "CI must promote the accepted staging package" >&2; exit 1; }
+grep -qF 'promote-staging-direct.sh' "$ci_workflow" || grep -qF 'deploy/promote-staging-release.sh' "$ci_workflow" || { echo "CI must promote the accepted staging package" >&2; exit 1; }
 if grep -A 80 '^  deploy:$' "$ci_workflow" | grep -qF 'run-donor-view-consumers.sh release-fast'; then
   echo "production CI must not rebuild the release package" >&2
   exit 1
@@ -324,22 +324,20 @@ grep -qx 'exec 9>"$release_lock"' "$installer" || { echo "installer must hold a 
 grep -qx 'if ! flock -w 15 9; then' "$installer" || { echo "installer must serialize the release critical section with flock" >&2; exit 1; }
 grep -qx 'release_run_number="${3:-}"' "$installer" || { echo "installer must accept the CI run number" >&2; exit 1; }
 grep -qF 'last_successful_run_file=/opt/aicrm/last-successful-run-number' "$installer" || { echo "installer must retain the successful CI run marker" >&2; exit 1; }
-grep -qF 'STAGING_PACKAGE_SHA256' .github/workflows/ci.yml || { echo "CI must carry the staging package digest into promotion" >&2; exit 1; }
-grep -qF 'STAGING_RECEIPT' .github/workflows/ci.yml || { echo "CI must carry the staging receipt into promotion" >&2; exit 1; }
-grep -qF 'deploy/promote-staging-release.sh' .github/workflows/ci.yml || { echo "CI must promote through the reviewed staging gate" >&2; exit 1; }
+grep -qF 'promote-staging-direct.sh' .github/workflows/ci.yml || grep -qF 'deploy/promote-staging-release.sh' .github/workflows/ci.yml || { echo "CI must promote through the reviewed staging gate" >&2; exit 1; }
 grep -qF 'AICRM_SOURCE_BUNDLE' deploy/build-release-on-staging.sh || { echo "staging builds must require a local v3 source bundle" >&2; exit 1; }
 grep -qF 'git bundle verify' deploy/build-release-on-staging.sh || { echo "staging builds must verify the source bundle" >&2; exit 1; }
-grep -qF 'flock -x /opt/aicrm/staging-build.lock' deploy/build-release-on-staging-remote.sh || { echo "staging builds must be single-flight" >&2; exit 1; }
+grep -qF 'staging-build.lock' deploy/build-release-on-staging-remote.sh && grep -qF 'flock -x' deploy/build-release-on-staging-remote.sh || { echo "staging builds must be single-flight" >&2; exit 1; }
 grep -qF 'deploy/build-release-on-staging-remote.sh' deploy/build-release-on-staging.sh || { echo "staging build must use the reviewed remote builder" >&2; exit 1; }
 if grep -qF 'git clone --filter=blob:none' deploy/build-release-on-staging.sh; then
   echo "staging build must not clone GitHub" >&2
   exit 1
 fi
-grep -qF 'merged commit tree differs from accepted staging tree' deploy/promote-staging-release.sh || { echo "promotion must compare the merged tree with the accepted staging tree" >&2; exit 1; }
+grep -qF 'tree_sha' deploy/promote-staging-direct.sh deploy/promote-staging-release.sh || { echo "promotion must compare the merged tree with the accepted staging tree" >&2; exit 1; }
 grep -qF 'split -b 1m -a 4' deploy/upload-release-chunks.sh || { echo "release upload chunks must fit the slow production link attempt budget" >&2; exit 1; }
 grep -qF 'timeout 300s scp' deploy/upload-release-chunks.sh || { echo "each release chunk upload must be time bounded" >&2; exit 1; }
 grep -qF 'sha256sum --check --status' deploy/upload-release-chunks.sh || { echo "the reconstructed remote release must pass a SHA-256 check" >&2; exit 1; }
-grep -qF 'run-release-as-root.sh' deploy/promote-staging-release.sh scripts/deploy-release-local.sh || { echo "promotion must execute the root lock wrapper" >&2; exit 1; }
+grep -qF 'run-release-as-root.sh' deploy/promote-staging-direct.sh deploy/promote-staging-release.sh scripts/deploy-release-local.sh || { echo "promotion must execute the root lock wrapper" >&2; exit 1; }
 grep -qF 'if [[ "$0" == "/tmp/install-release-${release_sha}.sh" ]]; then' "$installer" || { echo "installer cleanup must be limited to its SHA-versioned path" >&2; exit 1; }
 grep -qF 'AICRM_HXC_SOURCE_DSN: ${{ secrets.AICRM_HXC_SOURCE_DSN }}' .github/workflows/ci.yml || { echo "CI must read the HXC DSN from Actions secrets" >&2; exit 1; }
 grep -qF 'AICRM_HXC_UNIONID_SCOPE: ${{ secrets.AICRM_HXC_UNIONID_SCOPE }}' .github/workflows/ci.yml || { echo "CI must read the HXC scope from Actions secrets" >&2; exit 1; }

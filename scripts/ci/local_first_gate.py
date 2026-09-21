@@ -35,6 +35,14 @@ OPERATOR_ONLY_PREFIXES += (
     "scripts/validate-staging-capability.py",
     "scripts/test_validate_staging_capability.py",
     "scripts/run-donor-view-consumers.sh",
+    "deploy/create-merge-preview-bundle.sh",
+    "deploy/promote-staging-direct.sh",
+    "deploy/sync-staging-source-mirror.sh",
+    "scripts/accept-staging-candidate.py",
+    "scripts/release_candidate.py",
+    "scripts/release_queue.py",
+    "scripts/test_release_candidate.py",
+    "scripts/test_release_queue.py",
 )
 
 
