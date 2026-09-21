@@ -34,7 +34,12 @@ func (a audienceDirectPushTargetResolver) ResolveDirectPushTarget(ctx context.Co
 	if a.identities == nil || a.uow == nil || a.staff == nil || a.unionScope == "" {
 		return automationport.DirectPushResolvedTarget{}, "", errors.New("direct push identity adapter unavailable")
 	}
-	result, err := a.identities.Resolve(ctx, identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: a.unionScope, Value: unionID, Assurance: identitydomain.AssuranceDeclared, Source: "audience-direct-push"})
+	var result identityport.ResolveResult
+	err := a.uow.Within(ctx, func(tx context.Context) error {
+		var resolveErr error
+		result, resolveErr = a.identities.Resolve(tx, identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: a.unionScope, Value: unionID, Assurance: identitydomain.AssuranceDeclared, Source: "audience-direct-push"})
+		return resolveErr
+	})
 	if errors.Is(err, identitydomain.ErrInvalidReference) {
 		return automationport.DirectPushResolvedTarget{}, "identity_invalid", nil
 	}
