@@ -303,7 +303,10 @@ function boot(store, completion, redirectFailure = false, sessionAuthorized = tr
  assert.equal(run.calls.some(call=>call.method==='POST'),false);
 }
 {
- const run=boot(new Map(),{},false,true,'',{purchase_state:'pending',can_purchase:false});
+ // A server-side pending order no longer blocks a fresh checkout. The public
+ // status contract stays on the available path so the browser can create a
+ // new idempotent order while the old one remains queryable.
+ const run=boot(new Map(),{},false,true,'',{purchase_state:'available',can_purchase:true});
  await settle();
  assert.equal(run.elements.get('buy').disabled,false);
  assert.equal(run.elements.get('checkoutContent').hidden,false);
