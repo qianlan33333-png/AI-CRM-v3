@@ -131,6 +131,14 @@ class CleanupTests(unittest.TestCase):
         path.rename(alias); path.symlink_to(alias)
         with self.assertRaises((cleanup.Refuse, OSError)): cleanup.verified_success(self.root, package)
 
+    def test_schema_compatibility_allows_later_unrelated_migration(self):
+        package = cleanup.verified_package(self.root / "releases" / self.names[-1])
+        installed = json.loads(self.schema.read_text())
+        installed["migrations"].append({"version": "0002", "name": "0002_unrelated.sql", "checksum": "f" * 64})
+        self.assertTrue(cleanup.schema_is_compatible(package, installed))
+        installed["migrations"][0]["checksum"] = "0" * 64
+        self.assertFalse(cleanup.schema_is_compatible(package, installed))
+
     def test_writable_success_directory_and_duplicate_sequence_fail_closed(self):
         directory = self.root / cleanup.SUCCESS_DIRECTORY
         directory.chmod(0o777)

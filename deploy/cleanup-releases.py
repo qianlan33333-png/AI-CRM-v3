@@ -241,7 +241,24 @@ def verified_package(path: Path) -> dict:
             "inode": root_stat.st_ino, "device": root_stat.st_dev, "newest_file_ns": newest_file_ns,
             "binary_sha256": expected["bin/aicrm"],
             "package_digest": canonical_digest({"release_sha": path.name, "files": expected}),
-            "schema_digest": canonical_digest(sorted(migrations, key=lambda x: x["version"]))}
+            "schema_digest": canonical_digest(sorted(migrations, key=lambda x: x["version"])),
+            "migrations": sorted(migrations, key=lambda x: x["version"])}
+
+
+def schema_is_compatible(package: dict, installed: dict) -> bool:
+    """Allow a forward-compatible staging database to retain later migrations.
+
+    A branch may have already applied an unrelated later migration on a shared
+    preproduction database. Every migration in this package must still match
+    exactly by version, name, and checksum; only additional higher versions are
+    allowed. This prevents branch ordering from blocking an otherwise safe
+    same-package promotion without permitting checksum drift or downgrades.
+    """
+    installed_items = installed.get("migrations")
+    if not isinstance(installed_items, list):
+        return False
+    installed_by_version = {item.get("version"): item for item in installed_items if isinstance(item, dict)}
+    return all(installed_by_version.get(item["version"]) == item for item in package.get("migrations", []))
 
 
 def schema_snapshot(path: Path, current: str) -> tuple[dict, str]:
