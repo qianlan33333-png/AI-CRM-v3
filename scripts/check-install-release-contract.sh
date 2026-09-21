@@ -327,6 +327,15 @@ grep -qF 'last_successful_run_file=/opt/aicrm/last-successful-run-number' "$inst
 grep -qF 'STAGING_PACKAGE_SHA256' .github/workflows/ci.yml || { echo "CI must carry the staging package digest into promotion" >&2; exit 1; }
 grep -qF 'STAGING_RECEIPT' .github/workflows/ci.yml || { echo "CI must carry the staging receipt into promotion" >&2; exit 1; }
 grep -qF 'deploy/promote-staging-release.sh' .github/workflows/ci.yml || { echo "CI must promote through the reviewed staging gate" >&2; exit 1; }
+grep -qF 'AICRM_SOURCE_BUNDLE' deploy/build-release-on-staging.sh || { echo "staging builds must require a local v3 source bundle" >&2; exit 1; }
+grep -qF 'git bundle verify' deploy/build-release-on-staging.sh || { echo "staging builds must verify the source bundle" >&2; exit 1; }
+grep -qF 'flock -x /opt/aicrm/staging-build.lock' deploy/build-release-on-staging-remote.sh || { echo "staging builds must be single-flight" >&2; exit 1; }
+grep -qF 'deploy/build-release-on-staging-remote.sh' deploy/build-release-on-staging.sh || { echo "staging build must use the reviewed remote builder" >&2; exit 1; }
+if grep -qF 'git clone --filter=blob:none' deploy/build-release-on-staging.sh; then
+  echo "staging build must not clone GitHub" >&2
+  exit 1
+fi
+grep -qF 'merged commit tree differs from accepted staging tree' deploy/promote-staging-release.sh || { echo "promotion must compare the merged tree with the accepted staging tree" >&2; exit 1; }
 grep -qF 'split -b 1m -a 4' deploy/upload-release-chunks.sh || { echo "release upload chunks must fit the slow production link attempt budget" >&2; exit 1; }
 grep -qF 'timeout 300s scp' deploy/upload-release-chunks.sh || { echo "each release chunk upload must be time bounded" >&2; exit 1; }
 grep -qF 'sha256sum --check --status' deploy/upload-release-chunks.sh || { echo "the reconstructed remote release must pass a SHA-256 check" >&2; exit 1; }

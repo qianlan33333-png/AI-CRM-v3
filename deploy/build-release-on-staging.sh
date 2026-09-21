@@ -1,32 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Staging is the only release builder. It receives a local v3 git bundle and
+# never depends on GitHub connectivity.
 sha="${1:-}"
+bundle="${AICRM_SOURCE_BUNDLE:-}"
 staging_host="${STAGING_HOST:?STAGING_HOST is required}"
 staging_user="${STAGING_USER:-ubuntu}"
 key="${STAGING_KEY:?STAGING_KEY is required}"
 known_hosts="${STAGING_KNOWN_HOSTS:?STAGING_KNOWN_HOSTS is required}"
-repo_url="${AICRM_V3_REPOSITORY:-https://github.com/qianlan33333-png/AI-CRM-v3.git}"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release sha" >&2; exit 2; }
+[[ -f "$bundle" ]] || { echo "AICRM_SOURCE_BUNDLE must point to a local git bundle" >&2; exit 2; }
+git bundle verify "$bundle" >/dev/null
+git bundle list-heads "$bundle" | awk '{print $1}' | grep -Fxq "$sha" || { echo "source bundle does not contain requested commit $sha" >&2; exit 2; }
 chmod 600 "$key"
 flags=(-i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts" -o ConnectTimeout=30)
+remote_bundle="/opt/aicrm/source-bundles/$sha.bundle"
 remote_root="/opt/aicrm/builds/$sha"
 remote_archive="$remote_root/aicrm-$sha.tar.gz"
 remote_receipt="$remote_root/staging-receipt.json"
-ssh "${flags[@]}" "$staging_user@$staging_host" "umask 022 && sudo install -d -o $staging_user -g $staging_user -m 0755 /opt/aicrm/builds && rm -rf '$remote_root' && git clone --filter=blob:none '$repo_url' '$remote_root' && git -C '$remote_root' config core.fileMode true && git -C '$remote_root' checkout --detach '$sha' && cd '$remote_root' && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GITHUB_SHA='$sha' bash scripts/run-donor-view-consumers.sh release-fast"
-ssh "${flags[@]}" "$staging_user@$staging_host" "cd '$remote_root' && python3 scripts/check-release-binaries.py release/bin && python3 - '$remote_root' '$sha' <<'PY'
-import hashlib, json, pathlib, subprocess, sys
-root, sha = map(pathlib.Path, sys.argv[1:])
-archive = root / ('aicrm-' + sha.name + '.tar.gz')
-tree = subprocess.check_output(['git', '-C', str(root), 'rev-parse', sha.name + '^{tree}'], text=True).strip()
-json.dump({'schema': 1, 'repository': 'AI-CRM-v3', 'environment': 'staging', 'status': 'built',
-           'commit_sha': sha.name, 'tree_sha': tree,
-           'package_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
-           'capability': 'release', 'affected_modules': [], 'required_routes': [],
-           'required_services': [], 'required_provider_dependencies': [],
-           'business_readback': 'not run; build provenance only'},
-          (root / 'staging-receipt.json').open('w'), indent=2)
-PY"
+scp "${flags[@]}" "$bundle" "$staging_user@$staging_host:$remote_bundle.tmp"
+remote_helper="/tmp/build-release-on-staging-${sha}.sh"
+scp "${flags[@]}" deploy/build-release-on-staging-remote.sh "$staging_user@$staging_host:$remote_helper"
+ssh "${flags[@]}" "$staging_user@$staging_host" "set -euo pipefail; umask 022; sudo install -d -o $staging_user -g $staging_user -m 0755 /opt/aicrm/source-bundles /opt/aicrm/builds; sudo touch /opt/aicrm/staging-build.lock; sudo chown $staging_user:$staging_user /opt/aicrm/staging-build.lock; mv '$remote_bundle.tmp' '$remote_bundle'; chmod 755 '$remote_helper'; '$remote_helper' '$sha' '$remote_bundle' '$remote_root'"
+
 local_archive="aicrm-$sha.tar.gz"
 local_receipt="staging-receipt-$sha.json"
 scp "${flags[@]}" "$staging_user@$staging_host:$remote_archive" "$local_archive"

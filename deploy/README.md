@@ -79,9 +79,11 @@ WeCom, outbound, or credential prerequisites itself.
 The normal release path builds once on the Linux staging host and promotes the
 same package after merge:
 
-1. Run fast local checks only. The staging host checks out the exact v3 commit
-   and runs `deploy/build-release-on-staging.sh`, which invokes
-   `scripts/run-donor-view-consumers.sh release-fast` on Linux amd64.
+1. Run fast local checks only, then create a verified local v3 bundle and set
+   `AICRM_SOURCE_BUNDLE`. The staging host receives that bundle over the pinned
+   SSH connection; it never clones GitHub. `deploy/build-release-on-staging.sh`
+   invokes `scripts/run-donor-view-consumers.sh release-fast` on Linux amd64
+   under a single-flight staging build lock.
 2. Install the resulting package to staging `49.232.57.128` and complete the
    affected capability's synthetic API/browser/readback and rollback checks.
 3. Put the staging SHA/tree and receipt in the PR. GitHub PR checks validate
