@@ -10,6 +10,7 @@ user="${DEPLOY_USER:-ubuntu}"
 key="${DEPLOY_KEY:?DEPLOY_KEY is required}"
 known_hosts="${DEPLOY_KNOWN_HOSTS:?DEPLOY_KNOWN_HOSTS is required}"
 receipt="${DEPLOY_RECEIPT:-staging-receipts/${sha}.json}"
+environment="${DEPLOY_ENVIRONMENT:-staging}"
 [[ -f "$archive" && "$archive" == *"${sha}.tar.gz" ]] || { echo "archive/sha mismatch" >&2; exit 2; }
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid sha" >&2; exit 2; }
 chmod 600 "$key"
@@ -29,19 +30,19 @@ readback="$(ssh "${ssh_flags[@]}" "$user@$target" "readlink -f /opt/aicrm/curren
 tree_sha="$(git rev-parse "${sha}^{tree}" 2>/dev/null || true)"
 [[ "$tree_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "release sha is not a local git commit" >&2; exit 4; }
 mkdir -p "$(dirname "$receipt")"
-python3 - "$receipt" "$sha" "$tree_sha" "$local_digest" "$target" "$readback" <<'PY'
+python3 - "$receipt" "$sha" "$tree_sha" "$local_digest" "$target" "$readback" "$environment" <<'PY'
 import json, sys
 from datetime import datetime, timezone
-path, sha, tree_sha, digest, target, readback = sys.argv[1:]
+path, sha, tree_sha, digest, target, readback, environment = sys.argv[1:]
 ready = json.loads(readback.splitlines()[-1])
 if ready.get("release_sha") != sha or ready.get("status") != "ready":
     raise SystemExit("staging readiness did not prove the requested release")
 with open(path, "w") as stream:
-    json.dump({"schema": 1, "environment": "staging", "target": target,
+    json.dump({"schema": 1, "environment": environment, "target": target,
                "release_sha": sha, "tree_sha": tree_sha,
                "package_sha256": digest,
                "observed_at": datetime.now(timezone.utc).isoformat(),
                "readback": readback.splitlines()}, stream, sort_keys=True)
     stream.write("\n")
 PY
-printf '%s\n' "staging receipt: $receipt"
+printf '%s\n' "$environment receipt: $receipt"
