@@ -3177,6 +3177,12 @@ func securityHeaders(next http.Handler) http.Handler {
 			// under the stricter image policy.
 			imageSource += " blob:"
 		}
+		if strings.HasPrefix(request.URL.Path, "/gi/") {
+			// Invitation pages render the provider-issued group QR directly. Keep
+			// the exception scoped to this public route instead of weakening the
+			// image policy for the admin shell or API responses.
+			imageSource += " https://wework.qpic.cn"
+		}
 		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src " + imageSource + "; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
 		if request.URL.Path != webshell.SidebarPagePath && !strings.HasPrefix(request.URL.Path, "/api/sidebar/") {
 			writer.Header().Set("X-Frame-Options", "SAMEORIGIN")

@@ -160,7 +160,7 @@ func (h InvitationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeError(w, 405, "method_not_allowed")
 }
 
-var invitationPublicTemplate = template.Must(template.New("invitation").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}}</title><link rel="stylesheet" href="/static/admin_console/invitation_public.css"></head><body><main><h1 id="title">{{.Title}}</h1><p id="description">{{.Description}}</p><p id="status">正在获取入群方式…</p><img id="groupCode" alt="当前群聊入群二维码" hidden><p>长按识别二维码加入群聊</p></main><script src="/static/admin_console/invitation_public.js" defer></script></body></html>`))
+var invitationPublicTemplate = template.Must(template.New("invitation").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}}</title><link rel="stylesheet" href="/static/admin_console/invitation_public.css"></head><body><main><h1 id="title">{{.Title}}</h1><p id="description">{{.Description}}</p><p id="status">正在获取入群方式…</p><img id="groupCode" alt="当前群聊入群二维码" hidden><p>长按识别二维码加入群聊</p><p id="usageNotice">此链接仅用于加入群聊，不触发渠道欢迎语或入渠标签；如需触发渠道欢迎语，请使用渠道码中心的渠道二维码或获客链接。</p></main><script src="/static/admin_console/invitation_public.js" defer></script></body></html>`))
 
 func (h InvitationHandler) public(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
