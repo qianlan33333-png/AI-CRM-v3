@@ -426,6 +426,11 @@
       document.querySelectorAll("#panel-basic input,#panel-basic textarea,#panel-basic select,#panel-basic button,#panel-automation button,#panel-automation select,#panel-senders input,#panel-senders button").forEach((node) => { node.disabled = immutable; });
       byID("manualRefreshBtn").disabled = pkg?.lifecycle === "archived";
       for (const id of ["packageNameInput", "packageGroupSelect", "savePackageBtn"]) byID(id).disabled = pkg?.lifecycle === "archived";
+      // An active package freezes its audience definition, but the independent
+      // direct-push webhook must remain configurable while the package runs.
+      // Re-apply that section's narrower archived-only policy after the broad
+      // legacy form lock above.
+      renderDirectPush();
     }
 
     function renderGroups(groups) {
@@ -465,6 +470,7 @@
       const archived = state.pkg?.lifecycle === "archived";
       byID("directPushEnabled").disabled = archived;
       byID("directPushLimit").disabled = archived;
+      byID("directPushPath").disabled = archived;
       byID("saveDirectPushBtn").disabled = archived;
       setStatus(byID("directPushStatusLine"), config.webhook_path ? (config.enabled ? "接口已启用；合法条目会直接排队发送，实际送达和 24 小时打开结果另行回写。" : "接口已配置但当前停用。") : "尚未生成独立 Webhook。", config.enabled ? "success" : "");
     }
