@@ -128,7 +128,7 @@ const metadataFor = (contents) => ({
 // have canonical frozen homes, while the previously unshipped tag picker is
 // registered in the standard-components donor ledger.
 const standardComponents = [
-  { name: 'operation_member_picker.js', source: 'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js', sha256: '1b12b405d737794808dd1b998ccfa8c6eb77dd4d7c22e69380b428fb89a69e70' },
+  { name: 'operation_member_picker.js', source: 'internal/webshell/static/admin_console/operation_member_picker_dd8d60d.js', sha256: 'c51e565cac86ca99186e96028a8d9683b3692a2de5203dfd85cdf5cab7ecab49' },
   { name: 'group_chat_picker.css', source: 'web/donors/ai-assistant-production/static/group_chat_picker.css', sha256: '99627d8e05be5419c53a5cfbc3c8d6d006b6e4efafec157dd412aa656e858481' },
   { name: 'group_chat_picker.js', source: 'web/donors/ai-assistant-production/static/group_chat_picker.js', sha256: 'da3de5fc5861f1b22e61bbc2726b3de4ebdab8420e4af3342ba3e0c478f2c1ed' },
   { name: 'material_picker.css', source: 'web/donors/ai-assistant-production/static/material_picker.css', sha256: '46deddd60fbbbf6a94603e689fda6830d1a5b1aa221d0af8223bb6855846f1e1' },
@@ -140,7 +140,7 @@ const standardComponents = [
   { name: 'coupon_form.html', source: 'web/donors/standard-components-production/coupons/coupon_form.html', sha256: 'f9116280af8e0c9f4702c54c3cac192012f4c8af7944713afb32b929380f8e86' },
   { name: 'coupon_styles.html', source: 'web/donors/standard-components-production/coupons/coupon_styles.html', sha256: '89d4d72fb3234fc67c630ba61ff5f4292feae2286656fe8bb4b12942aea554f0' },
 ];
-const standardComponentsManifest = { version: 'standard-components-v2-1b12b405d7377948', css: [], scripts: [] };
+const standardComponentsManifest = { version: 'standard-components-v2-c51e565cac86', css: [], scripts: [] };
 for (const component of standardComponents) {
   const frozenContents = fs.readFileSync(path.join(repository, component.source));
   const frozenMetadata = metadataFor(frozenContents);
