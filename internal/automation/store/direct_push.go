@@ -263,14 +263,18 @@ func (r *Repository) MarkDirectPushDelivery(ctx context.Context, id int64, evide
 		if evidence.SentAt == nil || evidence.SentAt.IsZero() {
 			return false, automationapp.ErrDirectPushInvalid
 		}
-		tag, updateErr := t.Exec(ctx, `UPDATE automation_audience_push_items SET send_state='delivery_proven',observation_state='observing',sent_at=$2,observation_due_at=$2+INTERVAL '24 hours',failure_code='',updated_at=$3 WHERE id=$1 AND send_state IN ('provider_accepted','outcome_unknown')`, id, evidence.SentAt.UTC(), now.UTC())
+		// Cast both temporal parameters explicitly. PostgreSQL otherwise sees the
+		// repeated $2 in a column assignment and an interval expression through
+		// different inference paths when the statement is prepared by pgx,
+		// yielding SQLSTATE 42P08 and preventing delivery reconciliation.
+		tag, updateErr := t.Exec(ctx, `UPDATE automation_audience_push_items SET send_state='delivery_proven',observation_state='observing',sent_at=$2::timestamptz,observation_due_at=$2::timestamptz+INTERVAL '24 hours',failure_code='',updated_at=$3::timestamptz WHERE id=$1 AND send_state IN ('provider_accepted','outcome_unknown')`, id, evidence.SentAt.UTC(), now.UTC())
 		return updateErr == nil && tag.RowsAffected() == 1, updateErr
 	}
 	code := strings.TrimSpace(evidence.FailureCode)
 	if code == "" || len(code) > 100 {
 		code = "provider_delivery_failed"
 	}
-	tag, updateErr := t.Exec(ctx, `UPDATE automation_audience_push_items SET send_state='final_failed',failure_code=$2,updated_at=$3 WHERE id=$1 AND send_state IN ('provider_accepted','outcome_unknown')`, id, code, now.UTC())
+	tag, updateErr := t.Exec(ctx, `UPDATE automation_audience_push_items SET send_state='final_failed',failure_code=$2,updated_at=$3::timestamptz WHERE id=$1 AND send_state IN ('provider_accepted','outcome_unknown')`, id, code, now.UTC())
 	return updateErr == nil && tag.RowsAffected() == 1, updateErr
 }
 
