@@ -867,7 +867,7 @@ func (r *Repository) CompleteEffectWithin(ctx context.Context, effectRef string,
 	}
 	now := time.Now().UTC()
 	switch envelope.Kind {
-	case effectport.KindWeChatPayPrepay:
+	case effectport.KindWeChatPayPrepay, effectport.KindAlipayWapPay, effectport.KindAlipayPagePay:
 		status := domain.StatusFailed
 		if result.Completion == effectport.StateExecuted {
 			// An explicitly reviewed legacy checkout must never acquire a late
@@ -891,7 +891,11 @@ func (r *Repository) CompleteEffectWithin(ctx context.Context, effectRef string,
 			return paymentport.ErrConflict
 		}
 		if status == domain.StatusAwaitingPayment {
-			if !result.Artifact.Valid() || result.Artifact.Kind != "wechat_pay_jsapi_handoff_v1" || !json.Valid(result.Artifact.Payload) {
+			expectedArtifact := "wechat_pay_jsapi_handoff_v1"
+			if envelope.Kind == effectport.KindAlipayWapPay || envelope.Kind == effectport.KindAlipayPagePay {
+				expectedArtifact = "alipay_web_pay_url_v1"
+			}
+			if !result.Artifact.Valid() || result.Artifact.Kind != expectedArtifact || !json.Valid(result.Artifact.Payload) {
 				return paymentport.ErrConflict
 			}
 			var handoff struct {
@@ -905,7 +909,7 @@ func (r *Repository) CompleteEffectWithin(ctx context.Context, effectRef string,
 				return mapError(err)
 			}
 		}
-	case effectport.KindWeChatPayRefund, effectport.KindWeChatShopRefund:
+	case effectport.KindWeChatPayRefund, effectport.KindWeChatShopRefund, effectport.KindAlipayRefund:
 		if envelope.Kind == effectport.KindWeChatShopRefund && result.Completion == effectport.StateExecuted {
 			if !result.Artifact.Valid() || result.Artifact.Kind != "wechat_shop_refund_acceptance_v1" || !json.Valid(result.Artifact.Payload) {
 				return paymentport.ErrConflict
@@ -962,12 +966,14 @@ func (r *Repository) ReconciliationTargetWithin(ctx context.Context, envelope ef
 	switch envelope.Kind {
 	case effectport.KindWeChatPayPrepay, effectport.KindWeChatPayRefund:
 		target.Provider = domain.ProviderWeChatPay
+	case effectport.KindAlipayWapPay, effectport.KindAlipayPagePay, effectport.KindAlipayRefund:
+		target.Provider = domain.ProviderAlipay
 	case effectport.KindWeChatShopRefund:
 		target.Provider = domain.ProviderWeChatShop
 	default:
 		return paymentport.ReconciliationTarget{}, paymentport.ErrConflict
 	}
-	validPayment := target.Provider == domain.ProviderWeChatPay && target.PaymentID > 0 && target.RefundID == 0
+	validPayment := (target.Provider == domain.ProviderWeChatPay || target.Provider == domain.ProviderAlipay) && target.PaymentID > 0 && target.RefundID == 0
 	validRefund := target.RefundID > 0 && target.PaymentID == 0
 	if (!validPayment && !validRefund) || target.OrderID < 1 {
 		return paymentport.ReconciliationTarget{}, paymentport.ErrConflict

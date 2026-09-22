@@ -79,6 +79,7 @@ type Service struct {
 	effectReader            effectport.Reader
 	shopReconciler          paymentport.ShopRefundReconciler
 	payReconciler           paymentport.WeChatPayReconciler
+	alipayReconciler        paymentport.AlipayReconciler
 	profitSharingReconciler paymentport.ProfitSharingReconciler
 	receiverStatusObserver  paymentport.ProfitSharingReceiverStatusObserver
 	reconcileJobs           paymentport.ReconciliationEnqueuer
@@ -86,8 +87,17 @@ type Service struct {
 	refundExposureConsumer  paymentport.RefundExposureConsumer
 	miniAppID               string
 	h5AppID                 string
+	alipayAppID             string
 	profitSharingEnabled    bool
 	now                     func() time.Time
+}
+
+func (s *Service) SetAlipayAppID(appID string) error {
+	if s == nil || !validScope(appID) {
+		return paymentport.ErrInvalid
+	}
+	s.alipayAppID = appID
+	return nil
 }
 
 func (s *Service) SetPaymentChannelAppIDs(miniProgramAppID, h5OfficialAccountAppID string) error {
@@ -124,6 +134,14 @@ func (s *Service) SetReconciliationEnqueuer(enqueuer paymentport.ReconciliationE
 		return paymentport.ErrInvalid
 	}
 	s.reconcileJobs = enqueuer
+	return nil
+}
+
+func (s *Service) SetAlipayReconciler(reconciler paymentport.AlipayReconciler) error {
+	if s == nil || reconciler == nil || s.alipayReconciler != nil {
+		return paymentport.ErrInvalid
+	}
+	s.alipayReconciler = reconciler
 	return nil
 }
 
@@ -192,7 +210,7 @@ func NewService(uow platformport.UnitOfWork, store Store, orders orderport.Payme
 func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (domain.Payment, error) {
 	fromExistingOrder := c.OrderID > 0 && c.ProductID == 0 && c.ProductType == ""
 	fromProduct := c.OrderID == 0 && c.ProductID > 0 && (c.ProductType == string(productport.ProductOptionStandard) || c.ProductType == string(productport.ProductOptionServicePeriod))
-	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) || len(c.PromotionContext) > 512 || strings.TrimSpace(c.PromotionContext) != c.PromotionContext || !validOpaqueActivityContext(c.ReferralActivityContext) {
+	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) || len(c.PromotionContext) > 512 || strings.TrimSpace(c.PromotionContext) != c.PromotionContext || !validOpaqueActivityContext(c.ReferralActivityContext) || (c.Provider != "" && c.Provider != string(domain.ProviderWeChatPay) && c.Provider != string(domain.ProviderAlipay)) || (c.Provider == string(domain.ProviderAlipay) && c.Channel != domain.ChannelAlipayWap && c.Channel != domain.ChannelAlipayPage) {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
 	// A response-lost browser recovery checkpoint is valid for precisely the
@@ -244,10 +262,15 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			}
 		}
 		channel := actor.Channel
+		provider := orderdomain.ProviderWeChatPay
+		if c.Provider == string(domain.ProviderAlipay) {
+			provider = orderdomain.ProviderAlipay
+			channel = c.Channel
+		}
 		if channel == "" {
 			channel = domain.ChannelMiniProgram
 		}
-		if channel != domain.ChannelMiniProgram && channel != domain.ChannelH5Official {
+		if channel != domain.ChannelMiniProgram && channel != domain.ChannelH5Official && channel != domain.ChannelAlipayWap && channel != domain.ChannelAlipayPage {
 			return paymentport.ErrConflict
 		}
 		replay, found, err := s.store.ReplayPayment(tx, keyDigest, payloadDigest, c.ActorScope)
@@ -324,7 +347,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				}
 			}
 			order, err = s.orders.CreatePaymentOrderWithin(tx, orderport.PaymentOrderCommand{
-				Provider: orderdomain.ProviderWeChatPay, MerchantOrderNo: merchantOrderNo,
+				Provider: provider, MerchantOrderNo: merchantOrderNo,
 				PayerCustomerID: actor.PayerCustomerID, BeneficiaryCustomerID: actor.BeneficiaryCustomerID,
 				ProductID: int64(product.ID), CouponClaimID: c.CouponClaimID, ProductCode: product.Code, ProductName: product.Name,
 				ProductVersion: product.Version, ProductType: orderCheckoutProductType(product.ProductType), ServicePeriodDurationDays: product.ServicePeriodDurationDays, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
@@ -363,6 +386,13 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			}
 		}
 		kind := effectport.KindWeChatPayPrepay
+		if payment.Provider == domain.ProviderAlipay {
+			if payment.Channel == domain.ChannelAlipayWap {
+				kind = effectport.KindAlipayWapPay
+			} else {
+				kind = effectport.KindAlipayPagePay
+			}
+		}
 		if payment.Provider == domain.ProviderWeChatShop {
 			kind = effectport.KindWeChatShopRefund
 			return paymentport.ErrConflict
@@ -476,7 +506,7 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		// while the first still awaits an external outcome. Original-key replay
 		// remains ahead of this check; a terminal refund permits an explicit
 		// later partial-refund request. WeChat Shop retains its SKU contract.
-		if payment.Provider == domain.ProviderWeChatPay {
+		if payment.Provider == domain.ProviderWeChatPay || payment.Provider == domain.ProviderAlipay {
 			pending, pendingErr := s.store.HasNonTerminalRefund(tx, payment.ID)
 			if pendingErr != nil {
 				return pendingErr
@@ -510,6 +540,8 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		kind := effectport.KindWeChatPayRefund
 		if refund.Provider == domain.ProviderWeChatShop {
 			kind = effectport.KindWeChatShopRefund
+		} else if refund.Provider == domain.ProviderAlipay {
+			kind = effectport.KindAlipayRefund
 		}
 		intent := effectport.PaymentV1Intent{Kind: kind, ReceiptKey: effectport.Hash("payment.refund.v1", c.IdempotencyKey), SourceRefDigest: effectport.Hash("payment.refund", strconv.FormatInt(refund.ID, 10)), TargetRefDigest: effectport.Hash("payment", strconv.FormatInt(payment.ID, 10)), PayloadDigest: effectport.Hash("payment.refund.payload", refund.RefundNo, strconv.FormatInt(refund.AmountMinor, 10), refund.Reason, c.ProviderOrderID, c.ProductID, c.SKUID, strconv.FormatInt(c.RefundCount, 10), c.ReasonCode), PolicyVersionHash: effectport.Hash("payment.refund.policy", "v1")}
 		accept, ok := intent.AcceptCommand()
@@ -1120,13 +1152,146 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 	})
 	return current, classify(err)
 }
+
+func (s *Service) ReconcileAlipayPayment(ctx context.Context, paymentID int64) (domain.Payment, error) {
+	if s == nil || s.alipayReconciler == nil || paymentID < 1 {
+		return domain.Payment{}, paymentport.ErrInvalid
+	}
+	var current domain.Payment
+	if err := s.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		current, err = s.store.GetPayment(tx, paymentID, false)
+		return err
+	}); err != nil {
+		return domain.Payment{}, classify(err)
+	}
+	if current.Provider != domain.ProviderAlipay || current.Historical {
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	query, err := s.alipayReconciler.QueryPayment(ctx, current.MerchantOrderNo)
+	if err != nil {
+		return domain.Payment{}, paymentport.ErrUnavailable
+	}
+	if query.MerchantOrderNo != current.MerchantOrderNo || query.AmountMinor != current.AmountMinor || query.Currency != current.Currency || !effectport.ValidDigest(query.EvidenceDigest) || query.OccurredAt.IsZero() {
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	outcome := "pending"
+	if query.TradeStatus == "TRADE_SUCCESS" || query.TradeStatus == "TRADE_FINISHED" {
+		outcome = "paid"
+	} else if query.TradeStatus == "TRADE_CLOSED" {
+		outcome = "final_failed"
+	}
+	if outcome == "paid" && (!effectport.ValidDigest(query.TransactionDigest) || !validProviderTransactionReference(query.TradeNo)) {
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		locked, inner := s.store.GetPayment(tx, paymentID, true)
+		if inner != nil {
+			return inner
+		}
+		if _, inner = s.store.RecordPaymentReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC()); inner != nil || outcome == "pending" || locked.Status == domain.StatusPaid && outcome == "paid" {
+			current = locked
+			return inner
+		}
+		next := domain.StatusPaid
+		if outcome == "final_failed" {
+			next = domain.StatusFailed
+		}
+		locked, inner = locked.Settle(locked.Version, next, query.OccurredAt)
+		if inner != nil {
+			return inner
+		}
+		locked.ProviderTransactionReference = query.TradeNo
+		receipt := "reconcile:" + string(query.EvidenceDigest)
+		current, inner = s.store.UpdatePaymentSettlement(tx, locked, string(query.TransactionDigest), receipt)
+		if inner != nil {
+			return inner
+		}
+		_, inner = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: current.OrderID, Failed: outcome == "final_failed", ProviderTransactionNo: query.TradeNo, OccurredAt: query.OccurredAt, ReceiptKey: receipt})
+		return inner
+	})
+	return current, classify(err)
+}
+
+func (s *Service) ReconcileAlipayRefund(ctx context.Context, refundID int64) (domain.Refund, error) {
+	if s == nil || s.alipayReconciler == nil || refundID < 1 {
+		return domain.Refund{}, paymentport.ErrInvalid
+	}
+	var current domain.Refund
+	var payment domain.Payment
+	if err := s.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		current, err = s.store.GetRefund(tx, refundID, false)
+		if err != nil {
+			return err
+		}
+		payment, err = s.store.GetPayment(tx, current.PaymentID, false)
+		return err
+	}); err != nil {
+		return domain.Refund{}, classify(err)
+	}
+	if current.Provider != domain.ProviderAlipay || payment.Historical {
+		return domain.Refund{}, paymentport.ErrConflict
+	}
+	query, err := s.alipayReconciler.QueryRefund(ctx, current.RefundNo)
+	if err != nil {
+		return domain.Refund{}, paymentport.ErrUnavailable
+	}
+	if query.RefundNo != current.RefundNo || query.AmountMinor != current.AmountMinor || query.TotalMinor != payment.AmountMinor || query.Currency != payment.Currency || !effectport.ValidDigest(query.EvidenceDigest) || query.OccurredAt.IsZero() {
+		return domain.Refund{}, paymentport.ErrConflict
+	}
+	outcome := "pending"
+	if query.Status == "REFUND_SUCCESS" {
+		outcome = "refunded"
+	} else if query.Status == "REFUND_CLOSED" {
+		outcome = "final_failed"
+	}
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		locked, inner := s.store.GetRefund(tx, refundID, true)
+		if inner != nil {
+			return inner
+		}
+		if _, inner = s.store.RecordReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC()); inner != nil || outcome == "pending" || locked.Status == domain.RefundCompleted || locked.Status == domain.RefundFinalFailed {
+			current = locked
+			return inner
+		}
+		next := domain.RefundCompleted
+		if outcome == "final_failed" {
+			next = domain.RefundFinalFailed
+		}
+		locked, inner = locked.Complete(locked.Version, next, query.OccurredAt)
+		if inner != nil {
+			return inner
+		}
+		receipt := "reconcile:" + string(query.EvidenceDigest)
+		current, inner = s.store.UpdateRefundSettlement(tx, locked, string(query.RefundDigest), receipt)
+		if inner != nil {
+			return inner
+		}
+		if outcome == "final_failed" {
+			return s.notifyRefundExposureWithin(tx, payment.OrderID, current.ID, paymentport.RefundExposureFinalFailed, query.OccurredAt, receipt)
+		}
+		_, inner = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: payment.OrderID, RefundedDelta: current.AmountMinor, OccurredAt: query.OccurredAt, ReceiptKey: receipt})
+		return inner
+	})
+	return current, classify(err)
+}
 func validProviderTransactionReference(value string) bool {
 	return value != "" && len(value) <= 200 && value == strings.TrimSpace(value)
 }
 
 func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentprovider.CallbackResult) error {
+	if callback.Provider == "" {
+		callback.Provider = domain.ProviderWeChatPay
+	}
+	providerDigestNamespace := "wechatpay.transaction"
+	callbackProvider := "wechat_pay"
+	if callback.Provider == domain.ProviderAlipay {
+		providerDigestNamespace = "alipay.transaction"
+		callbackProvider = "alipay"
+	}
 	if !s.ready() || (callback.Kind != "payment" && callback.Kind != "refund") || callback.AmountMinor < 1 || callback.Currency != "CNY" || callback.OccurredAt.IsZero() ||
-		(callback.Kind == "payment" && (!validProviderTransactionReference(callback.ProviderTransactionReference) || callback.ProviderTransactionDigest != string(effectport.Hash("wechatpay.transaction", callback.ProviderTransactionReference)))) {
+		(callback.Kind == "payment" && (!validProviderTransactionReference(callback.ProviderTransactionReference) || callback.ProviderTransactionDigest != string(effectport.Hash(providerDigestNamespace, callback.ProviderTransactionReference)))) {
 		return paymentport.ErrInvalid
 	}
 	if callback.Kind == "payment" {
@@ -1138,7 +1303,7 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 			if err != nil {
 				return err
 			}
-			if payment.AmountMinor != callback.AmountMinor || payment.Currency != callback.Currency || !s.callbackAppIDMatches(payment, callback.AppID) {
+			if payment.Provider != callback.Provider || payment.AmountMinor != callback.AmountMinor || payment.Currency != callback.Currency || !s.callbackAppIDMatches(payment, callback.AppID) {
 				return paymentport.ErrConflict
 			}
 			// Reconciliation may have already settled this exact Provider fact
@@ -1149,10 +1314,10 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 				if payment.ProviderTransactionReference != callback.ProviderTransactionReference || payment.ProviderTransactionDigest != callback.ProviderTransactionDigest || !samePaymentConfirmationTime(payment.PaidConfirmedAt, callback.OccurredAt) {
 					return paymentport.ErrConflict
 				}
-				_, err = s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "payment", "replayed", payment.ID)
+				_, err = s.store.ClaimCallback(tx, callbackProvider, callback.EventDigest, callback.BodyDigest, "payment", "replayed", payment.ID)
 				return err
 			}
-			replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "payment", "settled", payment.ID)
+			replay, err := s.store.ClaimCallback(tx, callbackProvider, callback.EventDigest, callback.BodyDigest, "payment", "settled", payment.ID)
 			if err != nil || replay {
 				return err
 			}
@@ -1179,10 +1344,10 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 			return paymentport.ErrConflict
 		}
 		payment, err := s.store.GetPayment(tx, refund.PaymentID, false)
-		if err != nil || !s.callbackAppIDMatches(payment, callback.AppID) {
+		if err != nil || payment.Provider != callback.Provider || !s.callbackAppIDMatches(payment, callback.AppID) {
 			return paymentport.ErrConflict
 		}
-		replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "refund", "settled", refund.ID)
+		replay, err := s.store.ClaimCallback(tx, callbackProvider, callback.EventDigest, callback.BodyDigest, "refund", "settled", refund.ID)
 		if err != nil || replay {
 			return err
 		}
@@ -1213,6 +1378,9 @@ func samePaymentConfirmationTime(stored *time.Time, received time.Time) bool {
 }
 
 func (s *Service) callbackAppIDMatches(payment domain.Payment, appID string) bool {
+	if payment.Provider == domain.ProviderAlipay {
+		return s.alipayAppID == "" || appID == s.alipayAppID
+	}
 	if s.miniAppID == "" { // Tests and provider-disabled compositions have no accepted callback surface.
 		return true
 	}

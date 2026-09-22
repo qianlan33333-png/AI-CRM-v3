@@ -9,6 +9,13 @@ require (
 )
 
 require (
+	github.com/smartwalle/alipay/v3 v3.2.31 // indirect
+	github.com/smartwalle/ncrypto v1.0.4 // indirect
+	github.com/smartwalle/ngx v1.1.2 // indirect
+	github.com/smartwalle/nsign v1.0.9 // indirect
+)
+
+require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
