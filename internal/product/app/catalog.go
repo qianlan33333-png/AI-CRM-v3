@@ -643,6 +643,7 @@ func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error
 		"enabled":                     json.RawMessage(`false`),
 		"buy_button_text":             json.RawMessage(`""`),
 		"require_mobile":              json.RawMessage(`false`),
+		"contact_collection_level":    json.RawMessage(`"none"`),
 		"lead_program_id":             json.RawMessage(`null`),
 		"lead_channel_id":             json.RawMessage(`null`),
 		"lead_qr_title":               json.RawMessage(`""`),
@@ -683,6 +684,27 @@ func CanonicalLegacyAdminProjection(raw json.RawMessage) (json.RawMessage, error
 			return nil, ErrInvalidProduct
 		}
 	}
+	var requireMobile bool
+	if json.Unmarshal(defaults["require_mobile"], &requireMobile) != nil {
+		return nil, ErrInvalidProduct
+	}
+	level := ""
+	if rawLevel, ok := supplied["contact_collection_level"]; ok {
+		if json.Unmarshal(rawLevel, &level) != nil || (level != "none" && level != "mobile" && level != "shipping_address") {
+			return nil, ErrInvalidProduct
+		}
+	} else if requireMobile {
+		level = "mobile"
+	} else {
+		level = "none"
+	}
+	if level != "none" {
+		requireMobile = true
+	} else {
+		requireMobile = false
+	}
+	defaults["contact_collection_level"] = mustJSON(level)
+	defaults["require_mobile"] = mustJSON(requireMobile)
 	for _, key := range []string{"lead_program_id", "lead_channel_id"} {
 		if string(defaults[key]) == "null" {
 			continue

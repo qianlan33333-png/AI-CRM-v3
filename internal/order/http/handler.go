@@ -41,6 +41,12 @@ type Handler struct {
 	customers       customerport.DirectoryContactDisplayReader
 	customerFilters orderport.CustomerFilterResolver
 	distribution    distributionport.OrderDistributionReader
+	contactReader   checkoutContactReader
+}
+
+type checkoutContactReader interface {
+	orderport.CheckoutMobileReader
+	orderport.CheckoutShippingAddressReader
 }
 
 // SetCustomerFilterResolver installs the composition-owned OneID read bridge
@@ -62,6 +68,16 @@ func (h *Handler) SetCustomerFilterResolver(resolver orderport.CustomerFilterRes
 		return errors.New("order customer filter resolver is required")
 	}
 	h.customerFilters = resolver
+	return nil
+}
+
+// SetCheckoutContactReader installs the Order-owned immutable checkout contact
+// read seam used by the transaction detail projection.
+func (h *Handler) SetCheckoutContactReader(reader checkoutContactReader) error {
+	if h == nil || reader == nil {
+		return errors.New("order checkout contact reader is required")
+	}
+	h.contactReader = reader
 	return nil
 }
 
@@ -216,6 +232,7 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 	}
 	if len(parts) == 1 {
 		response := responseFrom(order, h.payerDisplays(r.Context(), []domain.Snapshot{order}))
+		h.populateCheckoutContact(r.Context(), order.ID, &response)
 		distribution, state := h.distributionFor(r.Context(), []domain.Snapshot{order})
 		response.DistributionReadState = state
 		response.Distribution = orderDistributionJSON(distribution[order.ID])
@@ -436,30 +453,76 @@ func parseListQuery(values url.Values) (orderport.ListQuery, bool) {
 }
 
 type orderResponse struct {
-	PayerCustomerNumber   string           `json:"payer_customer_number,omitempty"`
-	ID                    int64            `json:"id"`
-	RecordOrigin          string           `json:"record_origin"`
-	CreatedAt             time.Time        `json:"created_at"`
-	MerchantOrderNo       string           `json:"merchant_order_no"`
-	OutTradeNo            string           `json:"out_trade_no"`
-	OrderNo               string           `json:"order_no"`
-	PlatformTransactionNo string           `json:"platform_transaction_no"`
-	TransactionID         string           `json:"transaction_id"`
-	PayerName             string           `json:"payer_name"`
-	PayerID               string           `json:"payer_id"`
-	PayerPhoneMasked      string           `json:"payer_phone_masked"`
-	ProductCode           string           `json:"product_code"`
-	ProductName           string           `json:"product_name"`
-	AmountYuan            string           `json:"amount_yuan"`
-	Currency              string           `json:"currency"`
-	Status                domain.Status    `json:"status"`
-	StatusLabel           string           `json:"status_label"`
-	Provider              string           `json:"provider"`
-	ProviderLabel         string           `json:"provider_label"`
-	DetailURL             string           `json:"detail_url"`
-	RefundableAmountTotal int64            `json:"refundable_amount_total"`
-	DistributionReadState string           `json:"distribution_read_state,omitempty"`
-	Distribution          []map[string]any `json:"distribution,omitempty"`
+	PayerCustomerNumber    string           `json:"payer_customer_number,omitempty"`
+	ID                     int64            `json:"id"`
+	RecordOrigin           string           `json:"record_origin"`
+	CreatedAt              time.Time        `json:"created_at"`
+	MerchantOrderNo        string           `json:"merchant_order_no"`
+	OutTradeNo             string           `json:"out_trade_no"`
+	OrderNo                string           `json:"order_no"`
+	PlatformTransactionNo  string           `json:"platform_transaction_no"`
+	TransactionID          string           `json:"transaction_id"`
+	PayerName              string           `json:"payer_name"`
+	PayerID                string           `json:"payer_id"`
+	PayerPhoneMasked       string           `json:"payer_phone_masked"`
+	ProductCode            string           `json:"product_code"`
+	ProductName            string           `json:"product_name"`
+	AmountYuan             string           `json:"amount_yuan"`
+	Currency               string           `json:"currency"`
+	Status                 domain.Status    `json:"status"`
+	StatusLabel            string           `json:"status_label"`
+	Provider               string           `json:"provider"`
+	ProviderLabel          string           `json:"provider_label"`
+	DetailURL              string           `json:"detail_url"`
+	RefundableAmountTotal  int64            `json:"refundable_amount_total"`
+	DistributionReadState  string           `json:"distribution_read_state,omitempty"`
+	Distribution           []map[string]any `json:"distribution,omitempty"`
+	ContactCollectionLevel string           `json:"contact_collection_level"`
+	ShippingMobileMasked   string           `json:"shipping_mobile_masked,omitempty"`
+	RecipientName          string           `json:"recipient_name,omitempty"`
+	ProvinceCode           string           `json:"province_code,omitempty"`
+	ProvinceName           string           `json:"province_name,omitempty"`
+	CityCode               string           `json:"city_code,omitempty"`
+	CityName               string           `json:"city_name,omitempty"`
+	DistrictCode           string           `json:"district_code,omitempty"`
+	DistrictName           string           `json:"district_name,omitempty"`
+	DetailAddress          string           `json:"detail_address,omitempty"`
+}
+
+func (h *Handler) populateCheckoutContact(ctx context.Context, orderID int64, response *orderResponse) {
+	if h == nil || h.contactReader == nil || response == nil || orderID < 1 {
+		return
+	}
+	response.ContactCollectionLevel = "none"
+	address, foundAddress, addressErr := h.contactReader.ReadCheckoutShippingAddressWithin(ctx, orderID)
+	if addressErr == nil && foundAddress {
+		response.ContactCollectionLevel = "shipping_address"
+		response.RecipientName, response.ProvinceCode, response.ProvinceName = address.RecipientName, address.ProvinceCode, address.ProvinceName
+		response.CityCode, response.CityName = address.CityCode, address.CityName
+		response.DistrictCode, response.DistrictName = address.DistrictCode, address.DistrictName
+		response.DetailAddress = address.DetailAddress
+	}
+	mobile, foundMobile, mobileErr := h.contactReader.ReadCheckoutMobileWithin(ctx, orderID)
+	if mobileErr == nil && foundMobile {
+		if response.ContactCollectionLevel == "none" {
+			response.ContactCollectionLevel = "mobile"
+		}
+		response.ShippingMobileMasked = maskCheckoutMobile(mobile)
+	}
+}
+
+func maskCheckoutMobile(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "+86") {
+		value = strings.TrimPrefix(value, "+86")
+	}
+	if len(value) == 11 {
+		return value[:3] + "****" + value[7:]
+	}
+	if len(value) > 7 {
+		return value[:3] + "****" + value[len(value)-4:]
+	}
+	return "****"
 }
 
 func (h *Handler) distributionFor(ctx context.Context, orders []domain.Snapshot) (map[int64][]distributionport.OrderDistributionLine, string) {

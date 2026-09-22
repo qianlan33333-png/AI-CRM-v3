@@ -287,6 +287,34 @@ func (r *Repository) InsertContactSnapshot(ctx context.Context, orderID int64, c
 	return mapError(err)
 }
 
+func (r *Repository) InsertShippingAddressSnapshot(ctx context.Context, orderID int64, address orderport.ShippingAddress, createdAt time.Time) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if orderID < 1 || address.RecipientName == "" || address.ProvinceCode == "" || address.ProvinceName == "" || address.CityCode == "" || address.CityName == "" || address.DistrictCode == "" || address.DistrictName == "" || address.DetailAddress == "" || createdAt.IsZero() {
+		return ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO order_shipping_address_snapshots(order_id,recipient_name,province_code,province_name,city_code,city_name,district_code,district_name,detail_address,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, orderID, address.RecipientName, address.ProvinceCode, address.ProvinceName, address.CityCode, address.CityName, address.DistrictCode, address.DistrictName, address.DetailAddress, createdAt.UTC())
+	return mapError(err)
+}
+
+func (r *Repository) ReadShippingAddressSnapshot(ctx context.Context, orderID int64) (orderport.ShippingAddress, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return orderport.ShippingAddress{}, false, err
+	}
+	var address orderport.ShippingAddress
+	err = tx.QueryRow(ctx, `SELECT recipient_name,province_code,province_name,city_code,city_name,district_code,district_name,detail_address FROM order_shipping_address_snapshots WHERE order_id=$1`, orderID).Scan(&address.RecipientName, &address.ProvinceCode, &address.ProvinceName, &address.CityCode, &address.CityName, &address.DistrictCode, &address.DistrictName, &address.DetailAddress)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return orderport.ShippingAddress{}, false, nil
+	}
+	if err != nil {
+		return orderport.ShippingAddress{}, false, mapError(err)
+	}
+	return address, true, nil
+}
+
 func orderFilterSQL(filter orderapp.ListFilter) (string, []any) {
 	args := []any{}
 	conditions := []string{}

@@ -1459,6 +1459,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = orderHandler.SetCustomerFilterResolver(orderCustomerFilterAdapter{uow: uow, oneID: oneID, corpID: cfg.WeCom.CorpID}); err != nil {
 		return fail(err)
 	}
+	if err = orderHandler.SetCheckoutContactReader(orderService); err != nil {
+		return fail(err)
+	}
 	orderRuns := ordermigration.PostgreSQLRuns{Pool: pool.Native()}
 	orderImportHandler, err := orderhttp.NewImportHandler(ordermigration.OrderOnlyRunner{Orders: orderService, Runs: orderRuns}, orderRuns, requestSecurity)
 	if err != nil {

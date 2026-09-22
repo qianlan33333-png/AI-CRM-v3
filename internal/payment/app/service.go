@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	addresscatalog "github.com/qianlan33333-png/AI-CRM-v3/internal/address/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -23,6 +24,14 @@ import (
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
+
+func emptyShippingAddress(value paymentport.ShippingAddress) bool {
+	return value == (paymentport.ShippingAddress{})
+}
+
+func validShippingAddress(value paymentport.ShippingAddress) bool {
+	return value.RecipientName != "" && value.DetailAddress != "" && addresscatalog.Validate(value.ProvinceCode, value.ProvinceName, value.CityCode, value.CityName, value.DistrictCode, value.DistrictName) == nil
+}
 
 type Store interface {
 	CreatePayment(context.Context, domain.Payment, [32]byte, [32]byte, string) (domain.Payment, bool, error)
@@ -283,13 +292,28 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				}
 				return paymentport.ErrConflict
 			}
+			level := product.ContactCollectionLevel
+			if level == "" {
+				if product.RequireMobile {
+					level = "mobile"
+				} else {
+					level = "none"
+				}
+			}
+			if channel != domain.ChannelH5Official {
+				level = "none"
+			}
 			if channel == domain.ChannelH5Official {
-				if product.RequireMobile != validMainlandMobileE164(c.MobileE164) {
+				if level == "shipping_address" && !validShippingAddress(c.ShippingAddress) {
 					return paymentport.ErrConflict
 				}
-			} else if c.MobileE164 != "" {
+				if (level != "none") != validMainlandMobileE164(c.MobileE164) {
+					return paymentport.ErrConflict
+				}
+			} else if c.MobileE164 != "" || c.ContactCollectionLevel != "" && c.ContactCollectionLevel != "none" || !emptyShippingAddress(c.ShippingAddress) {
 				return paymentport.ErrConflict
 			}
+			c.ContactCollectionLevel = level
 			if product.ProductType == productport.ProductOptionStandard {
 				state, checkErr := s.standardPurchaseWithin(tx, actor.BeneficiaryCustomerID, int64(product.ID), product.Code, 0, true)
 				if checkErr != nil {
@@ -305,7 +329,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				ProductID: int64(product.ID), CouponClaimID: c.CouponClaimID, ProductCode: product.Code, ProductName: product.Name,
 				ProductVersion: product.Version, ProductType: orderCheckoutProductType(product.ProductType), ServicePeriodDurationDays: product.ServicePeriodDurationDays, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
 				PostPurchaseAction: product.PostPurchaseAction,
-				MobileE164:         c.MobileE164, PromotionContext: c.PromotionContext, ReferralActivityContext: c.ReferralActivityContext,
+				MobileE164:         c.MobileE164, ContactCollectionLevel: c.ContactCollectionLevel, ShippingAddress: orderport.ShippingAddress{RecipientName: c.ShippingAddress.RecipientName, ProvinceCode: c.ShippingAddress.ProvinceCode, ProvinceName: c.ShippingAddress.ProvinceName, CityCode: c.ShippingAddress.CityCode, CityName: c.ShippingAddress.CityName, DistrictCode: c.ShippingAddress.DistrictCode, DistrictName: c.ShippingAddress.DistrictName, DetailAddress: c.ShippingAddress.DetailAddress}, PromotionContext: c.PromotionContext, ReferralActivityContext: c.ReferralActivityContext,
 				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
 			})
 		}

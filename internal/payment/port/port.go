@@ -90,8 +90,21 @@ type CreateCommand struct {
 	SessionToken               string
 	CheckoutSessionBinding     string
 	MobileE164                 string
+	ContactCollectionLevel     string
+	ShippingAddress            ShippingAddress
 	BeneficiarySelection       BeneficiarySelection
 	ActorScope, IdempotencyKey string
+}
+
+type ShippingAddress struct {
+	RecipientName string `json:"recipient_name,omitempty"`
+	ProvinceCode  string `json:"province_code,omitempty"`
+	ProvinceName  string `json:"province_name,omitempty"`
+	CityCode      string `json:"city_code,omitempty"`
+	CityName      string `json:"city_name,omitempty"`
+	DistrictCode  string `json:"district_code,omitempty"`
+	DistrictName  string `json:"district_name,omitempty"`
+	DetailAddress string `json:"detail_address,omitempty"`
 }
 type RefundCommand struct {
 	PaymentID, AmountMinor                        int64
