@@ -339,6 +339,18 @@ func syncRetryCode(err error) string {
 	return "sync_step_failed"
 }
 
+// isSkippableContactDescriptionError reports relationship-local outcomes that
+// must not abort the directory sync. A routine sync cannot silently replan an
+// immutable description snapshot, and it must also leave in-flight or unknown
+// external effects untouched. Those relationships remain visible through the
+// description coverage/status readback for an explicit operator action while
+// the customer directory continues processing other contacts.
+func isSkippableContactDescriptionError(err error) bool {
+	return errors.Is(err, outboundport.ErrContactDescriptionReplanRequired) ||
+		errors.Is(err, outboundport.ErrContactDescriptionInFlight) ||
+		errors.Is(err, outboundport.ErrContactDescriptionOutcomeUnknown)
+}
+
 func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerSyncRun, staffID string, page wecomport.ExternalContactPage, observedAt time.Time) error {
 	now := service.now()
 	return service.UOW.Within(ctx, func(txContext context.Context) error {
@@ -396,7 +408,7 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 						// terminal and non-unknown; routine/callback maintenance cannot.
 						Replan: run.Trigger == "manual", Operation: outboundport.ContactDescriptionOperationWrite,
 					})
-					if enqueueErr != nil {
+					if enqueueErr != nil && !isSkippableContactDescriptionError(enqueueErr) {
 						return enqueueErr
 					}
 				}
