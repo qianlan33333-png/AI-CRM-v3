@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse,fcntl,hashlib,json,os,re,stat,sys,time,uuid
 from pathlib import Path
 SHA=re.compile(r'^[0-9a-f]{40}$'); SUFFIXES={'.bundle','.json','.sh'}; TERMINAL={'released','stale_candidate'}; RETENTION=30*86400
+ROOT_UID=0
 class Refuse(RuntimeError):pass
 
 def digest(path):
@@ -29,6 +30,22 @@ def secure_lock(path):
   os.close(descriptor);raise Refuse('invalid_retention_lock')
  return descriptor
 
+def trusted_active(current,success):
+ try:resolved=current.resolve(strict=True)
+ except OSError as exc:raise Refuse('active_release_unavailable') from exc
+ if resolved.parent.name!='releases' or not SHA.fullmatch(resolved.name):raise Refuse('active_release_unmanaged')
+ for path in (current.parent,current.parent/'releases',success):
+  info=path.lstat()
+  if info.st_uid!=ROOT_UID or info.st_mode&0o022 or not stat.S_ISDIR(info.st_mode):raise Refuse('active_release_control_untrusted')
+ receipt=success/(resolved.name+'.json')
+ try:info=receipt.lstat()
+ except OSError as exc:raise Refuse('active_release_receipt_unavailable') from exc
+ if info.st_uid!=ROOT_UID or info.st_nlink!=1 or info.st_mode&0o022 or not stat.S_ISREG(info.st_mode):raise Refuse('active_release_receipt_untrusted')
+ try:value=json.loads(receipt.read_text())
+ except (OSError,json.JSONDecodeError) as exc:raise Refuse('active_release_receipt_invalid') from exc
+ if value.get('version')!=1 or value.get('release_sha')!=resolved.name or not isinstance(value.get('sequence'),int):raise Refuse('active_release_receipt_invalid')
+ return resolved.name
+
 def queue_terminal(item,before):
  if item.get('status') not in TERMINAL:return False
  events=item.get('events')
@@ -36,13 +53,13 @@ def queue_terminal(item,before):
  terminal=[e for e in events if e.get('to')==item['status'] and isinstance(e.get('time'),int)]
  return bool(terminal) and max(e['time'] for e in terminal)<before
 
-def retirement(builds,sha,item,before,files,owner):
+def retirement(builds,sha,item,before,files):
  build=builds/sha
  if not build.is_dir() or build.is_symlink() or build.resolve().parent!=builds.resolve():return None
  path=build/'source-bundle-retention.json'
  if not path.is_file() or path.is_symlink():return None
  info=path.stat()
- if info.st_uid!=owner or info.st_nlink!=1 or info.st_mode&0o022:return None
+ if info.st_uid!=ROOT_UID or info.st_nlink!=1 or info.st_mode&0o022:return None
  try:value=json.loads(path.read_text())
  except (OSError,json.JSONDecodeError):return None
  if value.get('schema')!=1 or value.get('release_sha')!=sha or value.get('candidate_id')!=item.get('candidate_id') or value.get('terminal_status')!=item.get('status'):return None
@@ -52,7 +69,7 @@ def retirement(builds,sha,item,before,files,owner):
  if any(not re.fullmatch(r'[0-9a-f]{64}',expected[name]) or expected[name]!=files[name]['sha256'] for name in files):return None
  return {'path':str(path),'sha256':digest(path),'inode':info.st_ino,'device':info.st_dev}
 
-def inventory(root,builds,queue,before):
+def inventory(root,builds,queue,before,active_sha):
  root_info=safe_root(root)
  names=list(root.iterdir()); groups={}; unknown=[]
  for path in names:
@@ -62,19 +79,25 @@ def inventory(root,builds,queue,before):
   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_dev!=root_info.st_dev or info.st_uid!=root_info.st_uid or info.st_mode&0o022:raise Refuse('unsafe_source_bundle_member')
   groups.setdefault(match.group(1),{})[match.group(2)]={'path':path,'inode':info.st_ino,'device':info.st_dev,'size':info.st_size,'mtime_ns':info.st_mtime_ns,'sha256':digest(path)}
  if unknown:raise Refuse('unknown_source_bundle_member')
- items={i.get('merge_preview_sha') or i.get('commit_sha'):i for i in queue.get('items',[]) if isinstance(i,dict)}
+ items={}
+ for item in queue.get('items',[]):
+  if isinstance(item,dict):items.setdefault(item.get('merge_preview_sha') or item.get('commit_sha'),[]).append(item)
  eligible=[];protected=[]
  for sha,files in sorted(groups.items()):
   if set(files)!=SUFFIXES:protected.append({'sha':sha,'reason':'incomplete_group'});continue
-  item=items.get(sha)
-  if not item or not queue_terminal(item,before):protected.append({'sha':sha,'reason':'active_unknown_or_recent'});continue
-  proof=retirement(builds,sha,item,before,files,root_info.st_uid)
+  records=items.get(sha,[])
+  if sha==active_sha:protected.append({'sha':sha,'reason':'active_release'});continue
+  if not records or any(not queue_terminal(item,before) for item in records):protected.append({'sha':sha,'reason':'active_unknown_or_recent'});continue
+  identities={(item.get('candidate_id'),item.get('status')) for item in records}
+  if len(identities)!=1:protected.append({'sha':sha,'reason':'ambiguous_terminal_records'});continue
+  item=records[0]
+  proof=retirement(builds,sha,item,before,files)
   if not proof:protected.append({'sha':sha,'reason':'retirement_proof_missing'});continue
   eligible.append({'sha':sha,'candidate_id':item['candidate_id'],'files':{k:{x:v[x] for x in ('inode','device','size','mtime_ns','sha256')} for k,v in files.items()},'receipt':proof})
  return {'schema':1,'mode':'inventory','root':str(root),'before':before,'eligible':eligible,'protected':protected,'created_at':int(time.time())}
 
-def apply(root,builds,queue,before,plan):
- fresh=inventory(root,builds,queue,before)
+def apply(root,builds,queue,before,active_sha,plan):
+ fresh=inventory(root,builds,queue,before,active_sha)
  if plan.get('schema')!=1 or plan.get('mode')!='inventory' or plan.get('root')!=str(root) or plan.get('before')!=before:raise Refuse('invalid_cleanup_plan')
  if plan.get('eligible')!=fresh['eligible']:raise Refuse('cleanup_plan_stale')
  deleted=[]
@@ -98,14 +121,15 @@ def run(args):
  try:
   fcntl.flock(build_descriptor,fcntl.LOCK_EX);fcntl.flock(queue_descriptor,fcntl.LOCK_EX)
   queue=json.loads(args.queue.read_text()) if args.queue.exists() else {'items':[]}
-  if args.mode=='inventory':return inventory(args.root,args.builds,queue,before)
+  active_sha=trusted_active(args.current,args.success)
+  if args.mode=='inventory':return inventory(args.root,args.builds,queue,before,active_sha)
   if args.plan is None:raise Refuse('apply_requires_plan')
-  return apply(args.root,args.builds,queue,before,json.loads(args.plan.read_text()))
+  return apply(args.root,args.builds,queue,before,active_sha,json.loads(args.plan.read_text()))
  finally:
   os.close(queue_descriptor);os.close(build_descriptor)
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('mode',choices=('inventory','apply'),nargs='?',default='inventory');p.add_argument('--root',type=Path,default=Path('/opt/aicrm/source-bundles'));p.add_argument('--builds',type=Path,default=Path('/opt/aicrm/builds'));p.add_argument('--queue',type=Path,default=Path('/opt/aicrm/release-queue.json'));p.add_argument('--build-lock',type=Path,default=Path('/opt/aicrm/staging-build.lock'));p.add_argument('--before',type=int);p.add_argument('--plan',type=Path)
+ p=argparse.ArgumentParser();p.add_argument('mode',choices=('inventory','apply'),nargs='?',default='inventory');p.add_argument('--root',type=Path,default=Path('/opt/aicrm/source-bundles'));p.add_argument('--builds',type=Path,default=Path('/opt/aicrm/builds'));p.add_argument('--queue',type=Path,default=Path('/opt/aicrm/release-queue.json'));p.add_argument('--build-lock',type=Path,default=Path('/opt/aicrm/staging-build.lock'));p.add_argument('--current',type=Path,default=Path('/opt/aicrm/current'));p.add_argument('--success',type=Path,default=Path('/opt/aicrm/release-success'));p.add_argument('--before',type=int);p.add_argument('--plan',type=Path)
  a=p.parse_args()
  try:print(json.dumps(run(a),sort_keys=True));return 0
  except (OSError,ValueError,Refuse) as e:print(json.dumps({'ok':False,'reason':str(e) if isinstance(e,Refuse) else 'source_bundle_cleanup_io_or_format_failed'}),file=sys.stderr);return 1
