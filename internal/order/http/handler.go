@@ -45,8 +45,7 @@ type Handler struct {
 }
 
 type checkoutContactReader interface {
-	orderport.CheckoutMobileReader
-	orderport.CheckoutShippingAddressReader
+	orderport.CheckoutContactReader
 }
 
 // SetCustomerFilterResolver installs the composition-owned OneID read bridge
@@ -232,7 +231,10 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 	}
 	if len(parts) == 1 {
 		response := responseFrom(order, h.payerDisplays(r.Context(), []domain.Snapshot{order}))
-		h.populateCheckoutContact(r.Context(), order.ID, &response)
+		if err := h.populateCheckoutContact(r.Context(), order.ID, &response); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "order_detail_unavailable")
+			return
+		}
 		distribution, state := h.distributionFor(r.Context(), []domain.Snapshot{order})
 		response.DistributionReadState = state
 		response.Distribution = orderDistributionJSON(distribution[order.ID])
@@ -489,26 +491,30 @@ type orderResponse struct {
 	DetailAddress          string           `json:"detail_address,omitempty"`
 }
 
-func (h *Handler) populateCheckoutContact(ctx context.Context, orderID int64, response *orderResponse) {
+func (h *Handler) populateCheckoutContact(ctx context.Context, orderID int64, response *orderResponse) error {
 	if h == nil || h.contactReader == nil || response == nil || orderID < 1 {
-		return
+		return nil
 	}
 	response.ContactCollectionLevel = "none"
-	address, foundAddress, addressErr := h.contactReader.ReadCheckoutShippingAddressWithin(ctx, orderID)
-	if addressErr == nil && foundAddress {
+	contact, err := h.contactReader.ReadCheckoutContact(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	address := contact.ShippingAddress
+	if contact.AddressCollected {
 		response.ContactCollectionLevel = "shipping_address"
 		response.RecipientName, response.ProvinceCode, response.ProvinceName = address.RecipientName, address.ProvinceCode, address.ProvinceName
 		response.CityCode, response.CityName = address.CityCode, address.CityName
 		response.DistrictCode, response.DistrictName = address.DistrictCode, address.DistrictName
 		response.DetailAddress = address.DetailAddress
 	}
-	mobile, foundMobile, mobileErr := h.contactReader.ReadCheckoutMobileWithin(ctx, orderID)
-	if mobileErr == nil && foundMobile {
+	if contact.MobileCollected {
 		if response.ContactCollectionLevel == "none" {
 			response.ContactCollectionLevel = "mobile"
 		}
-		response.ShippingMobileMasked = maskCheckoutMobile(mobile)
+		response.ShippingMobileMasked = maskCheckoutMobile(contact.MobileE164)
 	}
+	return nil
 }
 
 func maskCheckoutMobile(value string) string {

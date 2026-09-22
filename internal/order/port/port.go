@@ -351,6 +351,15 @@ type ShippingAddress struct {
 	DetailAddress string `json:"detail_address,omitempty"`
 }
 
+// CheckoutContact is the frozen contact fact projected into transaction detail.
+// Presence flags distinguish historical orders from collected empty values.
+type CheckoutContact struct {
+	MobileE164       string
+	MobileCollected  bool
+	ShippingAddress  ShippingAddress
+	AddressCollected bool
+}
+
 // CheckoutAttributionCommand carries only trusted checkout facts from Order
 // to an injected cross-domain coordinator. It is never constructed from a
 // public identity/amount/receiver field. A coordinator treats an invalid or
@@ -442,6 +451,11 @@ type CheckoutSnapshot struct {
 // It returns no value when the checkout did not collect a shipping address.
 type CheckoutShippingAddressReader interface {
 	ReadCheckoutShippingAddressWithin(context.Context, int64) (ShippingAddress, bool, error)
+}
+
+// CheckoutContactReader opens its own read transaction for an HTTP detail read.
+type CheckoutContactReader interface {
+	ReadCheckoutContact(context.Context, int64) (CheckoutContact, error)
 }
 
 // CheckoutSnapshotReader is the narrow Order read seam for a Product paid
