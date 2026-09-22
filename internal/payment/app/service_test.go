@@ -73,7 +73,8 @@ func (o orderStub) SettlePaymentWithin(ctx context.Context, command orderport.Pa
 
 type recordingOrderStub struct {
 	orderStub
-	settlement *orderport.PaymentSettlementCommand
+	settlement      *orderport.PaymentSettlementCommand
+	settlementCount int
 }
 
 func (stub *recordingOrderStub) SettlePaymentWithin(ctx context.Context, command orderport.PaymentSettlementCommand) (orderdomain.Snapshot, error) {
@@ -81,6 +82,7 @@ func (stub *recordingOrderStub) SettlePaymentWithin(ctx context.Context, command
 		return orderdomain.Snapshot{}, errors.New("not in tx")
 	}
 	stub.settlement = &command
+	stub.settlementCount++
 	return stub.snapshot, nil
 }
 
@@ -179,24 +181,25 @@ func (e *effectStub) AcceptAndQueueWithin(ctx context.Context, c effectport.Acce
 }
 
 type storeStub struct {
-	payment                 domain.Payment
-	refund                  domain.Refund
-	shopMaterial            paymentport.ShopRefundMaterial
-	bound                   bool
-	reserved                int64
-	nonTerminalRefund       bool
-	nonTerminalRefundChecks int
-	refundReconciliationID  int64
-	paymentReconciliationID int64
-	callbackOutcome         string
-	callbackClaims          int
-	callbackReplay          bool
-	refundSettlementUpdates int
-	handoffCalls            int
-	recoveryRefund          domain.Refund
-	recoveryFound           bool
-	recoveryActor           string
-	recoveryKey             [32]byte
+	payment                  domain.Payment
+	refund                   domain.Refund
+	shopMaterial             paymentport.ShopRefundMaterial
+	bound                    bool
+	reserved                 int64
+	nonTerminalRefund        bool
+	nonTerminalRefundChecks  int
+	refundReconciliationID   int64
+	paymentReconciliationID  int64
+	callbackOutcome          string
+	callbackClaims           int
+	callbackReplay           bool
+	paymentSettlementUpdates int
+	refundSettlementUpdates  int
+	handoffCalls             int
+	recoveryRefund           domain.Refund
+	recoveryFound            bool
+	recoveryActor            string
+	recoveryKey              [32]byte
 }
 
 func (s *storeStub) CreatePayment(_ context.Context, p domain.Payment, _, _ [32]byte, _ string) (domain.Payment, bool, error) {
@@ -268,7 +271,13 @@ func (s *storeStub) RecordPaymentReconciliation(_ context.Context, id int64, _ e
 	s.paymentReconciliationID = id
 	return true, nil
 }
-func (s *storeStub) UpdatePaymentSettlement(_ context.Context, p domain.Payment, _, _ string) (domain.Payment, error) {
+func (s *storeStub) UpdatePaymentSettlement(_ context.Context, p domain.Payment, providerDigest, _ string) (domain.Payment, error) {
+	s.paymentSettlementUpdates++
+	p.ProviderTransactionDigest = providerDigest
+	if p.Status == domain.StatusPaid && p.PaidConfirmedAt == nil {
+		confirmed := p.UpdatedAt
+		p.PaidConfirmedAt = &confirmed
+	}
 	s.payment = p
 	return p, nil
 }
