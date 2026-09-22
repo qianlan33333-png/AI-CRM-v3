@@ -87,3 +87,4 @@ Governance-Validation: <实际验证命令、结果及尚未验证项，至少 1
 - Bundle mode: incremental / full fallback
 - Source mirror status: ready / mirror_stale (non-blocking)
 - Direct staging→production promotion receipt:
+- Staging fixture manifest/readback (客户同步/教研板块):
