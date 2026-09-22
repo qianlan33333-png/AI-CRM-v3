@@ -113,4 +113,6 @@ PR 保留准确 HEAD/tree、并行与发布快照、测试摘要、证据目录�
 
 预发布机维护非阻塞的 GitHub 源码镜像，仅用于增量 bundle 对象缓存。候选 bundle 优先以 `merge_preview_sha ^base_main_sha` 生成；缺少基线才传完整 bundle。Runner 不下载、不重新打包、不把发布包中转到生产。accepted 后由预发布机使用临时 0600 生产密钥、固定 known_hosts 和生产锁直推同一包，生产再次校验 tree、package SHA、active release、readyz 和板块读回。
 
+生产晋级必须直接使用预发布机已验收的原始归档；不得回传本地、重新编译、重新打包或让 Runner 充当大包中转。预发布机只发送一次归档到生产，生产端使用既有 root wrapper、发布锁、installer、observer、回滚和 readiness 检查。预发布队列登记缺失时只能通过 `adopt-accepted` 形成显式 `waiting_merge` 事件，不能静默绕过单一队列。
+
 发布队列由 `scripts/release_queue.py` 维护，一次只允许一个候选处于生产相关状态；普通领域可并行开发，Composition、迁移、公共组件、Provider、External Effects、部署脚本和 CI 变更串行合并。状态按 development、waiting_candidate、preview_building、staging_acceptance、frozen、waiting_merge、merged、production、observing、released、stale_candidate 记录。旧候选永不覆盖新候选。

@@ -43,6 +43,7 @@ def main():
     p.add_argument('--file', type=Path, default=Path('/opt/aicrm/release-queue.json'))
     commands = p.add_subparsers(dest='command', required=True)
     c = commands.add_parser('enqueue'); c.add_argument('manifest', type=Path)
+    c = commands.add_parser('adopt-accepted'); c.add_argument('receipt', type=Path)
     c = commands.add_parser('transition'); c.add_argument('candidate_id'); c.add_argument('status'); c.add_argument('--main')
     commands.add_parser('show')
     a = p.parse_args()
@@ -52,8 +53,14 @@ def main():
         queue = json.loads(a.file.read_text()) if a.file.exists() else {'schema': 1, 'items': []}
         if a.command == 'show':
             print(json.dumps(queue, ensure_ascii=False)); return
-        change(queue, a.command, manifest=json.loads(a.manifest.read_text()) if a.command == 'enqueue' else None,
-               candidate_id=getattr(a, 'candidate_id', None), status=getattr(a, 'status', None), main=getattr(a, 'main', None))
+        if a.command == 'adopt-accepted':
+            value = json.loads(a.receipt.read_text())
+            if value.get('status') != 'accepted': raise ValueError('accepted receipt required')
+            if not any(i.get('candidate_id') == value.get('candidate_id') for i in queue['items']):
+                queue['items'].append({**value, 'status': 'waiting_merge', 'events': [{'from': 'accepted', 'to': 'waiting_merge', 'time': int(time.time())}]})
+        else:
+            change(queue, a.command, manifest=json.loads(a.manifest.read_text()) if a.command == 'enqueue' else None,
+                   candidate_id=getattr(a, 'candidate_id', None), status=getattr(a, 'status', None), main=getattr(a, 'main', None))
         tmp = a.file.with_suffix('.tmp')
         with tmp.open('w') as out:
             json.dump(queue, out, ensure_ascii=False, indent=2)
