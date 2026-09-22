@@ -8,5 +8,5 @@ def main():
  if b.get('status')!='built':raise SystemExit('built receipt required')
  if r.get('business_verified') is not True:raise SystemExit('business readback is not verified')
  if r.get('effect_mode','virtual') not in ('virtual','live'):raise SystemExit('invalid effect mode')
- v={**b,**m,'status':'accepted','accepted_at':int(time.time()),'business_readback':r,'receipt_sha256':hashlib.sha256(a.built.read_bytes()).hexdigest()};a.out.write_text(json.dumps(v,ensure_ascii=False,indent=2)+'\n')
+ v={**m,**b,'status':'accepted','accepted_at':int(time.time()),'business_readback':r,'receipt_sha256':hashlib.sha256(a.built.read_bytes()).hexdigest()};a.out.write_text(json.dumps(v,ensure_ascii=False,indent=2)+'\n')
 if __name__=='__main__':main()
