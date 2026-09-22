@@ -59,7 +59,8 @@ function bodyText(input: RequestInfo | URL, init?: RequestInit): string {
 
 function catalogMutation(url: URL, method: string): boolean {
   return method === 'POST' && url.pathname === '/api/admin/channels' ||
-    method === 'PATCH' && /^\/api\/admin\/channels\/[1-9][0-9]*$/.test(url.pathname);
+    method === 'PATCH' && /^\/api\/admin\/channels\/[1-9][0-9]*$/.test(url.pathname) ||
+    method === 'POST' && /^\/api\/admin\/channels\/[1-9][0-9]*\/qrcode\/generate$/.test(url.pathname);
 }
 
 function text(value: unknown): string {
@@ -193,7 +194,9 @@ function installCatalogTransport(): void {
     if (url.origin !== location.origin || !catalogMutation(url, method)) return reportDirectoryReadState(await nativeFetch(input, init), url, method);
 
     let body: string;
-    try { body = normalizePayload(bodyText(input, init), url); }
+    try {
+      body = /\/qrcode\/generate$/.test(url.pathname) ? '{}' : normalizePayload(bodyText(input, init), url);
+    }
     catch { return new Response(JSON.stringify({ ok: false, code: 'MALFORMED_REQUEST', message: '渠道保存数据无效，请检查后重试。' }), { status: 400, headers: { 'Content-Type': 'application/json' } }); }
     const headers = new Headers(init?.headers || (typeof input === 'string' || input instanceof URL ? undefined : input.headers));
     headers.set('Accept', 'application/json');

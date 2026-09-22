@@ -98,21 +98,10 @@
   }
 
   function apiJson(url, options) {
-    const method = String(options?.method || "GET").toUpperCase();
-    const headers = new Headers(options?.headers || {});
-    if (["POST", "PATCH", "PUT", "DELETE"].includes(method) && !headers.has("Idempotency-Key")) {
-      const key = globalThis.crypto?.randomUUID
-        ? globalThis.crypto.randomUUID()
-        : `channel-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      headers.set("Idempotency-Key", key);
-    }
     return fetch(url, {
-      ...options,
-      headers: (() => {
-        if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-        return headers;
-      })(),
+      headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
+      ...options,
     }).then((response) => response.json().then((data) => ({ response, data })));
   }
 
