@@ -265,8 +265,8 @@ func TestPaidPurchaseActionPostgreSQLTransactionBoundaries(t *testing.T) {
 		t.Fatalf("failed tag action count=%d err=%v", count, err)
 	}
 
-	// A newly created checkout carries the Product action recorded at checkout,
-	// not a later product edit that happens before payment succeeds.
+	// Payment completion reads the current Product action, while the checkout
+	// snapshot remains an immutable sale fact for audit and validation.
 	if err = service.SetCheckoutSnapshotReader(checkoutSnapshotStub{values: map[int64]orderport.CheckoutSnapshot{105: {
 		OrderID: 105, ProductID: 5, ProductVersion: 1,
 		PostPurchaseAction: []byte(`{"schema_version":1,"purchase_action_enabled":true,"purchase_action_mode":"redirect","lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_url":"/frozen-after-paid","completion_target":null}`),
@@ -279,12 +279,12 @@ func TestPaidPurchaseActionPostgreSQLTransactionBoundaries(t *testing.T) {
 	}
 	var redirectURL string
 	var frozen bool
-	if err = native.QueryRow(ctx, `SELECT redirect_url,checkout_snapshot FROM product_paid_purchase_actions WHERE order_id=105`).Scan(&redirectURL, &frozen); err != nil || redirectURL != "/frozen-after-paid" || !frozen {
-		t.Fatalf("checkout action redirect=%q frozen=%t err=%v", redirectURL, frozen, err)
+	if err = native.QueryRow(ctx, `SELECT redirect_url,checkout_snapshot FROM product_paid_purchase_actions WHERE order_id=105`).Scan(&redirectURL, &frozen); err != nil || redirectURL != "/changed-after-checkout" || frozen {
+		t.Fatalf("current checkout action redirect=%q frozen=%t err=%v", redirectURL, frozen, err)
 	}
 	orders.order = orderdomain.Snapshot{ID: 105, Status: orderdomain.StatusPaid, Amount: orderdomain.Money{AmountMinor: 990, Currency: "CNY"}, Items: []orderdomain.ItemSnapshot{{ProductID: func() *int64 { id := int64(5); return &id }(), ProductCode: "purchase-5"}}}
 	guidance, guidanceErr := service.ReadPaidPurchaseGuidance(ctx, 105)
-	if guidanceErr != nil || guidance.RedirectURL != "/frozen-after-paid" {
+	if guidanceErr != nil || guidance.RedirectURL != "/changed-after-checkout" {
 		t.Fatalf("paid checkout guidance=%+v err=%v", guidance, guidanceErr)
 	}
 	orders.order.Status, orders.order.RefundedMinor = orderdomain.StatusRefunded, 990

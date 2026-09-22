@@ -76,9 +76,11 @@ func (s *PaidPurchaseActionService) ConsumePaidEventWithin(ctx context.Context, 
 	if event.CheckoutProductID < 1 {
 		return nil
 	}
-	// The immutable snapshot is the authority for a replay. In particular, do
-	// not re-read a later Product edit or reject an old paid event because its
-	// current definition became invalid after the first settlement.
+	// A previously persisted action is the authority only for an idempotent
+	// replay of the same paid event. For the first payment settlement, the
+	// action must be read from the current Product configuration at settlement
+	// time; the checkout snapshot remains an immutable sale/audit fact and is
+	// never used to select a later buyer action.
 	if stored, readErr := s.store.ReadPaidPurchaseActionForUpdate(ctx, event.ID); readErr == nil {
 		if !samePaidPurchaseEvent(stored, event) {
 			return ErrConflict
@@ -89,45 +91,32 @@ func (s *PaidPurchaseActionService) ConsumePaidEventWithin(ctx context.Context, 
 	}
 	productID, productVersion := productport.ID(event.CheckoutProductID), int64(0)
 	var configuration paidPurchaseConfiguration
-	checkoutSnapshot := false
 	if s.checkoutSnapshots != nil {
 		checkout, checkoutErr := s.checkoutSnapshots.ReadCheckoutSnapshotWithin(ctx, event.OrderID)
 		if checkoutErr == nil {
 			if checkout.OrderID != event.OrderID || checkout.ProductID != event.CheckoutProductID || checkout.ProductVersion < 1 {
 				return ErrConflict
 			}
-			if checkoutPaidPurchaseActionSet(checkout.PostPurchaseAction) {
-				frozen, frozenErr := paidPurchaseConfigFromProjection(checkout.PostPurchaseAction)
-				if frozenErr != nil {
-					return ErrConflict
-				}
-				configuration, checkoutSnapshot, productVersion = frozen, true, checkout.ProductVersion
-			}
 		} else if !errors.Is(checkoutErr, orderport.ErrNotFound) {
 			return classify(checkoutErr)
 		}
 	}
-	// The buyer action is now immutable at checkout. A later product edit must
-	// never block or replace it; current Product is consulted only for the
-	// pre-existing Customer tag behavior.
+	// The current Product is authoritative for the post-payment action. This is
+	// deliberately evaluated inside the settlement transaction so the action
+	// version and any tag/effect intent are frozen together with the paid fact.
 	product, productErr := s.store.GetForUpdate(ctx, productID)
-	if productErr != nil || !validProduct(product) {
-		if !checkoutSnapshot {
-			if productErr != nil {
-				return classify(productErr)
-			}
-			return ErrUnavailable
-		}
-	} else if current, currentErr := paidPurchaseConfigFromProjection(product.LegacyAdminProjection); currentErr == nil {
-		if checkoutSnapshot {
-			configuration.TagIDs, configuration.TagState = current.TagIDs, current.TagState
-		} else {
-			configuration, productVersion = current, product.Version
-		}
-	} else if !checkoutSnapshot {
+	if productErr != nil {
+		return classify(productErr)
+	}
+	if !validProduct(product) {
+		return ErrUnavailable
+	}
+	current, currentErr := paidPurchaseConfigFromProjection(product.LegacyAdminProjection)
+	if currentErr != nil {
 		return currentErr
 	}
-	if !checkoutSnapshot && productVersion < 1 {
+	configuration, productVersion = current, product.Version
+	if productVersion < 1 {
 		return ErrUnavailable
 	}
 	createdAt := event.OccurredAt.UTC()
@@ -147,7 +136,7 @@ func (s *PaidPurchaseActionService) ConsumePaidEventWithin(ctx context.Context, 
 		LeadQRSubtitle:   configuration.LeadQRSubtitle,
 		RedirectURL:      configuration.RedirectURL,
 		CompletionTarget: configuration.CompletionTarget,
-		CheckoutSnapshot: checkoutSnapshot,
+		CheckoutSnapshot: false,
 		TagState:         configuration.TagState,
 		CreatedAt:        createdAt,
 	}

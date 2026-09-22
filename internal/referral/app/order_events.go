@@ -28,13 +28,21 @@ func (s *Service) ConsumePaidEventWithin(ctx context.Context, event orderport.Pa
 	if err != nil {
 		return err
 	}
-	if checkout.OrderVersion != event.OrderVersion || checkout.ProductID != event.CheckoutProductID || checkout.ProductType != event.CheckoutProductType || checkout.ActivityContextDigest != event.ReferralActivityContextDigest || checkout.PromotionContextDigest != event.PromotionContextDigest {
+	// The checkout snapshot records the Order version at checkout creation.
+	// Payment settlement necessarily advances the native Order version before
+	// this paid event is emitted, so equality would reject every legitimate
+	// callback. A snapshot from a future version is the only impossible fact.
+	if !checkoutOrderVersionCompatible(checkout.OrderVersion, event.OrderVersion) || checkout.ProductID != event.CheckoutProductID || checkout.ProductType != event.CheckoutProductType || checkout.ActivityContextDigest != event.ReferralActivityContextDigest || checkout.PromotionContextDigest != event.PromotionContextDigest {
 		return referralport.ErrConflict
 	}
 	if event.Order.PayerCustomerID == nil || event.Order.BeneficiaryCustomerID == nil || *event.Order.PayerCustomerID < 1 || *event.Order.BeneficiaryCustomerID < 1 {
 		return referralport.ErrConflict
 	}
 	return s.consumeProductSalePaidWithin(ctx, referralport.ProductSalePaidEvent{PaidEventID: event.ID, OrderID: event.OrderID, OrderVersion: event.OrderVersion, ProductID: checkout.ProductID, ProductType: checkout.ProductType, CampaignID: checkout.CampaignID, PromotionCustomerID: checkout.PromotionCustomerID, BuyerCustomerID: *event.Order.PayerCustomerID, BeneficiaryCustomerID: *event.Order.BeneficiaryCustomerID, PaidAmountMinor: event.Order.Amount.AmountMinor, Currency: event.Order.Amount.Currency, ActivityContextDigest: checkout.ActivityContextDigest, PromotionContextDigest: checkout.PromotionContextDigest, SourceDigest: event.SourceDigest, OccurredAt: event.OccurredAt})
+}
+
+func checkoutOrderVersionCompatible(checkoutVersion, paidEventVersion int64) bool {
+	return checkoutVersion >= 1 && paidEventVersion >= checkoutVersion
 }
 
 // ConsumeRefundSettlementWithin adapts Order's confirmed cumulative refund
