@@ -120,7 +120,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	if promotionContext == "" {
 		clearLegacyPromotionCookies(w)
 	}
-	public := publicProduct{ID: product.ID, Name: product.Name, PriceMinor: product.PriceMinor, Currency: product.Currency, PaymentPath: publicPaymentPath("/s/"+url.PathEscape(product.Code)+"/pay", promotionContext), PromotionContext: promotionContext, BuyButtonText: "立即报名", ProductKind: "service_period", CouponTargetRef: "service_period:" + strconv.FormatInt(int64(product.ID), 10), ServicePeriodDurationDays: product.ServicePeriodDurationDays, Images: publicDetailMedia(product.Code, product.DetailMedia)}
+	public := publicProduct{ID: product.ID, Name: product.Name, PriceMinor: product.PriceMinor, Currency: product.Currency, PaymentPath: publicPaymentPath("/s/"+url.PathEscape(product.Code)+"/pay", promotionContext), PromotionContext: promotionContext, BuyButtonText: "立即报名", ProductKind: "service_period", CouponTargetRef: "service_period:" + strconv.FormatInt(int64(product.ID), 10), ServicePeriodDurationDays: product.ServicePeriodDurationDays, Images: publicDetailMedia(product.Code, product.DetailMedia), RegionOptionsJSON: "[]"}
 	presentation := PublicPresentationAssets{}
 	if h.presentationAssets.bound() {
 		presentation, err = h.presentationAssets.resolved()
