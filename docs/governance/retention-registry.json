@@ -132,7 +132,7 @@
       "coverage_status": "policy_available",
       "gap_code": "",
       "policy_id": "release_artifact",
-      "cleanup_entrypoint": "deploy/build-release-on-staging.sh#remote_root"
+      "cleanup_entrypoint": "deploy/cleanup-source-bundles.py#inventory"
     }
   },
   "resources": {
