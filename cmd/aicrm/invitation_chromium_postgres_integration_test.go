@@ -84,7 +84,7 @@ func TestPostgreSQLInvitationHostChromiumJourney(t *testing.T) {
 		t.Fatalf("saved plan: %+v %v", plan, err)
 	}
 	// Complete the test fixtures locally: no Provider call is implied.
-	if _, err = f.application.pool.Native().Exec(f.ctx, `UPDATE media_invitation_codes SET state='executed',config_id='test-config',qr_code='https://example.test/code'`); err != nil {
+	if _, err = f.application.pool.Native().Exec(f.ctx, `UPDATE media_invitation_join_ways SET state='executed',config_id='test-config',qr_code='https://example.test/code' WHERE invite_id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err = f.application.invitationService.Refresh(f.ctx); err != nil {
@@ -98,8 +98,17 @@ func TestPostgreSQLInvitationHostChromiumJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err = f.application.invitationService.Public(f.ctx, plan.Token)
-	if err != nil || plan.CurrentChatID != "chromium-group-2" {
-		t.Fatalf("rotation: %+v %v", plan, err)
+	if err != nil || plan.State != "preparing" || plan.CurrentChatID != "" || plan.ProviderQRCode != "https://example.test/code" {
+		t.Fatalf("rotation must wait for Provider confirmation: %+v %v", plan, err)
+	}
+	// Complete the queued virtual update using the same config and QR, then
+	// confirm that the public projection advances to the second group.
+	if _, err = f.application.pool.Native().Exec(f.ctx, `UPDATE media_invitation_join_ways SET state='executed' WHERE invite_id=$1 AND config_id='test-config' AND qr_code='https://example.test/code'`, id); err != nil {
+		t.Fatal(err)
+	}
+	plan, err = f.application.invitationService.Public(f.ctx, plan.Token)
+	if err != nil || plan.CurrentChatID != "chromium-group-2" || plan.ProviderQRCode != "https://example.test/code" {
+		t.Fatalf("confirmed rotation: %+v %v", plan, err)
 	}
 	if _, err = f.application.pool.Native().Exec(f.ctx, `UPDATE group_ops_directory_groups SET member_count=0 WHERE chat_reference='chromium-group-1'`); err != nil {
 		t.Fatal(err)
