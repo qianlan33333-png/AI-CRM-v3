@@ -10,7 +10,7 @@ import sys
 
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
-NON_RUNTIME_PREFIXES = (".github/", "docs/", "scripts/ci/", "skills/")
+NON_RUNTIME_PREFIXES = (".github/", "docs/", "scripts/ci/", "scripts/staging-fixtures/", "skills/")
 NON_RUNTIME_FILES = {"AGENTS.md"}
 NON_RUNTIME_FILES.add("internal/adminops/retention_resources.generated.json")
 NON_RUNTIME_FILES.add("deploy/README.md")
