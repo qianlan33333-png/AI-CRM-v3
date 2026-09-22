@@ -97,14 +97,19 @@ func ValidGroupInvite(item mediaport.GroupInvite, persisted bool) bool {
 }
 
 // ValidGroupInviteJoinURL is the single Media validator for a Group invite.
-// It rejects alternate hosts, credentials, queries, fragments, encoded path
-// ambiguity, and an empty /gm token before any persistence is attempted.
+// A group invite may be either a native WeCom /gm link or an AI-CRM public
+// /gi/ landing page. Both forms are HTTPS-only and reject credentials,
+// queries, fragments, and encoded path ambiguity.
 func ValidGroupInviteJoinURL(raw string) bool {
 	if raw == "" || raw != strings.TrimSpace(raw) || len(raw) > MaxGroupInviteURLBytes || !utf8.ValidString(raw) {
 		return false
 	}
 	parsed, err := url.Parse(raw)
-	return err == nil && parsed.Scheme == "https" && parsed.Host == "work.weixin.qq.com" && parsed.User == nil &&
-		parsed.RawQuery == "" && parsed.ForceQuery == false && parsed.Fragment == "" && parsed.RawPath == "" &&
-		strings.HasPrefix(parsed.Path, "/gm/") && len(parsed.Path) > len("/gm/") && !strings.Contains(parsed.Path[len("/gm/"):], "/")
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawPath != "" {
+		return false
+	}
+	if parsed.Host == "work.weixin.qq.com" {
+		return strings.HasPrefix(parsed.Path, "/gm/") && len(parsed.Path) > len("/gm/") && !strings.Contains(parsed.Path[len("/gm/"):], "/")
+	}
+	return parsed.Host == "www.youcangogogo.com" && strings.HasPrefix(parsed.Path, "/gi/") && len(parsed.Path) > len("/gi/") && !strings.Contains(parsed.Path[len("/gi/"):], "/")
 }

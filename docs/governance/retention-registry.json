@@ -2537,6 +2537,13 @@
       "reason": "Frozen order contact evidence; not process cache.",
       "cleanup": "disabled"
     },
+    "order_shipping_address_snapshots": {
+      "owner": "order",
+      "policy": "permanent",
+      "source": "migrations/0203_order_shipping_address_snapshots.sql",
+      "reason": "Frozen shipping address evidence captured at checkout; not process cache.",
+      "cleanup": "disabled"
+    },
     "order_distribution_qualification_evidence": {
       "owner": "order",
       "policy": "permanent",

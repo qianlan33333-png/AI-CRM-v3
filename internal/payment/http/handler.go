@@ -749,6 +749,15 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		CouponClaimID          int64                            `json:"coupon_claim_id,omitempty"`
 		ProductType            string                           `json:"product_kind,omitempty"`
 		MobileE164             string                           `json:"mobile,omitempty"`
+		ContactCollectionLevel string                           `json:"contact_collection_level,omitempty"`
+		RecipientName          string                           `json:"recipient_name,omitempty"`
+		ProvinceCode           string                           `json:"province_code,omitempty"`
+		ProvinceName           string                           `json:"province_name,omitempty"`
+		CityCode               string                           `json:"city_code,omitempty"`
+		CityName               string                           `json:"city_name,omitempty"`
+		DistrictCode           string                           `json:"district_code,omitempty"`
+		DistrictName           string                           `json:"district_name,omitempty"`
+		DetailAddress          string                           `json:"detail_address,omitempty"`
 		BeneficiarySelection   paymentport.BeneficiarySelection `json:"beneficiary_selection,omitempty"`
 		CheckoutSessionBinding string                           `json:"checkout_session_binding"`
 		// PromotionContext is an opaque /d credential. Order validates its
@@ -772,7 +781,7 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 	if activityCookie, cookieErr := request.Cookie(paymentport.ReferralActivityCookieName); cookieErr == nil && validReferralActivityContext(activityCookie.Value) {
 		activityContext = activityCookie.Value
 	}
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, PromotionContext: body.PromotionContext, ReferralActivityContext: activityContext, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, ContactCollectionLevel: body.ContactCollectionLevel, ShippingAddress: paymentport.ShippingAddress{RecipientName: body.RecipientName, ProvinceCode: body.ProvinceCode, ProvinceName: body.ProvinceName, CityCode: body.CityCode, CityName: body.CityName, DistrictCode: body.DistrictCode, DistrictName: body.DistrictName, DetailAddress: body.DetailAddress}, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, PromotionContext: body.PromotionContext, ReferralActivityContext: activityContext, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return

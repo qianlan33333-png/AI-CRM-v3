@@ -287,7 +287,7 @@ func TestPublicPaymentCompletionRefreshJourney(t *testing.T) {
 	pages := []string{}
 	for _, kind := range []string{"standard", "service_period"} {
 		var html bytes.Buffer
-		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true}}); err != nil {
+		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true, ContactCollectionLevel: "mobile", RegionOptionsJSON: "[]"}}); err != nil {
 			t.Fatal(err)
 		}
 		path := filepath.Join(t.TempDir(), kind+".html")
@@ -532,7 +532,7 @@ func TestServicePeriodPublicBrowserJourney(t *testing.T) {
 	pages := []string{}
 	for _, kind := range []string{"standard", "service_period"} {
 		var html bytes.Buffer
-		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true}}); err != nil {
+		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true, ContactCollectionLevel: "mobile", RegionOptionsJSON: "[]"}}); err != nil {
 			t.Fatal(err)
 		}
 		path := filepath.Join(t.TempDir(), kind+".html")

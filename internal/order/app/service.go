@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	addresscatalog "github.com/qianlan33333-png/AI-CRM-v3/internal/address/port"
 	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -235,7 +236,16 @@ func (s *Service) ReadCheckoutSnapshotWithin(ctx context.Context, orderID int64)
 }
 
 func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderport.PaymentOrderCommand) (domain.Snapshot, error) {
-	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validPostPurchaseAction(command.PostPurchaseAction) || !validPromotionContext(command.PromotionContext) || !validReferralActivityContext(command.ReferralActivityContext) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
+	// Empty means the legacy no-contact contract for callers created before
+	// contact collection levels were introduced.
+	if command.ContactCollectionLevel == "" {
+		if command.MobileE164 != "" {
+			command.ContactCollectionLevel = "mobile"
+		} else {
+			command.ContactCollectionLevel = "none"
+		}
+	}
+	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validPostPurchaseAction(command.PostPurchaseAction) || !validPromotionContext(command.PromotionContext) || !validReferralActivityContext(command.ReferralActivityContext) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) || !validContactCollection(command.ContactCollectionLevel, command.MobileE164, command.ShippingAddress) {
 		return domain.Snapshot{}, orderport.ErrConflict
 	}
 	productID := command.ProductID
@@ -254,6 +264,9 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 			return domain.Snapshot{}, orderport.ErrUnavailable
 		}
 		phoneKeyVersion = s.contactCipher.KeyVersion()
+	}
+	if command.ContactCollectionLevel == "shipping_address" && addresscatalog.Validate(command.ShippingAddress.ProvinceCode, command.ShippingAddress.ProvinceName, command.ShippingAddress.CityCode, command.ShippingAddress.CityName, command.ShippingAddress.DistrictCode, command.ShippingAddress.DistrictName) != nil {
+		return domain.Snapshot{}, orderport.ErrConflict
 	}
 	createdAt := s.now().UTC()
 	digestInput := struct {
@@ -347,6 +360,14 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 			return domain.Snapshot{}, orderport.ErrUnavailable
 		}
 	}
+	if command.ContactCollectionLevel == "shipping_address" {
+		shippingStore, ok := s.store.(interface {
+			InsertShippingAddressSnapshot(context.Context, int64, orderport.ShippingAddress, time.Time) error
+		})
+		if !ok || shippingStore.InsertShippingAddressSnapshot(ctx, persisted.Snapshot().ID, command.ShippingAddress, input.CreatedAt) != nil {
+			return domain.Snapshot{}, orderport.ErrUnavailable
+		}
+	}
 	result := persisted.Snapshot()
 	result.ProfitSharingRequired = checkout.ProfitSharingRequired
 	snapshot, err := json.Marshal(result)
@@ -358,6 +379,24 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 		return domain.Snapshot{}, orderport.ErrUnavailable
 	}
 	return result, nil
+}
+
+func validContactCollection(level, mobile string, address orderport.ShippingAddress) bool {
+	validMobile := mobile == "" || (len(mobile) == 14 && strings.HasPrefix(mobile, "+861") && mobile[4] >= '3' && mobile[4] <= '9' && strings.IndexFunc(mobile[1:], func(r rune) bool { return r < '0' || r > '9' }) < 0)
+	if !validMobile {
+		return false
+	}
+	emptyAddress := address == (orderport.ShippingAddress{})
+	switch level {
+	case "none":
+		return mobile == "" && emptyAddress
+	case "mobile":
+		return validMobile && mobile != "" && emptyAddress
+	case "shipping_address":
+		return validMobile && mobile != "" && address.RecipientName != "" && address.ProvinceCode != "" && address.ProvinceName != "" && address.CityCode != "" && address.CityName != "" && address.DistrictCode != "" && address.DistrictName != "" && address.DetailAddress != ""
+	default:
+		return false
+	}
 }
 
 func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.PaymentSettlementCommand) (domain.Snapshot, error) {

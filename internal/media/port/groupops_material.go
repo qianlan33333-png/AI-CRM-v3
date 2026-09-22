@@ -380,7 +380,13 @@ func validOptionalGroupOpsText(value string, limit int) bool {
 
 func validGroupInviteURL(value string) bool {
 	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && parsed.Host == "work.weixin.qq.com" && strings.HasPrefix(parsed.Path, "/gm/") && parsed.User == nil && parsed.Fragment == ""
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawPath != "" {
+		return false
+	}
+	if parsed.Host == "work.weixin.qq.com" {
+		return strings.HasPrefix(parsed.Path, "/gm/") && len(parsed.Path) > len("/gm/") && !strings.Contains(parsed.Path[len("/gm/"):], "/")
+	}
+	return parsed.Host == "www.youcangogogo.com" && strings.HasPrefix(parsed.Path, "/gi/") && len(parsed.Path) > len("/gi/") && !strings.Contains(parsed.Path[len("/gi/"):], "/")
 }
 
 func validHTTPURL(value string) bool {
