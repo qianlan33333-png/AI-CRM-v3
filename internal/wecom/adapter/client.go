@@ -744,7 +744,11 @@ type response struct {
 	FollowUser  json.RawMessage `json:"follow_user"`
 	NextCursor  string          `json:"next_cursor"`
 	JoinWay     struct {
-		QRCode string `json:"qr_code"`
+		ConfigID       string   `json:"config_id"`
+		Scene          int      `json:"scene"`
+		AutoCreateRoom int      `json:"auto_create_room"`
+		ChatIDs        []string `json:"chat_id_list"`
+		QRCode         string   `json:"qr_code"`
 	} `json:"join_way"`
 	ConfigID   string `json:"config_id"`
 	QRCode     string `json:"qr_code"`

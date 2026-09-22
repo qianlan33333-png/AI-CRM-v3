@@ -178,7 +178,10 @@ func (h InvitationHandler) public(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("format") == "json" {
-		qr := plan.ProviderQRCode
+		qr := ""
+		if plan.State == "active" {
+			qr = plan.ProviderQRCode
+		}
 		if qr == "" && plan.State == "active" {
 			for _, b := range plan.Bindings {
 				if b.ChatID == plan.CurrentChatID {

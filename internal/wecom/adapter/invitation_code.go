@@ -6,6 +6,7 @@ import (
 	w "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 // Only outbound receives this writer. Always bind one existing group and
@@ -40,7 +41,7 @@ func (c *Client) CreateInvitationCodeForGroups(ctx context.Context, chats []stri
 	if err != nil {
 		return w.InvitationCode{ConfigID: result.ConfigID}, w.WrapProviderWriteError(err, true)
 	}
-	if !validProviderHTTPS(detail.JoinWay.QRCode) {
+	if !validJoinWayReadback(detail.JoinWay.ConfigID, detail.JoinWay.Scene, detail.JoinWay.AutoCreateRoom, detail.JoinWay.ChatIDs, detail.JoinWay.QRCode, result.ConfigID, chats) {
 		return w.InvitationCode{ConfigID: result.ConfigID}, w.WrapProviderWriteError(ErrResponse, true)
 	}
 	return w.InvitationCode{ConfigID: result.ConfigID, QRCode: detail.JoinWay.QRCode}, nil
@@ -59,7 +60,9 @@ func (c *Client) UpdateInvitationCodeForGroups(ctx context.Context, configID str
 	if err != nil {
 		return w.InvitationCode{ConfigID: configID}, w.WrapProviderWriteError(err, false)
 	}
-	body, _ := json.Marshal(map[string]any{"config_id": configID, "chat_id_list": chats})
+	// update_join_way replaces the configuration. Keep the original QR scene
+	// and manual group policy when switching its bound customer group.
+	body, _ := json.Marshal(map[string]any{"config_id": configID, "scene": 2, "auto_create_room": 0, "chat_id_list": chats})
 	if _, err = c.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/groupchat/update_join_way", url.Values{"access_token": {token}}, body); err != nil {
 		return w.InvitationCode{ConfigID: configID}, w.WrapProviderWriteError(err, true)
 	}
@@ -68,11 +71,15 @@ func (c *Client) UpdateInvitationCodeForGroups(ctx context.Context, configID str
 	if err != nil {
 		return w.InvitationCode{ConfigID: configID}, w.WrapProviderWriteError(err, true)
 	}
-	if detail.ConfigID != "" && detail.ConfigID != configID {
-		return w.InvitationCode{ConfigID: configID}, w.WrapProviderWriteError(ErrResponse, true)
-	}
-	if !validProviderHTTPS(detail.JoinWay.QRCode) {
+	if !validJoinWayReadback(detail.JoinWay.ConfigID, detail.JoinWay.Scene, detail.JoinWay.AutoCreateRoom, detail.JoinWay.ChatIDs, detail.JoinWay.QRCode, configID, chats) {
 		return w.InvitationCode{ConfigID: configID}, w.WrapProviderWriteError(ErrResponse, true)
 	}
 	return w.InvitationCode{ConfigID: configID, QRCode: detail.JoinWay.QRCode}, nil
+}
+
+func validJoinWayReadback(configID string, scene, autoCreateRoom int, actualChats []string, qrCode, expectedConfigID string, expectedChats []string) bool {
+	if configID != expectedConfigID || scene != 2 || autoCreateRoom != 0 || !validProviderHTTPS(qrCode) || len(actualChats) != len(expectedChats) {
+		return false
+	}
+	return slices.Equal(slices.Sorted(slices.Values(actualChats)), slices.Sorted(slices.Values(expectedChats)))
 }

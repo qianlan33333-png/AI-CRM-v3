@@ -84,11 +84,11 @@ func TestPostgreSQLInvitationAtomicSaveAndUpgrade(t *testing.T) {
 	if err != nil || replay.ID != plan.ID {
 		t.Fatal("replay", err)
 	}
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM invitation_effect_probe`).Scan(&count); err != nil || count != 2 {
-		t.Fatal("duplicate effects", count, err)
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM invitation_effect_probe`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("plan must have one stable Provider effect", count, err)
 	}
 	if err = uow.Within(ctx, func(tx context.Context) error {
-		return repo.CompleteInvitationCode(tx, p.InvitationCodeCompletion{EffectID: "eer_2", State: "executed", QRCode: "https://example.test/code", ConfigID: "config"})
+		return repo.CompleteInvitationPlanCode(tx, p.InvitationCodeCompletion{EffectID: "eer_2", State: "executed", QRCode: "https://example.test/code", ConfigID: "config"})
 	}); err != nil {
 		t.Fatal(err)
 	}

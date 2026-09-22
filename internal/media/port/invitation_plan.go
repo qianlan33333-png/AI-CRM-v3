@@ -3,7 +3,6 @@ package port
 import (
 	"context"
 	"errors"
-	g "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	"time"
 )
 
@@ -32,19 +31,19 @@ type InvitationPlan struct {
 	Bindings         []InvitationBinding `json:"bindings"`
 	ProviderConfigID string              `json:"provider_config_id,omitempty"`
 	ProviderQRCode   string              `json:"provider_qr_code,omitempty"`
+	ProviderState    string              `json:"provider_state,omitempty"`
 }
 type InvitationInput struct {
-	Observations map[string]g.CatalogGroup `json:"-"`
-	ID           int64                     `json:"id"`
-	Version      int64                     `json:"version"`
-	Name         string                    `json:"name"`
-	Title        string                    `json:"title"`
-	Description  string                    `json:"description"`
-	CoverImageID int64                     `json:"cover_image_id"`
-	Mode         string                    `json:"mode"`
-	Threshold    *int                      `json:"threshold"`
-	Enabled      bool                      `json:"enabled"`
-	ChatIDs      []string                  `json:"chat_ids"`
+	ID           int64    `json:"id"`
+	Version      int64    `json:"version"`
+	Name         string   `json:"name"`
+	Title        string   `json:"title"`
+	Description  string   `json:"description"`
+	CoverImageID int64    `json:"cover_image_id"`
+	Mode         string   `json:"mode"`
+	Threshold    *int     `json:"threshold"`
+	Enabled      bool     `json:"enabled"`
+	ChatIDs      []string `json:"chat_ids"`
 }
 type InvitationSwitch struct {
 	From string    `json:"from"`

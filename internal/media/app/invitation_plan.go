@@ -45,7 +45,6 @@ func (s *InvitationService) Save(ctx context.Context, v p.InvitationInput, actor
 			}
 		}
 	}
-	v.Observations = map[string]g.CatalogGroup{}
 	for _, id := range v.ChatIDs {
 		if !v.Enabled {
 			continue
@@ -57,7 +56,6 @@ func (s *InvitationService) Save(ctx context.Context, v p.InvitationInput, actor
 		if err != nil || fact.ObservedAt == nil {
 			return p.InvitationPlan{}, errors.New("group details unavailable")
 		}
-		v.Observations[id] = fact
 	}
 	plan, err := s.Store.SaveInvitationPlan(ctx, v, actor, key, s.Origin, s.Effects)
 	if err != nil {
