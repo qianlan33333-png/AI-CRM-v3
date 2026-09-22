@@ -361,17 +361,20 @@ type WeChatShop struct {
 // key and certificates are referenced by path so they never enter runtime
 // snapshots or API responses.
 type Alipay struct {
-	Enabled         bool
-	Production      bool
-	AppID           string
-	PrivateKeyPath  string
-	AlipayPublicKey string
-	AppCertPath     string
-	AlipayCertPath  string
-	AlipayRootPath  string
-	Gateway         string
-	NotifyURL       string
-	ReturnURL       string
+	Enabled        bool
+	Production     bool
+	AppID          string
+	PrivateKeyPath string
+	// Optional protected file containing the base64 AES key configured in the
+	// Alipay application. It is not required for web payment flows.
+	ContentEncryptionKeyPath string
+	AlipayPublicKey          string
+	AppCertPath              string
+	AlipayCertPath           string
+	AlipayRootPath           string
+	Gateway                  string
+	NotifyURL                string
+	ReturnURL                string
 }
 
 func Load() (Runtime, error) {
@@ -505,6 +508,7 @@ func Load() (Runtime, error) {
 	}
 	cfg.Alipay.AppID = os.Getenv("AICRM_ALIPAY_APP_ID")
 	cfg.Alipay.PrivateKeyPath = os.Getenv("AICRM_ALIPAY_PRIVATE_KEY_PATH")
+	cfg.Alipay.ContentEncryptionKeyPath = os.Getenv("AICRM_ALIPAY_CONTENT_ENCRYPTION_KEY_PATH")
 	cfg.Alipay.AlipayPublicKey = os.Getenv("AICRM_ALIPAY_PUBLIC_KEY")
 	cfg.Alipay.AppCertPath = os.Getenv("AICRM_ALIPAY_APP_CERT_PATH")
 	cfg.Alipay.AlipayCertPath = os.Getenv("AICRM_ALIPAY_ALIPAY_CERT_PATH")
@@ -702,6 +706,9 @@ func Load() (Runtime, error) {
 				return Runtime{}, errors.New("invalid enabled WeCom configuration")
 			}
 		}
+		if strings.TrimSpace(cfg.Alipay.ContentEncryptionKeyPath) != cfg.Alipay.ContentEncryptionKeyPath || strings.ContainsAny(cfg.Alipay.ContentEncryptionKeyPath, "\r\n\x00") {
+			return Runtime{}, errors.New("invalid Alipay content-encryption key path")
+		}
 	}
 	if cfg.WeCom.MaterialUploadTimeout < time.Second || cfg.WeCom.MaterialUploadTimeout > MaximumWeComMaterialUploadTimeout {
 		return Runtime{}, errors.New("invalid WeCom material upload timeout")
@@ -781,7 +788,7 @@ func Load() (Runtime, error) {
 	}
 	if cfg.Alipay.Enabled {
 		values := []string{cfg.Alipay.AppID, cfg.Alipay.PrivateKeyPath, cfg.Alipay.Gateway, cfg.Alipay.NotifyURL, cfg.Alipay.ReturnURL}
-		if nonEmptyCount(values) != len(values) || !validHTTPSURL(cfg.Alipay.NotifyURL) || !validHTTPSURL(cfg.Alipay.ReturnURL) {
+		if nonEmptyCount(values) != len(values) || !validHTTPSURL(cfg.Alipay.Gateway) || !validHTTPSURL(cfg.Alipay.NotifyURL) || !validHTTPSURL(cfg.Alipay.ReturnURL) {
 			return Runtime{}, errors.New("enabled Alipay configuration is incomplete")
 		}
 		for _, value := range values {

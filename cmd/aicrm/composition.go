@@ -1574,9 +1574,13 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		if readErr != nil {
 			return fail(readErr)
 		}
+		contentEncryptionKey, readErr := paymentprovider.LoadContentEncryptionKey(cfg.Alipay.ContentEncryptionKeyPath)
+		if readErr != nil {
+			return fail(readErr)
+		}
 		alipayAdapter, err = paymentprovider.NewAlipay(paymentprovider.AlipayConfig{
 			Enabled: true, Production: cfg.Alipay.Production, AppID: cfg.Alipay.AppID,
-			PrivateKey: string(privateKey), AlipayPublicKey: cfg.Alipay.AlipayPublicKey,
+			PrivateKey: string(privateKey), Gateway: cfg.Alipay.Gateway, ContentEncryptionKey: contentEncryptionKey, AlipayPublicKey: cfg.Alipay.AlipayPublicKey,
 			AppCertPath: cfg.Alipay.AppCertPath, AlipayCertPath: cfg.Alipay.AlipayCertPath, AlipayRootPath: cfg.Alipay.AlipayRootPath,
 			NotifyURL: cfg.Alipay.NotifyURL, ReturnURL: cfg.Alipay.ReturnURL,
 		})

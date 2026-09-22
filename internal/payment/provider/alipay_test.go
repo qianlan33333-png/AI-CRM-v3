@@ -1,6 +1,10 @@
 package provider
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestAlipayDisabledIsFailClosedWithoutCredentials(t *testing.T) {
 	provider, err := NewAlipay(AlipayConfig{})
@@ -40,5 +44,20 @@ func TestAlipayWebPayRequestValidation(t *testing.T) {
 		if validWebPayRequest(request) {
 			t.Fatalf("invalid request accepted: %+v", request)
 		}
+	}
+}
+
+func TestLoadContentEncryptionKeyIsOptionalAndTrimmed(t *testing.T) {
+	if key, err := LoadContentEncryptionKey(""); err != nil || key != "" {
+		t.Fatalf("empty path should be optional: key=%q err=%v", key, err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "alipay-aes.key")
+	if err := os.WriteFile(path, []byte("  base64-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := LoadContentEncryptionKey(path)
+	if err != nil || key != "base64-key" {
+		t.Fatalf("key=%q err=%v", key, err)
 	}
 }

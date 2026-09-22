@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,16 +20,18 @@ import (
 // AlipayConfig contains only deployment-owned credentials and endpoints. The
 // payment domain never receives this SDK client directly.
 type AlipayConfig struct {
-	Enabled         bool
-	Production      bool
-	AppID           string
-	PrivateKey      string
-	AlipayPublicKey string
-	AppCertPath     string
-	AlipayCertPath  string
-	AlipayRootPath  string
-	NotifyURL       string
-	ReturnURL       string
+	Enabled              bool
+	Production           bool
+	AppID                string
+	PrivateKey           string
+	Gateway              string
+	ContentEncryptionKey string
+	AlipayPublicKey      string
+	AppCertPath          string
+	AlipayCertPath       string
+	AlipayRootPath       string
+	NotifyURL            string
+	ReturnURL            string
 }
 
 func (c AlipayConfig) valid() bool {
@@ -66,7 +69,15 @@ func NewAlipay(config AlipayConfig) (*Alipay, error) {
 	if !config.Enabled {
 		return &Alipay{config: config}, nil
 	}
-	client, err := alipay.New(config.AppID, config.PrivateKey, config.Production)
+	var opts []alipay.OptionFunc
+	if config.Gateway != "" {
+		if config.Production {
+			opts = append(opts, alipay.WithProductionGateway(config.Gateway))
+		} else {
+			opts = append(opts, alipay.WithSandboxGateway(config.Gateway))
+		}
+	}
+	client, err := alipay.New(config.AppID, config.PrivateKey, config.Production, opts...)
 	if err != nil {
 		return nil, ErrInvalidConfig
 	}
@@ -83,7 +94,34 @@ func NewAlipay(config AlipayConfig) (*Alipay, error) {
 	} else if err = client.LoadAliPayPublicKey(config.AlipayPublicKey); err != nil {
 		return nil, ErrInvalidConfig
 	}
+	if key := strings.TrimSpace(config.ContentEncryptionKey); key != "" {
+		if err = client.SetEncryptKey(key); err != nil {
+			return nil, ErrInvalidConfig
+		}
+	}
 	return &Alipay{config: config, client: client}, nil
+}
+
+// ContentEncryptionConfigured exposes only a boolean operational metric.
+func (a *Alipay) ContentEncryptionConfigured() bool {
+	return a != nil && a.client != nil && strings.TrimSpace(a.config.ContentEncryptionKey) != ""
+}
+
+// LoadContentEncryptionKey reads a deployment-owned key file without exposing
+// its contents to logs, descriptors, or API responses.
+func LoadContentEncryptionKey(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	key := strings.TrimSpace(string(data))
+	if key == "" {
+		return "", ErrInvalidConfig
+	}
+	return key, nil
 }
 
 func (a *Alipay) Enabled() bool { return a != nil && a.config.Enabled && a.client != nil }
