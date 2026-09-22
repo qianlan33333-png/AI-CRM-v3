@@ -32,6 +32,16 @@ PY
 )
 archive="$root/aicrm-$release_sha.tar.gz"
 python3 scripts/validate-staging-receipt.py "$receipt" --head "$release_sha" --tree "$tree" --package "$archive" >/dev/null
+# Older accepted receipts may predate queue registration. Adopt them explicitly
+# as waiting_merge so the direct path never silently bypasses the queue.
+if ! python3 - "$cid" <<'PY'
+import json, pathlib, sys
+p=pathlib.Path('/opt/aicrm/release-queue.json')
+v=json.loads(p.read_text()) if p.exists() else {'items': []}
+raise SystemExit(0 if any(i.get('candidate_id')==sys.argv[1] for i in v.get('items',[])) else 1)
+PY
+then python3 scripts/release_queue.py adopt-accepted "$receipt"; fi
+python3 scripts/release_queue.py transition "$cid" merged
 python3 scripts/release_queue.py transition "$cid" production
 # Reuse the reviewed installer/observer/readback path, running on staging.
 # Its single scp sends the archive directly from staging to production.
@@ -41,7 +51,9 @@ DEPLOY_RECEIPT="$root/production-install-receipt.json" \
 bash scripts/deploy-release-local.sh "$archive" "$release_sha"
 python3 scripts/release_queue.py transition "$cid" observing
 # Installed/readiness is deliberately not marked released: business readback and observation still required.
-python3 - "$root/production-install-receipt.json" "$merge_sha" "$cid" <<'PY'
+python3 - "$root/production-install-receipt.json" "$merge_sha" "$cid" "$digest" "$tree" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1]));v.update(merge_sha=sys.argv[2],candidate_id=sys.argv[3],status='observing',promotion_mode='staging_direct');print(json.dumps(v))
+p,merge_sha,cid,digest,tree=sys.argv[1:]
+v=json.load(open(p));v.update(merge_sha=merge_sha,candidate_id=cid,tree_sha=tree,package_sha256=digest,status='observing',promotion_mode='staging_direct')
+with open(p,'w') as out:json.dump(v,out,indent=2);out.write('\n')
 PY

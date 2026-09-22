@@ -17,6 +17,11 @@ cd "$root"
 python3 scripts/release_candidate.py validate "$manifest"
 [[ "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["merge_preview_sha"])' "$manifest")" == "$sha" ]]
 cp "$manifest" candidate-manifest.json
+# Keep the exact candidate base available to migration validation even when the
+# daily GitHub mirror is stale; this is an object reference, never a new source.
+base="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["base_main_sha"])' "$manifest")"
+git cat-file -e "$base^{commit}"
+git update-ref refs/remotes/origin/main "$base"
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GITHUB_SHA="$sha" bash scripts/run-donor-view-consumers.sh release-fast
 python3 scripts/check-release-binaries.py release/bin
 python3 - "$root" "$sha" <<'PY'
