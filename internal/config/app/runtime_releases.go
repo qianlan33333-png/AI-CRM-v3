@@ -58,7 +58,7 @@ type RuntimeReleaseService struct {
 type RuntimeActivationGuards struct {
 	WeComEnabled, MessageArchiveEnabled, AutomationProviderEnabled, AIDispatchEnabled             bool
 	AIAssistantIntakeEnabled, AIAgentGenerationEnabled, WeChatPayEnabled, WeChatPayH5OAuthEnabled bool
-	WeChatShopEnabled, SurveyOAuthEnabled                                                         bool
+	WeChatShopEnabled, AlipayEnabled, SurveyOAuthEnabled                                          bool
 }
 
 type RuntimeReleaseOption func(*RuntimeReleaseService) error
@@ -706,6 +706,7 @@ func runtimeReleaseValidationIssues(defaults, scopeBaseline []configport.Runtime
 	guard(boolAt(configport.WeChatPayProviderEnabled), configport.WeChatPayProviderEnabled, guards.WeChatPayEnabled, "需已有支付受保护凭据")
 	guard(boolAt(configport.WeChatPayH5OAuthEnabled), configport.WeChatPayH5OAuthEnabled, guards.WeChatPayH5OAuthEnabled, "需已有 H5 OAuth 受保护凭据")
 	guard(boolAt(configport.WeChatShopProviderEnabled), configport.WeChatShopProviderEnabled, guards.WeChatShopEnabled, "需已有微信小店 AppSecret、回调 Token 和专属 EncodingAESKey")
+	guard(boolAt(configport.AlipayProviderEnabled), configport.AlipayProviderEnabled, guards.AlipayEnabled, "需已有支付宝应用私钥和公钥/证书校验材料")
 	guard(boolAt(configport.SurveyOAuthEnabled), configport.SurveyOAuthEnabled, guards.SurveyOAuthEnabled, "需已有公众号 OAuth 受保护凭据")
 	for _, value := range effective {
 		deploymentValue := deploymentBaseline[value.Key]

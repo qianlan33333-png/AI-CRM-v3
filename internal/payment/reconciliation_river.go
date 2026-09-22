@@ -49,8 +49,8 @@ func reconciliationMaxAttempts(target paymentport.ReconciliationTarget) int {
 }
 
 func (enqueuer *RiverReconciliationEnqueuer) EnqueueWithin(ctx context.Context, target paymentport.ReconciliationTarget) error {
-	validPayment := target.Provider == domain.ProviderWeChatPay && target.PaymentID > 0 && target.RefundID == 0
-	validRefund := (target.Provider == domain.ProviderWeChatPay || target.Provider == domain.ProviderWeChatShop) && target.RefundID > 0 && target.PaymentID == 0
+	validPayment := (target.Provider == domain.ProviderWeChatPay || target.Provider == domain.ProviderAlipay) && target.PaymentID > 0 && target.RefundID == 0
+	validRefund := (target.Provider == domain.ProviderWeChatPay || target.Provider == domain.ProviderWeChatShop || target.Provider == domain.ProviderAlipay) && target.RefundID > 0 && target.PaymentID == 0
 	if enqueuer == nil || enqueuer.client == nil || (!validPayment && !validRefund) {
 		return paymentport.ErrUnavailable
 	}
@@ -66,6 +66,8 @@ type ReconciliationApplication interface {
 	ReconcileShopRefund(context.Context, int64) (domain.Refund, error)
 	ReconcileWeChatPayPayment(context.Context, int64) (domain.Payment, error)
 	ReconcileWeChatPayRefund(context.Context, int64) (domain.Refund, error)
+	ReconcileAlipayPayment(context.Context, int64) (domain.Payment, error)
+	ReconcileAlipayRefund(context.Context, int64) (domain.Refund, error)
 }
 
 type ReconciliationWorker struct {
@@ -101,6 +103,16 @@ func (worker *ReconciliationWorker) Work(ctx context.Context, job *river.Job[Rec
 		}
 		return nil
 	}
+	if job.Args.Provider == domain.ProviderAlipay && job.Args.PaymentID > 0 && job.Args.RefundID == 0 {
+		payment, err := worker.service.ReconcileAlipayPayment(ctx, job.Args.PaymentID)
+		if err != nil {
+			return err
+		}
+		if payment.Status != domain.StatusPaid && payment.Status != domain.StatusFailed && payment.Status != domain.StatusCancelled {
+			return errReconciliationPending
+		}
+		return nil
+	}
 	if job.Args.RefundID > 0 && job.Args.PaymentID == 0 {
 		var refund domain.Refund
 		var err error
@@ -108,6 +120,8 @@ func (worker *ReconciliationWorker) Work(ctx context.Context, job *river.Job[Rec
 			refund, err = worker.service.ReconcileWeChatPayRefund(ctx, job.Args.RefundID)
 		} else if job.Args.Provider == domain.ProviderWeChatShop {
 			refund, err = worker.service.ReconcileShopRefund(ctx, job.Args.RefundID)
+		} else if job.Args.Provider == domain.ProviderAlipay {
+			refund, err = worker.service.ReconcileAlipayRefund(ctx, job.Args.RefundID)
 		} else {
 			return paymentport.ErrUnavailable
 		}

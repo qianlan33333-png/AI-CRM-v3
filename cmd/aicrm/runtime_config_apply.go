@@ -31,6 +31,7 @@ func runtimeConfigDefaults(cfg platformconfig.Runtime) ([]configport.RuntimeSett
 		{configport.EffectsProviderEnabled, cfg.Effects.ProviderEnabled}, {configport.SurveyCompletionProviderEnabled, cfg.Survey.CompletionProviderEnabled}, {configport.CommercePushProviderEnabled, cfg.CommercePush.ProviderEnabled}, {configport.WorkerLimit, cfg.WorkerLimit},
 		{configport.WeChatPayProviderEnabled, cfg.WeChatPay.Enabled}, {configport.WeChatPayAppID, cfg.WeChatPay.AppID}, {configport.WeChatPayAppScope, cfg.WeChatPay.AppScope}, {configport.WeChatPayH5OAuthEnabled, cfg.WeChatPay.H5OAuthEnabled}, {configport.WeChatPayH5AppID, cfg.WeChatPay.H5AppID}, {configport.WeChatPayH5AppScope, cfg.WeChatPay.H5AppScope}, {configport.WeChatPayMerchantID, cfg.WeChatPay.MerchantID}, {configport.WeChatPayMerchantSerial, cfg.WeChatPay.MerchantSerial},
 		{configport.WeChatShopProviderEnabled, cfg.WeChatShop.Enabled}, {configport.WeChatShopAppID, cfg.WeChatShop.AppID},
+		{configport.AlipayProviderEnabled, cfg.Alipay.Enabled}, {configport.AlipayAppID, cfg.Alipay.AppID}, {configport.AlipayProduction, cfg.Alipay.Production},
 		{configport.SurveyOAuthEnabled, cfg.Survey.OAuthEnabled}, {configport.SurveyOAuthAppID, cfg.Survey.OAuthAppID}, {configport.SurveyOAuthOpenPlatformID, cfg.Survey.OAuthOpenPlatformID}, {configport.SurveyOAuthScope, cfg.Survey.OAuthScope},
 	}
 	settings := make([]configport.RuntimeSetting, 0, len(values))
@@ -66,7 +67,7 @@ func applyRuntimeConfig(cfg platformconfig.Runtime, snapshot configport.Effectiv
 			if !bytes.Equal(setting.Value, baselineValue) {
 				return cfg, fmt.Errorf("runtime config %s is deployment-controlled", setting.Key)
 			}
-		case configport.RuntimeWeComCorpID, configport.SurveyOAuthAppID, configport.SurveyOAuthOpenPlatformID, configport.WeChatPayAppID, configport.WeChatPayH5AppID, configport.WeChatPayMerchantID, configport.WeChatShopAppID:
+		case configport.RuntimeWeComCorpID, configport.SurveyOAuthAppID, configport.SurveyOAuthOpenPlatformID, configport.WeChatPayAppID, configport.WeChatPayH5AppID, configport.WeChatPayMerchantID, configport.WeChatShopAppID, configport.AlipayAppID:
 			var bound string
 			if err := json.Unmarshal(baselineValue, &bound); err != nil {
 				return cfg, fmt.Errorf("runtime config %s has invalid deployment baseline: %w", setting.Key, err)
@@ -205,6 +206,15 @@ func applyRuntimeConfig(cfg platformconfig.Runtime, snapshot configport.Effectiv
 	if err := stringValue(configport.WeChatShopAppID, &cfg.WeChatShop.AppID); err != nil {
 		return cfg, err
 	}
+	if err := boolValue(configport.AlipayProviderEnabled, &cfg.Alipay.Enabled); err != nil {
+		return cfg, err
+	}
+	if err := stringValue(configport.AlipayAppID, &cfg.Alipay.AppID); err != nil {
+		return cfg, err
+	}
+	if err := boolValue(configport.AlipayProduction, &cfg.Alipay.Production); err != nil {
+		return cfg, err
+	}
 	if err := boolValue(configport.SurveyOAuthEnabled, &cfg.Survey.OAuthEnabled); err != nil {
 		return cfg, err
 	}
@@ -253,6 +263,11 @@ func runtimeConfigProtectedReferencePresence(cfg platformconfig.Runtime) map[str
 		"environment://AICRM_WECHAT_SHOP_APP_SECRET":             cfg.WeChatShop.AppSecret != "",
 		"environment://AICRM_WECHAT_SHOP_CALLBACK_TOKEN":         cfg.WeChatShop.CallbackToken != "",
 		"environment://AICRM_WECHAT_SHOP_CALLBACK_AES_KEY":       cfg.WeChatShop.CallbackEncodingAESKey != "",
+		"environment://AICRM_ALIPAY_PRIVATE_KEY_PATH":            cfg.Alipay.PrivateKeyPath != "",
+		"environment://AICRM_ALIPAY_PUBLIC_KEY":                  cfg.Alipay.AlipayPublicKey != "",
+		"environment://AICRM_ALIPAY_APP_CERT_PATH":               cfg.Alipay.AppCertPath != "",
+		"environment://AICRM_ALIPAY_ALIPAY_CERT_PATH":            cfg.Alipay.AlipayCertPath != "",
+		"environment://AICRM_ALIPAY_ROOT_CERT_PATH":              cfg.Alipay.AlipayRootPath != "",
 		"environment://AICRM_SURVEY_OAUTH_SECRET":                cfg.Survey.OAuthSecret != "",
 	}
 }
@@ -272,6 +287,7 @@ func runtimeConfigActivationGuards(cfg platformconfig.Runtime) configapp.Runtime
 		WeChatPayEnabled:          cfg.WeChatPay.AppSecret != "" && cfg.WeChatPay.PrivateKeyPath != "" && cfg.WeChatPay.PlatformCertPath != "" && cfg.WeChatPay.APIV3Key != "",
 		WeChatPayH5OAuthEnabled:   cfg.WeChatPay.H5AppSecret != "" && cfg.WeChatPay.OrderContactDataKey != "",
 		WeChatShopEnabled:         cfg.WeChatShop.AppSecret != "" && cfg.WeChatShop.CallbackToken != "" && cfg.WeChatShop.CallbackEncodingAESKey != "",
+		AlipayEnabled:             cfg.Alipay.PrivateKeyPath != "" && (cfg.Alipay.AlipayPublicKey != "" || (cfg.Alipay.AppCertPath != "" && cfg.Alipay.AlipayCertPath != "" && cfg.Alipay.AlipayRootPath != "")),
 		SurveyOAuthEnabled:        cfg.Survey.OAuthSecret != "",
 	}
 }

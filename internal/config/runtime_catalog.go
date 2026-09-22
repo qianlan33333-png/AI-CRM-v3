@@ -112,7 +112,16 @@ func RuntimeCatalog(statuses ...map[string]bool) []RuntimeCategory {
 			secret("WECHAT_PAY_PRIVATE_KEY_PATH", "商户私钥", "密钥", "environment://AICRM_WECHAT_PAY_PRIVATE_KEY_PATH"),
 			secret("WECHAT_PAY_PLATFORM_CERT_PATH", "平台证书", "密钥", "environment://AICRM_WECHAT_PAY_PLATFORM_CERT_PATH"),
 		}},
-		{Key: "alipay", Label: "支付宝支付", Group: "外部联通能力", Disabled: "当前系统没有支付宝支付接入，不能保存、发布或显示已生效。", Fields: []RuntimeField{}},
+		{Key: "alipay", Label: "支付宝支付", Group: "外部联通能力", Fields: []RuntimeField{
+			field(configport.AlipayProviderEnabled, "启用支付宝支付", "基础信息", "boolean", "restart"),
+			scopeBound(configport.AlipayAppID, "AppID（支付应用）", "基础信息", "restart", "支付宝 AppID 与应用密钥必须属于同一应用，不能跨应用复用。"),
+			field(configport.AlipayProduction, "生产环境", "基础信息", "boolean", "restart"),
+			secret("ALIPAY_PRIVATE_KEY_PATH", "应用私钥", "密钥", "environment://AICRM_ALIPAY_PRIVATE_KEY_PATH"),
+			secret("ALIPAY_PUBLIC_KEY", "支付宝公钥", "密钥", "environment://AICRM_ALIPAY_PUBLIC_KEY"),
+			secret("ALIPAY_APP_CERT_PATH", "应用公钥证书", "证书", "environment://AICRM_ALIPAY_APP_CERT_PATH"),
+			secret("ALIPAY_ALIPAY_CERT_PATH", "支付宝公钥证书", "证书", "environment://AICRM_ALIPAY_ALIPAY_CERT_PATH"),
+			secret("ALIPAY_ROOT_CERT_PATH", "支付宝根证书", "证书", "environment://AICRM_ALIPAY_ROOT_CERT_PATH"),
+		}},
 		{Key: "wechat_shop", Label: "微信小店", Group: "外部联通能力", Fields: []RuntimeField{
 			field(configport.WeChatShopProviderEnabled, "启用微信小店", "基础信息", "boolean", "restart"),
 			scopeBound(configport.WeChatShopAppID, "AppID（小店接入绑定）", "基础信息", "restart", "已绑定微信小店 AppID 只能通过小店接入迁移流程变更；避免沿用旧回调凭据。"),
@@ -202,6 +211,9 @@ func runtimeDefinitions() map[configport.RuntimeSettingKey]runtimeDefinition {
 		configport.WeChatPayMerchantSerial:                 {input: "text", validate: text},
 		configport.WeChatShopProviderEnabled:               {input: "boolean", validate: boolValue},
 		configport.WeChatShopAppID:                         {input: "text", validate: text},
+		configport.AlipayProviderEnabled:                   {input: "boolean", validate: boolValue},
+		configport.AlipayAppID:                             {input: "text", validate: text},
+		configport.AlipayProduction:                        {input: "boolean", validate: boolValue},
 		configport.SurveyOAuthEnabled:                      {input: "boolean", validate: boolValue},
 		configport.SurveyOAuthAppID:                        {input: "text", validate: text},
 		configport.SurveyOAuthOpenPlatformID:               {input: "text", validate: text},
@@ -406,7 +418,7 @@ func legacyCatalogFields(category string) []RuntimeField {
 			deployment("接口", "支付模块固定回调路由和服务地址；由受保护部署管理。", "WECHAT_PAY_NOTIFY_URL", "WECHAT_PAY_API_BASE", "WECHAT_PAY_TIMEOUT_SECONDS"),
 			retired("商品", "旧 JSON 商品目录已由商品管理维护，已退休。", "WECHAT_PAY_PRODUCT_CATALOG_JSON"))
 	case "alipay":
-		return retired("支付宝", "当前系统没有支付宝接入或路由；不能保存、发布或显示已生效。", "ALIPAY_ENABLED", "ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY_PATH", "ALIPAY_PUBLIC_KEY_PATH", "ALIPAY_SERVER_URL", "ALIPAY_NOTIFY_URL", "ALIPAY_RETURN_URL", "ALIPAY_SIGN_TYPE", "ALIPAY_TIMEOUT_EXPRESS")
+		return deployment("支付宝接口", "支付宝网关、应用网关和支付通知地址由受保护部署配置管理。", "AICRM_ALIPAY_GATEWAY", "AICRM_ALIPAY_NOTIFY_URL", "AICRM_ALIPAY_RETURN_URL")
 	case "wechat_shop":
 		return deployment("接口", "微信小店使用固定协议；服务地址和超时由受保护部署管理。", "WECHAT_SHOP_API_BASE", "WECHAT_SHOP_HTTP_TIMEOUT_SECONDS")
 	case "wechat_oauth":
