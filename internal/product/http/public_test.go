@@ -321,6 +321,32 @@ func TestPublicPaymentEmbedsRegionOptionsAsArray(t *testing.T) {
 	}
 }
 
+func TestPublicPaymentRegionCascadeBrowserJourney(t *testing.T) {
+	product := enabledPublicProduct(7, "book")
+	product.LegacyAdminProjection = json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":true,"contact_collection_level":"shipping_address","slices":[]}`)
+	handler, err := NewPublicHandler(&testCatalog{product: product})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/pay/book", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("payment page status=%d", response.Code)
+	}
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime caller unavailable")
+	}
+	path := filepath.Join(t.TempDir(), "pay-book.html")
+	if err := os.WriteFile(path, response.Body.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	journey := filepath.Join(filepath.Dir(source), "public_shipping_region_journey.mjs")
+	if output, err := exec.Command("node", journey, path).CombinedOutput(); err != nil {
+		t.Fatalf("shipping region browser journey: %v\n%s", err, output)
+	}
+}
+
 func TestPublicProductDraftDisabledAndMalformedAre404(t *testing.T) {
 	for _, projection := range []json.RawMessage{
 		json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"buy_button_text":"","require_mobile":false,"lead_program_id":null,"lead_channel_id":null,"lead_qr_title":"","lead_qr_subtitle":"","completion_redirect_enabled":false,"completion_redirect_url":"","completion_target":null,"purchase_action_enabled":false,"purchase_action_mode":"","wecom_tagging":{},"slices":[]}`),
