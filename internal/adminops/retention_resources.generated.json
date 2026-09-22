@@ -3476,6 +3476,19 @@
     },
     {
       "kind": "table",
+      "name": "order_shipping_address_snapshots",
+      "owner": "order",
+      "policy": "permanent",
+      "reason": "Frozen shipping address evidence captured at checkout; not process cache.",
+      "source": "migrations/0203_order_shipping_address_snapshots.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
       "name": "order_distribution_qualification_evidence",
       "owner": "order",
       "policy": "permanent",

@@ -1459,6 +1459,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = orderHandler.SetCustomerFilterResolver(orderCustomerFilterAdapter{uow: uow, oneID: oneID, corpID: cfg.WeCom.CorpID}); err != nil {
 		return fail(err)
 	}
+	if err = orderHandler.SetCheckoutContactReader(orderService); err != nil {
+		return fail(err)
+	}
 	orderRuns := ordermigration.PostgreSQLRuns{Pool: pool.Native()}
 	orderImportHandler, err := orderhttp.NewImportHandler(ordermigration.OrderOnlyRunner{Orders: orderService, Runs: orderRuns}, orderRuns, requestSecurity)
 	if err != nil {
@@ -3176,6 +3179,12 @@ func securityHeaders(next http.Handler) http.Handler {
 			// presentation routes; API responses and unrelated admin pages stay
 			// under the stricter image policy.
 			imageSource += " blob:"
+		}
+		if strings.HasPrefix(request.URL.Path, "/gi/") {
+			// Invitation pages render the provider-issued group QR directly. Keep
+			// the exception scoped to this public route instead of weakening the
+			// image policy for the admin shell or API responses.
+			imageSource += " https://wework.qpic.cn"
 		}
 		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src " + imageSource + "; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
 		if request.URL.Path != webshell.SidebarPagePath && !strings.HasPrefix(request.URL.Path, "/api/sidebar/") {

@@ -145,7 +145,8 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 			return productport.CheckoutProduct{}, ErrNotFound
 		}
 		var projection struct {
-			RequireMobile bool `json:"require_mobile"`
+			RequireMobile          bool   `json:"require_mobile"`
+			ContactCollectionLevel string `json:"contact_collection_level"`
 		}
 		if json.Unmarshal(item.LegacyAdminProjection, &projection) != nil {
 			return productport.CheckoutProduct{}, ErrUnavailable
@@ -154,7 +155,15 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if actionErr != nil {
 			return productport.CheckoutProduct{}, actionErr
 		}
-		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version, RequireMobile: projection.RequireMobile, Images: append([]string(nil), item.Images...), PostPurchaseAction: action}, nil
+		level := projection.ContactCollectionLevel
+		if level == "" {
+			if projection.RequireMobile {
+				level = "mobile"
+			} else {
+				level = "none"
+			}
+		}
+		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version, RequireMobile: level != "none", ContactCollectionLevel: level, Images: append([]string(nil), item.Images...), PostPurchaseAction: action}, nil
 	case productport.ProductOptionServicePeriod:
 		item, err := reader.period.store.GetServicePeriodProductForUpdate(ctx, id)
 		if err != nil {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -287,7 +288,7 @@ func TestPublicPaymentCompletionRefreshJourney(t *testing.T) {
 	pages := []string{}
 	for _, kind := range []string{"standard", "service_period"} {
 		var html bytes.Buffer
-		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true}}); err != nil {
+		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true, ContactCollectionLevel: "mobile", RegionOptionsJSON: template.JS("[]")}}); err != nil {
 			t.Fatal(err)
 		}
 		path := filepath.Join(t.TempDir(), kind+".html")
@@ -299,6 +300,50 @@ func TestPublicPaymentCompletionRefreshJourney(t *testing.T) {
 	command := exec.Command("node", append([]string{journey}, pages...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("public payment completion refresh journey: %v\n%s", err, output)
+	}
+}
+
+func TestPublicPaymentEmbedsRegionOptionsAsArray(t *testing.T) {
+	var html bytes.Buffer
+	if err := publicProductPage.Execute(&html, map[string]any{
+		"Payment": true,
+		"Detail":  false,
+		"Product": publicProduct{ContactCollectionLevel: "shipping_address", RegionOptionsJSON: template.JS(`[{"c":11,"n":"北京市","ch":[]}]`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := html.String()
+	if !strings.Contains(body, `const regionOptions=[{"c":11,"n":"北京市","ch":[]}];`) {
+		t.Fatalf("region options were not embedded as an array: %s", body)
+	}
+	if strings.Contains(body, `const regionOptions="`) {
+		t.Fatalf("region options were incorrectly quoted as a string: %s", body)
+	}
+}
+
+func TestPublicPaymentRegionCascadeBrowserJourney(t *testing.T) {
+	product := enabledPublicProduct(7, "book")
+	product.LegacyAdminProjection = json.RawMessage(`{"schema_version":1,"status":"active","enabled":true,"buy_button_text":"购买","require_mobile":true,"contact_collection_level":"shipping_address","slices":[]}`)
+	handler, err := NewPublicHandler(&testCatalog{product: product})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/pay/book", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("payment page status=%d", response.Code)
+	}
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime caller unavailable")
+	}
+	path := filepath.Join(t.TempDir(), "pay-book.html")
+	if err := os.WriteFile(path, response.Body.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	journey := filepath.Join(filepath.Dir(source), "public_shipping_region_journey.mjs")
+	if output, err := exec.Command("node", journey, path).CombinedOutput(); err != nil {
+		t.Fatalf("shipping region browser journey: %v\n%s", err, output)
 	}
 }
 
@@ -532,7 +577,7 @@ func TestServicePeriodPublicBrowserJourney(t *testing.T) {
 	pages := []string{}
 	for _, kind := range []string{"standard", "service_period"} {
 		var html bytes.Buffer
-		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true}}); err != nil {
+		if err := publicProductPage.Execute(&html, map[string]any{"Payment": true, "Detail": false, "Product": publicProduct{ID: 7, Name: "已购商品", PriceMinor: 990, ProductKind: kind, CouponTargetRef: "standard_product:7", RequireMobile: true, ContactCollectionLevel: "mobile", RegionOptionsJSON: template.JS("[]")}}); err != nil {
 			t.Fatal(err)
 		}
 		path := filepath.Join(t.TempDir(), kind+".html")

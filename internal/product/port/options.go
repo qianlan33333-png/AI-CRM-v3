@@ -145,6 +145,9 @@ type CheckoutProduct struct {
 	Currency      string
 	Version       int64
 	RequireMobile bool
+	// ContactCollectionLevel controls the buyer contact fields collected by
+	// the public checkout. It is none, mobile, or shipping_address.
+	ContactCollectionLevel string
 	// Images are public detail media owned by Product; checkout persists none of them.
 	Images []string
 	// DetailMedia is restricted to legacy-admin slices that Product owns.

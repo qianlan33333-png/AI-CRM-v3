@@ -1370,6 +1370,14 @@ function applyOrderDetailPresentation(): void {
     ['用户编号', text(order.payer_customer_number, customerReference(order.payer_id))],
     ['手机号', text(order.payer_phone_masked, '未提供')],
   ]);
+  const collectionLevel = order.contact_collection_level === 'shipping_address' || order.contact_collection_level === 'mobile' ? order.contact_collection_level : 'none';
+  const shippingRows: Array<[string, string]> = [['收集层级', collectionLevel === 'shipping_address' ? '收货人信息' : collectionLevel === 'mobile' ? '仅手机号' : '未收集']];
+  if (collectionLevel !== 'none') shippingRows.push(['收货手机号', text(order.shipping_mobile_masked, '未提供')]);
+  if (collectionLevel === 'shipping_address') {
+    shippingRows.push(['收件人', text(order.recipient_name, '未提供')]);
+    shippingRows.push(['收货地址', `${text(order.province_name, '')}${text(order.city_name, '')}${text(order.district_name, '')}${text(order.detail_address, '') || '未提供'}`]);
+  }
+  appendDetailSection(card, '收货信息', shippingRows);
   const items = detailContext.items || [];
   const names = items.map(asRecord).filter((item): item is DetailRecord => Boolean(item)).map((item) => text(item.name, '')).filter(Boolean);
   appendDetailSection(card, '商品与金额', [
