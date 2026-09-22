@@ -101,7 +101,9 @@ func (s *Service) consumeProductSalePaidWithin(ctx context.Context, event referr
 		if err != nil {
 			return err
 		}
-		if checkout.OrderVersion != event.OrderVersion || checkout.CampaignID != event.CampaignID || checkout.ProductID != event.ProductID || checkout.ProductType != event.ProductType || checkout.BuyerCustomerID != event.BuyerCustomerID || checkout.BeneficiaryCustomerID != event.BeneficiaryCustomerID || checkout.PromotionCustomerID != event.PromotionCustomerID || checkout.ActivityContextDigest != event.ActivityContextDigest || checkout.PromotionContextDigest != event.PromotionContextDigest {
+		// Checkout order_version is the immutable version when the sale was
+		// created; the paid event carries the later settlement version.
+		if !checkoutOrderVersionCompatible(checkout.OrderVersion, event.OrderVersion) || checkout.CampaignID != event.CampaignID || checkout.ProductID != event.ProductID || checkout.ProductType != event.ProductType || checkout.BuyerCustomerID != event.BuyerCustomerID || checkout.BeneficiaryCustomerID != event.BeneficiaryCustomerID || checkout.PromotionCustomerID != event.PromotionCustomerID || checkout.ActivityContextDigest != event.ActivityContextDigest || checkout.PromotionContextDigest != event.PromotionContextDigest {
 			return referralport.ErrConflict
 		}
 		campaign, err := s.store.ReadCampaignWithin(ctx, checkout.CampaignID, true)
