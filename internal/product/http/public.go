@@ -54,7 +54,10 @@ type publicProduct struct {
 	CouponTargetRef           string         `json:"-"`
 	RequireMobile             bool           `json:"require_mobile"`
 	ContactCollectionLevel    string         `json:"contact_collection_level"`
-	RegionOptionsJSON         string         `json:"-"`
+	// RegionOptionsJSON is canonical, server-owned JSON embedded in the
+	// checkout script. template.JS prevents html/template from turning the
+	// array into a quoted string (which would render blank cascade options).
+	RegionOptionsJSON template.JS `json:"-"`
 }
 
 func NewPublicHandler(catalog PublicCatalogApplication) (*PublicHandler, error) {
@@ -213,7 +216,7 @@ func (h *PublicHandler) enabledProduct(r *http.Request, code string) (publicProd
 	if len(images) > 0 {
 		heroURL = images[0]
 	}
-	return publicProduct{ID: value.ID, ProductCode: value.ProductCode, Name: value.Name, Description: value.Description, PriceMinor: value.PriceMinor, Currency: value.Currency, Images: images, HeroURL: heroURL, PaymentPath: "/pay/" + url.PathEscape(value.ProductCode), BuyButtonText: projection.BuyButtonText, ProductKind: "standard", CouponTargetRef: "standard_product:" + strconv.FormatInt(int64(value.ID), 10), RequireMobile: level != "none", ContactCollectionLevel: level, RegionOptionsJSON: string(addresscatalog.OptionsJSON())}, true
+	return publicProduct{ID: value.ID, ProductCode: value.ProductCode, Name: value.Name, Description: value.Description, PriceMinor: value.PriceMinor, Currency: value.Currency, Images: images, HeroURL: heroURL, PaymentPath: "/pay/" + url.PathEscape(value.ProductCode), BuyButtonText: projection.BuyButtonText, ProductKind: "standard", CouponTargetRef: "standard_product:" + strconv.FormatInt(int64(value.ID), 10), RequireMobile: level != "none", ContactCollectionLevel: level, RegionOptionsJSON: template.JS(addresscatalog.OptionsJSON())}, true
 }
 
 func (h *PublicHandler) enabledProductValue(r *http.Request, code string) (productport.Product, bool) {
