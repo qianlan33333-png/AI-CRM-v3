@@ -2905,6 +2905,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/v1/wechat-pay/", identity)
 	mux.Handle("/api/h5/wechat-pay/oauth/", identity)
 	mux.Handle("/api/public/wechat-pay/", identity)
+	mux.Handle("/api/public/alipay/", identity)
 	mux.Handle("/api/public/wechat-shop/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
 	mux.Handle("/api/admin/wechat-pay/payments/", identity)
