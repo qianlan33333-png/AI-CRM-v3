@@ -27,6 +27,15 @@ func TestInvitationCodeBindsOneGroupAndPreservesUnknownReceipt(t *testing.T) {
 				t.Errorf("incorrect single-group request %+v %v", body, err)
 			}
 			out.Write([]byte(`{"errcode":0,"config_id":"config-1"}`))
+		case "/cgi-bin/externalcontact/groupchat/update_join_way":
+			var body struct {
+				ConfigID string   `json:"config_id"`
+				IDs      []string `json:"chat_id_list"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ConfigID != "config-1" || len(body.IDs) != 2 {
+				t.Errorf("incorrect update request %+v %v", body, err)
+			}
+			out.Write([]byte(`{"errcode":0}`))
 		case "/cgi-bin/externalcontact/groupchat/get_join_way":
 			if failRead {
 				out.WriteHeader(503)
@@ -51,5 +60,10 @@ func TestInvitationCodeBindsOneGroupAndPreservesUnknownReceipt(t *testing.T) {
 	code, err = client.CreateInvitationCode(context.Background(), "test-group")
 	if err == nil || !w.ProviderCallAttempted(err) || code.ConfigID != "config-1" || adds != 2 {
 		t.Fatal("must preserve accepted config for reconciliation", code, err, adds)
+	}
+	failRead = false
+	code, err = client.UpdateInvitationCodeForGroups(context.Background(), "config-1", []string{"test-group", "next-group"})
+	if err != nil || code.ConfigID != "config-1" || code.QRCode == "" {
+		t.Fatal("stable join-way update", code, err)
 	}
 }

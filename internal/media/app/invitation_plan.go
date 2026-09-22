@@ -80,6 +80,11 @@ func (s *InvitationService) evaluate(ctx context.Context, plan p.InvitationPlan)
 		}
 	}
 	next := d.EvaluateInvitation(plan, facts, time.Now().UTC())
+	if withEffects, ok := s.Store.(interface {
+		ApplyInvitationEvaluationWithEffects(context.Context, p.InvitationPlan, p.InvitationPlan, e.TransactionalAccepter) error
+	}); ok && s.Effects != nil {
+		return withEffects.ApplyInvitationEvaluationWithEffects(ctx, plan, next, s.Effects)
+	}
 	return s.Store.ApplyInvitationEvaluation(ctx, plan, next)
 }
 func (s *InvitationService) Refresh(ctx context.Context) error {

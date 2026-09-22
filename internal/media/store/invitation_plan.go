@@ -16,11 +16,11 @@ import (
 	"time"
 )
 
-const invitationSelect = `SELECT m.id,m.name,m.title,m.description,COALESCE(m.cover_image_id,0),m.enabled,m.version,m.join_url,COALESCE(p.public_token,''),COALESCE(p.mode,''),p.threshold,COALESCE(p.state,'legacy'),COALESCE(p.current_chat_id,''),COALESCE(p.bindings,'[]'::jsonb) FROM media_group_invites m LEFT JOIN media_invitation_plans p ON m.id=p.invite_id `
+const invitationSelect = `SELECT m.id,m.name,m.title,m.description,COALESCE(m.cover_image_id,0),m.enabled,m.version,m.join_url,COALESCE(p.public_token,''),COALESCE(p.mode,''),p.threshold,COALESCE(p.state,'legacy'),COALESCE(p.current_chat_id,''),COALESCE(p.bindings,'[]'::jsonb),COALESCE(j.config_id,''),COALESCE(j.qr_code,'') FROM media_group_invites m LEFT JOIN media_invitation_plans p ON m.id=p.invite_id LEFT JOIN media_invitation_join_ways j ON m.id=j.invite_id `
 
 func scanInvitation(row pgx.Row) (v p.InvitationPlan, err error) {
 	var raw []byte
-	err = row.Scan(&v.ID, &v.Name, &v.Title, &v.Description, &v.CoverImageID, &v.Enabled, &v.Version, &v.JoinURL, &v.Token, &v.Mode, &v.Threshold, &v.State, &v.CurrentChatID, &raw)
+	err = row.Scan(&v.ID, &v.Name, &v.Title, &v.Description, &v.CoverImageID, &v.Enabled, &v.Version, &v.JoinURL, &v.Token, &v.Mode, &v.Threshold, &v.State, &v.CurrentChatID, &raw, &v.ProviderConfigID, &v.ProviderQRCode)
 	if err == nil {
 		err = json.Unmarshal(raw, &v.Bindings)
 	}
@@ -53,6 +53,11 @@ func (r *Repository) ReadPublicInvitation(ctx context.Context, token string) (v 
 func (r *Repository) hydrateInvitation(ctx context.Context, v *p.InvitationPlan) error {
 	tx, _ := pg.RequireTransaction(ctx)
 	for i := range v.Bindings {
+		if v.ProviderQRCode != "" {
+			v.Bindings[i].QRCode = v.ProviderQRCode
+			v.Bindings[i].CodeState = "executed"
+			continue
+		}
 		err := tx.QueryRow(ctx, `SELECT state,qr_code FROM media_invitation_codes WHERE chat_id=$1`, v.Bindings[i].ChatID).Scan(&v.Bindings[i].CodeState, &v.Bindings[i].QRCode)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -177,7 +182,23 @@ func (r *Repository) SaveInvitationPlan(ctx context.Context, input p.InvitationI
 		if err != nil {
 			return err
 		}
-		for _, b := range bindings {
+		// A public invitation owns one stable join-way configuration. The
+		// provider updates its chat list in place as the sequence advances.
+		idsRaw, _ := json.Marshal(input.ChatIDs)
+		planSource := e.Hash("media.invitation.join-way.v2", strconv.FormatInt(id, 10), string(idsRaw))
+		_, err = tx.Exec(ctx, `INSERT INTO media_invitation_join_ways(invite_id,source_digest,chat_ids) VALUES($1,$2,$3) ON CONFLICT(invite_id) DO UPDATE SET chat_ids=EXCLUDED.chat_ids`, id, string(planSource), idsRaw)
+		if err != nil {
+			return err
+		}
+		env := e.Envelope{Owner: e.OwnerOutbound, Kind: e.KindInvitationCode, SourceRefDigest: planSource, TargetRefDigest: e.Hash("invitation.plan.target.v2", strconv.FormatInt(id, 10)), PayloadDigest: e.Hash("invitation.plan-code.v2", string(idsRaw)), PolicyVersionHash: e.Hash("invitation.code.policy.v2")}
+		projection, _, err := effects.AcceptAndQueueWithin(ctx, e.AcceptCommand{ReceiptKey: planSource, Envelope: env})
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE media_invitation_join_ways SET effect_id=$2 WHERE invite_id=$1`, id, projection.ID); err != nil {
+			return err
+		}
+		for _, b := range []p.InvitationBinding{} { // legacy per-group intents are no longer created
 			if b.Retired {
 				continue
 			}
@@ -228,6 +249,12 @@ func (r *Repository) SaveInvitationPlan(ctx context.Context, input p.InvitationI
 	return
 }
 func (r *Repository) ApplyInvitationEvaluation(ctx context.Context, before, after p.InvitationPlan) error {
+	return r.applyInvitationEvaluation(ctx, before, after, nil)
+}
+func (r *Repository) ApplyInvitationEvaluationWithEffects(ctx context.Context, before, after p.InvitationPlan, effects e.TransactionalAccepter) error {
+	return r.applyInvitationEvaluation(ctx, before, after, effects)
+}
+func (r *Repository) applyInvitationEvaluation(ctx context.Context, before, after p.InvitationPlan, effects e.TransactionalAccepter) error {
 	return r.Within(ctx, func(ctx context.Context) error {
 		tx, _ := pg.RequireTransaction(ctx)
 		var version int64
@@ -243,6 +270,27 @@ func (r *Repository) ApplyInvitationEvaluation(ctx context.Context, before, afte
 		}
 		if _, err := tx.Exec(ctx, `UPDATE media_invitation_plans SET state=$2,current_chat_id=$3,bindings=$4 WHERE invite_id=$1`, before.ID, after.State, after.CurrentChatID, raw); err != nil {
 			return err
+		}
+		if effects != nil && before.CurrentChatID != after.CurrentChatID {
+			ids := []string{}
+			for _, b := range after.Bindings {
+				if !b.Retired {
+					ids = append(ids, b.ChatID)
+				}
+			}
+			idsRaw, _ := json.Marshal(ids)
+			source := e.Hash("media.invitation.join-way.v2", strconv.FormatInt(before.ID, 10), string(idsRaw))
+			if _, err := tx.Exec(ctx, `UPDATE media_invitation_join_ways SET source_digest=$2,chat_ids=$3,state='accepted' WHERE invite_id=$1`, before.ID, string(source), idsRaw); err != nil {
+				return err
+			}
+			env := e.Envelope{Owner: e.OwnerOutbound, Kind: e.KindInvitationCode, SourceRefDigest: source, TargetRefDigest: e.Hash("invitation.plan.target.v2", strconv.FormatInt(before.ID, 10)), PayloadDigest: e.Hash("invitation.plan-code.v2", string(idsRaw)), PolicyVersionHash: e.Hash("invitation.code.policy.v2")}
+			projection, _, err := effects.AcceptAndQueueWithin(ctx, e.AcceptCommand{ReceiptKey: source, Envelope: env})
+			if err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `UPDATE media_invitation_join_ways SET effect_id=$2 WHERE invite_id=$1`, before.ID, projection.ID); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE media_group_invites SET version=version+1,updated_at=clock_timestamp() WHERE id=$1`, before.ID); err != nil {
 			return err
@@ -262,6 +310,18 @@ func (r *Repository) ReadInvitationCodeIntent(ctx context.Context, source string
 	return
 }
 
+func (r *Repository) ReadInvitationPlanCodeIntent(ctx context.Context, source string) (v p.InvitationPlanCodeIntent, err error) {
+	var raw []byte
+	err = r.Within(ctx, func(ctx context.Context) error {
+		tx, _ := pg.RequireTransaction(ctx)
+		return tx.QueryRow(ctx, `SELECT invite_id,chat_ids,source_digest,effect_id::text,config_id FROM media_invitation_join_ways WHERE source_digest=$1`, source).Scan(&v.InviteID, &raw, &v.SourceDigest, &v.EffectID, &v.ConfigID)
+	})
+	if err == nil {
+		err = json.Unmarshal(raw, &v.ChatIDs)
+	}
+	return
+}
+
 // EER calls this within its completion transaction; do not open another UoW.
 func (r *Repository) CompleteInvitationCode(ctx context.Context, v p.InvitationCodeCompletion) error {
 	tx, err := pg.RequireTransaction(ctx)
@@ -269,6 +329,15 @@ func (r *Repository) CompleteInvitationCode(ctx context.Context, v p.InvitationC
 		return err
 	}
 	_, err = tx.Exec(ctx, `UPDATE media_invitation_codes SET state=$2,config_id=$3,qr_code=$4 WHERE effect_id=$1`, v.EffectID, v.State, v.ConfigID, v.QRCode)
+	return err
+}
+
+func (r *Repository) CompleteInvitationPlanCode(ctx context.Context, v p.InvitationCodeCompletion) error {
+	tx, err := pg.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE media_invitation_join_ways SET state=$2,config_id=$3,qr_code=$4 WHERE effect_id=$1`, v.EffectID, v.State, v.ConfigID, v.QRCode)
 	return err
 }
 func (r *Repository) InvitationHistory(ctx context.Context, id int64) (out []p.InvitationSwitch, err error) {
