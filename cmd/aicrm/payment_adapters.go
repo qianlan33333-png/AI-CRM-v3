@@ -28,6 +28,7 @@ type composedProviderRouter struct {
 type paymentProviderRouter struct {
 	wechatPay  effectport.ProviderAdapter
 	wechatShop effectport.ProviderAdapter
+	alipay     effectport.ProviderAdapter
 }
 
 func (router paymentProviderRouter) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
@@ -42,6 +43,11 @@ func (router paymentProviderRouter) Execute(ctx context.Context, envelope effect
 			return effectport.AdapterResult{}, errors.New("wechat shop provider unavailable")
 		}
 		return router.wechatShop.Execute(ctx, envelope, attempt)
+	case effectport.KindAlipayWapPay, effectport.KindAlipayPagePay, effectport.KindAlipayRefund:
+		if router.alipay == nil {
+			return effectport.AdapterResult{}, errors.New("alipay provider unavailable")
+		}
+		return router.alipay.Execute(ctx, envelope, attempt)
 	default:
 		return effectport.AdapterResult{}, errors.New("payment effect kind unavailable")
 	}

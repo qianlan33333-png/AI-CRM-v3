@@ -56,6 +56,7 @@ type Runtime struct {
 	Referral                   Referral
 	CommercePush               CommercePush
 	WeChatPay                  WeChatPay
+	Alipay                     Alipay
 	WeChatShop                 WeChatShop
 	WorkerOwner                string
 	WorkerLimit                int
@@ -356,6 +357,26 @@ type WeChatShop struct {
 	CallbackToken, CallbackEncodingAESKey string
 }
 
+// Alipay contains deployment-owned credentials for web payments. The private
+// key and certificates are referenced by path so they never enter runtime
+// snapshots or API responses.
+type Alipay struct {
+	Enabled        bool
+	Production     bool
+	AppID          string
+	PrivateKeyPath string
+	// Optional protected file containing the base64 AES key configured in the
+	// Alipay application. It is not required for web payment flows.
+	ContentEncryptionKeyPath string
+	AlipayPublicKey          string
+	AppCertPath              string
+	AlipayCertPath           string
+	AlipayRootPath           string
+	Gateway                  string
+	NotifyURL                string
+	ReturnURL                string
+}
+
 func Load() (Runtime, error) {
 	databaseURL, err := DatabaseURL()
 	if err != nil {
@@ -479,6 +500,22 @@ func Load() (Runtime, error) {
 	cfg.WeChatPay.APIV3Key = os.Getenv("AICRM_WECHAT_PAY_API_V3_KEY")
 	cfg.WeChatPay.ProfitSharingAuthMode = os.Getenv("AICRM_WECHAT_PAY_PROFIT_SHARING_AUTH_MODE")
 	cfg.WeChatPay.ProfitSharingPublicKeyID = os.Getenv("AICRM_WECHAT_PAY_PROFIT_SHARING_PUBLIC_KEY_ID")
+	if cfg.Alipay.Enabled, err = strictBool("AICRM_ALIPAY_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.Alipay.Production, err = strictBool("AICRM_ALIPAY_PRODUCTION", true); err != nil {
+		return Runtime{}, err
+	}
+	cfg.Alipay.AppID = os.Getenv("AICRM_ALIPAY_APP_ID")
+	cfg.Alipay.PrivateKeyPath = os.Getenv("AICRM_ALIPAY_PRIVATE_KEY_PATH")
+	cfg.Alipay.ContentEncryptionKeyPath = os.Getenv("AICRM_ALIPAY_CONTENT_ENCRYPTION_KEY_PATH")
+	cfg.Alipay.AlipayPublicKey = os.Getenv("AICRM_ALIPAY_PUBLIC_KEY")
+	cfg.Alipay.AppCertPath = os.Getenv("AICRM_ALIPAY_APP_CERT_PATH")
+	cfg.Alipay.AlipayCertPath = os.Getenv("AICRM_ALIPAY_ALIPAY_CERT_PATH")
+	cfg.Alipay.AlipayRootPath = os.Getenv("AICRM_ALIPAY_ROOT_CERT_PATH")
+	cfg.Alipay.Gateway = valueOrDefault("AICRM_ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do")
+	cfg.Alipay.NotifyURL = os.Getenv("AICRM_ALIPAY_NOTIFY_URL")
+	cfg.Alipay.ReturnURL = os.Getenv("AICRM_ALIPAY_RETURN_URL")
 	if cfg.WeChatShop.Enabled, err = strictBool("AICRM_WECHAT_SHOP_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
@@ -669,6 +706,9 @@ func Load() (Runtime, error) {
 				return Runtime{}, errors.New("invalid enabled WeCom configuration")
 			}
 		}
+		if strings.TrimSpace(cfg.Alipay.ContentEncryptionKeyPath) != cfg.Alipay.ContentEncryptionKeyPath || strings.ContainsAny(cfg.Alipay.ContentEncryptionKeyPath, "\r\n\x00") {
+			return Runtime{}, errors.New("invalid Alipay content-encryption key path")
+		}
 	}
 	if cfg.WeCom.MaterialUploadTimeout < time.Second || cfg.WeCom.MaterialUploadTimeout > MaximumWeComMaterialUploadTimeout {
 		return Runtime{}, errors.New("invalid WeCom material upload timeout")
@@ -744,6 +784,25 @@ func Load() (Runtime, error) {
 			if strings.TrimSpace(value) != value {
 				return Runtime{}, errors.New("invalid enabled WeChat Pay configuration")
 			}
+		}
+	}
+	if cfg.Alipay.Enabled {
+		values := []string{cfg.Alipay.AppID, cfg.Alipay.PrivateKeyPath, cfg.Alipay.Gateway, cfg.Alipay.NotifyURL, cfg.Alipay.ReturnURL}
+		if nonEmptyCount(values) != len(values) || !validHTTPSURL(cfg.Alipay.Gateway) || !validHTTPSURL(cfg.Alipay.NotifyURL) || !validHTTPSURL(cfg.Alipay.ReturnURL) {
+			return Runtime{}, errors.New("enabled Alipay configuration is incomplete")
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+				return Runtime{}, errors.New("invalid enabled Alipay configuration")
+			}
+		}
+		certMode := cfg.Alipay.AppCertPath != "" || cfg.Alipay.AlipayCertPath != "" || cfg.Alipay.AlipayRootPath != ""
+		if certMode {
+			if cfg.Alipay.AppCertPath == "" || cfg.Alipay.AlipayCertPath == "" || cfg.Alipay.AlipayRootPath == "" || cfg.Alipay.AlipayPublicKey != "" {
+				return Runtime{}, errors.New("Alipay certificate mode requires all three certificates and no public key")
+			}
+		} else if strings.TrimSpace(cfg.Alipay.AlipayPublicKey) == "" {
+			return Runtime{}, errors.New("Alipay public-key mode requires ALIPAY_PUBLIC_KEY")
 		}
 	}
 	if cfg.WeChatPay.H5OAuthEnabled {
@@ -906,6 +965,11 @@ func strictBool(key string, fallback bool) (bool, error) {
 func validPublicOrigin(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func validHTTPSURL(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 func validAIGenerationBaseURL(value string) bool {

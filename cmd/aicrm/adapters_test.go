@@ -453,6 +453,23 @@ func TestSecurityHeadersAllowBlobImagesOnlyOnMediaAndSidebarPages(t *testing.T) 
 	}
 }
 
+func TestSecurityHeadersAllowInvitationProviderImagesOnlyOnPublicInvitationPages(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	public := httptest.NewRecorder()
+	handler.ServeHTTP(public, httptest.NewRequest(http.MethodGet, "/gi/40e73b50a900267cfc3a384609e884a4ea77b49139bae075", nil))
+	policy := public.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "img-src 'self' data: https://wework.qpic.cn") {
+		t.Fatalf("public invitation CSP does not allow provider QR image: %q", policy)
+	}
+
+	admin := httptest.NewRecorder()
+	handler.ServeHTTP(admin, httptest.NewRequest(http.MethodGet, "/admin/channels", nil))
+	adminPolicy := admin.Header().Get("Content-Security-Policy")
+	if strings.Contains(adminPolicy, "https://wework.qpic.cn") {
+		t.Fatalf("admin CSP unexpectedly allows provider QR image: %q", adminPolicy)
+	}
+}
+
 func TestSecurityHeadersAllowDashboardRuntimeStyles(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	response := httptest.NewRecorder()

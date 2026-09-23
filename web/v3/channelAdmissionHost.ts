@@ -19,6 +19,7 @@ const mutationKeys = new Map<string, string>();
 const detailEtags = new Map<string, string>();
 const detailCodes = new Map<string, string>();
 const detailPreservedFields = new Map<string, PreservedFormFields>();
+const detailAssignments = new Map<string, string>();
 let channelOperationMemberDirectory: Promise<Json[]> | null = null;
 
 function escapeHTML(value: unknown): string {
@@ -59,7 +60,8 @@ function bodyText(input: RequestInfo | URL, init?: RequestInit): string {
 
 function catalogMutation(url: URL, method: string): boolean {
   return method === 'POST' && url.pathname === '/api/admin/channels' ||
-    method === 'PATCH' && /^\/api\/admin\/channels\/[1-9][0-9]*$/.test(url.pathname);
+    method === 'PATCH' && /^\/api\/admin\/channels\/[1-9][0-9]*$/.test(url.pathname) ||
+    method === 'POST' && /^\/api\/admin\/channels\/[1-9][0-9]*\/qrcode\/generate$/.test(url.pathname);
 }
 
 function text(value: unknown): string {
@@ -89,6 +91,40 @@ function preserveFields(channel: Json): PreservedFormFields {
 function rememberDetail(url: URL, channel: Json): void {
   if (!/^\/api\/admin\/channels\/[1-9][0-9]*$/.test(url.pathname)) return;
   detailPreservedFields.set(url.pathname, preserveFields(channel));
+  const config = channel.assignment_config_json;
+  const assignees = config && typeof config === 'object' && !Array.isArray(config) && Array.isArray((config as Json).assignees)
+    ? (config as Json).assignees as Json[] : [];
+  detailAssignments.set(url.pathname, JSON.stringify(assignees.map((item) => ({
+    staff_id: Number((item as Json)?.staff_id) || 0,
+    priority: Number((item as Json)?.priority) || 0,
+    ratio_percent: Number((item as Json)?.ratio_percent) || 0,
+    max_scans_24h: Number((item as Json)?.max_scans_24h) || 0,
+  }))));
+}
+
+function assignmentFingerprint(payload: Json): string {
+  const config = payload.assignment_config_json;
+  const assignees = config && typeof config === 'object' && !Array.isArray(config) && Array.isArray((config as Json).assignees)
+    ? (config as Json).assignees as Json[] : [];
+  return JSON.stringify(assignees.map((item) => ({
+    staff_id: Number((item as Json)?.staff_id) || 0,
+    priority: Number((item as Json)?.priority) || 0,
+    ratio_percent: Number((item as Json)?.ratio_percent) || 0,
+    max_scans_24h: Number((item as Json)?.max_scans_24h) || 0,
+  })));
+}
+
+async function regenerateQRCodeAfterAssignmentChange(pathname: string): Promise<void> {
+  const token = csrf();
+  const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': key() });
+  if (token) headers.set('X-CSRF-Token', token);
+  const response = await nativeFetch(`${pathname}/qrcode/generate`, { method: 'POST', body: '{}', headers, credentials: 'same-origin' });
+  if (response.ok) return;
+  const feedback = document.querySelector<HTMLElement>('[data-channel-save-feedback]');
+  if (feedback) {
+    feedback.textContent = '保存成功，但客服已切换，二维码重新生成未受理，请刷新后重试。';
+    feedback.classList.add('is-error');
+  }
 }
 
 function visibleFormControl(names: string[]): boolean {
@@ -193,7 +229,9 @@ function installCatalogTransport(): void {
     if (url.origin !== location.origin || !catalogMutation(url, method)) return reportDirectoryReadState(await nativeFetch(input, init), url, method);
 
     let body: string;
-    try { body = normalizePayload(bodyText(input, init), url); }
+    try {
+      body = /\/qrcode\/generate$/.test(url.pathname) ? '{}' : normalizePayload(bodyText(input, init), url);
+    }
     catch { return new Response(JSON.stringify({ ok: false, code: 'MALFORMED_REQUEST', message: '渠道保存数据无效，请检查后重试。' }), { status: 400, headers: { 'Content-Type': 'application/json' } }); }
     const headers = new Headers(init?.headers || (typeof input === 'string' || input instanceof URL ? undefined : input.headers));
     headers.set('Accept', 'application/json');
@@ -217,7 +255,20 @@ function installCatalogTransport(): void {
     if (method === 'PATCH' && response.ok) {
       const etag = response.headers.get('ETag'); if (etag) detailEtags.set(url.pathname, etag);
       const result = await response.clone().json().catch(() => null) as Json | null;
-      if (result?.channel && typeof result.channel === 'object' && !Array.isArray(result.channel)) rememberDetail(url, result.channel as Json);
+      if (result?.channel && typeof result.channel === 'object' && !Array.isArray(result.channel)) {
+        const nextChannel = result.channel as Json;
+        const previousAssignment = detailAssignments.get(url.pathname);
+        const nextAssignment = assignmentFingerprint(nextChannel);
+        const assignmentChanged = previousAssignment !== undefined && previousAssignment !== nextAssignment;
+        const qrCarrier = nextChannel.channel_type === 'qrcode' || nextChannel.carrier_type === 'qrcode' || !nextChannel.channel_type && !nextChannel.carrier_type;
+        rememberDetail(url, nextChannel);
+        if (assignmentChanged && qrCarrier) {
+          // The Catalog save is complete; enqueue a fresh QR for the exact new
+          // assignment. This keeps the old QR from silently routing to the
+          // previous owner after a staff switch.
+          void regenerateQRCodeAfterAssignmentChange(url.pathname);
+        }
+      }
     }
     return catalogError(response);
   };

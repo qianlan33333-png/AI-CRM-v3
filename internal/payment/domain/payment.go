@@ -18,8 +18,11 @@ type Channel string
 const (
 	ProviderWeChatPay  Provider = "wechat_pay"
 	ProviderWeChatShop Provider = "wechat_shop"
+	ProviderAlipay     Provider = "alipay"
 	ChannelMiniProgram Channel  = "mini_program"
 	ChannelH5Official  Channel  = "h5_official_account"
+	ChannelAlipayWap   Channel  = "alipay_wap"
+	ChannelAlipayPage  Channel  = "alipay_page"
 )
 
 type Payment struct {
@@ -66,18 +69,18 @@ func NewPaymentWithProfitSharing(order orderdomain.Snapshot, payerIdentityID int
 }
 
 func newPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time, profitSharingMarked bool, requestedChannel ...Channel) (Payment, error) {
-	if order.ID < 1 || order.RecordOrigin != orderdomain.RecordOriginNative || !order.EffectEligible || order.PayerCustomerID == nil || order.BeneficiaryCustomerID == nil || payerIdentityID < 1 || now.IsZero() || order.Amount.Currency != "CNY" || order.Provider == orderdomain.ProviderAlipay {
+	if order.ID < 1 || order.RecordOrigin != orderdomain.RecordOriginNative || !order.EffectEligible || order.PayerCustomerID == nil || order.BeneficiaryCustomerID == nil || payerIdentityID < 1 || now.IsZero() || order.Amount.Currency != "CNY" {
 		return Payment{}, ErrInvalid
 	}
 	provider := Provider(order.Provider)
-	if provider != ProviderWeChatPay && provider != ProviderWeChatShop {
+	if provider != ProviderWeChatPay && provider != ProviderWeChatShop && provider != ProviderAlipay {
 		return Payment{}, ErrInvalid
 	}
 	channel := ChannelMiniProgram
 	if len(requestedChannel) > 0 {
 		channel = requestedChannel[0]
 	}
-	if channel != ChannelMiniProgram && channel != ChannelH5Official {
+	if channel != ChannelMiniProgram && channel != ChannelH5Official && channel != ChannelAlipayWap && channel != ChannelAlipayPage {
 		return Payment{}, ErrInvalid
 	}
 	if profitSharingMarked && provider != ProviderWeChatPay {

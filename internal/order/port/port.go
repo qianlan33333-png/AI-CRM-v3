@@ -320,9 +320,11 @@ type PaymentOrderCommand struct {
 	// PostPurchaseAction is an opaque, Product-validated buyer presentation
 	// snapshot. Order persists it atomically with the checkout and never
 	// interprets it.
-	PostPurchaseAction json.RawMessage
-	Currency           string
-	MobileE164         string
+	PostPurchaseAction     json.RawMessage
+	Currency               string
+	MobileE164             string
+	ContactCollectionLevel string
+	ShippingAddress        ShippingAddress
 	// PromotionContext is an opaque, server-carried promotion credential.  It
 	// has no customer, amount, policy or receiver semantics. Order freezes any
 	// accepted attribution through its injected coordinator in this same UoW.
@@ -333,6 +335,29 @@ type PaymentOrderCommand struct {
 	// Referral can later resolve the exact activity without reading Order data.
 	ReferralActivityContext    string
 	ActorScope, IdempotencyKey string
+}
+
+// ShippingAddress is an immutable buyer-supplied contact fact. Region codes
+// and names are both retained so historical orders do not drift with catalog
+// data updates.
+type ShippingAddress struct {
+	RecipientName string `json:"recipient_name,omitempty"`
+	ProvinceCode  string `json:"province_code,omitempty"`
+	ProvinceName  string `json:"province_name,omitempty"`
+	CityCode      string `json:"city_code,omitempty"`
+	CityName      string `json:"city_name,omitempty"`
+	DistrictCode  string `json:"district_code,omitempty"`
+	DistrictName  string `json:"district_name,omitempty"`
+	DetailAddress string `json:"detail_address,omitempty"`
+}
+
+// CheckoutContact is the frozen contact fact projected into transaction detail.
+// Presence flags distinguish historical orders from collected empty values.
+type CheckoutContact struct {
+	MobileE164       string
+	MobileCollected  bool
+	ShippingAddress  ShippingAddress
+	AddressCollected bool
 }
 
 // CheckoutAttributionCommand carries only trusted checkout facts from Order
@@ -420,6 +445,17 @@ type CheckoutSnapshot struct {
 	PromotionContextDigest        [32]byte
 	PostPurchaseAction            json.RawMessage
 	ReservedAt                    time.Time
+}
+
+// CheckoutShippingAddressReader is an authenticated Order-owned read seam.
+// It returns no value when the checkout did not collect a shipping address.
+type CheckoutShippingAddressReader interface {
+	ReadCheckoutShippingAddressWithin(context.Context, int64) (ShippingAddress, bool, error)
+}
+
+// CheckoutContactReader opens its own read transaction for an HTTP detail read.
+type CheckoutContactReader interface {
+	ReadCheckoutContact(context.Context, int64) (CheckoutContact, error)
 }
 
 // CheckoutSnapshotReader is the narrow Order read seam for a Product paid

@@ -35,7 +35,7 @@ func (sink *CompletionSink) CompleteEffect(ctx context.Context, effectRef string
 	if err := sink.projector.CompleteEffectWithin(ctx, effectRef, envelope, attempt, result); err != nil {
 		return err
 	}
-	if envelope.Kind == effectport.KindWeChatPayPrepay && result.Completion == effectport.StateFinalFailed {
+	if (envelope.Kind == effectport.KindWeChatPayPrepay || envelope.Kind == effectport.KindAlipayWapPay || envelope.Kind == effectport.KindAlipayPagePay) && result.Completion == effectport.StateFinalFailed {
 		target, err := sink.projector.ReconciliationTargetWithin(ctx, envelope)
 		if err != nil {
 			return err
@@ -47,7 +47,9 @@ func (sink *CompletionSink) CompleteEffect(ctx context.Context, effectRef string
 	}
 	shouldReconcile := envelope.Kind == effectport.KindWeChatShopRefund && result.Completion == effectport.StateExecuted ||
 		envelope.Kind == effectport.KindWeChatPayRefund && (result.Completion == effectport.StateExecuted || result.Completion == effectport.StateUnknown) ||
-		envelope.Kind == effectport.KindWeChatPayPrepay && (result.Completion == effectport.StateExecuted || result.Completion == effectport.StateUnknown)
+		envelope.Kind == effectport.KindAlipayRefund && (result.Completion == effectport.StateExecuted || result.Completion == effectport.StateUnknown) ||
+		envelope.Kind == effectport.KindWeChatPayPrepay && (result.Completion == effectport.StateExecuted || result.Completion == effectport.StateUnknown) ||
+		(envelope.Kind == effectport.KindAlipayWapPay || envelope.Kind == effectport.KindAlipayPagePay) && (result.Completion == effectport.StateExecuted || result.Completion == effectport.StateUnknown)
 	if !shouldReconcile {
 		return nil
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 )
 
 var ErrInvalidCallback = errors.New("invalid wechat pay callback")
@@ -55,6 +56,7 @@ type CallbackResult struct {
 	AmountMinor                  int64
 	Currency                     string
 	OccurredAt                   time.Time
+	Provider                     paymentdomain.Provider
 }
 
 func NewCallbackVerifier(keys map[string]*rsa.PublicKey, apiV3Key []byte, appID, merchantID string, additionalAppIDs ...string) (*CallbackVerifier, error) {
@@ -123,7 +125,7 @@ func (verifier *CallbackVerifier) Verify(_ context.Context, body []byte, headers
 	if !acceptedAppID || value.MerchantID != verifier.MerchantID || value.Amount.Currency != "CNY" {
 		return CallbackResult{}, invalidCallback("identity_or_currency")
 	}
-	result := CallbackResult{EventDigest: sha256.Sum256([]byte(envelope.ID)), BodyDigest: sha256.Sum256(body), AppID: value.AppID, AmountMinor: value.Amount.Total, Currency: value.Amount.Currency, MerchantOrderNo: value.OutTradeNo}
+	result := CallbackResult{EventDigest: sha256.Sum256([]byte(envelope.ID)), BodyDigest: sha256.Sum256(body), AppID: value.AppID, AmountMinor: value.Amount.Total, Currency: value.Amount.Currency, MerchantOrderNo: value.OutTradeNo, Provider: paymentdomain.ProviderWeChatPay}
 	if value.SuccessTime == "" {
 		// The Provider's immutable success timestamp is required for the
 		// Payment/Order transaction fact. Never manufacture it from local time.

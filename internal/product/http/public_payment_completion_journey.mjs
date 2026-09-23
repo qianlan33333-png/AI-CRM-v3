@@ -12,14 +12,16 @@ const script = source.slice(start + '</main><script>'.length, end)
   .replaceAll('{{.Product.PriceMinor}}', '990')
   .replaceAll('{{.Product.ID}}', '7')
   .replaceAll('{{.Product.ProductKind}}', 'standard')
+  .replaceAll('{{.Product.ContactCollectionLevel}}', 'mobile')
   .replaceAll('{{.Product.PromotionContext}}', '')
+  .replaceAll('{{.Product.RegionOptionsJSON}}', '[]')
   .replaceAll('{{.Product.CouponTargetRef}}', 'standard_product:7');
 
 assert.equal(source.includes('id="grossAmount"'), false);
 const storageKey = 'aicrm.checkout.tab.v2:7:standard';
 const paidCheckpoint = () => JSON.stringify({
   key: 'checkout-key-0000001', merchant_order_no: 'M-paid-7',
-  payload: {product_id: 7, product_kind: 'standard', beneficiary_selection: 'payer_self', coupon_claim_id: 0},
+  payload: {product_id: 7, product_kind: 'standard', beneficiary_selection: 'payer_self', coupon_claim_id: 0, contact_collection_level: 'mobile', mobile: '+8613812345678'},
   session_binding: 'a'.repeat(43), terminal_status: 'paid',
 });
 

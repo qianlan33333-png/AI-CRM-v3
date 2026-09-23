@@ -1459,6 +1459,9 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = orderHandler.SetCustomerFilterResolver(orderCustomerFilterAdapter{uow: uow, oneID: oneID, corpID: cfg.WeCom.CorpID}); err != nil {
 		return fail(err)
 	}
+	if err = orderHandler.SetCheckoutContactReader(orderService); err != nil {
+		return fail(err)
+	}
 	orderRuns := ordermigration.PostgreSQLRuns{Pool: pool.Native()}
 	orderImportHandler, err := orderhttp.NewImportHandler(ordermigration.OrderOnlyRunner{Orders: orderService, Runs: orderRuns}, orderRuns, requestSecurity)
 	if err != nil {
@@ -1493,6 +1496,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 		return fail(err)
 	}
 	var wechatPayAdapter *paymentprovider.WeChatPay
+	var alipayAdapter *paymentprovider.Alipay
 	var paymentCallbackVerifier *paymentprovider.CallbackVerifier
 	if cfg.WeChatPay.Enabled {
 		if err = paymentService.SetPaymentChannelAppIDs(cfg.WeChatPay.AppID, cfg.WeChatPay.H5AppID); err != nil {
@@ -1562,6 +1566,36 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 			return fail(err)
 		}
 	}
+	if cfg.Alipay.Enabled {
+		if err = paymentService.SetAlipayAppID(cfg.Alipay.AppID); err != nil {
+			return fail(err)
+		}
+		privateKey, readErr := os.ReadFile(cfg.Alipay.PrivateKeyPath)
+		if readErr != nil {
+			return fail(readErr)
+		}
+		contentEncryptionKey, readErr := paymentprovider.LoadContentEncryptionKey(cfg.Alipay.ContentEncryptionKeyPath)
+		if readErr != nil {
+			return fail(readErr)
+		}
+		alipayAdapter, err = paymentprovider.NewAlipay(paymentprovider.AlipayConfig{
+			Enabled: true, Production: cfg.Alipay.Production, AppID: cfg.Alipay.AppID,
+			PrivateKey: string(privateKey), Gateway: cfg.Alipay.Gateway, ContentEncryptionKey: contentEncryptionKey, AlipayPublicKey: cfg.Alipay.AlipayPublicKey,
+			AppCertPath: cfg.Alipay.AppCertPath, AlipayCertPath: cfg.Alipay.AlipayCertPath, AlipayRootPath: cfg.Alipay.AlipayRootPath,
+			NotifyURL: cfg.Alipay.NotifyURL, ReturnURL: cfg.Alipay.ReturnURL,
+		})
+		if err != nil {
+			return fail(err)
+		}
+		if err = alipayAdapter.SetMaterialLoader(paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository}); err != nil {
+			return fail(err)
+		}
+	} else {
+		alipayAdapter, err = paymentprovider.NewAlipay(paymentprovider.AlipayConfig{})
+		if err != nil {
+			return fail(err)
+		}
+	}
 	shopLoader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository}
 	wechatShopAdapter, err := paymentprovider.NewWeChatShop(paymentprovider.ShopConfig{Enabled: cfg.WeChatShop.Enabled, AppID: cfg.WeChatShop.AppID, AppSecret: cfg.WeChatShop.AppSecret, APIBaseURL: "https://api.weixin.qq.com"}, shopLoader, &http.Client{Timeout: 10 * time.Second})
 	if err != nil {
@@ -1573,10 +1607,18 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	if err = paymentService.SetWeChatPayReconciler(wechatPayAdapter); err != nil {
 		return fail(err)
 	}
-	paymentAdapter := paymentProviderRouter{wechatPay: wechatPayAdapter, wechatShop: wechatShopAdapter}
-	paymentHandler, err := paymenthttp.NewHandler(paymentService, paymentCallbackVerifier, requestSecurity, cfg.WeChatPay.Enabled, cfg.WeChatShop.Enabled)
+	if err = paymentService.SetAlipayReconciler(alipayAdapter); err != nil {
+		return fail(err)
+	}
+	paymentAdapter := paymentProviderRouter{wechatPay: wechatPayAdapter, wechatShop: wechatShopAdapter, alipay: alipayAdapter}
+	paymentHandler, err := paymenthttp.NewHandler(paymentService, paymentCallbackVerifier, requestSecurity, cfg.WeChatPay.Enabled || cfg.Alipay.Enabled, cfg.WeChatShop.Enabled, cfg.Alipay.Enabled)
 	if err != nil {
 		return fail(err)
+	}
+	if cfg.Alipay.Enabled {
+		if err = paymentHandler.SetAlipayCallbackVerifier(alipayAdapter); err != nil {
+			return fail(err)
+		}
 	}
 	if err = paymentHandler.SetCommercePushDeliveryReaders(orderService, commercePushService); err != nil {
 		return fail(err)
@@ -2196,6 +2238,7 @@ func composeWithWeComClientFactoryAndSurveyCompletionHTTPClient(ctx context.Cont
 	adminAPIs.Handle("/api/v1/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/h5/wechat-pay/oauth/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
+	adminAPIs.Handle("/api/public/alipay/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-shop/", paymentHandler)
 	adminAPIs.Handle("/api/public/service-period-member-grid/bootstrap", productBindings.Products)
 	adminAPIs.Handle("/api/public/service-period-member-grid/query", productBindings.Products)
@@ -2866,6 +2909,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/v1/wechat-pay/", identity)
 	mux.Handle("/api/h5/wechat-pay/oauth/", identity)
 	mux.Handle("/api/public/wechat-pay/", identity)
+	mux.Handle("/api/public/alipay/", identity)
 	mux.Handle("/api/public/wechat-shop/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
 	mux.Handle("/api/admin/wechat-pay/payments/", identity)
@@ -3176,6 +3220,12 @@ func securityHeaders(next http.Handler) http.Handler {
 			// presentation routes; API responses and unrelated admin pages stay
 			// under the stricter image policy.
 			imageSource += " blob:"
+		}
+		if strings.HasPrefix(request.URL.Path, "/gi/") {
+			// Invitation pages render the provider-issued group QR directly. Keep
+			// the exception scoped to this public route instead of weakening the
+			// image policy for the admin shell or API responses.
+			imageSource += " https://wework.qpic.cn"
 		}
 		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src " + imageSource + "; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
 		if request.URL.Path != webshell.SidebarPagePath && !strings.HasPrefix(request.URL.Path, "/api/sidebar/") {

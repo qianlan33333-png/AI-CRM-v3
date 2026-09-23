@@ -70,6 +70,9 @@ const (
 	KindWeChatPayReceiverAdd    Kind  = "wechat_pay_profit_sharing_receiver_v1"
 	KindWeChatPayProfitSharing  Kind  = "wechat_pay_profit_sharing_order_v1"
 	KindWeChatPayProfitUnfreeze Kind  = "wechat_pay_profit_sharing_unfreeze_v1"
+	KindAlipayWapPay            Kind  = "alipay_wap_pay_v1"
+	KindAlipayPagePay           Kind  = "alipay_page_pay_v1"
+	KindAlipayRefund            Kind  = "alipay_refund_v1"
 )
 
 type State string
@@ -101,7 +104,7 @@ type Envelope struct {
 
 func (value Envelope) Valid() bool {
 	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindWeComTagCatalogMutation || value.Kind == KindWeComContactDescription || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindCustomerTagCommand || value.Kind == KindCustomerOwnerHandoff || value.Kind == KindCommerceProductPush || value.Kind == KindInvitationCode || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
-		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund || value.Kind == KindWeChatPayReceiverAdd || value.Kind == KindWeChatPayProfitSharing || value.Kind == KindWeChatPayProfitUnfreeze) ||
+		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund || value.Kind == KindWeChatPayReceiverAdd || value.Kind == KindWeChatPayProfitSharing || value.Kind == KindWeChatPayProfitUnfreeze || value.Kind == KindAlipayWapPay || value.Kind == KindAlipayPagePay || value.Kind == KindAlipayRefund) ||
 		value.Owner == OwnerAutomation && value.Kind == KindAIAgentGenerate ||
 		value.Owner == OwnerAdminOps && value.Kind == KindFeishuOpsNotification || value.Owner == OwnerSegment && value.Kind == KindAIRecommend
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)

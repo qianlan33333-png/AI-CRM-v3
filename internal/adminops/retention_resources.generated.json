@@ -1,6 +1,6 @@
 {
   "registry_version": 1,
-  "registry_sha256": "49951ede62dd024dc9020a72fae14a8fad115dbbf78b40ed1c87a677a1a69951",
+  "registry_sha256": "e69b4658863d4fb0fcdf5549dc0238aa0189e7f13a4512d6ddd8dd3ef1a3dda2",
   "inventory_scope": "committed_registry",
   "items": [
     {
@@ -3047,6 +3047,19 @@
     },
     {
       "kind": "table",
+      "name": "media_invitation_join_ways",
+      "owner": "media",
+      "policy": "permanent",
+      "reason": "保存公开邀请计划固定 join_way 的 config_id、二维码和切群更新回执。",
+      "source": "migrations/0204_media_invitation_join_ways.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
       "name": "media_invitation_plans",
       "owner": "media",
       "policy": "permanent",
@@ -3702,6 +3715,19 @@
       "policy": "permanent",
       "reason": "保存源数据摘要、导入/映射/拒绝结论与目标绑定，属于迁移及差异核对证据；删除将失去防重复导入或防静默丢数依据。 核验字段：source_system, source_key, customer_id, service_product_id, last_order_id, status, version, source_digest。",
       "source": "migrations/0055_order_service_entitlements.sql",
+      "cleanup_entrypoint": "",
+      "policy_id": "",
+      "coverage_status": "protected",
+      "gap_code": "",
+      "authorization_expiry": "not_assessed"
+    },
+    {
+      "kind": "table",
+      "name": "order_shipping_address_snapshots",
+      "owner": "order",
+      "policy": "permanent",
+      "reason": "Frozen shipping address evidence captured at checkout; not process cache.",
+      "source": "migrations/0203_order_shipping_address_snapshots.sql",
       "cleanup_entrypoint": "",
       "policy_id": "",
       "coverage_status": "protected",
@@ -6640,7 +6666,7 @@
       "policy": "verified_release_allowlist",
       "reason": "Local v3 source bundles retained for reproducible staging builds and removed only by the release owner after receipt expiry.",
       "source": "docs/governance/retention-registry.json#filesystem_prefixes//opt/aicrm/source-bundles",
-      "cleanup_entrypoint": "deploy/build-release-on-staging.sh#remote_root",
+      "cleanup_entrypoint": "deploy/cleanup-source-bundles.py#inventory",
       "policy_id": "release_artifact",
       "coverage_status": "policy_available",
       "gap_code": "",

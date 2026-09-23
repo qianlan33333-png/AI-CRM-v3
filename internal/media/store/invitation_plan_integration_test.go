@@ -52,7 +52,7 @@ func TestPostgreSQLInvitationAtomicSaveAndUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer native.Close()
-	for _, f := range []string{"0007_media.sql", "0195_media_invitation_plans.sql"} {
+	for _, f := range []string{"0007_media.sql", "0195_media_invitation_plans.sql", "0204_media_invitation_join_ways.sql"} {
 		raw, err := os.ReadFile(filepath.Join("../../../migrations", f))
 		if err != nil {
 			t.Fatal(err)
@@ -84,11 +84,11 @@ func TestPostgreSQLInvitationAtomicSaveAndUpgrade(t *testing.T) {
 	if err != nil || replay.ID != plan.ID {
 		t.Fatal("replay", err)
 	}
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM invitation_effect_probe`).Scan(&count); err != nil || count != 2 {
-		t.Fatal("duplicate effects", count, err)
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM invitation_effect_probe`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("plan must have one stable Provider effect", count, err)
 	}
 	if err = uow.Within(ctx, func(tx context.Context) error {
-		return repo.CompleteInvitationCode(tx, p.InvitationCodeCompletion{EffectID: "eer_2", State: "executed", QRCode: "https://example.test/code", ConfigID: "config"})
+		return repo.CompleteInvitationPlanCode(tx, p.InvitationCodeCompletion{EffectID: "eer_2", State: "executed", QRCode: "https://example.test/code", ConfigID: "config"})
 	}); err != nil {
 		t.Fatal(err)
 	}

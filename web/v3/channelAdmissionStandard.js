@@ -100,10 +100,21 @@ export function mountChannelAdmissionStandard() {
   }
 
   function apiJson(url, options) {
+    const method = String(options?.method || "GET").toUpperCase();
+    const headers = new Headers(options?.headers || {});
+    if (["POST", "PATCH", "PUT", "DELETE"].includes(method) && !headers.has("Idempotency-Key")) {
+      const key = globalThis.crypto?.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `channel-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      headers.set("Idempotency-Key", key);
+    }
     return fetch(url, {
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
       ...options,
+      headers: (() => {
+        if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+        return headers;
+      })(),
+      credentials: "same-origin",
     }).then((response) => response.json().then((data) => ({ response, data })));
   }
 
@@ -718,7 +729,23 @@ export function mountChannelAdmissionStandard() {
         toast("渠道已保存");
         setSaveFeedback("保存成功。" + (savedAt ? " " + savedAt : ""));
         if (!isEdit && data.channel && data.channel.id) {
-          window.location.href = "/admin/channels/" + data.channel.id + "/edit";
+          // A new QR channel has no provider asset yet. Queue its first QR
+          // generation immediately after the catalog write so the edit page
+          // does not present a permanently download-less channel.
+          const channelID = String(data.channel.id);
+          const channelType = String(data.channel.channel_type || data.channel.carrier_type || "qrcode");
+          const generate = channelType === "qrcode"
+            ? apiJson("/api/admin/channels/" + encodeURIComponent(channelID) + "/qrcode/generate", { method: "POST", body: "{}" })
+            : Promise.resolve({ response: { ok: true }, data: {} });
+          generate.then(({ response: generateResponse, data: generateData }) => {
+            if (!generateResponse.ok || generateData.ok === false) {
+              throw new Error(apiErrorMessage(generateData, "二维码生成失败"));
+            }
+            window.location.href = "/admin/channels/" + channelID + "/edit";
+          }).catch((error) => {
+            toast(error.message || "二维码生成失败");
+            window.location.href = "/admin/channels/" + channelID + "/edit";
+          });
         }
       }).catch((error) => {
         toast(error.message || "保存失败");

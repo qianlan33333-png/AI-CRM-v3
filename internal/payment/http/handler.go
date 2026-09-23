@@ -84,20 +84,34 @@ type H5OAuthApplication interface {
 	Complete(context.Context, string, string) (paymentsession.Issued, string, error)
 }
 
+type AlipayCallbackVerifier interface {
+	VerifyValues(context.Context, url.Values) (paymentprovider.CallbackResult, error)
+}
+
 type Handler struct {
-	app                Application
-	verifier           *paymentprovider.CallbackVerifier
-	security           RequestSecurity
-	writesEnabled      bool
-	shopWritesEnabled  bool
-	shopVerifier       paymentport.ShopCallbackVerifier
-	sessionVerifier    SessionIdentityVerifier
-	sessionIssuer      TrustedSessionIssuer
-	h5OAuth            H5OAuthApplication
-	commerceOrders     orderport.CommercePushDeliveryReferenceReader
-	commerceDeliveries outboundport.CommercePushDeliveryReader
-	purchaseActions    productport.PaidPurchaseActionReader
-	leadQR             channelport.PublicLeadQRCodeReader
+	app                 Application
+	verifier            *paymentprovider.CallbackVerifier
+	alipayVerifier      AlipayCallbackVerifier
+	security            RequestSecurity
+	writesEnabled       bool
+	alipayWritesEnabled bool
+	shopWritesEnabled   bool
+	shopVerifier        paymentport.ShopCallbackVerifier
+	sessionVerifier     SessionIdentityVerifier
+	sessionIssuer       TrustedSessionIssuer
+	h5OAuth             H5OAuthApplication
+	commerceOrders      orderport.CommercePushDeliveryReferenceReader
+	commerceDeliveries  outboundport.CommercePushDeliveryReader
+	purchaseActions     productport.PaidPurchaseActionReader
+	leadQR              channelport.PublicLeadQRCodeReader
+}
+
+func (handler *Handler) SetAlipayCallbackVerifier(verifier AlipayCallbackVerifier) error {
+	if handler == nil || verifier == nil {
+		return paymentport.ErrInvalid
+	}
+	handler.alipayVerifier = verifier
+	return nil
 }
 
 func (handler *Handler) SetH5OAuth(application H5OAuthApplication) error {
@@ -155,6 +169,9 @@ func NewHandler(app Application, verifier *paymentprovider.CallbackVerifier, sec
 	if len(shopEnabled) > 0 {
 		handler.shopWritesEnabled = shopEnabled[0]
 	}
+	if len(shopEnabled) > 1 {
+		handler.alipayWritesEnabled = shopEnabled[1]
+	}
 	return handler, nil
 }
 
@@ -174,8 +191,17 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.checkoutSession(writer, request)
 	case path == "/api/v1/wechat-pay/checkouts":
 		handler.checkout(writer, request)
+	case path == "/api/v1/alipay/checkouts":
+		handler.checkout(writer, request)
 	case strings.HasPrefix(path, "/api/v1/wechat-pay/checkouts/"):
 		checkoutPath := strings.TrimPrefix(path, "/api/v1/wechat-pay/checkouts/")
+		if strings.HasSuffix(checkoutPath, "/completion-target") {
+			handler.resolveCompletionTarget(writer, request, strings.TrimSuffix(checkoutPath, "/completion-target"))
+			return
+		}
+		handler.checkoutStatus(writer, request, checkoutPath)
+	case strings.HasPrefix(path, "/api/v1/alipay/checkouts/"):
+		checkoutPath := strings.TrimPrefix(path, "/api/v1/alipay/checkouts/")
 		if strings.HasSuffix(checkoutPath, "/completion-target") {
 			handler.resolveCompletionTarget(writer, request, strings.TrimSuffix(checkoutPath, "/completion-target"))
 			return
@@ -193,6 +219,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.refundRecoveryReceipt(writer, request)
 	case path == "/api/public/wechat-pay/callbacks/payment" || path == "/api/public/wechat-pay/callbacks/refund":
 		handler.callback(writer, request)
+	case path == "/api/public/alipay/callback":
+		handler.alipayCallback(writer, request)
 	case path == "/api/public/wechat-shop/callbacks/refund":
 		handler.shopCallback(writer, request)
 	case strings.HasPrefix(path, "/api/admin/wechat-pay/profit-sharing/receivers/") && strings.HasSuffix(path, "/recover"):
@@ -731,7 +759,7 @@ func compatRefundStatus(status domain.RefundStatus) string {
 }
 
 func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Request) {
-	if !handler.writesEnabled {
+	if !handler.writesEnabled && !handler.alipayWritesEnabled {
 		writeError(writer, http.StatusServiceUnavailable, "payment_provider_disabled")
 		return
 	}
@@ -748,7 +776,18 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		ProductID              int64                            `json:"product_id,omitempty"`
 		CouponClaimID          int64                            `json:"coupon_claim_id,omitempty"`
 		ProductType            string                           `json:"product_kind,omitempty"`
+		Provider               string                           `json:"provider,omitempty"`
+		Channel                domain.Channel                   `json:"channel,omitempty"`
 		MobileE164             string                           `json:"mobile,omitempty"`
+		ContactCollectionLevel string                           `json:"contact_collection_level,omitempty"`
+		RecipientName          string                           `json:"recipient_name,omitempty"`
+		ProvinceCode           string                           `json:"province_code,omitempty"`
+		ProvinceName           string                           `json:"province_name,omitempty"`
+		CityCode               string                           `json:"city_code,omitempty"`
+		CityName               string                           `json:"city_name,omitempty"`
+		DistrictCode           string                           `json:"district_code,omitempty"`
+		DistrictName           string                           `json:"district_name,omitempty"`
+		DetailAddress          string                           `json:"detail_address,omitempty"`
 		BeneficiarySelection   paymentport.BeneficiarySelection `json:"beneficiary_selection,omitempty"`
 		CheckoutSessionBinding string                           `json:"checkout_session_binding"`
 		// PromotionContext is an opaque /d credential. Order validates its
@@ -757,6 +796,14 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		PromotionContext string `json:"promotion_context,omitempty"`
 	}
 	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	provider := body.Provider
+	if provider == "" {
+		provider = "wechat_pay"
+	}
+	if (provider == "alipay" && !handler.alipayWritesEnabled) || (provider != "alipay" && !handler.writesEnabled) {
+		writeError(writer, http.StatusServiceUnavailable, "payment_provider_disabled")
 		return
 	}
 	if !paymentport.MatchesCheckoutSessionBinding(cookie.Value, body.CheckoutSessionBinding) {
@@ -772,7 +819,7 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 	if activityCookie, cookieErr := request.Cookie(paymentport.ReferralActivityCookieName); cookieErr == nil && validReferralActivityContext(activityCookie.Value) {
 		activityContext = activityCookie.Value
 	}
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, PromotionContext: body.PromotionContext, ReferralActivityContext: activityContext, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, Provider: body.Provider, Channel: body.Channel, MobileE164: body.MobileE164, ContactCollectionLevel: body.ContactCollectionLevel, ShippingAddress: paymentport.ShippingAddress{RecipientName: body.RecipientName, ProvinceCode: body.ProvinceCode, ProvinceName: body.ProvinceName, CityCode: body.CityCode, CityName: body.CityName, DistrictCode: body.DistrictCode, DistrictName: body.DistrictName, DetailAddress: body.DetailAddress}, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, PromotionContext: body.PromotionContext, ReferralActivityContext: activityContext, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return
@@ -800,7 +847,7 @@ func validReferralActivityContext(value string) bool {
 }
 
 func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http.Request, merchantOrderNo string) {
-	if !handler.writesEnabled {
+	if !handler.writesEnabled && !handler.alipayWritesEnabled {
 		writeError(writer, http.StatusServiceUnavailable, "payment_provider_disabled")
 		return
 	}
@@ -1042,6 +1089,30 @@ func (handler *Handler) callback(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]string{"code": "SUCCESS", "message": "成功"})
+}
+
+func (handler *Handler) alipayCallback(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost || handler.alipayVerifier == nil {
+		writeError(writer, http.StatusNotFound, "not_found")
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxBody)
+	if err := request.ParseForm(); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_callback")
+		return
+	}
+	callback, err := handler.alipayVerifier.VerifyValues(request.Context(), request.PostForm)
+	if err != nil {
+		writeError(writer, http.StatusUnauthorized, "invalid_signature")
+		return
+	}
+	if err = handler.app.ApplyVerifiedCallback(request.Context(), callback); err != nil {
+		resultError(writer, err)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte("success"))
 }
 
 // callbackDiagnostic allows production operators to distinguish ingress,

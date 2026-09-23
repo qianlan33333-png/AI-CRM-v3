@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 sha="${1:?sha}"; bundle="${2:?bundle}"; root="${3:?root}"; manifest="${4:?manifest}"
 [[ "$sha" =~ ^[0-9a-f]{40}$ && "$root" == "/opt/aicrm/builds/$sha" ]] || exit 2
 exec 9>/opt/aicrm/staging-build.lock

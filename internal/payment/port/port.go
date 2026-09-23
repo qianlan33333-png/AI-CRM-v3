@@ -76,6 +76,11 @@ type CreateCommand struct {
 	OrderID, ProductID int64
 	CouponClaimID      int64
 	ProductType        string
+	// Provider and Channel are a constrained checkout choice. They are
+	// validated against the server-side enabled capability before any order is
+	// created; the browser cannot select an unsupported Provider.
+	Provider string
+	Channel  domain.Channel
 	// PromotionContext is an opaque, server-issued checkout context. Payment
 	// does not parse it; it is frozen into idempotent checkout facts and passed
 	// to Order's same-UoW attribution coordinator by composition.
@@ -90,8 +95,21 @@ type CreateCommand struct {
 	SessionToken               string
 	CheckoutSessionBinding     string
 	MobileE164                 string
+	ContactCollectionLevel     string
+	ShippingAddress            ShippingAddress
 	BeneficiarySelection       BeneficiarySelection
 	ActorScope, IdempotencyKey string
+}
+
+type ShippingAddress struct {
+	RecipientName string `json:"recipient_name,omitempty"`
+	ProvinceCode  string `json:"province_code,omitempty"`
+	ProvinceName  string `json:"province_name,omitempty"`
+	CityCode      string `json:"city_code,omitempty"`
+	CityName      string `json:"city_name,omitempty"`
+	DistrictCode  string `json:"district_code,omitempty"`
+	DistrictName  string `json:"district_name,omitempty"`
+	DetailAddress string `json:"detail_address,omitempty"`
 }
 type RefundCommand struct {
 	PaymentID, AmountMinor                        int64
@@ -338,6 +356,23 @@ type WeChatPayRefundQuery struct {
 type WeChatPayReconciler interface {
 	QueryPayment(context.Context, string) (WeChatPayPaymentQuery, error)
 	QueryRefund(context.Context, string) (WeChatPayRefundQuery, error)
+}
+
+type AlipayPaymentQuery struct {
+	MerchantOrderNo, TradeNo, TradeStatus, Currency string
+	AmountMinor                                     int64
+	OccurredAt                                      time.Time
+	EvidenceDigest, TransactionDigest               effectport.Digest
+}
+type AlipayRefundQuery struct {
+	RefundNo, Currency, Status   string
+	AmountMinor, TotalMinor      int64
+	OccurredAt                   time.Time
+	EvidenceDigest, RefundDigest effectport.Digest
+}
+type AlipayReconciler interface {
+	QueryPayment(context.Context, string) (AlipayPaymentQuery, error)
+	QueryRefund(context.Context, string) (AlipayRefundQuery, error)
 }
 
 type ProviderIntentReader interface {

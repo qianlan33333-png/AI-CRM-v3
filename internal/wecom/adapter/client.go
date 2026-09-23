@@ -744,7 +744,11 @@ type response struct {
 	FollowUser  json.RawMessage `json:"follow_user"`
 	NextCursor  string          `json:"next_cursor"`
 	JoinWay     struct {
-		QRCode string `json:"qr_code"`
+		ConfigID       string   `json:"config_id"`
+		Scene          int      `json:"scene"`
+		AutoCreateRoom int      `json:"auto_create_room"`
+		ChatIDs        []string `json:"chat_id_list"`
+		QRCode         string   `json:"qr_code"`
 	} `json:"join_way"`
 	ConfigID   string `json:"config_id"`
 	QRCode     string `json:"qr_code"`
@@ -948,7 +952,7 @@ func (client *Client) CreateContactWay(ctx context.Context, input wecomport.Acqu
 	}
 	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/add_contact_way", url.Values{"access_token": {token}}, body)
 	if err != nil {
-		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(err, true)
+		return wecomport.AcquisitionAssetResult{}, wrapAcquisitionWriteError(err)
 	}
 	payload.ConfigID = strings.TrimSpace(payload.ConfigID)
 	payload.QRCode = strings.TrimSpace(payload.QRCode)
@@ -956,6 +960,21 @@ func (client *Client) CreateContactWay(ctx context.Context, input wecomport.Acqu
 		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
 	}
 	return wecomport.AcquisitionAssetResult{ProviderAssetRef: payload.ConfigID, URL: payload.QRCode}, nil
+}
+
+// wrapAcquisitionWriteError keeps a completed WeCom rejection distinct from a
+// transport ambiguity. The old generic wrapper marked every post-request
+// error outcome_unknown, which hid actionable permission/configuration codes
+// and left every newly generated channel QR without a diagnosable result.
+func wrapAcquisitionWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var providerErr *providerResponseError
+	if errors.As(err, &providerErr) && providerErr.errCode != 0 {
+		return wecomport.WrapProviderWriteDispositionWithCode(err, true, false, providerErr.retryable, providerErr.errCode)
+	}
+	return wecomport.WrapProviderWriteError(err, true)
 }
 
 func (client *Client) GetContactWay(ctx context.Context, configID string) (wecomport.AcquisitionAssetResult, error) {
